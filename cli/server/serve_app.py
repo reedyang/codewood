@@ -5659,9 +5659,26 @@ def _make_handler(app: ServeApp):
                 store = get_session_store()
                 session = store.get_session(session_id)
                 _sa_log.info("subagent-session-history: cache hit=%s", session is not None)
-                if session is None and chat_id:
-                    session = store.load_session_from_disk(app.agent, chat_id, session_id)
-                    _sa_log.info("subagent-session-history: disk load=%s", session is not None)
+                # Prefer the on-disk file when the cached session is missing the
+                # structured ``_tool_rounds_raw`` (e.g. it was generated under an
+                # older build and is still held in the in-memory cache). The disk
+                # file is always the canonical, up-to-date record, so reloading
+                # from it guarantees the GUI sees the current tool-round data.
+                # ``load_session_from_disk`` short-circuits on a cache hit, so
+                # evict the (stale) cached entry first to force a fresh read.
+                _cached_has_raw = bool(session) and any(
+                    isinstance(_m, dict) and _m.get("_tool_rounds_raw")
+                    for _m in (session.get("messages") or [])
+                )
+                if (session is None or not _cached_has_raw) and chat_id:
+                    try:
+                        store._cache.pop(session_id, None)
+                    except Exception:
+                        pass
+                    _disk = store.load_session_from_disk(app.agent, chat_id, session_id)
+                    if _disk is not None:
+                        _sa_log.info("subagent-session-history: disk load (cache stale/missing)=%s", _cached_has_raw)
+                        session = _disk
                 if session is None:
                     _sa_log.warning("subagent-session-history: session %s not found (chat_id=%s)", session_id, chat_id)
                     self._send_json(404, {"ok": False, "error": "session not found"})
@@ -5682,15 +5699,34 @@ def _make_handler(app: ServeApp):
                             try:
                                 _m["tool_rounds"] = self.agent._rerender_tool_rounds(_raw)
                             except Exception:
-                                # Fallback: render a minimal description straight
-                                # from the raw entry (no agent-dependent
-                                # formatting) so older sessions still display
-                                # instead of a blank "• undefined" row.
+                                # Fallback: render a human-readable description
+                                # straight from the raw entry (reusing the agent's
+                                # own tool-label logic when available) so a render
+                                # failure never produces a raw JSON blob or a blank
+                                # "• undefined" row.
                                 try:
-                                    _m["tool_rounds"] = [
-                                        f"\u2022 {str(item.get('tool') or 'tool')} {json.dumps(item.get('args', {}), ensure_ascii=False)}"
-                                        for item in _raw
-                                    ]
+                                    _fallback_rounds: List[str] = []
+                                    _natural = getattr(self.agent, "_natural_tool_action", None)
+                                    _humanize = getattr(self.agent, "_humanize_tool_name", None)
+                                    for _item in _raw:
+                                        _tn = str(_item.get("tool") or "tool")
+                                        _args = _item.get("args") if isinstance(_item.get("args"), dict) else {}
+                                        _label = _tn
+                                        _detail = ""
+                                        try:
+                                            if callable(_natural):
+                                                _label, _detail = _natural(_tn, _args)
+                                            elif callable(_humanize):
+                                                _label = _humanize(_tn)
+                                        except Exception:
+                                            pass
+                                        _bullet = "\u2022"
+                                        _line = f"{_bullet} {_label}" + (f" {_detail}" if _detail else "")
+                                        _out = _item.get("output")
+                                        if _out:
+                                            _line = f"{_line}\n\uE000{_out}\uE001"
+                                        _fallback_rounds.append(_line)
+                                    _m["tool_rounds"] = _fallback_rounds
                                 except Exception:
                                     pass
                 except Exception:
