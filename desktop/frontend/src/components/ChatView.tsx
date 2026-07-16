@@ -540,18 +540,25 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
   const mergedMessages = (() => {
     const result: SubAgentMessage[] = [];
     let i = 0;
+    // Visible text of an assistant message: when "_clean_content" is present it
+    // is authoritative (empty string means the raw content was entirely hidden
+    // markers, e.g. "<|channel>..."), otherwise fall back to stripping markers
+    // from the raw content. Used to decide whether a message is content-less and
+    // therefore mergeable into a "Called N tools" group.
+    const visibleTextOf = (m: SubAgentMessage): string => {
+      const mAny = m as unknown as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(mAny, "_clean_content")) {
+        return String(mAny["_clean_content"] ?? "");
+      }
+      return stripHiddenAssistantMarkers(m.content || "");
+    };
     while (i < session.messages.length) {
       const msg = session.messages[i];
       // A persisted assistant message with no visible text (either its raw
       // content is entirely hidden markers like "<|channel>thought...<channel|>",
       // or it carries an empty "_clean_content") is content-less and should be
       // merged into the surrounding "Called N tools" group.
-      const msgAny = msg as unknown as Record<string, unknown>;
-      const hasClean = Object.prototype.hasOwnProperty.call(msgAny, "_clean_content");
-      const visibleContent = hasClean
-        ? String(msgAny["_clean_content"] ?? "")
-        : stripHiddenAssistantMarkers(msg.content || "");
-      const msgContent = visibleContent.trim();
+      const msgContent = visibleTextOf(msg).trim();
       const isToolOnlyAssistant =
         msg.role === "assistant" && !msgContent && (!!msg.tool_rounds?.length || !!msg.tool_calls?.length);
       if (!isToolOnlyAssistant) {
@@ -578,7 +585,11 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
       let j = i + 1;
       while (j < session.messages.length) {
         const next = session.messages[j];
-        if (next.role === "assistant" && !next.content && (!!next.tool_rounds?.length || !!next.tool_calls?.length)) {
+        if (
+          next.role === "assistant" &&
+          !visibleTextOf(next).trim() &&
+          (!!next.tool_rounds?.length || !!next.tool_calls?.length)
+        ) {
           addRound(next.tool_rounds, next.tool_calls);
           j++;
         } else if (next.role === "tool") {
