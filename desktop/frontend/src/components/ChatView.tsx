@@ -542,10 +542,16 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
     let i = 0;
     while (i < session.messages.length) {
       const msg = session.messages[i];
-      // A persisted assistant message whose raw content is entirely hidden
-      // markers (e.g. "<|channel>thought\n<channel|>") carries an empty
-      // "_clean_content" and no user-visible text — treat it as content-less.
-      const msgContent = stripHiddenAssistantMarkers(msg.content || "").trim();
+      // A persisted assistant message with no visible text (either its raw
+      // content is entirely hidden markers like "<|channel>thought...<channel|>",
+      // or it carries an empty "_clean_content") is content-less and should be
+      // merged into the surrounding "Called N tools" group.
+      const msgAny = msg as unknown as Record<string, unknown>;
+      const hasClean = Object.prototype.hasOwnProperty.call(msgAny, "_clean_content");
+      const visibleContent = hasClean
+        ? String(msgAny["_clean_content"] ?? "")
+        : stripHiddenAssistantMarkers(msg.content || "");
+      const msgContent = visibleContent.trim();
       const isToolOnlyAssistant =
         msg.role === "assistant" && !msgContent && (!!msg.tool_rounds?.length || !!msg.tool_calls?.length);
       if (!isToolOnlyAssistant) {
@@ -613,13 +619,17 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
         }
 
         if (msg.role === "assistant") {
-          // Prefer the sanitized form when present (mirrors the main chat),
-          // so persisted sessions never render hidden <|channel> markers.
-          // Fall back to the marker-stripped raw content; an empty _clean_content
-          // (recorded when the raw was entirely hidden markers) means no visible
-          // text, so we must not fall through to the raw marker string.
-          const cleanContent = ((msg as unknown as Record<string, unknown>)._clean_content as string) || "";
-          const displayContent = cleanContent || stripHiddenAssistantMarkers(msg.content || "");
+          // Prefer the stored sanitized form when present. _clean_content is
+          // authoritative: when the key exists it was recorded by the backend
+          // (empty string means "no visible text", e.g. raw was entirely
+          // "<|channel>thought ... <channel|>" markers) and we must NOT fall
+          // back to re-cleaning the raw content. Only fall back to the raw
+          // content for legacy records that predate _clean_content support.
+          const msgAny = msg as unknown as Record<string, unknown>;
+          const hasClean = Object.prototype.hasOwnProperty.call(msgAny, "_clean_content");
+          const displayContent = hasClean
+            ? String(msgAny["_clean_content"] ?? "")
+            : stripHiddenAssistantMarkers(msg.content || "");
           const answer = displayContent ? (
             <div className="answer">
               <MarkdownText text={displayContent} />

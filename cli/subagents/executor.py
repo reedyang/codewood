@@ -21,7 +21,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from ..core.logging.app_logging import get_logger
 
@@ -776,6 +776,31 @@ def run_subagent(
                 }
 
             raw_content = str(message.get("content") or "")
+            # Mirror the main session: deduplicate tool_calls that are identical
+            # apart from their id (models sometimes emit the same call repeatedly).
+            # Done BEFORE plans/assistant_msg/tool_msg are derived so the deduped
+            # set stays consistent across execution, persisted history, and the
+            # follow-up request (an unmatched tool result would otherwise break
+            # the Responses API, which rejects role:"tool" input items).
+            _raw_tcs = message.get("tool_calls")
+            if isinstance(_raw_tcs, list) and len(_raw_tcs) > 1:
+                _seen_tc: Set[str] = set()
+                _deduped_tc: List[Dict[str, Any]] = []
+                for _tc in _raw_tcs:
+                    if not isinstance(_tc, dict):
+                        _deduped_tc.append(_tc)
+                        continue
+                    _fn = _tc.get("function", {})
+                    _key = json.dumps(
+                        {"name": _fn.get("name"), "arguments": _fn.get("arguments")},
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                    if _key not in _seen_tc:
+                        _seen_tc.add(_key)
+                        _deduped_tc.append(_tc)
+                if len(_deduped_tc) != len(_raw_tcs):
+                    message["tool_calls"] = _deduped_tc
             # Mirror the main session: the provider's final_message already
             # carries a sanitized "_clean_content" (set only when it differs
             # from the raw text). Fall back to sanitizing here so the sub-agent
@@ -817,7 +842,10 @@ def run_subagent(
             # markers to itself. Keep the cleaned form under "_clean_content"
             # for parity with the main chat's content / _clean_content split.
             assistant_msg["content"] = clean_content if clean_content else raw_content
-            if clean_content and clean_content != raw_content:
+            if clean_content != raw_content:
+                # Record even an empty cleaned form so the GUI, on reload, knows
+                # there is no visible text (raw was entirely hidden markers)
+                # rather than falling back to the raw marker string.
                 assistant_msg["_clean_content"] = clean_content
             store.append_message(agent, chat_id, session_id, assistant_msg)
             messages.append(assistant_msg)

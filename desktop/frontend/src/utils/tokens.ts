@@ -214,8 +214,13 @@ export function stripHiddenAssistantMarkers(text: string): string {
   let s = String(text ?? "");
   if (!s) return s;
   s = s.replace(/<\s*\/?\s*think\s*>[\s\S]*?<\s*\/?\s*think\s*>/gi, "");
-  s = s.replace(/<\|channel\>\s*thought[\s\S]*?<channel\|>/gi, "");
-  s = s.replace(/<\|channel\>\s*thought|<channel\|>|<\s*\/?\s*think\s*>/gi, "");
+  s = s.replace(/<\|?channel\|?\s*thought[\s\S]*?<\|?channel\|?>/gi, "");
+  // Dangling sentinels: the streaming cutter withholds these live, but a
+  // persisted record may still carry the raw fragment (e.g. a bare
+  // "<|channel>" with no matching closer). They are always hidden markers,
+  // never legitimate user-facing text, so strip them unconditionally.
+  s = s.replace(/<\|?channel\|?>/gi, "");
+  s = s.replace(/<\s*\/?\s*think\s*>/gi, "");
   return s;
 }
 

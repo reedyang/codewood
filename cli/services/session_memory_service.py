@@ -433,7 +433,7 @@ class SessionMemoryService:
             message["_context_suffix"] = str(context_suffix)
         if _internal:
             message["_internal"] = True
-        if isinstance(clean_content, str) and clean_content and clean_content != str(content or ""):
+        if isinstance(clean_content, str) and clean_content != str(content or ""):
             message["_clean_content"] = clean_content
         if isinstance(api_content, str) and api_content:
             message["_api_content"] = api_content
