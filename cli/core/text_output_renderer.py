@@ -28,9 +28,9 @@ _THINK_TAG_RE = re.compile(
 _CHANNEL_THOUGHT_RE = re.compile(
     r"<\|channel\>\s*thought[\s\S]*?<channel\|>", flags=re.IGNORECASE
 )
-_CHANNEL_MARKER_RE = re.compile(r"<\|channel\>|<channel\|>", flags=re.IGNORECASE)
+_CHANNEL_MARKER_RE = re.compile(r"<\|?channel\|?>", flags=re.IGNORECASE)
 _ORPHAN_HIDDEN_MARKER_RE = re.compile(
-    r"<\|channel\>\s*thought|<channel\|>|</?\s*think\s*>",
+    r"<\|?channel\|?\s*thought|<\|?channel\|?>|</?\s*think\s*>",
     flags=re.IGNORECASE,
 )
 
