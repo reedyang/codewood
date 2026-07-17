@@ -3274,6 +3274,7 @@ def run_agent_loop(agent: Any):
         user_message_recorded = False
         pre_task_status_ticker: Optional[_WorkingStatusTicker] = None
         active_status_ticker: Optional[_WorkingStatusTicker] = None
+        explore_ticker: Any = None
         try:
             self._refresh_input_handler_skill_completions()
             # Get user input (including replayed waiting-state input) and route everything through the main loop.
@@ -5214,6 +5215,14 @@ def run_agent_loop(agent: Any):
 
             self._in_task_execution = False
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
+            if self._consume_task_interrupt_requested():
+                self._record_conversation_interrupted_history(
+                    interrupted_kind="task",
+                    reason="user_interrupt",
+                )
+                if not self._consume_conversation_interrupted_banner_recent():
+                    self._print_conversation_interrupted_banner()
+                continue
             print("")
             try:
                 should_exit = input(

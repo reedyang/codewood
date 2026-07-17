@@ -5134,8 +5134,9 @@ class ServeApp:
 
             run_agent_loop(self.agent)
         except Exception:
-            # Best-effort: surface fatal loop errors to subscribers (scoped to
-            # this chat) without taking down the other chats' loops.
+            import traceback
+
+            tb_lines = traceback.format_exc()
             try:
                 self.broadcaster.publish(
                     "output",
@@ -5145,6 +5146,13 @@ class ServeApp:
                         "workspaceId": rt.workspace_id,
                     },
                 )
+            except Exception:
+                pass
+            try:
+                sys.stderr.write(
+                    f"[_run_chat_loop] chat={rt.chat_id} exception:\n{tb_lines}\n"
+                )
+                sys.stderr.flush()
             except Exception:
                 pass
         finally:
