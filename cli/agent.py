@@ -3624,18 +3624,32 @@ class Agent:
         if gui_marker:
             tool_round = tool_round + "\n" + gui_marker
         # Surface the tool's output (file/dir/image content for ``read``,
-        # command output for ``shell``, etc.) as a collapsible block in the GUI
-        # transcript by wrapping it in the same CMD_OUTPUT sentinels the
-        # sub-agent session viewer uses. This lets the main session expand the
-        # output on demand when a chat is reloaded.
-        # A sub-agent call keeps a separate, fully-persisted transcript (see
-        # cli/subagents/executor.py); recording its potentially large final
-        # output inline would bloat the main chat history. We deliberately skip
-        # the output block here — the guiSessionMarker recorded below still lets
-        # the GUI navigate into that sub-session on history reload.
+        # command output for ``shell``, project_context_search candidates, MCP
+        # tool results, etc.) as a collapsible block in the GUI transcript by
+        # wrapping it in the same CMD_OUTPUT sentinels the sub-agent session
+        # viewer uses. This lets the main session expand the output on demand
+        # when a chat is reloaded. Sub-agent calls keep a separate transcript
+        # and are skipped here (see below).
         is_subagent_call = t == "run_subagent"
         is_project_context_search = t == "project_context_search"
-        round_output = "" if (is_subagent_call or is_project_context_search) else self._extract_tool_result_output(t, r)
+        if is_subagent_call:
+            # A sub-agent call keeps a separate, fully-persisted transcript (see
+            # cli/subagents/executor.py); recording its potentially large final
+            # output inline would bloat the main chat history. We deliberately skip
+            # the output block here — the guiSessionMarker recorded below still lets
+            # the GUI navigate into that sub-session on history reload.
+            round_output = ""
+        elif is_project_context_search:
+            # Record the project_context_search result's raw output so history
+            # reload can expand it, like any other tool call.
+            round_output = self._extract_tool_result_output(t, r)
+        elif t.startswith("mcp__"):
+            # MCP tool results wrap the underlying tool output in ``r["result"]``;
+            # extract its raw content for the expandable output block.
+            raw = r.get("result") if isinstance(r.get("result"), dict) else {}
+            round_output = self._extract_tool_result_output(t, raw) or str(r.get("message") or "")
+        else:
+            round_output = self._extract_tool_result_output(t, r)
         if round_output:
             tool_round = (
                 f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
