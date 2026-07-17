@@ -3538,12 +3538,79 @@ class Agent:
             if not content:
                 content = str(r.get("output") or "")
             return content
+        if t == "project_context_search" or t == "call_graph":
+            # The search/call-graph result carries no ``output``/``content``
+            # field; serialize its candidate list into a readable block so
+            # history reload can expand the raw results.
+            return Agent._format_project_context_output(t, r)
         out = str(r.get("output") or "")
         if not out:
             out = str(r.get("content") or "")
         if not out:
             out = str(r.get("message") or "")
         return out
+
+    @staticmethod
+    def _format_project_context_output(tool_name: str, result: Dict[str, Any]) -> str:
+        """Render ``project_context_search`` / ``call_graph`` results into a
+        readable, expandable block for ``_tool_rounds_raw.output``.
+
+        These tools return structured candidate lists rather than a single
+        ``output``/``content`` field, so we serialize the candidates here.
+        """
+        r = result if isinstance(result, dict) else {}
+        lines: List[str] = []
+        query = str(r.get("query") or "").strip()
+        if query:
+            lines.append(f"query: {query}")
+        total = r.get("total_matches")
+        if total is not None:
+            lines.append(f"total_matches: {total}")
+        if tool_name == "call_graph":
+            nodes = r.get("nodes") if isinstance(r.get("nodes"), list) else []
+            edges = r.get("edges") if isinstance(r.get("edges"), list) else []
+            if nodes:
+                lines.append("nodes:")
+                for n in nodes[:50]:
+                    if isinstance(n, dict):
+                        lines.append(f"  - {n.get('path') or n.get('symbol') or n}")
+                    else:
+                        lines.append(f"  - {n}")
+            if edges:
+                lines.append("edges:")
+                for e in edges[:100]:
+                    if isinstance(e, dict):
+                        lines.append(f"  - {e.get('from') or '?'} -> {e.get('to') or '?'}")
+                    else:
+                        lines.append(f"  - {e}")
+        candidates = r.get("candidates") if isinstance(r.get("candidates"), list) else []
+        if candidates:
+            lines.append("candidates:")
+            for c in candidates:
+                if not isinstance(c, dict):
+                    lines.append(f"  - {c}")
+                    continue
+                path = str(c.get("path") or "")
+                score = c.get("score")
+                score_txt = f" (score={score})" if score is not None else ""
+                lines.append(f"  - {path}{score_txt}")
+                syms = c.get("symbols") if isinstance(c.get("symbols"), list) else []
+                if syms:
+                    lines.append(f"      symbols: {', '.join(str(s) for s in syms[:12])}")
+                imps = c.get("imports") if isinstance(c.get("imports"), list) else []
+                if imps:
+                    lines.append(f"      imports: {', '.join(str(i) for i in imps[:8])}")
+                reasons = c.get("reasons") if isinstance(c.get("reasons"), list) else []
+                if reasons:
+                    lines.append(f"      reasons: {', '.join(str(x) for x in reasons)}")
+        if len(lines) <= 1:
+            # No candidates/query: fall back to a compact JSON view so the
+            # raw result is still recoverable on reload.
+            try:
+                return json.dumps(r, ensure_ascii=False)
+            except Exception:
+                return ""
+        return "\n".join(lines)
 
     def _record_model_tool_execution_history(
         self,
