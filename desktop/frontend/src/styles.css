@@ -33,6 +33,10 @@
   --user-bg: #f3f3f4;
   --user-bg-solid: #f3f3f4;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  --divider-line: #d0d5dd;
+  --panel-inset: inset 2px 0 1px -1px rgba(0, 0, 0, 0.1), inset 0 2px 1px -1px rgba(0, 0, 0, 0.1);
+  --panel-shadow-top: 0 -2px 1px -1px rgba(0, 0, 0, 0.09);
+  --panel-shadow-divider: -3px 0 2px -1px rgba(0, 0, 0, 0.1);
   --panel-radius: 10px;
   --scrollbar-thumb: rgba(0, 0, 0, 0.22);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.34);
@@ -75,6 +79,10 @@
   --user-bg: #242424;
   --user-bg-solid: #242424;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --divider-line: #404040;
+  --panel-inset: inset 2px 0 2px -1px rgba(0, 0, 0, 0.34), inset 0 2px 2px -1px rgba(0, 0, 0, 0.34);
+  --panel-shadow-top: 0 -2px 2px -1px rgba(0, 0, 0, 0.3);
+  --panel-shadow-divider: -3px 0 3px -1px rgba(0, 0, 0, 0.3);
   --scrollbar-thumb: rgba(255, 255, 255, 0.10);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
   --console-bg-solid: #1e1e1e;
@@ -371,7 +379,7 @@ html[data-has-bg] .ws-selector-menu {
   display: flex;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   background: var(--bg-sidebar);
 }
 
@@ -548,10 +556,10 @@ html[data-has-bg] .ws-selector-menu {
 .sidebar-resizer::after {
   content: "";
   position: absolute;
-  /* Start below the main panel's top-left rounded corner so the line doesn't
-     cut across the rounded area. */
+  /* Start below the main panel's top-left rounded corner and stop above the
+     bottom-left rounded corner so the line never cuts across the radii. */
   top: var(--panel-radius, 12px);
-  bottom: 0;
+  bottom: var(--panel-radius, 12px);
   left: 50%;
   width: 1px;
   transform: translateX(-50%);
@@ -588,7 +596,7 @@ body.resizing-x .browser-frame {
   display: flex;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   background: var(--bg-sidebar);
 }
 
@@ -664,7 +672,7 @@ body.resizing-x .browser-frame {
   content: "";
   position: absolute;
   top: var(--panel-radius, 12px);
-  bottom: 0;
+  bottom: var(--panel-radius, 12px);
   left: 50%;
   width: 2px;
   transform: translateX(-50%);
@@ -681,9 +689,24 @@ body.resizing-x .browser-frame {
   flex: 1;
   min-width: 0;
   background: var(--bg);
+  border-top: 1px solid var(--divider-line);
+  border-left: 1px solid var(--divider-line);
   border-top-left-radius: var(--panel-radius);
   border-bottom-left-radius: var(--panel-radius);
   overflow: auto;
+  position: relative;
+}
+
+/* Soft shadow hugging the top + left edges, matching the main message area. */
+.settings-content::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-top-left-radius: var(--panel-radius);
+  border-bottom-left-radius: var(--panel-radius);
+  box-shadow: var(--panel-inset);
+  pointer-events: none;
+  z-index: 50;
 }
 
 .settings-page {
@@ -973,13 +996,48 @@ body.resizing-x .browser-frame {
   display: flex;
   position: relative;
   background: var(--bg);
+  border-top: 1px solid var(--divider-line);
+  border-left: 1px solid var(--divider-line);
   border-top-left-radius: var(--panel-radius);
   border-bottom-left-radius: var(--panel-radius);
-  overflow: hidden;
+  overflow: visible;
 }
 
-.app-shell.sidebar-collapsed .main {
+.app-shell.sidebar-collapsed .main,
+.app-shell.sidebar-collapsed .chat-view {
   border-radius: 0;
+  border-left: none;
+}
+
+/* Shadow wrapper for .main — lets .main paint without being clipped. */
+.main-shadow-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.main-shadow-wrap > .main {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Soft shadow hugging the top + left edges of the message area. Rendered as
+   an inner overlay above the content so it is never clipped by ancestors. */
+.main::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-top-left-radius: var(--panel-radius);
+  border-bottom-left-radius: var(--panel-radius);
+  box-shadow: var(--panel-inset);
+  pointer-events: none;
+  z-index: 50;
+}
+
+.app-shell.sidebar-collapsed .main::after {
+  box-shadow: none;
 }
 
 .panel-toggle-float {
@@ -1130,6 +1188,9 @@ body.resizing-x .browser-frame {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
+  border-top-left-radius: var(--panel-radius);
+  border-bottom-left-radius: var(--panel-radius);
 }
 
 /* Fixed bar above the transcript with the active chat name + actions. */
@@ -1284,15 +1345,17 @@ body.resizing-x .browser-frame {
   flex: 0 0 var(--right-panel-width, 300px);
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--divider-line);
   background: var(--bg);
   overflow: hidden;
   transition: flex-basis 0.2s ease;
+  box-shadow: var(--panel-shadow-top);
 }
 
 .right-panel.collapsed {
   flex-basis: 0;
   border-left: none;
+  box-shadow: none;
 }
 
 .right-panel-resizer {
@@ -1308,6 +1371,7 @@ body.resizing-x .browser-frame {
 .right-panel-resizer.collapsed {
   flex-basis: 0;
   cursor: default;
+  box-shadow: none;
 }
 
 .right-panel-resizer::after {
@@ -5448,13 +5512,15 @@ body.resizing-y .console-term {
 .status-bar {
   display: flex;
   align-items: center;
-  height: 24px;
-  padding: 0 12px;
+  padding: 4px 12px;
+  min-height: 24px;
+  box-sizing: border-box;
   background: var(--status-bar-bg, var(--bg-sidebar));
   border-top: 1px solid var(--border);
   position: relative;
   isolation: isolate;
   font-size: 12px;
+  line-height: 16px;
   color: var(--text-muted);
   flex-shrink: 0;
   user-select: none;

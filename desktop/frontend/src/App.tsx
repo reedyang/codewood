@@ -172,19 +172,21 @@ function Shell() {
             aria-orientation="vertical"
             onMouseDown={startResize}
           />
-          <main
-            className="main"
-            style={{ "--right-panel-width": `${rightPanelWidth}px` } as CSSProperties}
-          >
-            <ChatView />
-            <div
-              className={`right-panel-resizer ${resizingRight ? "resizing" : ""} ${planOpen ? "" : "collapsed"}`}
-              role="separator"
-              aria-orientation="vertical"
-              onMouseDown={startResizeRight}
-            />
-            <RightPanel />
-          </main>
+          <div className="main-shadow-wrap">
+            <main
+              className="main"
+              style={{ "--right-panel-width": `${rightPanelWidth}px` } as CSSProperties}
+            >
+              <ChatView />
+              <div
+                className={`right-panel-resizer ${resizingRight ? "resizing" : ""} ${planOpen ? "" : "collapsed"}`}
+                role="separator"
+                aria-orientation="vertical"
+                onMouseDown={startResizeRight}
+              />
+              <RightPanel />
+            </main>
+          </div>
         </div>
       )}
 
