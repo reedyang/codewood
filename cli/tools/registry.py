@@ -316,11 +316,15 @@ class McpDispatchTool:
 
         # Inject credential params (e.g. user_token) from the server connection
         # config before validation so the model never needs to supply them.
-        self._inject_internal_params(mcp_manager, original_server, tool_name, params, full_schema)
+        # Use a private copy for injection/validation/execution so the original
+        # ``params`` (the model-supplied args) stays clean — it is later
+        # recorded in ``_tool_rounds_raw`` and must not contain internal params.
+        internal_params = dict(params)
+        self._inject_internal_params(mcp_manager, original_server, tool_name, internal_params, full_schema)
 
         # Validate arguments against the full schema
         if full_schema is not None:
-            errs = _validate_params_against_schema(full_schema, params)
+            errs = _validate_params_against_schema(full_schema, internal_params)
             if errs:
                 return {
                     "success": False,
@@ -335,7 +339,7 @@ class McpDispatchTool:
 
         try:
             result = mcp_manager.call_tool(
-                original_server, tool_name, params, timeout_s=20.0,
+                original_server, tool_name, internal_params, timeout_s=20.0,
             )
             return {
                 "success": True,
