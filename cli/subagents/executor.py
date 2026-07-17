@@ -107,6 +107,12 @@ class SubAgentSessionStore:
             "_chat_id": chat_id,
         }
         logger.info("create_session: id=%s, chat_id=%r, name=%s", session_id, chat_id, name)
+        # Cache the resolved session directory on the session so later mutations
+        # (e.g. attaching ``_tool_rounds_raw``) can re-persist without needing the
+        # ``agent`` reference that may be unavailable at that call site.
+        session_dir = self._session_dir(agent, chat_id)
+        if session_dir is not None:
+            session["_session_dir"] = str(session_dir)
         with self._lock:
             self._cache[session_id] = session
         self._persist(agent, chat_id, session)
@@ -249,6 +255,13 @@ class SubAgentSessionStore:
     def _persist(self, agent: Any, chat_id: str, session: Dict[str, Any]) -> None:
         """Write a session to disk."""
         session_dir = self._session_dir(agent, chat_id)
+        # Fall back to the cached directory when no agent is supplied (e.g. the
+        # ``set_assistant_tool_rounds_raw`` path), so tool_rounds can persist
+        # without the agent reference.
+        if session_dir is None:
+            cached = session.get("_session_dir")
+            if cached:
+                session_dir = Path(cached)
         if session_dir is None:
             logger.warning("_persist: session_dir is None for chat_id=%r, skipping disk write", chat_id)
             return
@@ -1129,6 +1142,31 @@ def run_subagent(
             "output": output,
             "subagent": record.name,
             "max_rounds_reached": True,
+            "sessionId": session_id,
+            "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+            "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
+        }
+    except Exception as _loop_exc:
+        # An unexpected error inside the sub-agent loop must not leave the
+        # session half-persisted (only the seeded system/user messages and
+        # endedAt=null). Finish it with an error so the GUI viewer can still
+        # open the session and see whatever progress was recorded, and log the
+        # traceback so the failure is diagnosable.
+        logger.exception("run_subagent: loop error for session %s: %s", session_id, _loop_exc)
+        err_out = f"[subagent error] {_loop_exc}"
+        try:
+            store.finish_session(agent, chat_id, session_id, err_out, False)
+        except Exception:
+            pass
+        _emit_subagent_event(agent, "sub_agent_end", {
+            "sessionId": session_id,
+            "output": err_out,
+            "success": False,
+        })
+        return {
+            "success": False,
+            "error": err_out,
+            "subagent": record.name,
             "sessionId": session_id,
             "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
             "_elapsed_seconds": round(time.monotonic() - _started_at, 1),

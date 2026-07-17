@@ -26,6 +26,7 @@ from ..config.startup_tips import (
 )
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
 from ..core.console_utils import GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
+from ..core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END
 from ..core.text_output_renderer import (
     format_assistant_display_response,
 )
@@ -4880,11 +4881,26 @@ def run_agent_loop(agent: Any):
                     # frontend receives a coherent CMD_PROMPT / CMD_OUTPUT
                     # pair that cannot be split across rounds by a race.
                     _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
-                    if _gui_stream and tool_name not in ("run_subagent", "project_context_search"):
+                    if _gui_stream:
                         _rounds = getattr(self, "_accumulated_tool_rounds", None) or []
                         if _rounds:
+                            _last_round = _rounds[-1]
                             try:
-                                print(_rounds[-1])
+                                if tool_name == "run_subagent":
+                                    # Sub-agent calls keep a separate transcript;
+                                    # the guiSessionMarker is emitted elsewhere.
+                                    pass
+                                elif tool_name == "project_context_search":
+                                    # Its prompt line was already printed at call
+                                    # time (not deferred), so emit only the
+                                    # CMD_OUTPUT block here so the frontend can
+                                    # expand the result live, before the session
+                                    # completes.
+                                    _out_idx = _last_round.find(GUI_CMD_OUTPUT_BEGIN)
+                                    if _out_idx >= 0:
+                                        print(_last_round[_out_idx:])
+                                else:
+                                    print(_last_round)
                             except Exception:
                                 pass
                     # Real-time context tracking: after each tool result is
