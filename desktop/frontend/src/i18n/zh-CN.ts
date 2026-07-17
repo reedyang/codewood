@@ -254,7 +254,7 @@ export const zhCN: Dict = {
   "common.save": "保存",
   "common.delete": "删除",
   "common.remove": "移除",
-  "chat.removeConfirm": "移除此对话？",
+  "chat.removeConfirm": "移除对话 \"{name}\"？",
   "general.autoCompactTrigger": "自动压缩阈值",
   "general.autoCompactHint": "上下文占用超过该百分比时自动汇总较早的历史消息（0 表示不启用）。",
   "general.maxToolRounds": "最大工具轮数",

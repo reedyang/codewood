@@ -106,7 +106,7 @@ interface AppContextValue {
   aboutOpen: boolean;
   planOpen: boolean;
   togglePlan: () => void;
-  t: (key: string) => string;
+  t: (key: string, params?: Record<string, string | number>) => string;
   setTheme: (theme: Theme) => void;
   setGuiLanguage: (language: string) => Promise<void>;
   /** Pick + set a new GUI background image (returns false if cancelled/failed). */
@@ -614,7 +614,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const reloadHistoryRef = useRef<() => void>(() => {});
 
   const lang = useMemo(() => normalizeLang(state?.language), [state?.language]);
-  const t = useCallback((key: string) => translate(lang, key), [lang]);
+  const t = useCallback(
+    (key: string, params?: Record<string, string | number>) =>
+      translate(lang, key, params),
+    [lang],
+  );
   const selectedChats = useMemo(() => {
     if (!state || !selectedWorkspaceId) {
       return [] as ChatSummary[];

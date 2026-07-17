@@ -256,7 +256,7 @@ export const en: Dict = {
   "common.save": "Save",
   "common.delete": "Delete",
   "common.remove": "Remove",
-  "chat.removeConfirm": "Remove this chat?",
+  "chat.removeConfirm": "Remove chat \"{name}\"?",
   "general.autoCompactTrigger": "Auto-compact trigger",
   "general.autoCompactHint": "Automatically summarize older history once the context window crosses this threshold (0 disables).",
   "general.maxToolRounds": "Max tool rounds",
