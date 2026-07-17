@@ -1069,7 +1069,12 @@ def run_subagent(
                 try:
                     _extract = getattr(agent, "_extract_tool_result_output", None)
                     if callable(_extract):
-                        _round_output = _extract(str(tool_name), r)
+                        _out_src = r
+                        # MCP tool results wrap the underlying tool output in
+                        # ``r["result"]``; extract its raw content.
+                        if t.startswith("mcp__") and isinstance(r.get("result"), dict):
+                            _out_src = r["result"]
+                        _round_output = _extract(str(tool_name), _out_src) or str(r.get("message") or "")
                 except Exception:
                     _round_output = ""
                 raw_entry = {
