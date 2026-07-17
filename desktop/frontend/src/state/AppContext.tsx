@@ -2162,10 +2162,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const interrupt = useCallback(async () => {
     const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
     if (key) {
-      setBusyForChat(key, false);
+      await client.interrupt();
     }
-    await client.interrupt();
-  }, [client, setBusyForChat]);
+  }, [client]);
 
   const answerConfirm = useCallback(
     async (answer: string) => {

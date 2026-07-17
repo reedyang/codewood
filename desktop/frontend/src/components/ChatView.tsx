@@ -1018,7 +1018,7 @@ export function ChatView() {
     imageAttachments.length > 0;
 
   const submit = async () => {
-    if (!canSend) {
+    if ((busy && !askMoreInfo) || !canSend) {
       return;
     }
     // While an request_user_input prompt is pending, the turn is paused waiting on
