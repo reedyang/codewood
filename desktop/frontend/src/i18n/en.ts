@@ -54,6 +54,8 @@ export const en: Dict = {
   "menu.renameProject": "Rename workspace",
   "menu.archiveChats": "Archive chats",
   "menu.remove": "Remove",
+  "menu.removeWorkspaceConfirm": "Remove workspace \"{name}\"?",
+  "menu.removeWorkspaceNote": "This only removes it from the workspace list. No files or data in the workspace directory will be deleted.",
   "menu.pinChat": "Pin Chat",
   "menu.exportChat": "Export transcript",
   "menu.unpinChat": "Unpin Chat",

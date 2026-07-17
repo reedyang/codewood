@@ -54,6 +54,8 @@ export const zhCN: Dict = {
   "menu.renameProject": "重命名工作区",
   "menu.archiveChats": "归档对话",
   "menu.remove": "移除",
+  "menu.removeWorkspaceConfirm": "移除工作区 \"{name}\"？",
+  "menu.removeWorkspaceNote": "这只会将其从工作区列表中移除，工作区目录下的任何文件与数据都不会被删除。",
   "menu.pinChat": "置顶对话",
   "menu.exportChat": "导出聊天记录",
   "menu.unpinChat": "取消置顶",

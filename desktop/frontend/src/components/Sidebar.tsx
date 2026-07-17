@@ -100,6 +100,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
   const [chatToDelete, setChatToDelete] = useState<{ id: string; wsId: string; name: string } | null>(null);
+  const [workspaceToDelete, setWorkspaceToDelete] = useState<{ id: string; name: string } | null>(null);
   const [chatLoadCounts, setChatLoadCounts] = useState<Record<string, number>>({});
   const CHAT_PAGE_SIZE = 5;
 
@@ -282,7 +283,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
         id: "remove",
         label: t("menu.remove"),
         danger: true,
-        onSelect: () => { void deleteWorkspace(ws.id); },
+        onSelect: () => { setWorkspaceToDelete({ id: ws.id, name: ws.name }); },
       },
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });
@@ -622,6 +623,29 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
                 onClick={() => {
                   void deleteChat(chatToDelete.id, chatToDelete.wsId);
                   setChatToDelete(null);
+                }}
+              >
+                {t("common.remove")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {workspaceToDelete && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3 className="modal-title">{t("menu.removeWorkspaceConfirm", { name: workspaceToDelete.name })}</h3>
+            <p className="modal-body">{t("menu.removeWorkspaceNote")}</p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setWorkspaceToDelete(null)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => {
+                  void deleteWorkspace(workspaceToDelete.id);
+                  setWorkspaceToDelete(null);
                 }}
               >
                 {t("common.remove")}
