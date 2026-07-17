@@ -99,7 +99,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
-  const [chatToDelete, setChatToDelete] = useState<{ id: string; wsId: string } | null>(null);
+  const [chatToDelete, setChatToDelete] = useState<{ id: string; wsId: string; name: string } | null>(null);
   const [chatLoadCounts, setChatLoadCounts] = useState<Record<string, number>>({});
   const CHAT_PAGE_SIZE = 5;
 
@@ -298,7 +298,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
       onToggleArchive: () => toggleChatArchive(chatKey(wsId, chat.id)),
       onRename: () => startRename("chat", chat.id, wsId, chat.name),
       onRemove: () => {
-        setChatToDelete({ id: chat.id, wsId });
+        setChatToDelete({ id: chat.id, wsId, name: chat.name });
       },
       onExport: async () => {
         const api = (window as unknown as { pywebview?: { api?: { save_file_dialog?: () => string | Promise<string> } } }).pywebview?.api;
@@ -612,7 +612,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
       {chatToDelete && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
-            <h3 className="modal-title">{t("chat.removeConfirm")}</h3>
+            <h3 className="modal-title">{t("chat.removeConfirm", { name: chatToDelete.name })}</h3>
             <div className="modal-actions">
               <button className="btn" onClick={() => setChatToDelete(null)}>
                 {t("common.cancel")}

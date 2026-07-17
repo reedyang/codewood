@@ -26,8 +26,18 @@ export function normalizeLang(value: string | undefined | null): Lang {
   return "en";
 }
 
-export function translate(lang: Lang, key: string): string {
-  return dictionaries[lang]?.[key] ?? dictionaries.en[key] ?? key;
+export function translate(
+  lang: Lang,
+  key: string,
+  params?: Record<string, string | number>,
+): string {
+  let text = dictionaries[lang]?.[key] ?? dictionaries.en[key] ?? key;
+  if (params) {
+    for (const [name, value] of Object.entries(params)) {
+      text = text.replace(new RegExp(`\\{${name}\\}`, "g"), String(value));
+    }
+  }
+  return text;
 }
 
 export const SUPPORTED_LANGS: Lang[] = ["en", "zh-CN"];

@@ -172,7 +172,7 @@ export function ChatTitleBar() {
       {confirmDelete && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
-            <h3 className="modal-title">{t("chat.removeConfirm")}</h3>
+            <h3 className="modal-title">{t("chat.removeConfirm", { name: activeChat.name })}</h3>
             <div className="modal-actions">
               <button className="btn" onClick={() => setConfirmDelete(false)}>
                 {t("common.cancel")}
