@@ -123,6 +123,8 @@ export interface AppState {
     ready?: boolean;
     reasoningEffort?: string;
     reasoningEfforts?: string[];
+    /** Map of model selector -> reasoning-effort levels that model supports. */
+    reasoningEffortsBySelector?: Record<string, string[]>;
   };
   /** Active chat's last-known context-window usage snapshot. */
   contextUsage?: {

@@ -1123,6 +1123,24 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         model_available = [str(s) for s in (agent._get_configured_model_selectors() or []) if str(s)]
     except Exception:
         pass
+    # Per-model reasoning-effort map so the GUI can swap the reasoning-effort
+    # list immediately when the user picks a different model (instead of waiting
+    # for the backend round-trip, which otherwise keeps the old model's efforts
+    # visible in the model menu).
+    model_reasoning_efforts: Dict[str, List[str]] = {}
+    try:
+        for choice in (agent._get_configured_model_catalog() or []):
+            selector = str(choice.get("selector") or "").strip()
+            if not selector:
+                continue
+            params = choice.get("params") or {}
+            efforts = params.get("reasoning_effort") if isinstance(params, dict) else None
+            if isinstance(efforts, list):
+                normalized = [str(x) for x in efforts if str(x).strip()]
+                if normalized:
+                    model_reasoning_efforts[selector] = normalized
+    except Exception:
+        model_reasoning_efforts = {}
 
     # A model is only "ready" when the resolved config yields a usable model
     # whose values are no longer the shipped template placeholders. The startup
@@ -1225,6 +1243,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
             "ready": model_ready,
             "reasoningEffort": _safe_reasoning_effort(agent),
             "reasoningEfforts": _safe_reasoning_efforts(agent),
+            "reasoningEffortsBySelector": model_reasoning_efforts,
         },
         "contextUsage": {
             "percent": active_context_percent,

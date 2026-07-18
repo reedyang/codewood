@@ -74,6 +74,59 @@ function parseChatKey(key: string): { wsId: string; chatId: string } {
   return { wsId: "", chatId: key };
 }
 
+// Resolve the reasoning-effort levels a model supports from the per-selector
+// map the backend ships in ``state.model.reasoningEffortsBySelector``. Returns
+// ``null`` when unknown (e.g. backend predates the map or model isn't listed),
+// so callers can leave the existing list untouched rather than clearing it.
+function resolveReasoningEffortsForModel(
+  selector: string,
+  bySelector?: Record<string, string[]>,
+): string[] | null {
+  if (!bySelector || !selector) {
+    return null;
+  }
+  const exact = bySelector[selector];
+  if (Array.isArray(exact)) {
+    return exact;
+  }
+  const lower = selector.toLowerCase();
+  for (const [key, efforts] of Object.entries(bySelector)) {
+    if (key.toLowerCase() === lower && Array.isArray(efforts)) {
+      return efforts;
+    }
+  }
+  return null;
+}
+
+// Build the optimistic ``model`` patch to apply when the user switches models:
+// update ``current`` and swap the reasoning-effort list to the newly selected
+// model's supported levels, dropping any selected effort the new model doesn't
+// support. Returns null when the new model's efforts are unknown, so callers
+// can leave the existing list untouched.
+function buildModelChangePatch(
+  selector: string,
+  prevModel?: {
+    current: string;
+    reasoningEffort?: string;
+    reasoningEfforts?: string[];
+    reasoningEffortsBySelector?: Record<string, string[]>;
+  },
+): { current: string; reasoningEfforts: string[]; reasoningEffort: string } | null {
+  const efforts = resolveReasoningEffortsForModel(
+    selector,
+    prevModel?.reasoningEffortsBySelector,
+  );
+  if (efforts === null) {
+    return null;
+  }
+  const prevEffort = (prevModel?.reasoningEffort ?? "").trim().toLowerCase();
+  const supported = efforts.map((e) => e.toLowerCase());
+  const reasoningEffort = prevEffort && supported.includes(prevEffort)
+    ? prevModel?.reasoningEffort ?? ""
+    : "";
+  return { current: selector, reasoningEfforts: efforts, reasoningEffort };
+}
+
 interface AppContextValue {
   state: AppState | null;
   activeWorkspaceId: string;
@@ -453,6 +506,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Model the user chose while in draft (compose) mode, applied when the chat
   // is materialized on first send. ``""`` means "inherit from last chat".
   const draftModelRef = useRef<string>("");
+  // Reasoning effort the user chose while in draft (compose) mode, applied
+  // when the chat is materialized on first send. ``""`` means "inherit".
+  const draftReasoningRef = useRef<string>("");
+  // Reset the pending draft model/reasoning when leaving draft mode so they
+  // never leak into a later compose session.
+  const resetDraftSelectionRef = useCallback(() => {
+    draftModelRef.current = "";
+    draftReasoningRef.current = "";
+  }, []);
   // Sub-agent session viewer state
   const [activeSubAgentSession, setActiveSubAgentSession] = useState<SubAgentSession | null>(null);
   const [subAgentSessionLoading, setSubAgentSessionLoading] = useState(false);
@@ -811,10 +873,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
       draftModelRef.current = "";
       setState((prev) => {
         if (!prev) return prev;
-        return { ...prev, model: { ...prev.model, current: pendingModel } };
+        const patch = buildModelChangePatch(pendingModel, prev.model);
+        return {
+          ...prev,
+          model: {
+            ...prev.model,
+            current: pendingModel,
+            ...(patch
+              ? {
+                  reasoningEfforts: patch.reasoningEfforts,
+                  reasoningEffort: patch.reasoningEffort,
+                }
+              : {}),
+          },
+        };
       });
       // Fire-and-forget: the backend processes it asynchronously.
       client.sendInput(`/model ${pendingModel}`, false, newId).catch(() => {});
+    }
+    // Apply the reasoning effort the user chose while in draft mode, if any.
+    const pendingReasoning = draftReasoningRef.current;
+    if (pendingReasoning) {
+      draftReasoningRef.current = "";
+      setState((prev) => {
+        if (!prev) return prev;
+        return { ...prev, model: { ...prev.model, reasoningEffort: pendingReasoning } };
+      });
+      // Fire-and-forget: the backend processes it asynchronously.
+      client.sendInput(`/reasoning ${pendingReasoning}`, false, newId).catch(() => {});
     }
     return { chatId: newId, workspaceId: targetWsId };
   }, [client]);
@@ -2543,6 +2629,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
       setDraftWorkspaceId(wsId);
       setDraftMode(true);
+      // Clear any selection left over from a previous draft session.
+      resetDraftSelectionRef();
       historyChatRef.current = "\u0000";
       setHistoryTurns([]);
       setHistoryStart(0);
@@ -2583,6 +2671,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // to create a fresh chat instead of auto-creating one.
           setDraftWorkspaceId(wsId);
           setDraftMode(true);
+          resetDraftSelectionRef();
           historyChatRef.current = "\u0000";
           setHistoryTurns([]);
           setHistoryStart(0);
@@ -2711,6 +2800,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         clearLiveTurns(key);
         setDraftWorkspaceId(wsId);
         setDraftMode(true);
+        resetDraftSelectionRef();
         historyChatRef.current = "\u0000";
         setHistoryTurns([]);
         setHistoryStart(0);
@@ -2745,17 +2835,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
         draftModelRef.current = value;
         setState((prev) => {
           if (!prev) return prev;
-          return { ...prev, model: { ...prev.model, current: value } };
+          const patch = buildModelChangePatch(value, prev.model);
+          return {
+            ...prev,
+            model: {
+              ...prev.model,
+              current: value,
+              ...(patch
+                ? {
+                    reasoningEfforts: patch.reasoningEfforts,
+                    reasoningEffort: patch.reasoningEffort,
+                  }
+                : {}),
+            },
+          };
         });
         return;
       }
       setState((prev) => {
         if (!prev) return prev;
+        const patch = buildModelChangePatch(value, prev.model);
         return {
           ...prev,
           model: {
             ...prev.model,
             current: value,
+            ...(patch
+              ? {
+                  reasoningEfforts: patch.reasoningEfforts,
+                  reasoningEffort: patch.reasoningEffort,
+                }
+              : {}),
           },
         };
       });
@@ -2768,8 +2878,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setReasoning = useCallback(
     async (level: string) => {
+      // Empty ``level`` means "Default" (clear the selected effort). Unlike
+      // model selection, Default is a valid choice and must not be dropped.
+      const value = level.trim();
+      if (draftModeRef.current) {
+        // In draft mode just record the preference — don't materialize the
+        // chat yet. The selected reasoning effort will be applied when the
+        // user sends their first message (materializeDraftChat applies it
+        // afterwards). Mirrors setModel's draft-mode handling.
+        draftReasoningRef.current = value;
+        setState((prev) => {
+          if (!prev) return prev;
+          return { ...prev, model: { ...prev.model, reasoningEffort: value } };
+        });
+        return;
+      }
       await client.sendInput(
-        `/reasoning ${level.trim()}`,
+        `/reasoning ${value}`,
         false,
         activeChatIdRef.current,
       );
