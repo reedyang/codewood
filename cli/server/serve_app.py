@@ -4746,7 +4746,7 @@ class ServeApp:
         except Exception:
             return False
         self.broadcaster.publish(
-            "idle", self._route(state=_build_state(agent))
+            "idle", {"state": _build_state(agent)}
         )
         return True
 

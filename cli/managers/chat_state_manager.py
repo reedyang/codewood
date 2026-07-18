@@ -1053,6 +1053,94 @@ class ChatStateManager:
         return False
 
     def sync_active_chat_messages(self) -> None:
+        history = list(getattr(self._agent, "conversation_history", None) or [])
+        msgs = []
+        for m in history:
+            if not isinstance(m, dict):
+                continue
+            if bool(m.get("persist_to_chat_state", True)) is False:
+                continue
+            role = str(m.get("role") or "").strip().lower()
+            if role not in ("user", "assistant", "tool"):
+                continue
+            entry = {
+                "role": role,
+                "content": str(m.get("content") or ""),
+                "created_at": str(m.get("created_at") or "").strip() or self._now_text(),
+            }
+            if role == "assistant":
+                plan_items = _normalize_plan_items(m.get("plan"))
+                if plan_items:
+                    entry["plan"] = plan_items
+                    entry["plan_explanation"] = str(m.get("plan_explanation") or "").strip()
+                    entry["plan_updated_at"] = str(m.get("plan_updated_at") or "").strip()
+            if bool(m.get("exclude_from_model_context", False)):
+                entry["exclude_from_model_context"] = True
+            if bool(m.get("_internal", False)):
+                entry["_internal"] = True
+            context_suffix = str(m.get("_context_suffix") or "").strip()
+            if context_suffix:
+                entry["_context_suffix"] = context_suffix
+            api_content = str(m.get("_api_content") or "").strip()
+            if api_content:
+                entry["_api_content"] = api_content
+            cache_stats = m.get("_cache_stats")
+            if isinstance(cache_stats, dict) and cache_stats:
+                entry["_cache_stats"] = cache_stats
+            output_tokens = m.get("_output_tokens")
+            if isinstance(output_tokens, int) and output_tokens > 0:
+                entry["_output_tokens"] = output_tokens
+            reasoning_tokens = m.get("_reasoning_tokens")
+            if isinstance(reasoning_tokens, int):
+                entry["_reasoning_tokens"] = reasoning_tokens
+            token_count_includes_reasoning = m.get("_token_count_includes_reasoning")
+            if isinstance(token_count_includes_reasoning, bool):
+                entry["_token_count_includes_reasoning"] = token_count_includes_reasoning
+            token_count = m.get("_token_count")
+            if isinstance(token_count, (int, float)) and token_count > 0:
+                entry["_token_count"] = int(token_count)
+            model_name = str(m.get("_model") or "").strip()
+            if model_name:
+                entry["_model"] = model_name
+            tool_calls = m.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                entry["tool_calls"] = tool_calls
+            tool_rounds = m.get("tool_rounds")
+            if isinstance(tool_rounds, list) and tool_rounds:
+                entry["tool_rounds"] = tool_rounds
+            raw_rounds = m.get("_tool_rounds_raw")
+            if isinstance(raw_rounds, list) and raw_rounds:
+                entry["_tool_rounds_raw"] = raw_rounds
+            if role == "tool":
+                tool_call_id = str(m.get("tool_call_id") or "").strip()
+                if tool_call_id:
+                    entry["tool_call_id"] = tool_call_id
+                tool_name = str(m.get("name") or "").strip()
+                if tool_name:
+                    entry["name"] = tool_name
+            pseudo_tool_call_text = str(m.get("pseudo_tool_call_text") or "").strip()
+            if pseudo_tool_call_text:
+                entry["pseudo_tool_call_text"] = pseudo_tool_call_text
+                pseudo_tools = m.get("pseudo_tool_call_tools")
+                if isinstance(pseudo_tools, list):
+                    cleaned_tools = [
+                        str(x).strip()
+                        for x in pseudo_tools
+                        if str(x).strip()
+                    ]
+                    if cleaned_tools:
+                        entry["pseudo_tool_call_tools"] = cleaned_tools
+            # Preserve _clean_content even when empty: a blank value is an
+            # explicit signal that the raw content was entirely hidden
+            # markers (no visible text), which must survive export.
+            if "_clean_content" in m:
+                entry["_clean_content"] = m["_clean_content"]
+            thinking = str(m.get("_thinking") or "").strip()
+            if thinking:
+                entry["_thinking"] = thinking
+            if m.get("_thinking_from_content"):
+                entry["_thinking_from_content"] = True
+            msgs.append(entry)
         with self._active_chat_state_lock():
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             try:
@@ -1061,107 +1149,20 @@ class ChatStateManager:
 
                 get_logger(f"{get_app_logger_root()}.serve.wsswitch").info(
                     f"sync chat={self._agent.active_chat_id} found={bool(chat)} "
-                    f"dir={self.chat_records_dir()} hist={len(list(getattr(self._agent,'conversation_history',None) or []))}"
+                    f"dir={self.chat_records_dir()} hist={len(history)}"
                 )
             except Exception:
                 pass
             if not chat:
                 return
             prev_messages = list(chat.get("messages") or [])
-            msgs = []
-            for m in list(self._agent.conversation_history):
-                if not isinstance(m, dict):
-                    continue
-                if bool(m.get("persist_to_chat_state", True)) is False:
-                    continue
-                role = str(m.get("role") or "").strip().lower()
-                if role not in ("user", "assistant", "tool"):
-                    continue
-                entry = {
-                    "role": role,
-                    "content": str(m.get("content") or ""),
-                    "created_at": str(m.get("created_at") or "").strip() or self._now_text(),
-                }
-                if role == "assistant":
-                    plan_items = _normalize_plan_items(m.get("plan"))
-                    if plan_items:
-                        entry["plan"] = plan_items
-                        entry["plan_explanation"] = str(m.get("plan_explanation") or "").strip()
-                        entry["plan_updated_at"] = str(m.get("plan_updated_at") or "").strip()
-                if bool(m.get("exclude_from_model_context", False)):
-                    entry["exclude_from_model_context"] = True
-                if bool(m.get("_internal", False)):
-                    entry["_internal"] = True
-                context_suffix = str(m.get("_context_suffix") or "").strip()
-                if context_suffix:
-                    entry["_context_suffix"] = context_suffix
-                api_content = str(m.get("_api_content") or "").strip()
-                if api_content:
-                    entry["_api_content"] = api_content
-                cache_stats = m.get("_cache_stats")
-                if isinstance(cache_stats, dict) and cache_stats:
-                    entry["_cache_stats"] = cache_stats
-                output_tokens = m.get("_output_tokens")
-                if isinstance(output_tokens, int) and output_tokens > 0:
-                    entry["_output_tokens"] = output_tokens
-                reasoning_tokens = m.get("_reasoning_tokens")
-                if isinstance(reasoning_tokens, int):
-                    entry["_reasoning_tokens"] = reasoning_tokens
-                token_count_includes_reasoning = m.get("_token_count_includes_reasoning")
-                if isinstance(token_count_includes_reasoning, bool):
-                    entry["_token_count_includes_reasoning"] = token_count_includes_reasoning
-                token_count = m.get("_token_count")
-                if isinstance(token_count, (int, float)) and token_count > 0:
-                    entry["_token_count"] = int(token_count)
-                model_name = str(m.get("_model") or "").strip()
-                if model_name:
-                    entry["_model"] = model_name
-                tool_calls = m.get("tool_calls")
-                if isinstance(tool_calls, list) and tool_calls:
-                    entry["tool_calls"] = tool_calls
-                tool_rounds = m.get("tool_rounds")
-                if isinstance(tool_rounds, list) and tool_rounds:
-                    entry["tool_rounds"] = tool_rounds
-                raw_rounds = m.get("_tool_rounds_raw")
-                if isinstance(raw_rounds, list) and raw_rounds:
-                    entry["_tool_rounds_raw"] = raw_rounds
-                if role == "tool":
-                    tool_call_id = str(m.get("tool_call_id") or "").strip()
-                    if tool_call_id:
-                        entry["tool_call_id"] = tool_call_id
-                    tool_name = str(m.get("name") or "").strip()
-                    if tool_name:
-                        entry["name"] = tool_name
-                pseudo_tool_call_text = str(m.get("pseudo_tool_call_text") or "").strip()
-                if pseudo_tool_call_text:
-                    entry["pseudo_tool_call_text"] = pseudo_tool_call_text
-                    pseudo_tools = m.get("pseudo_tool_call_tools")
-                    if isinstance(pseudo_tools, list):
-                        cleaned_tools = [
-                            str(x).strip()
-                            for x in pseudo_tools
-                            if str(x).strip()
-                        ]
-                        if cleaned_tools:
-                            entry["pseudo_tool_call_tools"] = cleaned_tools
-                # Preserve _clean_content even when empty: a blank value is an
-                # explicit signal that the raw content was entirely hidden
-                # markers (no visible text), which must survive export.
-                if "_clean_content" in m:
-                    entry["_clean_content"] = m["_clean_content"]
-                thinking = str(m.get("_thinking") or "").strip()
-                if thinking:
-                    entry["_thinking"] = thinking
-                if m.get("_thinking_from_content"):
-                    entry["_thinking_from_content"] = True
-                msgs.append(entry)
             chat["messages"] = msgs
             if prev_messages == msgs:
                 return
             if msgs:
                 chat["updated_at"] = str(msgs[-1].get("created_at") or "").strip() or self._now_text()
-            self.save_chat_state()
-            self._notify_gui_context_usage_changed()
+        self.save_chat_state()
+        self._notify_gui_context_usage_changed()
 
     def persist_active_chat_usage_snapshot(self) -> None:
         # Context usage is no longer persisted on the chat record. The runtime
