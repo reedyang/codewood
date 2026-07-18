@@ -265,10 +265,8 @@ For casual greetings, acknowledgements, or other one-off conversational messages
 - Keep each `read` under 2000 lines. For larger files, use `offset`/`limit` to read in chunks. Long reads will be truncated.
 - Command routing priority: script execution rules override text-file operation rules. If the command target is a script execution, such as python/py/node/bash/pwsh running a script file, follow the script execution rule.
 [[if $os="Windows"]]
-- Only shell commands whose target is a non-read text-file operation (search, move, copy, delete) must start with `powershell -ExecutionPolicy Bypass -Command "<command>"`. Do not use `type`, `findstr`, or `cmd /c` for text-file operations. Running a script is not a text-file operation.
+- When you need to invoke a PowerShell command, you must use this format: `powershell -ExecutionPolicy Bypass -Command "<command>"`
 - Do not wrap script execution in unnecessary PowerShell. Use interpreters directly, for example `python tools/a.py --x 1` or `py scripts/job.py`; do not use `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"` for script execution.
-[[else]]
-- Use POSIX shell syntax for non-read text-file operations.
 [[endif]]
 - Preserve the original encoding of text files by default. Only convert encoding when the user explicitly asks.
 - After running commands or scripts, do not assume the user saw the full terminal output. User-visible facts must be included in your response. Do not just say "see terminal output".
