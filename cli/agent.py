@@ -6066,8 +6066,8 @@ class Agent:
         def _fallback_title(text: str) -> str:
             t = re.sub(r"\s+", " ", str(text or "").strip())
             t = t.strip(" \"'`[](){}")
-            if len(t) > 18:
-                t = t[:18]
+            if len(t) > 64:
+                t = t[:64]
             if len(t) < 2:
                 return "New Chat"
             return t
@@ -6075,8 +6075,8 @@ class Agent:
         try:
             prompt = (
                 "You are a chat title generator. Output only the title text with no explanation.\n"
-                "Task: Generate a short title from the user's first message.\n"
-                "Requirements: 4-18 characters; no trailing punctuation; avoid words like 'Chat/session/title/first message'.\n"
+                "Task: Generate a short title from the user's first message using the same language as the message.\n"
+                "Requirements: 4-64 characters; no trailing punctuation; avoid words like 'Chat/session/title/first message'.\n"
                 "If the message is very short, extract a concise intent phrase.\n\n"
                 f"<user_first_message>\n{first_user}\n</user_first_message>"
             )
@@ -6086,8 +6086,8 @@ class Agent:
             t = re.sub(r"\s+", " ", t).strip(" \"'`[](){}")
             if any(bad in t for bad in ("first message", "title", "session", "Chat", "chat")):
                 t = ""
-            if len(t) > 18:
-                t = t[:18]
+            if len(t) > 64:
+                t = t[:64]
             if len(t) < 2:
                 t = _fallback_title(first_user)
             with self._chat_state_lock:
