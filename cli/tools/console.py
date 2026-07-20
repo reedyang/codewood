@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from .base import BaseTool
+from .shell import is_ai_workspace_script_command, is_dependency_install_command
 
 
 def _dispatch(agent: Any, action: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -47,6 +48,16 @@ class ConsoleExecTool(BaseTool):
         command = str((params or {}).get("command") or "")
         if not command.strip():
             return {"success": False, "error": "missing command"}
+        # Enforce the same running-app protection as the ``shell`` tool so the
+        # guard cannot be trivially bypassed via the interactive console.
+        policy = getattr(agent, "path_policy", None)
+        if policy is not None and hasattr(policy, "can_run_shell_in_workdir"):
+            decision = policy.can_run_shell_in_workdir(
+                is_dependency_install=is_dependency_install_command(command),
+                is_ai_workspace_script=is_ai_workspace_script_command(agent, command),
+            )
+            if not decision.get("allowed", False):
+                return {"success": False, "error": decision.get("error", "")}
         return _dispatch(agent, "exec", {"command": command})
 
 

@@ -80,6 +80,44 @@ class ConsoleToolGatingTests(unittest.TestCase):
         res = ConsoleExecTool().execute(agent, {"command": "   "})
         self.assertFalse(res.get("success"))
 
+    def test_exec_blocks_inside_running_app_dir(self):
+        from pathlib import Path
+
+        repo_root = Path("D:/codewood").resolve()
+        workspace = Path("D:/other-workspace").resolve()
+
+        class _DenyPolicy:
+            def can_run_shell_in_workdir(self, *, is_dependency_install, is_ai_workspace_script):
+                return {"allowed": False, "error": "Blocked shell command: test"}
+
+        class _A:
+            pass
+
+        agent = _A()
+        agent.path_policy = _DenyPolicy()
+        agent._console_dispatch = lambda action, payload=None: {"success": True}
+        res = ConsoleExecTool().execute(agent, {"command": "npx ccusage codex"})
+        self.assertFalse(res.get("success"))
+        self.assertIn("Blocked shell command", str(res.get("error") or ""))
+
+    def test_exec_allows_outside_running_app_dir(self):
+        class _AllowPolicy:
+            def can_run_shell_in_workdir(self, *, is_dependency_install, is_ai_workspace_script):
+                return {"allowed": True, "error": ""}
+
+        class _A:
+            pass
+
+        seen = {}
+        agent = _A()
+        agent.path_policy = _AllowPolicy()
+        agent._console_dispatch = lambda action, payload=None: seen.update(
+            {"action": action, "payload": payload}
+        ) or {"success": True}
+        res = ConsoleExecTool().execute(agent, {"command": "npx ccusage codex"})
+        self.assertTrue(res.get("success"))
+        self.assertEqual(seen.get("action"), "exec")
+
 
 class ConsolePromptAppendTests(unittest.TestCase):
     def test_append_empty_without_gui(self):
