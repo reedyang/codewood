@@ -34,10 +34,15 @@
   --user-bg-solid: #f3f3f4;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
   --divider-line: #d0d5dd;
+  --panel-outer-shadow:
+    -7px -7px 18px -12px rgba(0, 0, 0, 0.16),
+    -5px 0 14px -12px rgba(0, 0, 0, 0.08),
+    0 0 6px -5px rgba(0, 0, 0, 0.08);
   --panel-inset: inset 2px 0 1px -1px rgba(0, 0, 0, 0.1), inset 0 2px 1px -1px rgba(0, 0, 0, 0.1);
   --panel-shadow-top: 0 -2px 1px -1px rgba(0, 0, 0, 0.09);
   --panel-shadow-divider: -3px 0 2px -1px rgba(0, 0, 0, 0.1);
   --panel-radius: 10px;
+  --titlebar-height: 36px;
   --scrollbar-thumb: rgba(0, 0, 0, 0.22);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.34);
   --console-bg-solid: #ffffff;
@@ -80,6 +85,10 @@
   --user-bg-solid: #242424;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   --divider-line: #404040;
+  --panel-outer-shadow:
+    -7px -7px 20px -12px rgba(0, 0, 0, 0.3),
+    -5px 0 16px -12px rgba(0, 0, 0, 0.18),
+    0 0 6px -5px rgba(0, 0, 0, 0.18);
   --panel-inset: inset 2px 0 2px -1px rgba(0, 0, 0, 0.34), inset 0 2px 2px -1px rgba(0, 0, 0, 0.34);
   --panel-shadow-top: 0 -2px 2px -1px rgba(0, 0, 0, 0.3);
   --panel-shadow-divider: -3px 0 3px -1px rgba(0, 0, 0, 0.3);
@@ -373,6 +382,7 @@ html[data-has-bg] .ws-selector-menu {
   height: 100vh;
   overflow: hidden;
   background: var(--bg-sidebar);
+  position: relative;
 }
 
 .app-shell {
@@ -381,25 +391,29 @@ html[data-has-bg] .ws-selector-menu {
   min-height: 0;
   overflow: visible;
   background: var(--bg-sidebar);
+  padding-top: var(--titlebar-height);
 }
 
 /* Custom title bar */
 .titlebar {
   display: flex;
   align-items: center;
-  height: 38px;
-  flex: 0 0 auto;
-  background: var(--bg-sidebar);
+  height: var(--titlebar-height);
+  background: transparent;
   color: var(--text-on-dark);
   padding: 0 4px;
   gap: 2px;
   user-select: none;
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 400;
 }
 
 .titlebar .icon-btn.titlebar-toggle {
   margin-left: 0;
+  padding: 4px;
 }
 
 .titlebar .icon-btn.titlebar-toggle.active {
@@ -424,7 +438,7 @@ html[data-has-bg] .ws-selector-menu {
   background: transparent;
   border: none;
   color: var(--text-on-dark);
-  padding: 6px 10px;
+  padding: 4px 10px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
@@ -695,16 +709,17 @@ body.resizing-x .browser-frame {
   border-bottom-left-radius: var(--panel-radius);
   overflow: auto;
   position: relative;
+  box-shadow: var(--panel-outer-shadow);
+  z-index: 1;
 }
 
-/* Soft shadow hugging the top + left edges, matching the main message area. */
+/* Keep only the panel-edge overlay; the shadow is now the shared outer shadow. */
 .settings-content::after {
   content: "";
   position: absolute;
   inset: 0;
   border-top-left-radius: var(--panel-radius);
   border-bottom-left-radius: var(--panel-radius);
-  box-shadow: var(--panel-inset);
   pointer-events: none;
   z-index: 50;
 }
@@ -1001,6 +1016,7 @@ body.resizing-x .browser-frame {
   border-top-left-radius: var(--panel-radius);
   border-bottom-left-radius: var(--panel-radius);
   overflow: visible;
+  z-index: 1;
 }
 
 .app-shell.sidebar-collapsed .main,
@@ -1023,20 +1039,41 @@ body.resizing-x .browser-frame {
   min-height: 0;
 }
 
-/* Soft shadow hugging the top + left edges of the message area. Rendered as
-   an inner overlay above the content so it is never clipped by ancestors. */
+/* One rounded shadow silhouette behind the main panel, so the left edge,
+   top edge, and left corners transition as a single shape. */
+.main-shadow-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  right: 0;
+  border-top-left-radius: var(--panel-radius);
+  border-bottom-left-radius: var(--panel-radius);
+  box-shadow: var(--panel-outer-shadow);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Non-interactive overlay for the rounded panel edge; shadow is painted
+   outside .main so it follows the left/top corners instead of clipping inward. */
 .main::after {
   content: "";
   position: absolute;
   inset: 0;
   border-top-left-radius: var(--panel-radius);
   border-bottom-left-radius: var(--panel-radius);
-  box-shadow: var(--panel-inset);
   pointer-events: none;
   z-index: 50;
 }
 
 .app-shell.sidebar-collapsed .main::after {
+  content: none;
+}
+
+.app-shell.sidebar-collapsed .main-shadow-wrap::before {
+  content: none;
+}
+
+.app-shell.sidebar-collapsed .main {
   box-shadow: none;
 }
 
