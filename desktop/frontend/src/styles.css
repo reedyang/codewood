@@ -41,7 +41,7 @@
   --panel-inset: inset 2px 0 1px -1px rgba(0, 0, 0, 0.1), inset 0 2px 1px -1px rgba(0, 0, 0, 0.1);
   --panel-shadow-top: 0 -2px 1px -1px rgba(0, 0, 0, 0.09);
   --panel-shadow-divider: -3px 0 2px -1px rgba(0, 0, 0, 0.1);
-  --panel-radius: 10px;
+  --panel-radius: 14px;
   --titlebar-height: 36px;
   --scrollbar-thumb: rgba(0, 0, 0, 0.22);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.34);
