@@ -1006,7 +1006,7 @@ def _stream_openai_like_response(
                 if snapshot_tools and not self.final_message.get("tool_calls"):
                     self.final_message["tool_calls"] = snapshot_tools
             if not raw_buffer:
-                _OPENAI_ROUTE_LOG.warning(
+                _OPENAI_ROUTE_LOG.info(
                     "openai-stream empty-output event_types=%s payload_keys=%s snapshot_seen=%s has_tool_calls=%s",
                     ",".join(seen_event_types[-12:]),
                     ",".join(seen_payload_keys[-20:]),
@@ -1692,25 +1692,25 @@ def _attach_cache_stats(message: Dict[str, Any], response_data: Dict[str, Any], 
     mgr = ModelApiAdapterManager()
     adapter = mgr.resolve(url)
     if adapter is None:
-        _OPENAI_ROUTE_LOG.warning("cache-stats no-adapter url=%s", url)
+        _OPENAI_ROUTE_LOG.info("cache-stats no-adapter url=%s", url)
         return
     usage_raw = response_data.get("usage")
     usage_keys = sorted(usage_raw.keys()) if isinstance(usage_raw, dict) else "N/A"
-    _OPENAI_ROUTE_LOG.warning("cache-stats trying adapter=%s url=%s usage_keys=%s",
+    _OPENAI_ROUTE_LOG.info("cache-stats trying adapter=%s url=%s usage_keys=%s",
                               type(adapter).__name__, url, usage_keys)
     stats = adapter.extract_cache_stats(response_data)
     if stats is not None:
         message["_cache_stats"] = stats
         if "input_tokens" in stats:
-            _OPENAI_ROUTE_LOG.warning("cache-stats attached input_tokens=%s url=%s",
+            _OPENAI_ROUTE_LOG.info("cache-stats attached input_tokens=%s url=%s",
                                       stats["input_tokens"], url)
         else:
-            _OPENAI_ROUTE_LOG.warning("cache-stats attached hit=%s miss=%s url=%s",
+            _OPENAI_ROUTE_LOG.info("cache-stats attached hit=%s miss=%s url=%s",
                                       stats.get("prompt_cache_hit_tokens"),
                                       stats.get("prompt_cache_miss_tokens"),
                                       url)
     else:
-        _OPENAI_ROUTE_LOG.warning("cache-stats no-cache-data adapter=%s url=%s",
+        _OPENAI_ROUTE_LOG.info("cache-stats no-cache-data adapter=%s url=%s",
                                   type(adapter).__name__, url)
 
 
@@ -1816,7 +1816,7 @@ def _call_openai_once(
                 message_for_return["_thinking"] = content_thinking
                 message_for_return["_thinking_from_content"] = True
     if not raw_text:
-        _OPENAI_ROUTE_LOG.warning(
+        _OPENAI_ROUTE_LOG.info(
             "openai-response empty-output api_kind=%s data_keys=%s message_keys=%s has_tool_calls=%s",
             api_kind,
             ",".join(sorted([str(k) for k in data.keys()])),
