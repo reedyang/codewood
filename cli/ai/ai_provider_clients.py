@@ -1555,6 +1555,15 @@ def _is_rate_limit_error(error: Exception) -> bool:
     return int(error.status_code or 0) == 429
 
 
+def _model_call_error_contains_429(error: "ModelCallError") -> bool:
+    """Check whether any attempt in a ModelCallError was a 429 rate-limit."""
+    for attempt in (error.attempt_errors or []):
+        err_text = str(attempt.get("error") or "")
+        if " 429 " in err_text or err_text.startswith("429 ") or "429 Client Error" in err_text:
+            return True
+    return False
+
+
 def fetch_openai_compatible_models(
     *, base_url: str, api_key: str = "", context_length_attr_name: str = ""
 ) -> List[Dict[str, Any]]:
@@ -2242,6 +2251,43 @@ def _call_with_openai_compatible(
                 append_history=append_history,
             )
         except ModelCallError as e:
+            if _model_call_error_contains_429(e):
+                _OPENAI_ROUTE_LOG.warning(
+                    "openai-route rate-limited-outer model=%s api_kind=%s retry-after=3s",
+                    model_name,
+                    api_kind,
+                )
+                time.sleep(3)
+                try:
+                    return _call_openai_with_suffix_strategy(
+                        model_name=model_name,
+                        api_kind=api_kind,
+                        base_url=str(base_url),
+                        headers=headers,
+                        messages=provider_messages,
+                        stream=stream,
+                        return_message=return_message,
+                        image_data=image_data,
+                        image_user_idx=image_user_idx,
+                        image_user_text=image_user_text,
+                        session_summary_mode=session_summary_mode,
+                        memory_query_expansion_mode=memory_query_expansion_mode,
+                        tool_schemas=tool_schemas,
+                        tool_choice=tool_choice,
+                        reasoning_effort=reasoning_effort,
+                        thinking=thinking,
+                        append_history=append_history,
+                    )
+                except ModelCallError as retry_e:
+                    aggregated_attempts.extend(retry_e.attempt_errors)
+                    _OPENAI_ROUTE_LOG.warning(
+                        "openai-route kind-failed model=%s api_kind=%s error=%s",
+                        model_name,
+                        api_kind,
+                        str(retry_e),
+                    )
+                    last_error = retry_e
+                    continue
             last_error = e
             aggregated_attempts.extend(e.attempt_errors)
             _OPENAI_ROUTE_LOG.warning(
