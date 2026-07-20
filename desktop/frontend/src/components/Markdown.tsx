@@ -8,12 +8,16 @@ import { CodeBlock } from "./CodeBlock";
 // links) so the model reply is colored in the GUI without a heavy dependency.
 // All text flows through React children, so it is escaped by default.
 
-// Underscore emphasis (`_italic_`) is constrained to non-whitespace,
-// non-underscore content so snake_case identifiers like `run_subagent` /
-// `Agent.execute_tool` are NOT mistaken for emphasis (which would otherwise
-// swallow the whole span — including any `$...$` math — as a single <em>).
+// Underscore / asterisk emphasis (`_italic_`, `*italic*`, `__bold__`,
+// `**bold**`, `***bolditalic***`) is only treated as emphasis when the char
+// immediately OUTSIDE each delimiter is NOT a letter, digit, or underscore
+// (i.e. not `[\w]`). This mirrors the TUI rule in
+// cli/core/text_output_renderer.py so identifiers like `project_context_search`
+// / `a*b*c` / `run_subagent` are NOT mistaken for emphasis (which would
+// otherwise swallow the whole span — including any `$...$` math — as a single
+// <em>/<strong>). Plain `_x_` / `*x*` surrounded by spaces still italicize.
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*\*[^*]+\*\*\*)|(\*\*[^*]+\*\*)|(__[^\s_]+__)|(\*[^*]+\*)|(_[^\s_]+_)|(~~[^~]+~~)|(<u>[^<]*<\/u>)|(\[[^\]]+\]\([^)]+\))|(\[\^[^\]]+\])/g;
+  /(`[^`]+`)|(?<!\w)\*\*\*[^*]+\*\*\*(?!\w)|(?<!\w)\*\*[^*]+\*\*(?!\w)|(?<!\w)__[^\s_]+__(?!\w)|(?<!\w)\*[^*]+\*(?!\w)|(?<!\w)_[^\s_]+_(?!\w)|(~~[^~]+~~)|(<u>[^<]*<\/u>)|(\[[^\]]+\]\([^)]+\))|(\[\^[^\]]+\])/g;
 
 // ---------------------------------------------------------------------------
 // Bare-LaTeX auto-detection: the model sometimes emits LaTeX without `$`
