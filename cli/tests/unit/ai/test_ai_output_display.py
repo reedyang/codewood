@@ -394,7 +394,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             line = self.agent._format_tool_call_feedback_line(
                 "run_subagent", {"subagent": "coder"}, failed=False
             )
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 运行子代理 "))
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 调用子智能体 "))
         self.assertIn("<H>(subagent=coder)</H>", line)
 
     def test_format_tool_call_feedback_line_includes_explore_topic(self):

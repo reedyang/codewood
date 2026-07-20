@@ -12,7 +12,7 @@
   "status.apply_patch": "修改文件",
   "status.create_file": "创建文件",
   "tool.label.read": "读取",
-  "tool.label.run_subagent": "运行子代理",
+  "tool.label.run_subagent": "调用子智能体",
   "tool.label.update_plan": "更新计划",
   "tool.label.request_user_input": "请求用户输入",
   "tool.label.request_skill_prompt": "请求技能提示",

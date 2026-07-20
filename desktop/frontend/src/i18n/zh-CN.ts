@@ -24,7 +24,7 @@ export const zhCN: Dict = {
   "activity.thoughtFor": "思考用时",
   "tool.label.tool": "工具",
   "tool.label.read": "读取",
-  "tool.label.run_subagent": "运行子代理",
+  "tool.label.run_subagent": "调用子智能体",
   "tool.label.update_plan": "更新计划",
   "tool.label.request_user_input": "请求用户输入",
   "tool.label.request_skill_prompt": "请求技能提示",
