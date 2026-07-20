@@ -26,7 +26,7 @@ from ..config.startup_tips import (
 )
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
 from ..core.console_utils import GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
-from ..core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END
+
 from ..core.text_output_renderer import (
     format_assistant_display_response,
 )
@@ -4559,14 +4559,15 @@ def run_agent_loop(agent: Any):
                                 explore_ticker = ticker
                         else:
                             # In GUI streaming mode, tools that produce an
-                            # expandable output (everything except run_subagent
-                            # and project_context_search) defer printing the
-                            # prompt line so it can be sent in the same SSE
-                            # event as the output. This avoids a race where the
-                            # prompt and output arrive in different rounds and
-                            # the output is mis-attributed to the wrong tool.
+                            # expandable output (everything except run_subagent)
+                            # defer printing the prompt line so it can be sent in
+                            # the same SSE event as the output. This avoids a
+                            # race where the prompt and output arrive in
+                            # different rounds and the output is mis-attributed
+                            # to the wrong tool, or consecutive calls' prompts
+                            # and outputs interleave.
                             _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
-                            _tool_defers_prompt = _gui_stream and tool_name not in ("run_subagent", "project_context_search")
+                            _tool_defers_prompt = _gui_stream and tool_name not in ("run_subagent",)
                             if not _tool_defers_prompt:
                                 self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
@@ -4880,7 +4881,9 @@ def run_agent_loop(agent: Any):
                     # line now print the accumulated tool_round (prompt +
                     # output as a single SSE event). This guarantees the
                     # frontend receives a coherent CMD_PROMPT / CMD_OUTPUT
-                    # pair that cannot be split across rounds by a race.
+                    # pair that cannot be split across rounds by a race,
+                    # and consecutive tool calls' prompts and outputs never
+                    # interleave.
                     _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
                     if _gui_stream:
                         _rounds = getattr(self, "_accumulated_tool_rounds", None) or []
@@ -4891,15 +4894,6 @@ def run_agent_loop(agent: Any):
                                     # Sub-agent calls keep a separate transcript;
                                     # the guiSessionMarker is emitted elsewhere.
                                     pass
-                                elif tool_name == "project_context_search":
-                                    # Its prompt line was already printed at call
-                                    # time (not deferred), so emit only the
-                                    # CMD_OUTPUT block here so the frontend can
-                                    # expand the result live, before the session
-                                    # completes.
-                                    _out_idx = _last_round.find(GUI_CMD_OUTPUT_BEGIN)
-                                    if _out_idx >= 0:
-                                        print(_last_round[_out_idx:])
                                 else:
                                     print(_last_round)
                             except Exception:

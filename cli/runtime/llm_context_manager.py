@@ -885,7 +885,7 @@ class LLMContextManager:
             streamed_raw_text = "".join(streamed_summary_parts)
             summary = streamed_raw_text.strip()
             compaction_reply_message = getattr(raw, "final_message", None)
-        if summary.startswith("❌") or summary.startswith("Error calling LLM API") or not summary:
+        if summary.startswith("❌") or summary.startswith("Error calling LLM API") or summary.startswith("❌ API error:") or not summary:
             if mode == "manual":
                 print(summary or self._t("compaction.failed_empty_summary"))
             return False
