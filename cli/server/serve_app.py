@@ -404,9 +404,28 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round = _new_round(turn, 0)
             if ts is not None and prev_ts is not None:
                 current_round["waitSeconds"] += max(0, int(round(ts - prev_ts)))
-            rendered = _render_step(idx, msg)
-            if rendered.strip():
-                current_round["tools"] = current_round["tools"] + rendered + "\n"
+            # When the tool_plan message that issued this call already carries
+            # pre-rendered tool_rounds (e.g. ``_tool_rounds_raw``), its branch
+            # above already appended the complete round (prompt line + expandable
+            # output) for every tool in the batch. Rendering the feedback line
+            # again here would produce a duplicate prompt line that trails the
+            # real ones, making tools appear twice or out of order.
+            _covered_by_raw_rounds = False
+            for _j in range(idx - 1, max(idx - 20, -1), -1):
+                _prev = hist[_j]
+                if not isinstance(_prev, dict):
+                    continue
+                if str(_prev.get("role") or "").strip().lower() != "assistant":
+                    continue
+                if _is_tool_plan(str(_prev.get("content") or "")):
+                    _raw = _prev.get("_tool_rounds_raw") if isinstance(_prev, dict) else None
+                    if isinstance(_raw, list) and _raw:
+                        _covered_by_raw_rounds = True
+                    break
+            if not _covered_by_raw_rounds:
+                rendered = _render_step(idx, msg)
+                if rendered.strip():
+                    current_round["tools"] = current_round["tools"] + rendered + "\n"
             if ts is not None:
                 prev_ts = ts
             continue

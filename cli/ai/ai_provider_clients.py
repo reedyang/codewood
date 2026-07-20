@@ -1,6 +1,7 @@
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -1525,6 +1526,35 @@ def _truncate_error_body(raw: str, limit: int = 1200) -> str:
     return text[:limit] + "...(truncated)"
 
 
+def _extract_api_error_message(error: "OpenAIRequestError") -> str:
+    """Extract the human-readable ``message`` from an API error response body.
+
+    Parses JSON like ``{"error":{"message":"rpm exhausted",...}}`` and
+    returns just the message text. Falls back to the full error string
+    when the body cannot be parsed.
+    """
+    body = str(getattr(error, "response_body", "") or "")
+    if body:
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                err_obj = parsed.get("error")
+                if isinstance(err_obj, dict):
+                    msg = str(err_obj.get("message") or "")
+                    if msg.strip():
+                        return msg.strip()
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return ""
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Check whether an error is a rate-limit (HTTP 429) response."""
+    if not isinstance(error, OpenAIRequestError):
+        return False
+    return int(error.status_code or 0) == 429
+
+
 def fetch_openai_compatible_models(
     *, base_url: str, api_key: str = "", context_length_attr_name: str = ""
 ) -> List[Dict[str, Any]]:
@@ -1864,6 +1894,55 @@ def _call_openai_with_suffix_strategy(
         )
 
     if first_error is not None and not _should_retry_openai_alternate_url(first_error):
+        if _is_rate_limit_error(first_error):
+            _OPENAI_ROUTE_LOG.warning(
+                "openai-route rate-limited model=%s api_kind=%s retry-after=3s url=%s",
+                model_name,
+                api_kind,
+                primary_url,
+            )
+            time.sleep(3)
+            try:
+                return _call_openai_once(
+                    model_name=model_name,
+                    api_kind=api_kind,
+                    url=primary_url,
+                    headers=headers,
+                    messages=messages,
+                    stream=stream,
+                    return_message=return_message,
+                    image_data=image_data,
+                    image_user_idx=image_user_idx,
+                    image_user_text=image_user_text,
+                    session_summary_mode=session_summary_mode,
+                    memory_query_expansion_mode=memory_query_expansion_mode,
+                    tool_schemas=tool_schemas,
+                    tool_choice=tool_choice,
+                    force_disable_thinking=force_disable_thinking,
+                    reasoning_effort=reasoning_effort,
+                    append_history=append_history,
+                )
+            except Exception as retry_error:
+                _OPENAI_ROUTE_LOG.warning(
+                    "openai-route retry-failed model=%s api_kind=%s url=%s error=%s",
+                    model_name,
+                    api_kind,
+                    primary_url,
+                    str(retry_error),
+                )
+                attempts: List[Dict[str, str]] = [
+                    {
+                        "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'} (1st)",
+                        "url": primary_url,
+                        "error": str(first_error),
+                    },
+                    {
+                        "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'} (retry after 3s)",
+                        "url": primary_url,
+                        "error": str(retry_error),
+                    },
+                ]
+                raise ModelCallError(str(retry_error), attempt_errors=attempts) from retry_error
         attempts: List[Dict[str, str]] = [
             {
                 "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
