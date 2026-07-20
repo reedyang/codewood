@@ -1226,6 +1226,7 @@ body.resizing-x .browser-frame {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+  position: relative;
   border-top-left-radius: var(--panel-radius);
   border-bottom-left-radius: var(--panel-radius);
 }
@@ -1819,13 +1820,68 @@ body.resizing-x .browser-frame {
 .transcript {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 30px;
+  padding: 18px 40px;
 }
 
 .transcript-empty {
   color: var(--text-muted);
   text-align: center;
   margin-top: 40px;
+}
+
+/* ---- Transcript minimap ---- */
+.transcript-minimap {
+  position: absolute;
+  left: 0;
+  width: 20px;
+  z-index: 5;
+  cursor: pointer;
+}
+
+.minimap-line {
+  position: absolute;
+  left: 6px;
+  height: 2px;
+  width: 6px;
+  background: var(--text-muted);
+  opacity: 0.45;
+  border-radius: 1px;
+  transition: width 0.12s ease-out, opacity 0.12s ease-out;
+  pointer-events: none;
+}
+
+.minimap-tooltip {
+  position: fixed;
+  max-width: 320px;
+  min-width: 140px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  z-index: 100;
+  pointer-events: none;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.minimap-tooltip-user {
+  color: var(--text);
+  font-weight: 600;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.minimap-tooltip-answer {
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.minimap-tooltip-files {
+  color: var(--accent);
+  font-family: monospace;
+  font-size: 11px;
 }
 
 .entry {
@@ -1927,7 +1983,7 @@ body.resizing-x .browser-frame {
 /* Composer */
 .composer {
   border-top: 1px solid var(--border);
-  padding: 12px 30px;
+  padding: 12px 40px;
   background: var(--bg-elevated);
 }
 

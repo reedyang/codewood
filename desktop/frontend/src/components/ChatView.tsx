@@ -293,6 +293,26 @@ function fileExt(path: string): string {
   return dot > 0 ? name.slice(dot + 1).toUpperCase() : "";
 }
 
+const DIFF_BEGIN = "\uE006";
+const DIFF_END = "\uE007";
+
+function extractFilesFromToolText(toolText: string): string[] {
+  const files: string[] = [];
+  let start = 0;
+  while (true) {
+    const s = toolText.indexOf(DIFF_BEGIN, start);
+    if (s === -1) break;
+    const e = toolText.indexOf(DIFF_END, s + 1);
+    if (e === -1) break;
+    try {
+      const parsed = JSON.parse(toolText.slice(s + 1, e));
+      if (parsed.file) files.push(parsed.file);
+    } catch { /* ignore malformed payloads */ }
+    start = e + 1;
+  }
+  return [...new Set(files)];
+}
+
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(total / 60);
@@ -1288,6 +1308,14 @@ export function ChatView() {
         </div>
       ) : showEmpty ? emptyContent : (
         <>
+          <TranscriptMinimap
+            scrollRef={scrollRef}
+            historyTurns={historyTurns}
+            liveTurns={turns}
+            unloadedCount={historyStart}
+            loadOlderHistory={() => void loadOlderHistory()}
+            historyLoading={historyLoading}
+          />
           <div className="transcript" ref={scrollRef} onScroll={onScroll}>
             {historyStart > 0 && (
               <div className="history-more">
@@ -1647,6 +1675,300 @@ export function splitCompletedTurn(turn: HistoryTurn): {
       0,
     ),
   };
+}
+
+const MINIMAP_LINE_MIN = 6;
+const MINIMAP_LINE_MAX = 24;
+const MINIMAP_LINE_HEIGHT = 3;
+const MINIMAP_LINE_GAP = 6;
+
+function TranscriptMinimap({
+  scrollRef,
+  historyTurns,
+  liveTurns,
+  unloadedCount,
+  loadOlderHistory,
+  historyLoading,
+}: {
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  historyTurns: HistoryTurn[];
+  liveTurns: Turn[];
+  unloadedCount: number;
+  loadOlderHistory: () => void;
+  historyLoading: boolean;
+}) {
+  const { t } = useApp();
+  const minimapRef = useRef<HTMLDivElement | null>(null);
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [minimapHeight, setMinimapHeight] = useState(0);
+  const [minimapTop, setMinimapTop] = useState(0);
+  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
+  const loadTriggeredRef = useRef(false);
+
+  // Build filtered list: only user turns get minimap lines.
+  // Use ref-based memoization to avoid recalculating when context provides
+  // new array references with the same content.
+  const userTurnsRef = useRef<Array<{ userText: string; answerText: string; files: string[] }>>([]);
+  const domIndicesRef = useRef<number[]>([]);
+  const prevKeyRef = useRef("");
+
+  const curKey = `${unloadedCount}:${historyTurns.length}:${historyTurns.map((h) => h.userText?.length).join(",")}:${liveTurns.length}:${liveTurns.map((l) => `${l.id}:${l.userText?.length}`).join(",")}`;
+  if (curKey !== prevKeyRef.current) {
+    prevKeyRef.current = curKey;
+    const ut: Array<{ userText: string; answerText: string; files: string[] }> = [];
+    const di: number[] = [];
+    let domIdx = 0;
+    for (let i = 0; i < unloadedCount; i++) {
+      ut.push({ userText: "", answerText: "", files: [] });
+      di.push(domIdx);
+      domIdx++;
+    }
+    for (const turn of historyTurns) {
+      if (turn.userText?.trim()) {
+        const lastRound = turn.rounds[turn.rounds.length - 1];
+        const answerText = lastRound ? String(lastRound.text || "").trim() : "";
+        const files = turn.rounds.flatMap((r) => extractFilesFromToolText(String(r.tools || "")));
+        ut.push({ userText: turn.userText.trim(), answerText, files: [...new Set(files)] });
+        di.push(domIdx);
+      }
+      domIdx++;
+    }
+    for (const turn of liveTurns) {
+      if (turn.userText?.trim()) {
+        let answerText = "";
+        const files: string[] = [];
+        for (const round of turn.rounds) {
+          for (const seg of round.segments) {
+            if (seg.kind === "answer" && seg.text.trim()) {
+              answerText = seg.text.trim();
+            }
+          }
+          const stepTexts = round.segments
+            .filter((s) => s.kind === "step")
+            .map((s) => s.text);
+          files.push(...stepTexts.flatMap(extractFilesFromToolText));
+        }
+        ut.push({ userText: turn.userText.trim(), answerText, files: [...new Set(files)] });
+        di.push(domIdx);
+      }
+      domIdx++;
+    }
+    userTurnsRef.current = ut;
+    domIndicesRef.current = di;
+  }
+  const userTurns = userTurnsRef.current;
+  const domIndices = domIndicesRef.current;
+
+  const totalLines = userTurns.length;
+  const lineStep = MINIMAP_LINE_HEIGHT + MINIMAP_LINE_GAP;
+
+  const measureLayout = () => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const ut = userTurnsRef.current;
+    const userCount = ut.length;
+    const contentExceeds3Screens = container.scrollHeight > container.clientHeight * 3;
+    const nextVisible = userCount >= 3 && contentExceeds3Screens;
+    setVisible((prev) => prev === nextVisible ? prev : nextVisible);
+
+    const chatView = container.closest('.chat-view');
+    if (chatView) {
+      const containerRect = container.getBoundingClientRect();
+      const chatViewRect = chatView.getBoundingClientRect();
+      const h = containerRect.height;
+      const nextTop = (containerRect.top - chatViewRect.top) + (h - Math.min(h, userCount * lineStep)) / 2;
+      setMinimapHeight(h);
+      setMinimapTop(nextTop);
+    }
+  };
+
+  const measureScroll = () => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const ut = userTurnsRef.current;
+    const di = domIndicesRef.current;
+    const userCount = ut.length;
+
+    const turnEls = Array.from(container.querySelectorAll(':scope > .turn'));
+    const scrollTop = container.scrollTop;
+    const viewBottom = scrollTop + container.clientHeight;
+    let domStart = turnEls.length;
+    let domEnd = 0;
+    for (let i = 0; i < turnEls.length; i++) {
+      const el = turnEls[i] as HTMLElement;
+      const elTop = el.offsetTop;
+      const elBottom = elTop + el.offsetHeight;
+      if (elBottom > scrollTop && elTop < viewBottom) {
+        if (i < domStart) domStart = i;
+        if (i > domEnd) domEnd = i;
+      }
+    }
+    if (domStart <= domEnd) {
+      let lineStart = userCount;
+      let lineEnd = -1;
+      for (let li = 0; li < di.length; li++) {
+        if (di[li] >= domStart && di[li] <= domEnd) {
+          if (li < lineStart) lineStart = li;
+          if (li > lineEnd) lineEnd = li;
+        }
+      }
+      if (lineStart <= lineEnd) {
+        setVisibleRange((prev) =>
+          prev.start === lineStart && prev.end === lineEnd ? prev : { start: lineStart, end: lineEnd }
+        );
+      }
+    }
+  };
+
+  useEffect(() => {
+    measureLayout();
+    const container = scrollRef.current;
+    if (!container) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; measureScroll(); });
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    const ro = new ResizeObserver(() => {
+      measureLayout();
+      measureScroll();
+    });
+    ro.observe(container);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      container.removeEventListener('scroll', onScroll);
+      ro.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyTurns, liveTurns, unloadedCount, scrollRef]);
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    const rect = minimapRef.current?.getBoundingClientRect();
+    if (!rect || totalLines === 0) return;
+    const y = e.clientY - rect.top;
+    const idx = Math.round(y / lineStep);
+    setHoveredIdx(Math.max(0, Math.min(idx, totalLines - 1)));
+  };
+
+  const handleMouseLeave = () => {
+    setHoveredIdx(null);
+    loadTriggeredRef.current = false;
+  };
+
+  // Trigger history load when hovering over unloaded lines
+  if (hoveredIdx !== null && hoveredIdx < unloadedCount && !historyLoading && !loadTriggeredRef.current) {
+    loadTriggeredRef.current = true;
+    loadOlderHistory();
+  }
+
+  const getLineOpacity = (idx: number) => {
+    if (hoveredIdx !== null) {
+      return idx === hoveredIdx ? 0.9 : 0.3;
+    }
+    if (idx >= visibleRange.start && idx <= visibleRange.end) return 0.7;
+    return 0.25;
+  };
+
+  const getLineWidth = (idx: number) => {
+    if (hoveredIdx === null) return MINIMAP_LINE_MIN;
+    const dist = Math.abs(idx - hoveredIdx);
+    if (dist >= 4) return MINIMAP_LINE_MIN;
+    const t = dist / 4;
+    return Math.round(MINIMAP_LINE_MAX - t * (MINIMAP_LINE_MAX - MINIMAP_LINE_MIN));
+  };
+
+  const handleClick = () => {
+    if (hoveredIdx === null) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const domIdx = domIndices[hoveredIdx];
+    if (domIdx === undefined) return;
+    if (hoveredIdx < unloadedCount) {
+      container.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    const turnEls = Array.from(container.querySelectorAll(':scope > .turn'));
+    const target = turnEls[domIdx] as HTMLElement | undefined;
+    if (target) {
+      container.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
+    }
+  };
+
+  const tooltip = (() => {
+    if (hoveredIdx === null) return null;
+    const rect = minimapRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const lineCenterY = hoveredIdx * lineStep + MINIMAP_LINE_HEIGHT / 2;
+    const tooltipY = Math.min(
+      Math.max(rect.top + lineCenterY - 30, 8),
+      window.innerHeight - 120,
+    );
+    const tooltipX = rect.right + MINIMAP_LINE_MAX;
+
+    // Unloaded line: show loading or nothing
+    if (hoveredIdx < unloadedCount) {
+      if (historyLoading) {
+        return (
+          <div className="minimap-tooltip" style={{ top: tooltipY, left: tooltipX, position: 'fixed' }}>
+            <div className="minimap-tooltip-answer">{t('minimap.loading')}</div>
+          </div>
+        );
+      }
+      return null;
+    }
+
+    const preview = userTurns[hoveredIdx];
+    if (!preview || (!preview.userText && !preview.answerText && preview.files.length === 0)) {
+      return null;
+    }
+    return (
+      <div className="minimap-tooltip" style={{ top: tooltipY, left: tooltipX, position: 'fixed' }}>
+        {preview.userText && (
+          <div className="minimap-tooltip-user">
+            {preview.userText.slice(0, 80)}{preview.userText.length > 80 ? '…' : ''}
+          </div>
+        )}
+        {preview.answerText && (
+          <div className="minimap-tooltip-answer">
+            {preview.answerText.slice(0, 120)}{preview.answerText.length > 120 ? '…' : ''}
+          </div>
+        )}
+        {preview.files.length > 0 && (
+          <div className="minimap-tooltip-files">
+            {preview.files.map(baseName).join(', ')}
+          </div>
+        )}
+      </div>
+    );
+  })();
+
+  if (!visible || totalLines === 0 || unloadedCount > 0) return null;
+
+  return (
+    <div
+      ref={minimapRef}
+      className="transcript-minimap"
+      style={{ top: minimapTop, height: minimapHeight }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      onClick={handleClick}
+    >
+      {Array.from({ length: totalLines }, (_, i) => (
+        <div
+          key={i}
+          className="minimap-line"
+          style={{
+            top: i * lineStep,
+            width: getLineWidth(i),
+            opacity: getLineOpacity(i),
+          }}
+        />
+      ))}
+      {tooltip}
+    </div>
+  );
 }
 
 function CompletedTurnView({
