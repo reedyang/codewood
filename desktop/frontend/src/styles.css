@@ -6,13 +6,13 @@
   --bg: #ffffff;
   --bg-elevated: #ffffff;
   --bg-hover: rgba(0, 0, 0, 0.05);
-  --bg-sidebar: #f3f4f6;
+  --bg-sidebar: #f5f5f5;
   /* Solid (always-opaque) mirrors of the surface tokens. These never become
      translucent, so the background-image override can derive translucent
      surface colours from them without a circular ``var(--bg)`` reference. */
   --bg-solid: #ffffff;
   --bg-elevated-solid: #ffffff;
-  --bg-sidebar-solid: #f3f4f6;
+  --bg-sidebar-solid: #f5f5f5;
   --bg-input: #ffffff;
   --bg-input-solid: #ffffff;
   --border: #e5e7eb;
