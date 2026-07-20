@@ -47,6 +47,7 @@ export const zhCN: Dict = {
   "tool.label.console_info": "获取控制台信息",
   "history.more": "向上滚动加载更早的消息",
   "history.loading": "正在加载更早的消息……",
+  "minimap.loading": "加载中…",
 
   "menu.pinProject": "置顶工作区",
   "menu.unpinProject": "取消置顶",

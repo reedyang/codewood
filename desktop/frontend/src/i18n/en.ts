@@ -47,6 +47,7 @@ export const en: Dict = {
   "tool.label.console_info": "Get console info",
   "history.more": "Scroll up to load earlier messages",
   "history.loading": "Loading earlier messages…",
+  "minimap.loading": "Loading…",
 
   "menu.pinProject": "Pin workspace",
   "menu.unpinProject": "Unpin workspace",

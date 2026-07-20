@@ -2500,6 +2500,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [client, historyLoading, historyStart]);
 
+  // Auto-load all remaining history after the initial page loads so the
+  // minimap can show the final stable line count without visible intermediate
+  // decreases. The minimap stays hidden while historyStart > 0.
+  const loadOlderHistoryRef = useRef(loadOlderHistory);
+  loadOlderHistoryRef.current = loadOlderHistory;
+  useEffect(() => {
+    if (historyStart > 0 && !historyLoading) {
+      void loadOlderHistoryRef.current();
+    }
+  }, [historyStart, historyLoading]);
+
   // Initial / external chat changes: (re)load history for the active chat.
   // Our own switchToChat/newChat update historyChatRef so this won't double-run.
   useEffect(() => {
