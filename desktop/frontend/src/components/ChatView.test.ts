@@ -65,7 +65,7 @@ describe("groupLiveRounds", () => {
     expect(groups[1]?.kind).toBe("other");
   });
 
-  it("keeps a tool round with thinking in the tool group", () => {
+  it("keeps a tool round with thinking separate from the tool group", () => {
     const rounds = [
       {
         id: 1,
@@ -86,10 +86,12 @@ describe("groupLiveRounds", () => {
 
     const groups = groupLiveRounds(rounds);
 
-    expect(groups).toHaveLength(1);
-    expect(groups[0]?.kind).toBe("tool");
-    if (groups[0]?.kind === "tool") {
-      expect(groups[0].rounds).toHaveLength(2);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.kind).toBe("other");
+    expect(groups[1]?.kind).toBe("tool");
+    if (groups[1]?.kind === "tool") {
+      expect(groups[1].rounds).toHaveLength(1);
+      expect(groups[1].rounds[0]?.id).toBe(2);
     }
   });
 });
