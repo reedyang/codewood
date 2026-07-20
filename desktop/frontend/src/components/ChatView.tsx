@@ -1682,6 +1682,11 @@ const MINIMAP_LINE_MAX = 24;
 const MINIMAP_LINE_HEIGHT = 3;
 const MINIMAP_LINE_GAP = 6;
 
+function snapToDevicePixel(value: number) {
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  return Math.round(value * dpr) / dpr;
+}
+
 function TranscriptMinimap({
   scrollRef,
   historyTurns,
@@ -1762,6 +1767,8 @@ function TranscriptMinimap({
 
   const totalLines = userTurns.length;
   const lineStep = MINIMAP_LINE_HEIGHT + MINIMAP_LINE_GAP;
+  const lineHeight = snapToDevicePixel(MINIMAP_LINE_HEIGHT);
+  const getLineTop = (idx: number) => snapToDevicePixel(idx * lineStep);
 
   const measureLayout = () => {
     const container = scrollRef.current;
@@ -1900,7 +1907,7 @@ function TranscriptMinimap({
     if (hoveredIdx === null) return null;
     const rect = minimapRef.current?.getBoundingClientRect();
     if (!rect) return null;
-    const lineCenterY = hoveredIdx * lineStep + MINIMAP_LINE_HEIGHT / 2;
+    const lineCenterY = getLineTop(hoveredIdx) + lineHeight / 2;
     const tooltipY = Math.min(
       Math.max(rect.top + lineCenterY - 30, 8),
       window.innerHeight - 120,
@@ -1960,7 +1967,8 @@ function TranscriptMinimap({
           key={i}
           className="minimap-line"
           style={{
-            top: i * lineStep,
+            top: getLineTop(i),
+            height: lineHeight,
             width: getLineWidth(i),
             opacity: getLineOpacity(i),
           }}
