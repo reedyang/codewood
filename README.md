@@ -214,22 +214,6 @@ Frontmatter keys (the Markdown body is the sub-agent's independent system instru
 
 The `run_subagent` tool also accepts an optional `image` argument (a file path). The image is attached to and analyzed by the **sub-agent's own model**, not the main model — so a non-multimodal main model can delegate image understanding to a multimodal sub-agent. See `additional-subagents/image-analyzer.md` for a ready-made example that turns a UI mockup, screenshot, diagram, or chart into a structured description a coding model can act on.
 
-Example `~/.codewood/subagents/code-reviewer.md`:
-
-```markdown
----
-name: code-reviewer
-description: Use to review a diff, file, or change for bugs, security issues, and style problems. Returns a concise findings list.
-model: openai/gpt-4o
-tools: [shell, project_context_search, read]
-max_rounds: 15
----
-You are a meticulous senior code reviewer. Inspect the requested code using the
-available tools, then report concrete findings grouped by severity (blocker,
-major, minor) with file/line references and suggested fixes. Be concise and do
-not modify any files.
-```
-
 ### Built-In Commands vs Native Shell Commands
 
 - Built-in commands that do not go through AI must start with `/`, for example `/exit`, `/help`, `/clear screen`, `/clear context`, and `/free`
