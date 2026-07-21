@@ -4385,7 +4385,7 @@ html[data-has-bg] .select {
 .activity-steps {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 12.5px;
-  background: var(--output-bg);
+  background: color-mix(in srgb, var(--output-bg) 30%, transparent);
   color: var(--output-text);
   padding: 10px 12px;
   border-radius: 10px;
