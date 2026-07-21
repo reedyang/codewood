@@ -4491,8 +4491,13 @@ html[data-has-bg] .select {
 }
 
 .activity-steps > .diff-preview {
-  /* Context rows (no del/add class) inherit background from activity-steps;
-     force transparent so only changed lines show a tinted background. */
+  margin-left: -12px;
+  margin-right: -12px;
+  margin-bottom: -10px;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
 }
 
 .diff-preview .diff-iline:not(.diff-del):not(.diff-add),
