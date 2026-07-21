@@ -373,7 +373,7 @@ export function StepsView({ text }: { text: string }) {
               cmdPayload={cmdPayload}
               diffPayload={diffPayload}
               subagentSessionId={subagentSessionId}
-              defaultExpanded={diffIdx === lastContentIdx}
+              defaultExpanded={false}
               onPathPreview={isBrowserPreview ? onPathPreview : undefined}
             />
           );
