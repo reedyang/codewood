@@ -5008,8 +5008,24 @@ h6.md-h {
   color: #6b7280;
 }
 
+.send-btn.is-stop:hover {
+  background: rgba(107, 114, 128, 0.12);
+}
+
+.send-btn.is-stop:active {
+  background: rgba(107, 114, 128, 0.22);
+}
+
 [data-theme="dark"] .send-btn.is-stop {
   color: #ffffff;
+}
+
+[data-theme="dark"] .send-btn.is-stop:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .send-btn.is-stop:active {
+  background: rgba(255, 255, 255, 0.22);
 }
 
 /* Dropdowns (policy / model) */
