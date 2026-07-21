@@ -313,6 +313,19 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             # Non-genuine user entries are internal command inputs (slash
             # commands or "!cmd" direct shell). The GUI never executes these
             # directly, so neither the command echo nor its output is shown.
+            # Check for [FILE_CHANGE_REF:<hashcode>] internal messages that
+            # carry file-change references for the preceding turn.
+            if content.startswith("[FILE_CHANGE_REF:"):
+                _ref = content[len("[FILE_CHANGE_REF:"):].rstrip("]")
+                if _ref:
+                    _fc_store = getattr(agent, "_file_changes_by_chat", {}) or {}
+                    _cid = str(getattr(agent, "active_chat_id", "") or "")
+                    _chat_store = _fc_store.get(_cid, {})
+                    if isinstance(_chat_store, dict):
+                        _fc = _chat_store.get(_ref)
+                        if isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
+                            if current:
+                                current["fileChanges"] = _fc
             continue
         if role == "assistant":
             # A recorded request_user_input selection: render it as a left-side
@@ -426,6 +439,27 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 rendered = _render_step(idx, msg)
                 if rendered.strip():
                     current_round["tools"] = current_round["tools"] + rendered + "\n"
+            else:
+                # When the tool-call prompt already rendered the prompt line
+                # via _tool_rounds_raw, and diffs are NOT already inline
+                # (old conversations without previewRef), emit the apply_patch
+                # diff block from the previews.json sidecar.
+                if not current_round.get("_has_inline_diffs"):
+                    try:
+                        _parsed = agent._parse_model_tool_result_history_content(content)
+                        if (
+                            isinstance(_parsed, dict)
+                            and str(_parsed.get("tool") or "").strip().lower() == "apply_patch"
+                            and bool(_parsed.get("success", True))
+                        ):
+                            _buf = io.StringIO()
+                            with contextlib.redirect_stdout(_buf):
+                                agent._replay_apply_patch_gui_diff_block(_parsed)
+                            _diff = _buf.getvalue().strip()
+                            if _diff:
+                                current_round["tools"] = current_round["tools"] + _diff + "\n"
+                    except Exception:
+                        pass
             if ts is not None:
                 prev_ts = ts
             continue
@@ -438,6 +472,22 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round = _new_round(turn, 0)
             if ts is not None and prev_ts is not None:
                 current_round["waitSeconds"] += max(0, int(round(ts - prev_ts)))
+            # Emit apply_patch diff block from previews.json sidecar
+            # unless diffs are already inline in the tool round text
+            # (new conversations with previewRef in _tool_rounds_raw).
+            if not current_round.get("_has_inline_diffs"):
+                try:
+                    if str(msg.get("name") or "").strip().lower() == "apply_patch":
+                        _parsed = json.loads(str(msg.get("content") or "{}"))
+                        if isinstance(_parsed, dict) and bool(_parsed.get("success", True)):
+                            _buf = io.StringIO()
+                            with contextlib.redirect_stdout(_buf):
+                                agent._replay_apply_patch_gui_diff_block(_parsed)
+                            _diff = _buf.getvalue().strip()
+                            if _diff:
+                                current_round["tools"] = current_round["tools"] + _diff + "\n"
+                except Exception:
+                    pass
             if ts is not None:
                 prev_ts = ts
             continue
@@ -469,6 +519,10 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     tool_rounds = agent._rerender_tool_rounds(raw_rounds)
                 except Exception:
                     tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+                if isinstance(raw_rounds, list) and any(
+                    isinstance(r, dict) and r.get("previewRef") for r in raw_rounds
+                ):
+                    current_round["_has_inline_diffs"] = True
             else:
                 tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
             if not (isinstance(tool_rounds, list) and tool_rounds):
@@ -546,6 +600,12 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     tool_rounds = agent._rerender_tool_rounds(raw_rounds)
                 except Exception:
                     tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+                # If any raw round has a previewRef, diffs are already
+                # inline in the tool round text — skip separate emission.
+                if isinstance(raw_rounds, list) and any(
+                    isinstance(r, dict) and r.get("previewRef") for r in raw_rounds
+                ):
+                    current_round["_has_inline_diffs"] = True
             else:
                 tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
             if isinstance(tool_rounds, list) and tool_rounds:
@@ -564,6 +624,10 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     tool_rounds = agent._rerender_tool_rounds(raw_rounds)
                 except Exception:
                     tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+                if isinstance(raw_rounds, list) and any(
+                    isinstance(r, dict) and r.get("previewRef") for r in raw_rounds
+                ):
+                    current_round["_has_inline_diffs"] = True
             else:
                 tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
             if isinstance(tool_rounds, list) and tool_rounds:
@@ -602,32 +666,38 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 or r["compactNoticeBody"].strip()
             )
         ]
-    # Attach per-turn file-change summaries from the sidecar list.
-    # Each summary carries a ``turnIndex`` that matches its position in the
-    # structured-turns list (0-based, counting from the first user message).
+    # Attach per-turn file-change summaries from the sidecar.
+    # New format: hashcode-ref dict loaded via [FILE_CHANGE_REF] messages
+    # (already handled above).  Legacy fallback: turnIndex-based list.
     try:
         _cs = getattr(agent, "_chat_state", None)
         _cid = str(_cs.get("active", "")) if isinstance(_cs, dict) else ""
         if _cid:
             _fc_by_chat = getattr(agent, "_file_changes_by_chat", {}) or {}
-            _fc_list = list(_fc_by_chat.get(_cid, []))
-            # Fall back to disk when the in-memory cache is empty (e.g. after restart).
-            if not _fc_list:
+            _fc_store = _fc_by_chat.get(_cid, {})
+            if not _fc_store:
                 _mgr = getattr(agent, "_chat_state_manager", None)
                 if _mgr is not None:
-                    _disk_list = _mgr.load_file_changes(_cid)
-                    if _disk_list:
-                        _fc_list = _disk_list
-            if _fc_list:
-                _fc_by_index = {
-                    int(_fc.get("turnIndex", -1)): _fc
-                    for _fc in _fc_list
-                    if isinstance(_fc, dict) and _fc.get("turnIndex") is not None
-                }
-                for i, turn in enumerate(turns):
-                    _fc = _fc_by_index.get(i)
-                    if _fc and isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
-                        turn["fileChanges"] = _fc
+                    _disk = _mgr.load_file_changes(_cid)
+                    if isinstance(_disk, list):
+                        # Legacy turnIndex format: attach by position
+                        for i, turn in enumerate(turns):
+                            _fc = _disk[i] if i < len(_disk) else None
+                            if isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
+                                turn["fileChanges"] = _fc
+                    elif isinstance(_disk, dict):
+                        _fc_store = _disk
+            if isinstance(_fc_store, dict):
+                for turn in turns:
+                    if turn.get("fileChanges") is None:
+                        # Try to match by turnIndex (legacy) or ref
+                        _fc = next(
+                            (v for v in _fc_store.values()
+                             if isinstance(v, dict) and v.get("turnIndex") == turn.get("_turnIndex")),
+                            None
+                        )
+                        if _fc and isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
+                            turn["fileChanges"] = _fc
     except Exception:
         pass
     return turns
@@ -1157,23 +1227,64 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     "_recordFile": str(c.get("_record_file") or ""),
                 }
             )
-        # Attach per-chat file-change summaries (now a list of per-turn
-        # summaries keyed by turnIndex).  Prefer the in-memory cache (set by
-        # _gui_file_changes hook); fall back to disk sidecar so persisted data
-        # survives restarts.
+        # Attach per-chat file-change summaries (now a dict keyed by hashcode
+        # ref).  Prefer the in-memory cache (set by _gui_file_changes hook);
+        # fall back to disk sidecar so persisted data survives restarts.
         _fc_map: Dict[str, Any] = getattr(agent, "_file_changes_by_chat", {}) or {}
         _fc_mgr = getattr(agent, "_chat_state_manager", None)
+        def _merge_by_file(summaries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """Merge multiple summaries, combining patches per file path."""
+            _by_file: Dict[str, Dict[str, Any]] = {}
+            _file_order: List[str] = []
+            for _s in summaries:
+                if not isinstance(_s, dict):
+                    continue
+                for _f in (_s.get("files") or []):
+                    _fp = str(_f.get("filePath") or "")
+                    _patch = _f.get("patch")
+                    if _fp not in _by_file:
+                        _by_file[_fp] = {
+                            "filePath": _fp,
+                            "changeType": _f.get("changeType", "modify"),
+                            "addedLines": 0,
+                            "deletedLines": 0,
+                            "patch": [],
+                        }
+                        _file_order.append(_fp)
+                    _m = _by_file[_fp]
+                    if isinstance(_patch, list):
+                        _m["patch"].extend(_patch)
+                        for _r in _patch:
+                            if not isinstance(_r, dict):
+                                continue
+                            _t = _r.get("type")
+                            if _t == "add":
+                                _m["addedLines"] += 1
+                            elif _t == "del":
+                                _m["deletedLines"] += 1
+                            elif _t == "change":
+                                _m["addedLines"] += 1
+                                _m["deletedLines"] += 1
+                    _m["changeType"] = _f.get("changeType", _m["changeType"])
+            _files = [_by_file[_fp] for _fp in _file_order]
+            return [{
+                "totalFiles": len(_files),
+                "totalAdded": sum(_f["addedLines"] for _f in _files),
+                "totalDeleted": sum(_f["deletedLines"] for _f in _files),
+                "files": _files,
+            }]
         for _ch in chats:
             _ch_id = str(_ch.get("id") or "")
             if not _ch_id:
                 continue
             if _ch_id in _fc_map:
-                _ch["fileChanges"] = _fc_map[_ch_id]
+                # Convert the dict (keyed by hashcode ref) to an array of
+                # summaries, then merge by file path so every file shows
+                # cumulative changes across all turns.
+                _raw_list = list(_fc_map[_ch_id].values())
+                _ch["fileChanges"] = _merge_by_file(_raw_list)
             elif _fc_mgr is not None:
                 try:
-                    # Resolve the side-data dir directly from the chat's record
-                    # file stem (carried on _recordFile) instead of find_chat_by_id,
-                    # which can fail under the suspend() context used here.
                     _rec = str(_ch.get("_recordFile") or "")
                     _data_dir = _fc_mgr.chat_data_dir(_rec) if _rec else None
                     _disk_path = (_data_dir / "file_changes.json") if _data_dir else None
@@ -1181,15 +1292,29 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                         import json as _json
                         with open(_disk_path, "r", encoding="utf-8") as _fh:
                             _disk_fc = _json.load(_fh)
-                        # Handle both new list format and old single-dict format
-                        _fc_list: list = []
-                        if isinstance(_disk_fc, list):
-                            _fc_list = _disk_fc
-                        elif isinstance(_disk_fc, dict) and _disk_fc.get("totalFiles", 0) > 0:
-                            _fc_list = [_disk_fc]
-                        if _fc_list:
-                            _ch["fileChanges"] = _fc_list
-                            _fc_map[_ch_id] = _fc_list
+                        # New format: dict keyed by hashcode ref
+                        # Old format: list of summaries or single dict
+                        _fc_store: dict = {}
+                        if isinstance(_disk_fc, dict):
+                            _first_val = next(iter(_disk_fc.values()), None)
+                            if isinstance(_first_val, dict) and "ref" in _first_val:
+                                _fc_store = _disk_fc
+                            elif _disk_fc.get("totalFiles", 0) > 0:
+                                _fc_store["_legacy"] = _disk_fc
+                        elif isinstance(_disk_fc, list):
+                            _fc_store["_legacy"] = _disk_fc
+                        if _fc_store:
+                            # Convert to array, merge by file path
+                            if "_legacy" in _fc_store:
+                                _legacy = _fc_store["_legacy"]
+                                if isinstance(_legacy, list):
+                                    _raw_list = _legacy
+                                else:
+                                    _raw_list = [_legacy]
+                            else:
+                                _raw_list = list(_fc_store.values())
+                            _ch["fileChanges"] = _merge_by_file(_raw_list)
+                            _fc_map[_ch_id] = _fc_store
                 except Exception:
                     pass
         if _fc_map:
@@ -5122,27 +5247,57 @@ class ServeApp:
             event_name, self._route(**data)
         )
         # Hook for file change events: emits a summary of all file changes
-        # at the end of a task.
+        # at the end of a task.  Each summary is stored in file_changes.json
+        # keyed by a random hashcode, and a [FILE_CHANGE_REF:<hashcode>]
+        # internal message is inserted into the conversation history so the
+        # structured-turn builder can attach the right summary to each turn.
+        FILE_CHANGE_REF_PREFIX = "[FILE_CHANGE_REF:"
         from ..core.logging.app_logging import get_logger
         _fc_logger = get_logger("codewood.file_change")
         def _on_file_changes(summary: dict) -> None:
             cid = str(self._active_chat_id())
-            # Store per-chat list of file-change summaries (preserving order for
-            # per-turn mapping). Each entry carries its own ``turnIndex`` so the
-            # structured-turn builder can attach the right summary to each turn.
+            # Reuse hashcodes from _pending_preview_refs (generated by
+            # _record_model_tool_execution_history for each apply_patch)
+            # so previews.json and file_changes.json share the same key.
+            # Pop only the first ref; don't clear the list — leftover
+            # refs are harmless (they'll be overwritten on next use).
+            _pending_refs = getattr(self.agent, "_pending_preview_refs", None)
+            if isinstance(_pending_refs, list) and _pending_refs:
+                _hash = _pending_refs.pop(0)
+            else:
+                _hash = secrets.token_hex(8)
+            summary["ref"] = _hash
+            # Store as a dict keyed by hashcode
             _fc_by_chat = dict(getattr(self.agent, "_file_changes_by_chat", {}) or {})
-            _existing = list(_fc_by_chat.get(cid, []))
-            _existing.append(summary)
-            _fc_by_chat[cid] = _existing
+            _fc_store: dict = dict(_fc_by_chat.get(cid, {}))
+            _fc_store[_hash] = summary
+            _fc_by_chat[cid] = _fc_store
             setattr(self.agent, "_file_changes_by_chat", _fc_by_chat)
             # Persist to disk so it survives restarts
             try:
                 mgr = getattr(self.agent, "_chat_state_manager", None)
                 if mgr is not None:
-                    mgr.save_file_changes(cid, _existing)
+                    mgr.save_file_changes(cid, _fc_store)
             except Exception:
                 pass
-            _fc_logger.debug(f"[file_changes] broadcasting: {list(summary.keys())} files={summary.get('totalFiles')}")
+            # Insert a [FILE_CHANGE_REF:<hashcode>] internal message into the
+            # conversation history so the structured-turn builder can attach
+            # the file change to the correct turn.  This message is filtered
+            # from the model context (exclude_from_model_context) and the UI
+            # (_internal), and is automatically removed on conversation edit.
+            try:
+                _hist = getattr(self.agent, "conversation_history", None)
+                if isinstance(_hist, list):
+                    _hist.append({
+                        "role": "user",
+                        "content": f"{FILE_CHANGE_REF_PREFIX}{_hash}]",
+                        "_internal": True,
+                        "exclude_from_model_context": True,
+                        "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    })
+            except Exception:
+                pass
+            _fc_logger.debug(f"[file_changes] broadcasting: ref={_hash} files={summary.get('totalFiles')}")
             self.broadcaster.publish("file_changes", self._route(**summary))
         self.agent._gui_file_changes = _on_file_changes  # type: ignore[attr-defined]
         # The GUI renders its own layout, so disable terminal hard-wrapping and

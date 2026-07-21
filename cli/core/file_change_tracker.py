@@ -124,7 +124,11 @@ class FileChangeTracker:
         except Exception:
             _to_diff_rows = None
 
-        # Group by file, keeping patch from the last change per file
+        # Group by file.  When the same file is modified multiple times
+        # within a task, each intermediate patch carries its own context
+        # lines — splicing them naively would duplicate content.  Instead
+        # compute a single diff from the very first content_before to the
+        # very last content_after, giving a clean unified view.
         files: Dict[str, Dict[str, Any]] = {}
         for change in self._changes:
             path = change.file_path
@@ -136,14 +140,22 @@ class FileChangeTracker:
                     "addedLines": 0,
                     "deletedLines": 0,
                     "patch": diff_rows,
+                    "_first_before": change.content_before,
+                    "_last_after": change.content_after,
                 }
             else:
                 files[path]["addedLines"] += change.added_lines
                 files[path]["deletedLines"] += change.deleted_lines
-                if change.patch:
-                    files[path]["patch"] = _convert_segments_to_diff_rows(
-                        change.patch, _to_diff_rows
-                    )
+                files[path]["_last_after"] = change.content_after
+        for path, entry in files.items():
+            _first = entry.pop("_first_before", None)
+            _last = entry.pop("_last_after", None)
+            if (
+                _first is not None
+                and _last is not None
+                and _first != _last
+            ):
+                entry["patch"] = _compute_diff_rows(_first, _last)
 
         return {
             "totalFiles": len(files),
@@ -174,6 +186,55 @@ class FileChangeTracker:
     def _normalize_path(path: str) -> str:
         """Normalize path for comparison."""
         return os.path.normcase(os.path.normpath(path))
+
+
+def _compute_diff_rows(before: str, after: str) -> List[Dict[str, Any]]:
+    """Compute frontend DiffRow[] from two content strings via difflib."""
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines)
+    rows: List[Dict[str, Any]] = []
+    old_no = 1
+    new_no = 1
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                rows.append({
+                    "type": "context",
+                    "oldNo": old_no + k, "newNo": new_no + k,
+                    "oldText": before_lines[i1 + k],
+                    "newText": after_lines[j1 + k],
+                })
+            old_no += i2 - i1
+            new_no += j2 - j1
+        elif tag == "replace":
+            for k in range(max(i2 - i1, j2 - j1)):
+                rows.append({
+                    "type": "change",
+                    "oldNo": old_no + k if i1 + k < i2 else None,
+                    "newNo": new_no + k if j1 + k < j2 else None,
+                    "oldText": before_lines[i1 + k] if i1 + k < i2 else "",
+                    "newText": after_lines[j1 + k] if j1 + k < j2 else "",
+                })
+            old_no += i2 - i1
+            new_no += j2 - j1
+        elif tag == "delete":
+            for k in range(i2 - i1):
+                rows.append({
+                    "type": "del",
+                    "oldNo": old_no + k, "newNo": None,
+                    "oldText": before_lines[i1 + k], "newText": "",
+                })
+            old_no += i2 - i1
+        elif tag == "insert":
+            for k in range(j2 - j1):
+                rows.append({
+                    "type": "add",
+                    "oldNo": None, "newNo": new_no + k,
+                    "oldText": "", "newText": after_lines[j1 + k],
+                })
+            new_no += j2 - j1
+    return rows
 
 
 def _convert_segments_to_diff_rows(

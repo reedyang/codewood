@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
-import type { FileChangeSummary, HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from "../api/types";
+import type { HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from "../api/types";
 import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
@@ -795,7 +795,6 @@ export function ChatView() {
     consoleOpen,
     activeSubAgentSession,
     subAgentSessionLoading,
-    fileChangesByChat,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -1325,25 +1324,13 @@ export function ChatView() {
               </div>
             )}
             {(() => {
-              const fallbackList = fileChangesByChat?.[draftKey];
-              const fallbackMap = new Map<number, FileChangeSummary>();
-              if (Array.isArray(fallbackList)) {
-                for (const fc of fallbackList) {
-                  if (fc.turnIndex != null) {
-                    fallbackMap.set(fc.turnIndex, fc);
-                  }
-                }
-              }
               return historyTurns.map((turn, index) => {
-                const globalIndex = historyStart + index;
-                const fileChangesFallback = fallbackMap.get(globalIndex);
                 return (
                   <HistoryTurnView
                     key={`h-${index}`}
                     turn={turn}
                     negIndex={histNeg[index]}
                     handlers={messageHandlers}
-                    fileChangesFallback={fileChangesFallback}
                   />
                 );
               });
@@ -2001,12 +1988,10 @@ function CompletedTurnView({
   turn,
   negIndex,
   handlers,
-  fileChangesFallback,
 }: {
   turn: HistoryTurn;
   negIndex: number;
   handlers: MessageHandlers;
-  fileChangesFallback?: FileChangeSummary;
 }) {
   const { t, pendingExpandSubAgentId } = useApp();
   const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
@@ -2095,8 +2080,7 @@ function CompletedTurnView({
         finalAnswer
       )}
       {(() => {
-        const displayFileChanges = turn.fileChanges ?? fileChangesFallback;
-        return displayFileChanges ? <FileChangeList summary={displayFileChanges} t={t} /> : null;
+        return turn.fileChanges ? <FileChangeList summary={turn.fileChanges} t={t} /> : null;
       })()}
     </div>
   );
@@ -2164,14 +2148,12 @@ function HistoryTurnView({
   turn,
   negIndex,
   handlers,
-  fileChangesFallback,
 }: {
   turn: HistoryTurn;
   negIndex: number;
   handlers: MessageHandlers;
-  fileChangesFallback?: FileChangeSummary;
 }) {
-  return <CompletedTurnView turn={turn} negIndex={negIndex} handlers={handlers} fileChangesFallback={fileChangesFallback} />;
+  return <CompletedTurnView turn={turn} negIndex={negIndex} handlers={handlers} />;
 }
 
 type LiveRoundGroup =

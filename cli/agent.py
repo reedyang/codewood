@@ -3630,27 +3630,50 @@ class Agent:
         # Persist the apply_patch change preview rows to an out-of-context
         # sidecar BEFORE recording the history. The rows must never enter
         # the model context (conversation history), so they are keyed by
-        # the tool-result's stable fields and looked up on reload.
+        # a random hashcode (unique, collision-free) and looked up on reload.
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _preview_ref: str = ""
         if t == "apply_patch":
-            created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            import secrets as _secrets
+            _preview_ref = _secrets.token_hex(8)
+            # Store the ref so _on_file_changes can reuse it for the
+            # corresponding file_changes.json entry.
+            _pending = getattr(self, "_pending_preview_refs", None)
+            if not isinstance(_pending, list):
+                _pending = []
+                self._pending_preview_refs = _pending
+            _pending.append(_preview_ref)
             self._persist_apply_patch_preview_sidecar(
                 args if isinstance(args, dict) else {},
                 r,
-                created_at,
+                _preview_ref,
             )
 
         # Build the result payload for the tool message.
-        # Start with all fields from the tool result so the model sees every
-        # detail (e.g. file content from read, command output from bash).
-        payload: Dict[str, Any] = dict(r)
-        payload["success"] = success
-        # Ensure output/error/message are present even if not in raw result.
-        if output_text:
-            payload["output"] = output_text
-        if error_text:
-            payload["error"] = error_text
-        if message_text:
-            payload["message"] = message_text
+        # For apply_patch, only include the essential result fields
+        # (success/error/file), keeping the large diff preview data
+        # out of the model context.  Other tools keep all fields.
+        if t == "apply_patch":
+            payload: Dict[str, Any] = {
+                "success": success,
+                "file": str(r.get("file") or ""),
+                "hunk_count": r.get("hunk_count", 0),
+            }
+            if output_text:
+                payload["output"] = output_text
+            if error_text:
+                payload["error"] = error_text
+            if message_text:
+                payload["message"] = message_text
+        else:
+            payload: Dict[str, Any] = dict(r)
+            payload["success"] = success
+            if output_text:
+                payload["output"] = output_text
+            if error_text:
+                payload["error"] = error_text
+            if message_text:
+                payload["message"] = message_text
         rc = r.get("return_code")
         if rc is not None:
             payload["return_code"] = rc
@@ -3660,7 +3683,7 @@ class Agent:
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             payload["guiSessionMarker"] = gui_marker
-        payload["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload["created_at"] = created_at
         tool_content = json.dumps(payload, ensure_ascii=False)
 
         # Store as a role:tool message in conversation_history with a
@@ -3741,13 +3764,11 @@ class Agent:
             "elapsed": r.get("_elapsed_seconds"),
             "output": round_output or "",
         }
-        # Persist the apply_patch change preview rows so history reload can
-        # render a collapsible, syntax-highlighted diff block (same as the live
-        # view) instead of just the "Successfully applied patch" message.
-        if t == "apply_patch":
-            preview_rows = r.get("change_preview_rows")
-            if preview_rows:
-                raw_entry["diffRows"] = preview_rows
+        # Store the preview ref (hashcode) so _rerender_tool_rounds can
+        # embed the diff block inline — in the right position — on reload.
+        # The full diff rows live in previews.json, out of the model context.
+        if t == "apply_patch" and _preview_ref:
+            raw_entry["previewRef"] = _preview_ref
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             raw_entry["marker"] = gui_marker
@@ -3901,6 +3922,21 @@ class Agent:
                 elapsed = item.get("elapsed")
                 explore_text = self._explore_completed_label(args, elapsed)
                 tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
+            # For apply_patch with a preview ref, embed the diff block
+            # directly after the prompt line so it renders in the right
+            # position within the tool round (one preview per tool call).
+            if tool == "apply_patch":
+                preview_ref = item.get("previewRef")
+                if preview_ref:
+                    try:
+                        store = self._load_apply_patch_preview_store()
+                        preview = store.get(str(preview_ref))
+                        if isinstance(preview, dict) and preview.get("diffRows"):
+                            import json as _json
+                            payload = _json.dumps(preview, ensure_ascii=False)
+                            tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
+                    except Exception:
+                        pass
             # Expand the tool output (generic ``output`` field) as a collapsible
             # block so reloaded history can show every tool's result on demand.
             output = item.get("output")
@@ -3912,15 +3948,6 @@ class Agent:
             marker = item.get("marker")
             if marker:
                 tool_round = f"{tool_round}\n{marker}"
-            # Re-render the apply_patch diff block when present.
-            diff_rows = item.get("diffRows")
-            if diff_rows:
-                import json as _json
-                _file_path = str(args.get("path") or "")
-                _diff_payload = _json.dumps(
-                    {"file": _file_path, "diffRows": diff_rows}, ensure_ascii=False
-                )
-                tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{_diff_payload}{GUI_DIFF_END}"
             result.append(tool_round)
         return result
 
@@ -7361,6 +7388,73 @@ class Agent:
         except Exception:
             pass
 
+    def _prune_file_changes_sidecar(self) -> None:
+        """Drop file_changes.json entries whose [FILE_CHANGE_REF] hashcodes
+        no longer appear in the conversation history. Called after editing
+        a message truncates the conversation so orphaned summaries don't
+        accumulate on disk."""
+        mgr = getattr(self, "_chat_state_manager", None)
+        if not mgr:
+            return
+        cid = str(getattr(self, "active_chat_id", "") or "")
+        if not cid:
+            return
+        try:
+            record_file = None
+            for _c in getattr(self, "_chat_entries", lambda: [])():
+                if isinstance(_c, dict) and str(_c.get("id") or "") == cid:
+                    record_file = str(_c.get("_record_file") or "")
+                    break
+            if not record_file:
+                return
+            data_dir = mgr.chat_data_dir(record_file)
+            if not data_dir:
+                return
+            disk_path = data_dir / "file_changes.json"
+            if not disk_path.exists():
+                return
+            import json as _json
+            with open(disk_path, "r", encoding="utf-8") as _fh:
+                store = _json.load(_fh)
+            if not isinstance(store, dict) or not store:
+                return
+            # Collect live hashcodes from [FILE_CHANGE_REF:...] messages
+            messages = self.conversation_history if isinstance(
+                getattr(self, "conversation_history", None), list
+            ) else []
+            live_refs = set()
+            for _msg in messages:
+                if not isinstance(_msg, dict):
+                    continue
+                _content = str(_msg.get("content") or "")
+                if _content.startswith("[FILE_CHANGE_REF:"):
+                    _ref = _content[len("[FILE_CHANGE_REF:"):].rstrip("]")
+                    if _ref:
+                        live_refs.add(_ref)
+            pruned = {k: v for k, v in store.items() if k in live_refs}
+            if len(pruned) == len(store):
+                return
+            if not pruned:
+                try:
+                    disk_path.unlink()
+                except Exception:
+                    pass
+                # Also clear in-memory cache
+                _fc_map = dict(getattr(self, "_file_changes_by_chat", {}) or {})
+                _fc_map.pop(cid, None)
+                setattr(self, "_file_changes_by_chat", _fc_map)
+                return
+            tmp = disk_path.with_suffix(disk_path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as _fh:
+                _json.dump(pruned, _fh, ensure_ascii=False)
+            tmp.replace(disk_path)
+            # Update in-memory cache
+            _fc_map = dict(getattr(self, "_file_changes_by_chat", {}) or {})
+            _fc_map[cid] = pruned
+            setattr(self, "_file_changes_by_chat", _fc_map)
+        except Exception:
+            pass
+
     def _prune_shell_output_files(self) -> None:
         """Delete ``shell_output_*.txt`` files whose tool result message no
         longer exists in the active chat. Called after editing a message
@@ -7452,12 +7546,12 @@ class Agent:
             pass
 
     def _persist_apply_patch_preview_sidecar(
-        self, args: Dict[str, Any], result: Dict[str, Any], created_at: str
+        self, args: Dict[str, Any], result: Dict[str, Any], ref: str
     ) -> None:
         """Store apply_patch diff rows in the active chat's per-chat preview
-        sidecar (OUTSIDE the model context), keyed by the tool-result
-        ``created_at`` (unique within a chat) so transcript reload can look them
-        up. No-op when there are no structured rows."""
+        sidecar (OUTSIDE the model context), keyed by a unique hashcode ref
+        so transcript reload can look them up. No-op when there are no
+        structured rows."""
         rows = result.get("change_preview_rows")
         if not isinstance(rows, list) or not rows:
             return
@@ -7465,7 +7559,7 @@ class Agent:
         if not path:
             return
         display_file = str(result.get("file") or args.get("file_path") or "")
-        key = str(created_at or "")
+        key = str(ref or "")
         if not key:
             return
         try:
@@ -7486,7 +7580,10 @@ class Agent:
         mode or when no stored rows match this result."""
         if not callable(getattr(self, "_confirm_choice_provider", None)):
             return
-        key = str(tool_result.get("created_at") or "")
+        key = str(tool_result.get("_previewRef") or "")
+        if not key:
+            # Fallback: try created_at for legacy previews.json entries
+            key = str(tool_result.get("created_at") or "")
         if not key:
             return
         store = self._load_apply_patch_preview_store()

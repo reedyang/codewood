@@ -283,8 +283,9 @@ class ChatStateManager:
             return None
         return data_dir / self._CHAT_FILE_CHANGES_FILENAME
 
-    def save_file_changes(self, chat_id: str, summaries: List[Dict[str, Any]]) -> None:
-        """Persist a list of per-turn file-change summaries for ``chat_id`` to disk."""
+    def save_file_changes(self, chat_id: str, summaries: Any) -> None:
+        """Persist a dict of per-turn file-change summaries (keyed by hashcode ref)
+        or a list (legacy turnIndex-based format) for ``chat_id`` to disk."""
         path = self.chat_file_changes_path(chat_id)
         if path is None:
             return

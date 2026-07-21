@@ -4890,9 +4890,10 @@ def run_agent_loop(agent: Any):
                         if _rounds:
                             _last_round = _rounds[-1]
                             try:
-                                if tool_name == "run_subagent":
+                                if tool_name in ("run_subagent", "apply_patch"):
                                     # Sub-agent calls keep a separate transcript;
-                                    # the guiSessionMarker is emitted elsewhere.
+                                    # apply_patch already printed prompt+diff
+                                    # via _emit_gui_diff_block in apply_patch.py.
                                     pass
                                 else:
                                     print(_last_round)
@@ -5123,15 +5124,6 @@ def run_agent_loop(agent: Any):
                     _chat_id_for_turn = str(_cs.get("active", "")) if isinstance(_cs, dict) else ""
                     if _chat_id_for_turn:
                         _task_turn_counts = getattr(self, "_task_turn_counts", {})
-                        if _chat_id_for_turn not in _task_turn_counts:
-                            # Initialize from existing file_changes.json so the
-                            # counter survives restarts instead of resetting to 0.
-                            _init_mgr = getattr(self, "_chat_state_manager", None)
-                            if _init_mgr is not None:
-                                _existing = _init_mgr.load_file_changes(_chat_id_for_turn)
-                                if _existing:
-                                    _max_ti = max((s.get("turnIndex", -1) for s in _existing), default=-1)
-                                    _task_turn_counts[_chat_id_for_turn] = _max_ti + 1
                         turn_index = _task_turn_counts.get(_chat_id_for_turn, 0)
                         _task_turn_counts[_chat_id_for_turn] = turn_index + 1
                         setattr(self, "_task_turn_counts", _task_turn_counts)
