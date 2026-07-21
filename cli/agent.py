@@ -1846,6 +1846,7 @@ class Agent:
                                 clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                                 self._ensure_terminal_line_start()
                                 print(clean)
+                                print("")
                             last_plan_emitted_feedback = True
                         except Exception:
                             pass
@@ -1946,6 +1947,7 @@ class Agent:
                                 clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                                 self._ensure_terminal_line_start()
                                 print(clean)
+                                print("")
                         except Exception:
                             pass
                 display_response = format_assistant_display_response(content)
@@ -2141,6 +2143,7 @@ class Agent:
                         for r in rendered:
                             clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                             print(clean)
+                            print("")
                     except Exception:
                         pass
             return
@@ -2182,6 +2185,7 @@ class Agent:
                     for r in rendered:
                         clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                         print(clean)
+                        print("")
                 except Exception:
                     pass
         display_response = format_assistant_display_response(content)
@@ -3960,10 +3964,15 @@ class Agent:
             # output is suppressed.
             output = item.get("output")
             if output and (_tui_allowed_tools is None or tool in _tui_allowed_tools):
-                tool_round = (
-                    f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
-                    f"{output}{GUI_CMD_OUTPUT_END}"
-                )
+                if tool in ("shell", "bash"):
+                    formatted = self._format_shell_output_for_tui(output)
+                    if formatted:
+                        tool_round = f"{tool_round}\n{formatted}"
+                else:
+                    tool_round = (
+                        f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
+                        f"{output}{GUI_CMD_OUTPUT_END}"
+                    )
             marker = item.get("marker")
             if marker:
                 tool_round = f"{tool_round}\n{marker}"
@@ -4005,6 +4014,119 @@ class Agent:
                 else:
                     lines.append(f"  {new_text}")
         return lines
+
+    def _format_shell_output_for_tui(self, raw_output: str) -> str:
+        """Format shell tool output for TUI history replay with the same
+        ``└ ... omitted N lines ...`` truncation and 4-space indentation
+        (with wrapped-line continuation) as live execution."""
+        from .tools import shell as tools_shell
+        from .core.localization import translate
+
+        text = str(raw_output or "")
+        if not text:
+            return ""
+        total_lines = 0
+        remaining = text
+        # Parse "Total output lines: N" header inserted by CommandExecutionBuffer
+        if text.startswith("Total output lines:"):
+            try:
+                first_line_end = text.index("\n")
+                first_line = text[:first_line_end]
+                remaining = text[first_line_end:].lstrip("\n")
+                total_lines = int(first_line.split("Total output lines:")[1].strip())
+            except (ValueError, IndexError):
+                pass
+
+            # Find the "... omitted lines X to Y (Z lines) ..." marker
+            # and discard the head lines, keeping only the tail.
+            try:
+                marker_idx = remaining.index("\n... omitted lines ")
+                tail_start = remaining.index("\n", marker_idx + 1)
+                remaining = remaining[tail_start + 1:]
+                # Skip optional "(Full output saved to: ...)" line
+                if remaining.startswith("(Full output saved to:"):
+                    try:
+                        nl = remaining.index("\n")
+                        remaining = remaining[nl + 1:]
+                    except ValueError:
+                        remaining = ""
+            except ValueError:
+                pass
+
+        if not remaining:
+            return ""
+
+        if not total_lines:
+            total_lines = len(remaining.splitlines())
+
+        tail_limit = tools_shell._dynamic_tail_line_limit(sys.stdout)
+        output_indent = 4
+        saved_indent = getattr(sys.stdout, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, None)
+        try:
+            setattr(sys.stdout, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, output_indent)
+            formatted = tools_shell._build_tail_output_for_display(
+                remaining,
+                sys.stdout,
+                tail_lines=tail_limit,
+                display_indent_width=0,
+                language=self._ui_language(),
+            )
+        finally:
+            if saved_indent is not None:
+                setattr(sys.stdout, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, saved_indent)
+            else:
+                try:
+                    delattr(sys.stdout, _STREAM_ATTR_OUTPUT_INDENT_WIDTH)
+                except (AttributeError, TypeError):
+                    pass
+
+        # Separate the notice (if any) from the output lines.
+        if formatted == remaining:
+            shown_text = formatted
+        else:
+            try:
+                nl = formatted.index("\n")
+                shown_text = formatted[nl + 1:]
+            except ValueError:
+                shown_text = ""
+
+        # Count shown lines and compute omitted count
+        shown_lines = len(shown_text.splitlines()) if shown_text else 0
+        omitted = max(0, total_lines - shown_lines)
+
+        output_indent = 4
+        indent_prefix = " " * output_indent
+        term_cols = max(8, int(getattr(self, "_terminal_columns_for_line_estimate", lambda: 80)()) - output_indent)
+        result_lines = []
+
+        if omitted > 0:
+            notice = "\x1b[90;3m" + "  └ " + translate(
+                "output.omitted_lines",
+                self._ui_language(),
+                count=int(omitted),
+            )
+            result_lines.append(notice)
+
+        # Wrap and indent each output line. First line uses "  └ " connector
+        # (matching live execution), continuations use 4-space indent.
+        # When there's an omission notice, all output lines use 4-space indent
+        # since the notice already monopolizes the "  └ " line.
+        lines = shown_text.splitlines()
+        for i, ln in enumerate(lines):
+            chunks = tools_shell._wrap_line_for_display(ln, term_cols)
+            if not chunks:
+                result_lines.append(indent_prefix)
+                continue
+            if i == 0 and omitted <= 0:
+                first_prefix = "  └ "
+                cont_prefix = indent_prefix
+            else:
+                first_prefix = indent_prefix
+                cont_prefix = indent_prefix
+            wrapped = first_prefix + ("\n" + cont_prefix).join(chunks)
+            result_lines.append(wrapped)
+
+        return _ansi_gray("\n".join(result_lines)) if result_lines else ""
 
     def _build_conversation_interrupted_history_content(
         self,
