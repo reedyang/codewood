@@ -379,8 +379,12 @@ export const zhCN: Dict = {
   "common.ok": "确定",
   "common.connecting": "正在连接后端……",
 
-  "noModel.title": "请先配置模型",
+"noModel.title": "请先配置模型",
   "noModel.body":
-    "尚未配置任何模型。请打开“设置 → 模型”添加供应商和模型，然后返回即可开始对话。",
+    "尚未配置任何模型。请打开\u201c设置 \u2192 模型\u201d添加供应商和模型，然后返回即可开始对话。",
   "noModel.openSettings": "打开模型设置",
+
+  "fileChange.header": "修改了 {count} 个文件",
+  "fileChange.linesHidden": "隐藏了 {count} 行未修改内容",
+  "fileChange.linesRemaining": "{count} 行未修改内容",
 };

@@ -8,6 +8,7 @@ from ..config.app_info import (
     get_app_global_config_dir,
     prepend_bundled_bin_to_path,
 )
+from ..core.file_change_tracker import FileChangeTracker
 from ..core.logging.app_logging import setup_app_logging
 from ..core.config.config_env import resolve_string_values_in_data
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME, load_config_jsonc
@@ -85,6 +86,7 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
 
     agent._ephemeral_script_paths = set()
     agent._ai_created_path_keys = set()
+    agent.file_change_tracker = FileChangeTracker()
     agent._last_auto_removed_ephemeral = None
     agent._mcp_pending_user_input = {}
     agent._force_current_input_as_requirement_once = False

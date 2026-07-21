@@ -602,6 +602,34 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 or r["compactNoticeBody"].strip()
             )
         ]
+    # Attach per-turn file-change summaries from the sidecar list.
+    # Each summary carries a ``turnIndex`` that matches its position in the
+    # structured-turns list (0-based, counting from the first user message).
+    try:
+        _cs = getattr(agent, "_chat_state", None)
+        _cid = str(_cs.get("active", "")) if isinstance(_cs, dict) else ""
+        if _cid:
+            _fc_by_chat = getattr(agent, "_file_changes_by_chat", {}) or {}
+            _fc_list = list(_fc_by_chat.get(_cid, []))
+            # Fall back to disk when the in-memory cache is empty (e.g. after restart).
+            if not _fc_list:
+                _mgr = getattr(agent, "_chat_state_manager", None)
+                if _mgr is not None:
+                    _disk_list = _mgr.load_file_changes(_cid)
+                    if _disk_list:
+                        _fc_list = _disk_list
+            if _fc_list:
+                _fc_by_index = {
+                    int(_fc.get("turnIndex", -1)): _fc
+                    for _fc in _fc_list
+                    if isinstance(_fc, dict) and _fc.get("turnIndex") is not None
+                }
+                for i, turn in enumerate(turns):
+                    _fc = _fc_by_index.get(i)
+                    if _fc and isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
+                        turn["fileChanges"] = _fc
+    except Exception:
+        pass
     return turns
 
 
@@ -1124,8 +1152,48 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     # of defaulting every chat to Agent.
                     "planMode": _chat_mode_is_plan(c),
                     "archived": bool(c.get("archived", False)),
+                    # Private: keep the on-disk record file stem so side-data
+                    # (file_changes.json) can be resolved without find_chat_by_id.
+                    "_recordFile": str(c.get("_record_file") or ""),
                 }
             )
+        # Attach per-chat file-change summaries (now a list of per-turn
+        # summaries keyed by turnIndex).  Prefer the in-memory cache (set by
+        # _gui_file_changes hook); fall back to disk sidecar so persisted data
+        # survives restarts.
+        _fc_map: Dict[str, Any] = getattr(agent, "_file_changes_by_chat", {}) or {}
+        _fc_mgr = getattr(agent, "_chat_state_manager", None)
+        for _ch in chats:
+            _ch_id = str(_ch.get("id") or "")
+            if not _ch_id:
+                continue
+            if _ch_id in _fc_map:
+                _ch["fileChanges"] = _fc_map[_ch_id]
+            elif _fc_mgr is not None:
+                try:
+                    # Resolve the side-data dir directly from the chat's record
+                    # file stem (carried on _recordFile) instead of find_chat_by_id,
+                    # which can fail under the suspend() context used here.
+                    _rec = str(_ch.get("_recordFile") or "")
+                    _data_dir = _fc_mgr.chat_data_dir(_rec) if _rec else None
+                    _disk_path = (_data_dir / "file_changes.json") if _data_dir else None
+                    if _disk_path is not None and _disk_path.exists():
+                        import json as _json
+                        with open(_disk_path, "r", encoding="utf-8") as _fh:
+                            _disk_fc = _json.load(_fh)
+                        # Handle both new list format and old single-dict format
+                        _fc_list: list = []
+                        if isinstance(_disk_fc, list):
+                            _fc_list = _disk_fc
+                        elif isinstance(_disk_fc, dict) and _disk_fc.get("totalFiles", 0) > 0:
+                            _fc_list = [_disk_fc]
+                        if _fc_list:
+                            _ch["fileChanges"] = _fc_list
+                            _fc_map[_ch_id] = _fc_list
+                except Exception:
+                    pass
+        if _fc_map:
+            setattr(agent, "_file_changes_by_chat", _fc_map)
     except Exception:
         pass
 
@@ -5053,6 +5121,30 @@ class ServeApp:
         self.agent._gui_subagent_event = lambda event_name, data: self.broadcaster.publish(  # type: ignore[attr-defined]
             event_name, self._route(**data)
         )
+        # Hook for file change events: emits a summary of all file changes
+        # at the end of a task.
+        from ..core.logging.app_logging import get_logger
+        _fc_logger = get_logger("codewood.file_change")
+        def _on_file_changes(summary: dict) -> None:
+            cid = str(self._active_chat_id())
+            # Store per-chat list of file-change summaries (preserving order for
+            # per-turn mapping). Each entry carries its own ``turnIndex`` so the
+            # structured-turn builder can attach the right summary to each turn.
+            _fc_by_chat = dict(getattr(self.agent, "_file_changes_by_chat", {}) or {})
+            _existing = list(_fc_by_chat.get(cid, []))
+            _existing.append(summary)
+            _fc_by_chat[cid] = _existing
+            setattr(self.agent, "_file_changes_by_chat", _fc_by_chat)
+            # Persist to disk so it survives restarts
+            try:
+                mgr = getattr(self.agent, "_chat_state_manager", None)
+                if mgr is not None:
+                    mgr.save_file_changes(cid, _existing)
+            except Exception:
+                pass
+            _fc_logger.debug(f"[file_changes] broadcasting: {list(summary.keys())} files={summary.get('totalFiles')}")
+            self.broadcaster.publish("file_changes", self._route(**summary))
+        self.agent._gui_file_changes = _on_file_changes  # type: ignore[attr-defined]
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps
         # the SGR runs so the GUI can color step output like the terminal.

@@ -414,6 +414,25 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
                 pruner()
         except Exception:
             pass
+        # Truncate per-turn file-change summaries to remove entries for the
+        # edited turn and everything after it.
+        try:
+            _fc_by_chat = getattr(agent, "_file_changes_by_chat", None) or {}
+            _cid = str(getattr(agent, "active_chat_id", "") or "").strip()
+            if _cid and _cid in _fc_by_chat:
+                _fc_list = list(_fc_by_chat.get(_cid, []))
+                _fc_list = [
+                    _s for _s in _fc_list
+                    if isinstance(_s, dict) and _s.get("turnIndex", -1) < pos_in_list
+                ]
+                _fc_by_chat[_cid] = _fc_list
+                setattr(agent, "_file_changes_by_chat", _fc_by_chat)
+                # Persist the truncated list to disk
+                _mgr = getattr(agent, "_chat_state_manager", None)
+                if _mgr is not None:
+                    _mgr.save_file_changes(_cid, _fc_list)
+        except Exception:
+            pass
 
     current_chat_id = str(getattr(agent, "active_chat_id", "") or "").strip()
     if current_chat_id:

@@ -127,7 +127,7 @@ function InlineRows({ row, lang }: { row: DiffRow; lang: string }) {
   );
 }
 
-function Code({ text, lang }: { text: string; lang: string }) {
+export function Code({ text, lang }: { text: string; lang: string }) {
   const html = useMemo(() => {
     if (!text) {
       return "";

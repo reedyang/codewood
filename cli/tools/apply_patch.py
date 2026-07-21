@@ -434,6 +434,8 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             if not ok:
                 return {"success": False, "error": "Operation cancelled by user"}
         abs_path.parent.mkdir(parents=True, exist_ok=True)
+        # Snapshot file content before modification for change tracking
+        content_before = source if file_exists else None
         # Write raw bytes so the text-mode universal-newline translation does not
         # rewrite "\n" to the OS separator. This keeps the chosen ``newline`` and
         # encoding/BOM exactly as intended.
@@ -445,6 +447,26 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         resolved = abs_path.resolve()
         agent._ai_created_path_keys.add(agent._ephemeral_path_key(resolved))
         agent._reload_skills_if_workspace_skill_changed([resolved])
+        # Record file change for the change tracker
+        try:
+            from ..core.logging.app_logging import get_logger
+            _fc_logger = get_logger("codewood.file_change")
+            tracker = getattr(agent, "file_change_tracker", None)
+            if tracker is not None:
+                tracker.record_patch_change(
+                    file_path=str(resolved),
+                    source="apply_patch",
+                    segments=preview_segments or [],
+                    content_before=content_before,
+                    content_after=new_text,
+                )
+                _fc_logger.debug(f"[file_changes] recorded patch change for {resolved} (segments={len(preview_segments or [])})")
+            else:
+                _fc_logger.debug("[file_changes] tracker is None in apply_patch")
+        except Exception as _e:
+            from ..core.logging.app_logging import get_logger
+            get_logger("codewood.file_change").debug(f"[file_changes] apply_patch record error: {_e}")
+            pass
         # GUI: render the change preview as a collapsible, highlighted diff
         # block in the transcript. This is display-only (persisted with the
         # chat and replayed on reload), so emit it in every execution policy —

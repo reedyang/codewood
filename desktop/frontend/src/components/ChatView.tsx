@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
-import type { HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from "../api/types";
+import type { FileChangeSummary, HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from "../api/types";
 import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
@@ -17,6 +17,7 @@ import { StepsView, countToolCalls, getLastToolPromptBody, textContainsSubAgentS
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { FileChangeList } from "./FileChangeList";
 import { chatKey } from "./chatMenu";
 import { decodeAttachments } from "../utils/attachments";
 import {
@@ -794,6 +795,7 @@ export function ChatView() {
     consoleOpen,
     activeSubAgentSession,
     subAgentSessionLoading,
+    fileChangesByChat,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -1322,14 +1324,30 @@ export function ChatView() {
                 {historyLoading ? t("history.loading") : t("history.more")}
               </div>
             )}
-            {historyTurns.map((turn, index) => (
-              <HistoryTurnView
-                key={`h-${index}`}
-                turn={turn}
-                negIndex={histNeg[index]}
-                handlers={messageHandlers}
-              />
-            ))}
+            {(() => {
+              const fallbackList = fileChangesByChat?.[draftKey];
+              const fallbackMap = new Map<number, FileChangeSummary>();
+              if (Array.isArray(fallbackList)) {
+                for (const fc of fallbackList) {
+                  if (fc.turnIndex != null) {
+                    fallbackMap.set(fc.turnIndex, fc);
+                  }
+                }
+              }
+              return historyTurns.map((turn, index) => {
+                const globalIndex = historyStart + index;
+                const fileChangesFallback = fallbackMap.get(globalIndex);
+                return (
+                  <HistoryTurnView
+                    key={`h-${index}`}
+                    turn={turn}
+                    negIndex={histNeg[index]}
+                    handlers={messageHandlers}
+                    fileChangesFallback={fileChangesFallback}
+                  />
+                );
+              });
+            })()}
             {turns.map((turn, index) => (
               <TurnView
                 key={turn.id}
@@ -1983,10 +2001,12 @@ function CompletedTurnView({
   turn,
   negIndex,
   handlers,
+  fileChangesFallback,
 }: {
   turn: HistoryTurn;
   negIndex: number;
   handlers: MessageHandlers;
+  fileChangesFallback?: FileChangeSummary;
 }) {
   const { t, pendingExpandSubAgentId } = useApp();
   const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
@@ -2074,6 +2094,10 @@ function CompletedTurnView({
       ) : (
         finalAnswer
       )}
+      {(() => {
+        const displayFileChanges = turn.fileChanges ?? fileChangesFallback;
+        return displayFileChanges ? <FileChangeList summary={displayFileChanges} t={t} /> : null;
+      })()}
     </div>
   );
 }
@@ -2140,12 +2164,14 @@ function HistoryTurnView({
   turn,
   negIndex,
   handlers,
+  fileChangesFallback,
 }: {
   turn: HistoryTurn;
   negIndex: number;
   handlers: MessageHandlers;
+  fileChangesFallback?: FileChangeSummary;
 }) {
-  return <CompletedTurnView turn={turn} negIndex={negIndex} handlers={handlers} />;
+  return <CompletedTurnView turn={turn} negIndex={negIndex} handlers={handlers} fileChangesFallback={fileChangesFallback} />;
 }
 
 type LiveRoundGroup =
@@ -2727,6 +2753,9 @@ function TurnView({
   const pendingWorkingElapsed = lastRound
     ? formatElapsed(now - lastRound.waitStartedAt)
     : formatElapsed(now - turn.startedAt);
+  
+  const fileChanges = turn.fileChanges;
+  
   return (
     <div className="turn">
       {turn.userText && (
@@ -2781,6 +2810,7 @@ function TurnView({
           </div>
         </div>
       )}
+      {fileChanges && <FileChangeList summary={fileChanges} t={t} />}
     </div>
   );
 }

@@ -16,6 +16,7 @@ import type {
   CompactNoticeData,
   CompletionCatalog,
   ConfirmRequest,
+  FileChangeSummary,
   GeneralConfig,
   HistoryTurn,
   McpServerConfigEntry,
@@ -330,6 +331,8 @@ interface AppContextValue {
   exitSubAgentSession: () => void;
   /** Sub-agent session ID pending auto-expand when returning to the main chat ("" = none). */
   pendingExpandSubAgentId: string;
+  /** File changes by chat key for displaying file modification summaries (array of per-turn summaries). */
+  fileChangesByChat: Record<string, FileChangeSummary[]>;
 }
 
 interface HostApiBridge {
@@ -523,6 +526,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const subAgentCacheRef = useRef<Record<string, SubAgentSession>>({});
   const subAgentThinkingStartRef = useRef<Record<string, number>>({});
   const [pendingExpandSubAgentId, setPendingExpandSubAgentId] = useState<string>("");
+  
+  // File changes state for displaying file modification summaries (array per chat)
+  const [fileChangesByChat, setFileChangesByChat] = useState<Record<string, FileChangeSummary[]>>({});
+  const fileChangesByChatRef = useRef<Record<string, FileChangeSummary[]>>({});
 
   // Helper: apply a sub-agent session update from SSE handlers. Always updates
   // the live ref and cache; only pushes to React state when the user is viewing.
@@ -539,6 +546,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     draftWorkspaceIdRef.current = draftWorkspaceId;
   }, [draftWorkspaceId]);
+  useEffect(() => {
+    fileChangesByChatRef.current = fileChangesByChat;
+  }, [fileChangesByChat]);
   const nextIdRef = useRef(1);
   const seededExpandRef = useRef(false);
   const themeInitRef = useRef(false);
@@ -2174,6 +2184,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "file_changes": {
+          const fileChangesData = event.data as FileChangeSummary & { chatId?: string; workspaceId?: string; turnIndex?: number };
+          if (fileChangesData && fileChangesData.totalFiles > 0) {
+            // Store file changes on the current turn so they persist in the message list
+            setTurnsByChat((prev) => {
+              const turns = prev[eventKey];
+              if (!turns || turns.length === 0) return prev;
+              const lastTurn = { ...turns[turns.length - 1], fileChanges: fileChangesData };
+              const newTurns = [...turns];
+              newTurns[newTurns.length - 1] = lastTurn;
+              return { ...prev, [eventKey]: newTurns };
+            });
+            // Also cache per-chat as a list so each turn's changes are preserved
+            setFileChangesByChat((prev) => {
+              const existing = prev[eventKey] || [];
+              const next = [...existing, fileChangesData];
+              return { ...prev, [eventKey]: next };
+            });
+          }
+          break;
+        }
         default:
           break;
       }
@@ -2188,6 +2219,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((value) => {
         setState(value);
         setConnected(true);
+        // Hydrate fileChangesByChat from persisted per-chat summaries (now a list).
+        if (value.chats) {
+          const wsId = String(value.workspace?.id ?? activeWorkspaceId ?? "");
+          const hydrated: Record<string, FileChangeSummary[]> = {};
+          for (const ch of value.chats) {
+            // ch.fileChanges is now a FileChangeSummary[] from the backend
+            if (ch.fileChanges && Array.isArray(ch.fileChanges) && ch.fileChanges.length > 0) {
+              hydrated[chatKey(wsId, ch.id)] = ch.fileChanges;
+            }
+          }
+          if (Object.keys(hydrated).length > 0) {
+            setFileChangesByChat((prev) => ({ ...prev, ...hydrated }));
+          }
+        }
         // Sync model presets to backend on startup (fire-and-forget).
         client.syncModelPresets(MODEL_PRESETS.filter((p) => p.id !== "custom")).catch(() => {});
       })
@@ -2397,7 +2442,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // drop that tail. A brand-new chat has no persisted history yet
           // (empty page) — keep the live turn untouched so the optimistically
           // echoed user message survives this reload instead of being cleared.
-          setHistoryTurns(page.turns.length > 0 ? page.turns.slice(0, -1) : page.turns);
+          const settled = live.filter((tt) => tt.endedAt !== null);
+          const settledMerged = [...(page.turns.length > 0 ? page.turns.slice(0, -1) : page.turns)];
+          // Merge fileChanges from each settled turn to the correct history
+          // position, using the turnIndex included in the summary payload.
+          for (const lt of settled) {
+            if (lt.fileChanges && lt.fileChanges.turnIndex != null) {
+              const localPos = lt.fileChanges.turnIndex - page.start;
+              if (localPos >= 0 && localPos < settledMerged.length) {
+                settledMerged[localPos] = { ...settledMerged[localPos], fileChanges: lt.fileChanges };
+              }
+            }
+          }
+          setHistoryTurns(settledMerged);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
           dropSettledLiveTurns(key);
@@ -2412,7 +2469,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setHistoryStart(0);
           setHistoryTotal(0);
         } else {
-          setHistoryTurns(page.turns);
+          // All turns are settled — merge live fileChanges into the correct
+          // history positions using turnIndex from each summary payload.
+          const merged = [...page.turns];
+          for (const lt of live) {
+            if (lt.fileChanges && lt.fileChanges.turnIndex != null) {
+              const localPos = lt.fileChanges.turnIndex - page.start;
+              if (localPos >= 0 && localPos < merged.length) {
+                merged[localPos] = { ...merged[localPos], fileChanges: lt.fileChanges };
+              }
+            }
+          }
+          setHistoryTurns(merged);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
           clearLiveTurns(key);
@@ -3280,6 +3348,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     enterSubAgentSession,
     exitSubAgentSession,
     pendingExpandSubAgentId,
+    fileChangesByChat,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
