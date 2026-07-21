@@ -3964,11 +3964,13 @@ class Agent:
             # output is suppressed.
             output = item.get("output")
             if output and (_tui_allowed_tools is None or tool in _tui_allowed_tools):
-                if tool in ("shell", "bash"):
+                if _tui_allowed_tools is not None and tool in ("shell", "bash"):
+                    # TUI mode: format shell output with truncation
                     formatted = self._format_shell_output_for_tui(output)
                     if formatted:
                         tool_round = f"{tool_round}\n{formatted}"
                 else:
+                    # GUI mode: wrap in sentinel for expandable block
                     tool_round = (
                         f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
                         f"{output}{GUI_CMD_OUTPUT_END}"
