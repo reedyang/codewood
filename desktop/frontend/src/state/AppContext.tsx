@@ -2442,18 +2442,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // drop that tail. A brand-new chat has no persisted history yet
           // (empty page) — keep the live turn untouched so the optimistically
           // echoed user message survives this reload instead of being cleared.
-          const settled = live.filter((tt) => tt.endedAt !== null);
           const settledMerged = [...(page.turns.length > 0 ? page.turns.slice(0, -1) : page.turns)];
-          // Merge fileChanges from each settled turn to the correct history
-          // position, using the turnIndex included in the summary payload.
-          for (const lt of settled) {
-            if (lt.fileChanges && lt.fileChanges.turnIndex != null) {
-              const localPos = lt.fileChanges.turnIndex - page.start;
-              if (localPos >= 0 && localPos < settledMerged.length) {
-                settledMerged[localPos] = { ...settledMerged[localPos], fileChanges: lt.fileChanges };
-              }
-            }
-          }
           setHistoryTurns(settledMerged);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
@@ -2469,18 +2458,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setHistoryStart(0);
           setHistoryTotal(0);
         } else {
-          // All turns are settled — merge live fileChanges into the correct
-          // history positions using turnIndex from each summary payload.
-          const merged = [...page.turns];
-          for (const lt of live) {
-            if (lt.fileChanges && lt.fileChanges.turnIndex != null) {
-              const localPos = lt.fileChanges.turnIndex - page.start;
-              if (localPos >= 0 && localPos < merged.length) {
-                merged[localPos] = { ...merged[localPos], fileChanges: lt.fileChanges };
-              }
-            }
-          }
-          setHistoryTurns(merged);
+          // All turns are settled — the backend's structured-turn builder
+          // already attaches fileChanges to each turn via [FILE_CHANGE_REF]
+          // messages in the conversation history.
+          setHistoryTurns(page.turns);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
           clearLiveTurns(key);
