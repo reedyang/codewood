@@ -1840,10 +1840,10 @@ class Agent:
                     raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
                     if isinstance(raw_rounds, list) and raw_rounds:
                         try:
-                            rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
+                            rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True, tui_mode=True)
                             for r in rendered:
-                                # Strip GUI prompt/output sentinels for TUI display
-                                clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                                # Strip GUI prompt/output/diff sentinels for TUI display
+                                clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                                 self._ensure_terminal_line_start()
                                 print(clean)
                             last_plan_emitted_feedback = True
@@ -1941,9 +1941,9 @@ class Agent:
                     raw_rounds = msg.get("_tool_rounds_raw")
                     if isinstance(raw_rounds, list) and raw_rounds:
                         try:
-                            rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
+                            rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True, tui_mode=True)
                             for r in rendered:
-                                clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                                clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                                 self._ensure_terminal_line_start()
                                 print(clean)
                         except Exception:
@@ -2137,9 +2137,9 @@ class Agent:
                 raw_rounds = msg.get("_tool_rounds_raw")
                 if isinstance(raw_rounds, list) and raw_rounds:
                     try:
-                        rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
+                        rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True, tui_mode=True)
                         for r in rendered:
-                            clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                            clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                             print(clean)
                     except Exception:
                         pass
@@ -2178,9 +2178,9 @@ class Agent:
             raw_rounds = msg.get("_tool_rounds_raw")
             if isinstance(raw_rounds, list) and raw_rounds:
                 try:
-                    rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
+                    rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True, tui_mode=True)
                     for r in rendered:
-                        clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                        clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                         print(clean)
                 except Exception:
                     pass
@@ -3684,6 +3684,8 @@ class Agent:
         if gui_marker:
             payload["guiSessionMarker"] = gui_marker
         payload["created_at"] = created_at
+        if t == "apply_patch" and _preview_ref:
+            payload["_previewRef"] = _preview_ref
         tool_content = json.dumps(payload, ensure_ascii=False)
 
         # Store as a role:tool message in conversation_history with a
@@ -3905,13 +3907,19 @@ class Agent:
         self,
         raw_list: List[Dict[str, Any]],
         suppress_read_output: bool = False,
+        tui_mode: bool = False,
     ) -> List[str]:
         """Re-render tool_rounds from raw data using the current language.
 
         When ``suppress_read_output`` is True (TUI history/transcript reload),
-        the ``read`` tool's file content is omitted so the terminal mirrors live
-        task execution, where only the read feedback line is shown.
+        only ``shell``/``bash`` tool output is shown (and ``apply_patch`` renders
+        its diff preview separately). All other tool output is suppressed so the
+        TUI stays compact.
+
+        When ``tui_mode`` is True, ``apply_patch`` diff previews are rendered
+        as ANSI-formatted text instead of GUI-diff JSON blocks.
         """
+        _tui_allowed_tools = {"shell", "bash"} if suppress_read_output else None
         result = []
         for item in raw_list:
             tool = str(item.get("tool") or "").strip().lower()
@@ -3932,15 +3940,26 @@ class Agent:
                         store = self._load_apply_patch_preview_store()
                         preview = store.get(str(preview_ref))
                         if isinstance(preview, dict) and preview.get("diffRows"):
-                            import json as _json
-                            payload = _json.dumps(preview, ensure_ascii=False)
-                            tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
+                            if tui_mode:
+                                preview_lines = preview.get("previewLines")
+                                if isinstance(preview_lines, list) and preview_lines:
+                                    for ln in preview_lines:
+                                        tool_round = f"{tool_round}\n{ln}"
+                                else:
+                                    for ln in self._render_diff_rows_as_text(preview["diffRows"]):
+                                        tool_round = f"{tool_round}\n{ln}"
+                            else:
+                                import json as _json
+                                payload = _json.dumps(preview, ensure_ascii=False)
+                                tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
                     except Exception:
                         pass
             # Expand the tool output (generic ``output`` field) as a collapsible
             # block so reloaded history can show every tool's result on demand.
+            # In TUI mode, only shell/bash output is shown; all other tool
+            # output is suppressed.
             output = item.get("output")
-            if output and not (suppress_read_output and tool == "read"):
+            if output and (_tui_allowed_tools is None or tool in _tui_allowed_tools):
                 tool_round = (
                     f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
                     f"{output}{GUI_CMD_OUTPUT_END}"
@@ -3950,6 +3969,42 @@ class Agent:
                 tool_round = f"{tool_round}\n{marker}"
             result.append(tool_round)
         return result
+
+    def _render_diff_rows_as_text(self, diff_rows: List[Dict[str, Any]]) -> List[str]:
+        """Render diffRows (structured diff rows) as simple ANSI-colored text.
+        Used as a fallback when pre-formatted previewLines are not available."""
+        lines = []
+        for row in diff_rows:
+            row_type = str(row.get("type") or "").strip()
+            old_text = str(row.get("oldText") or "")
+            new_text = str(row.get("newText") or "")
+            old_no = row.get("oldNo")
+            new_no = row.get("newNo")
+            if row_type == "omitted":
+                lines.append(f"\x1b[90m{old_text}\x1b[0m")
+            elif row_type == "del":
+                if old_no is not None:
+                    lines.append(f"\x1b[41m- {old_text}\x1b[0m")
+                else:
+                    lines.append(f"\x1b[41m- {old_text}\x1b[0m")
+            elif row_type == "add":
+                if new_no is not None:
+                    lines.append(f"\x1b[42m+ {new_text}\x1b[0m")
+                else:
+                    lines.append(f"\x1b[42m+ {new_text}\x1b[0m")
+            elif row_type == "change":
+                if old_no is not None:
+                    lines.append(f"\x1b[41m- {old_text}\x1b[0m")
+                if new_no is not None:
+                    lines.append(f"\x1b[42m+ {new_text}\x1b[0m")
+            else:
+                if old_no is not None and new_no is not None:
+                    lines.append(f"  {old_text}")
+                elif old_no is not None:
+                    lines.append(f"  {old_text}")
+                else:
+                    lines.append(f"  {new_text}")
+        return lines
 
     def _build_conversation_interrupted_history_content(
         self,
@@ -7341,34 +7396,30 @@ class Agent:
             return {}
 
     def _prune_apply_patch_preview_sidecar(self) -> None:
-        """Drop preview entries whose ``created_at`` no longer appears in the
-        active chat's apply_patch tool results. Called after editing a message
-        truncates the conversation so orphaned diff previews don't linger."""
+        """Drop preview entries whose ``previewRef`` no longer appears in
+        ``_tool_rounds_raw`` on assistant messages in ``conversation_history``.
+        Called after editing a message truncates the conversation so orphaned
+        diff previews don't linger."""
         path = self._apply_patch_preview_path()
         if not path or not path.exists():
             return
         try:
-            chat = self._find_chat_by_id(str(getattr(self, "active_chat_id", "") or ""))
-            messages = (chat or {}).get("messages") if isinstance(chat, dict) else None
-            if not isinstance(messages, list):
-                return
+            messages = list(getattr(self, "conversation_history", None) or [])
             live_keys = set()
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
-                if str(msg.get("role") or "").strip().lower() != "tool":
+                raw_rounds = msg.get("_tool_rounds_raw")
+                if not isinstance(raw_rounds, list):
                     continue
-                if str(msg.get("name") or "").strip().lower() != "apply_patch":
-                    continue
-                try:
-                    payload = json.loads(str(msg.get("content") or "{}"))
-                except Exception:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                ca = str(payload.get("created_at") or "")
-                if ca:
-                    live_keys.add(ca)
+                for entry in raw_rounds:
+                    if not isinstance(entry, dict):
+                        continue
+                    if str(entry.get("tool") or "").strip().lower() != "apply_patch":
+                        continue
+                    ref = str(entry.get("previewRef") or "")
+                    if ref:
+                        live_keys.add(ref)
             store = self._load_apply_patch_preview_store()
             if not isinstance(store, dict) or not store:
                 return
@@ -7562,9 +7613,13 @@ class Agent:
         key = str(ref or "")
         if not key:
             return
+        preview_lines = result.get("change_preview")
         try:
             store = self._load_apply_patch_preview_store()
-            store[key] = {"file": display_file, "diffRows": rows}
+            entry = {"file": display_file, "diffRows": rows}
+            if isinstance(preview_lines, list) and preview_lines:
+                entry["previewLines"] = preview_lines
+            store[key] = entry
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(path.suffix + ".tmp")
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -7576,13 +7631,12 @@ class Agent:
 
     def _replay_apply_patch_gui_diff_block(self, tool_result: Dict[str, Any]) -> None:
         """Re-emit the GUI collapsible diff block during transcript replay
-        (reload) by looking up the per-chat preview sidecar. No-op outside GUI
-        mode or when no stored rows match this result."""
-        if not callable(getattr(self, "_confirm_choice_provider", None)):
-            return
+        (reload) by looking up the per-chat preview sidecar. In GUI mode this
+        emits a JSON block wrapped in GUI_DIFF sentinels; in TUI mode it
+        prints the pre-formatted ANSI preview lines."""
+        is_gui = callable(getattr(self, "_confirm_choice_provider", None))
         key = str(tool_result.get("_previewRef") or "")
         if not key:
-            # Fallback: try created_at for legacy previews.json entries
             key = str(tool_result.get("created_at") or "")
         if not key:
             return
@@ -7594,13 +7648,28 @@ class Agent:
         if not isinstance(rows, list) or not rows:
             return
         try:
-            import json as _json
-
-            payload = _json.dumps(
-                {"file": entry.get("file") or "", "diffRows": rows},
-                ensure_ascii=False,
-            )
-            print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
+            if is_gui:
+                import json as _json
+                payload = _json.dumps(
+                    {"file": entry.get("file") or "", "diffRows": rows},
+                    ensure_ascii=False,
+                )
+                print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
+            else:
+                preview_lines = entry.get("previewLines")
+                if isinstance(preview_lines, list) and preview_lines:
+                    file_name = entry.get("file") or ""
+                    try:
+                        lang = self._ui_language()
+                    except Exception:
+                        lang = "en"
+                    from .core.localization import translate
+                    print(translate("change_preview.markers", lang))
+                    for ln in preview_lines:
+                        print(ln)
+                else:
+                    for ln in self._render_diff_rows_as_text(rows):
+                        print(ln)
         except Exception:
             pass
 

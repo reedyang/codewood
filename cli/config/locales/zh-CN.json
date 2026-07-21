@@ -413,7 +413,6 @@
   "elicitation.invalid_input": "输入格式无效，请重试。",
   "elicitation.submit_prompt": "现在提交 elicitation 数据吗？(y=接受 / n=拒绝 / 回车=取消)：",
   "confirm.apply_patch_text_file": "⚠️ 确认要对文本文件应用补丁：{path} ？",
-  "change_preview.header": "变更预览（旧 ││ 新）：",
   "change_preview.markers": "   标记：'=' 不变，'-' 删除，'+' 新增",
   "warning.skill_hot_reload_failed": "⚠️ Skill 热重载失败，继续使用当前已加载版本：{error}",
   "warning.mcp_invalid_root": "⚠️ mcp.jsonc 格式无效：根节点必须是一个 JSON 对象",

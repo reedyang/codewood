@@ -5084,7 +5084,7 @@ def run_agent_loop(agent: Any):
                                         if bool(getattr(self, "_gui_plain_stream", False)):
                                             print(str(rendered[0]).rstrip("\n"))
                                             break
-                                        clean = rendered[0].split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                                        clean = rendered[0].split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                                         if sys.stdout.isatty():
                                             sys.stdout.write("\033[1A\033[K")
                                             sys.stdout.flush()
