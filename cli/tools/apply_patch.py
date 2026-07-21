@@ -395,7 +395,6 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         confirm_preview_segments = preview_segments if interactive_preview else None
         if (
             preview_lines
-            and not skip_preview_and_confirm
             and not interactive_preview
             and not gui_mode
         ):
@@ -403,7 +402,6 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 lang = agent._ui_language()
             except AttributeError:
                 lang = getattr(agent, "display_language", None) or "en"
-            print(translate("change_preview.header", lang))
             print(translate("change_preview.markers", lang))
             for ln in preview_lines:
                 print(ln)

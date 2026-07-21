@@ -413,7 +413,6 @@
   "elicitation.invalid_input": "Invalid input format, please try again.",
   "elicitation.submit_prompt": "Submit elicitation data now? (y=accept / n=decline / Enter=cancel): ",
   "confirm.apply_patch_text_file": "⚠️ Confirm applying patch to text file: {path} ?",
-  "change_preview.header": "Change preview (old ││ new):",
   "change_preview.markers": "   Markers: '=' unchanged, '-' removed, '+' added",
   "warning.skill_hot_reload_failed": "⚠️ Skill hot reload failed, continuing with the currently loaded version: {error}",
   "warning.mcp_invalid_root": "⚠️ Invalid mcp.jsonc format: root object must be a JSON object",
