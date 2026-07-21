@@ -4921,6 +4921,8 @@ def run_agent_loop(agent: Any):
                     last_tool_name = tool_name
                     last_tool_args = args if isinstance(args, dict) else {}
                     last_tool_result = result if isinstance(result, dict) else {}
+                    if not bool(getattr(self, "_gui_plain_stream", False)):
+                        print("")
                     is_first_round = False
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
