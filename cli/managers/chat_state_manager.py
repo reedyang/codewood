@@ -230,6 +230,7 @@ class ChatStateManager:
     # can be deleted/cleaned up wholesale alongside the chat record.
     _CHAT_DATA_DIRNAME = "data"
     _CHAT_PREVIEWS_FILENAME = "previews.json"
+    _CHAT_FILE_CHANGES_FILENAME = "file_changes.json"
 
     def _chat_data_dir_for_record_file(self, record_file: str) -> Optional[Path]:
         """Resolve ``chats/data/<record-stem>/`` for a chat record file name."""
@@ -274,6 +275,46 @@ class ChatStateManager:
         if data_dir is None:
             return None
         return data_dir / self._CHAT_PREVIEWS_FILENAME
+
+    def chat_file_changes_path(self, chat_id: str) -> Optional[Path]:
+        """Resolve the file-changes sidecar path for ``chat_id``."""
+        data_dir = self.chat_data_dir_for_chat(chat_id)
+        if data_dir is None:
+            return None
+        return data_dir / self._CHAT_FILE_CHANGES_FILENAME
+
+    def save_file_changes(self, chat_id: str, summaries: List[Dict[str, Any]]) -> None:
+        """Persist a list of per-turn file-change summaries for ``chat_id`` to disk."""
+        path = self.chat_file_changes_path(chat_id)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(summaries, fh, ensure_ascii=False, indent=2)
+                fh.write("\n")
+            _safe_replace(tmp, path)
+        except Exception:
+            pass
+
+    def load_file_changes(self, chat_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Load the persisted list of per-turn file-change summaries for ``chat_id``.
+        Returns an empty list when the sidecar is missing or unreadable."""
+        path = self.chat_file_changes_path(chat_id)
+        if path is None or not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, list):
+                return data
+            # Backward-compat: old single-summary dict files
+            if isinstance(data, dict):
+                return [data]
+            return None
+        except Exception:
+            return None
 
     def delete_chat_data(self, record_file: str) -> None:
         """Remove the entire side-data directory for a chat record being

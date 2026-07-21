@@ -390,4 +390,8 @@ export const en: Dict = {
   "noModel.body":
     "No model is configured yet. Open Settings → Models to add a provider and model, then come back to start chatting.",
   "noModel.openSettings": "Open model settings",
+
+  "fileChange.header": "Changed {count} files",
+  "fileChange.linesHidden": "{count} unmodified lines hidden",
+  "fileChange.linesRemaining": "{count} unmodified lines",
 };

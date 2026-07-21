@@ -48,6 +48,8 @@ export interface ChatSummary {
   planMode?: boolean;
   /** Whether the chat has been archived (hidden from the sidebar). */
   archived?: boolean;
+  /** Per-chat file-change summaries (list of per-turn summaries, survives restarts via getState). */
+  fileChanges?: FileChangeSummary[];
 }
 
 /** Chat summary as returned by GET /workspace-chats for any workspace. */
@@ -250,6 +252,7 @@ export type ServerEvent =
   | { event: "thinking"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
   | { event: "request_user_input"; data: AskMoreInfoRequest }
+  | { event: "file_changes"; data: FileChangeSummary & { chatId?: string; workspaceId?: string; turnIndex?: number } }
   | { event: "sub_agent_start"; data: { sessionId: string; name: string; topic: string; description: string; prompt: string } }
   | { event: "sub_agent_assistant"; data: { sessionId: string; text: string } }
   | { event: "sub_agent_thinking"; data: { sessionId: string; text: string } }
@@ -300,6 +303,8 @@ export interface Turn {
    *  than appending a duplicate, and ``endActiveTurn`` won't settle it while it
    *  has no rounds yet (so a premature ``idle`` can't split it in two). */
   optimistic?: boolean;
+  /** File changes emitted during this turn. */
+  fileChanges?: FileChangeSummary;
 }
 
 /** A previously-recorded model round loaded from chat history. */
@@ -323,6 +328,8 @@ export interface HistoryTurn {
   userText: string;
   rounds: HistoryRound[];
   timestamp?: string;
+  /** File changes emitted during this turn. */
+  fileChanges?: FileChangeSummary;
 }
 
 /** One configured sub-agent as surfaced by the config UI. */
@@ -408,4 +415,25 @@ export interface ChatHistoryPage {
   turns: HistoryTurn[];
   start: number;
   total: number;
+}
+
+/** File change record for tracking modifications */
+export interface FileChangeRecord {
+  filePath: string;
+  changeType: "create" | "modify" | "delete" | "rename";
+  source: string;
+  timestamp: string;
+  addedLines: number;
+  deletedLines: number;
+  patch?: DiffRow[];
+}
+
+/** Summary of all file changes */
+export interface FileChangeSummary {
+  totalFiles: number;
+  totalAdded: number;
+  totalDeleted: number;
+  files: FileChangeRecord[];
+  /** Turn index (0-based) for per-turn association. */
+  turnIndex?: number;
 }

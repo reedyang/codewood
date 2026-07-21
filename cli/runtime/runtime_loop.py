@@ -5106,6 +5106,58 @@ def run_agent_loop(agent: Any):
                 )
             in_task_execution = False
             self._in_task_execution = False
+            # Broadcast file changes summary at task boundary
+            try:
+                from ..core.logging.app_logging import get_logger
+                _fc_logger = get_logger("codewood.file_change")
+                tracker = getattr(self, "file_change_tracker", None)
+                if tracker is not None:
+                    changes = tracker.get_changes()
+                    _fc_logger.debug(f"[file_changes] task boundary: {len(changes)} changes recorded")
+                    # Determine turn index for per-turn file-change association.
+                    # Each task boundary marks the end of one turn; we count
+                    # completed tasks per chat to assign stable turn indices.
+                    # When the chat ID is unavailable, fall back to a global
+                    # counter so turn indices still increase monotonically.
+                    _cs = getattr(self, "_chat_state", None)
+                    _chat_id_for_turn = str(_cs.get("active", "")) if isinstance(_cs, dict) else ""
+                    if _chat_id_for_turn:
+                        _task_turn_counts = getattr(self, "_task_turn_counts", {})
+                        if _chat_id_for_turn not in _task_turn_counts:
+                            # Initialize from existing file_changes.json so the
+                            # counter survives restarts instead of resetting to 0.
+                            _init_mgr = getattr(self, "_chat_state_manager", None)
+                            if _init_mgr is not None:
+                                _existing = _init_mgr.load_file_changes(_chat_id_for_turn)
+                                if _existing:
+                                    _max_ti = max((s.get("turnIndex", -1) for s in _existing), default=-1)
+                                    _task_turn_counts[_chat_id_for_turn] = _max_ti + 1
+                        turn_index = _task_turn_counts.get(_chat_id_for_turn, 0)
+                        _task_turn_counts[_chat_id_for_turn] = turn_index + 1
+                        setattr(self, "_task_turn_counts", _task_turn_counts)
+                    else:
+                        _task_turn_counts = getattr(self, "_task_turn_counts", {})
+                        turn_index = _task_turn_counts.get("__global__", 0)
+                        _task_turn_counts["__global__"] = turn_index + 1
+                        setattr(self, "_task_turn_counts", _task_turn_counts)
+                    if changes:
+                        summary = tracker.get_summary()
+                        summary["turnIndex"] = turn_index
+                        gui_handler = getattr(self, "_gui_file_changes", None)
+                        _fc_logger.debug(f"[file_changes] gui_handler callable={callable(gui_handler)}, chat={_chat_id_for_turn or '?'}, turnIndex={turn_index}")
+                        if callable(gui_handler):
+                            gui_handler(summary)
+                        tracker.clear()
+                else:
+                    _fc_logger.debug("[file_changes] tracker is None at task boundary")
+            except Exception as _e:
+                import traceback as _tb
+                try:
+                    from ..core.logging.app_logging import get_logger
+                    get_logger("codewood.file_change").debug(f"[file_changes] ERROR: {_e}\n{_tb.format_exc()}")
+                except Exception:
+                    pass
+                pass
             if pre_task_status_ticker is not None:
                 pre_task_status_ticker.stop()
                 pre_task_status_ticker = None
