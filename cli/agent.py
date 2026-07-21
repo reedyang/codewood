@@ -3717,6 +3717,11 @@ class Agent:
             round_output = self._extract_tool_result_output(t, raw) or str(r.get("message") or "")
         else:
             round_output = self._extract_tool_result_output(t, r)
+        # Suppress the generic "Successfully applied patch to '...'"
+        # message for apply_patch — the diff block renders the same
+        # information as a structured, syntax-highlighted preview.
+        if t == "apply_patch":
+            round_output = ""
         if round_output:
             tool_round = (
                 f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
@@ -3736,6 +3741,13 @@ class Agent:
             "elapsed": r.get("_elapsed_seconds"),
             "output": round_output or "",
         }
+        # Persist the apply_patch change preview rows so history reload can
+        # render a collapsible, syntax-highlighted diff block (same as the live
+        # view) instead of just the "Successfully applied patch" message.
+        if t == "apply_patch":
+            preview_rows = r.get("change_preview_rows")
+            if preview_rows:
+                raw_entry["diffRows"] = preview_rows
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             raw_entry["marker"] = gui_marker
@@ -3900,6 +3912,15 @@ class Agent:
             marker = item.get("marker")
             if marker:
                 tool_round = f"{tool_round}\n{marker}"
+            # Re-render the apply_patch diff block when present.
+            diff_rows = item.get("diffRows")
+            if diff_rows:
+                import json as _json
+                _file_path = str(args.get("path") or "")
+                _diff_payload = _json.dumps(
+                    {"file": _file_path, "diffRows": diff_rows}, ensure_ascii=False
+                )
+                tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{_diff_payload}{GUI_DIFF_END}"
             result.append(tool_round)
         return result
 

@@ -58,11 +58,12 @@ describe("FileChangeList", () => {
     render(<FileChangeList summary={summary} t={t} />);
     const header = screen.getByText("helloworld.py");
     fireEvent.click(header);
-    // Both unmodified blocks (before + after change) should show the expand toggle
-    const expand = screen.getAllByText(t("fileChange.expand"));
-    expect(expand.length).toBe(2);
-    // Click the collapsed one to expand
-    fireEvent.click(expand[1]);
-    expect(screen.getAllByText(t("fileChange.expand")).length).toBeGreaterThan(0);
+    // Both unmodified blocks should show hidden lines count
+    const hidden = screen.getAllByText(/unmodified lines hidden/);
+    expect(hidden.length).toBe(2);
+    // Click the first toggle to expand
+    fireEvent.click(hidden[0]);
+    // After clicking, the expanded block shows remaining count
+    expect(screen.getAllByText(/unmodified lines/).length).toBeGreaterThan(0);
   });
 });
