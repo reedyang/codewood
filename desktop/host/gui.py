@@ -655,8 +655,8 @@ def main() -> int:
     window = webview.create_window(
         WINDOW_TITLE,
         url=url,
-        width=1280,
-        height=860,
+        width=1140,
+        height=780,
         min_size=(960, 640),
         frameless=True,
         easy_drag=False,
