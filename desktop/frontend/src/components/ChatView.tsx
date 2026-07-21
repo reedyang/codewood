@@ -619,7 +619,8 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
 
   return (
     <div className="transcript" ref={scrollRef}>
-      {mergedMessages.map((msg, index) => {
+      <div className="transcript-inner">
+        {mergedMessages.map((msg, index) => {
         if (msg.role === "system") return null;
 
         if (msg.role === "user") {
@@ -749,6 +750,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           {t("subagents.error.max_rounds") || "Maximum rounds reached"}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -1318,6 +1320,7 @@ export function ChatView() {
             historyLoading={historyLoading}
           />
           <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+            <div className="transcript-inner">
             {historyStart > 0 && (
               <div className="history-more">
                 {historyLoading ? t("history.loading") : t("history.more")}
@@ -1449,6 +1452,7 @@ export function ChatView() {
                 />
               </div>
             )}
+          </div>
           </div>
           <div className="composer-dock">{composer}</div>
         </>
