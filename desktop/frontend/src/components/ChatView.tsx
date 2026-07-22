@@ -2339,15 +2339,12 @@ function LiveToolGroupView({
     <>
       {thinkingNodes}
       <div className="turn-round">
-        <div className="activity">
-          <StepsView text={toolText} running={lastRunning} />
-          {waitingForContinuation && (
-            <div className="activity-header running">
-              <span className={`activity-text marquee`}>
-                {waitingText}
-              </span>
-            </div>
-          )}
+        <div className="activity live-tool-activity">
+          <StepsView
+            text={toolText}
+            running={lastRunning}
+            trailingStatusText={waitingForContinuation ? waitingText : undefined}
+          />
         </div>
       </div>
     </>

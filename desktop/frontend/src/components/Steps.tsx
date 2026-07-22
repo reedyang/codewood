@@ -311,7 +311,15 @@ function SpinnerChar() {
 }
 
 /** Render collapsible execution steps, isolating command output blocks. */
-export function StepsView({ text, running }: { text: string; running?: boolean }) {
+export function StepsView({
+  text,
+  running,
+  trailingStatusText,
+}: {
+  text: string;
+  running?: boolean;
+  trailingStatusText?: string;
+}) {
   const segments = normalizeToolSegments(text);
 
   const onPathPreview = useCallback(async (path: string) => {
@@ -391,6 +399,7 @@ export function StepsView({ text, running }: { text: string; running?: boolean }
               defaultExpanded={false}
               onPathPreview={isBrowserPreview ? onPathPreview : undefined}
               running={running && index === lastPromptIdx}
+              trailingStatusText={index === lastPromptIdx ? trailingStatusText : undefined}
             />
           );
         }
@@ -430,6 +439,7 @@ function PromptWithAttachment({
   defaultExpanded,
   onPathPreview,
   running,
+  trailingStatusText,
 }: {
   bullet: string;
   body: string;
@@ -439,6 +449,7 @@ function PromptWithAttachment({
   defaultExpanded: boolean;
   onPathPreview?: (path: string) => void;
   running?: boolean;
+  trailingStatusText?: string;
 }) {
   const { enterSubAgentSession, pendingExpandSubAgentId } = useApp();
   const hasCmd = !!cmdPayload;
@@ -478,6 +489,11 @@ function PromptWithAttachment({
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
           {running && <SpinnerChar />}
+          {trailingStatusText && (
+            <span className="tool-inline-working">
+              <span className="activity-text marquee">{trailingStatusText}</span>
+            </span>
+          )}
         </span>
       </div>
     );
@@ -504,6 +520,11 @@ function PromptWithAttachment({
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
           {running && <SpinnerChar />}
+          {trailingStatusText && (
+            <span className="tool-inline-working">
+              <span className="activity-text marquee">{trailingStatusText}</span>
+            </span>
+          )}
           <span className="cmd-prompt-diff-toggle subagent-view-btn">
             <Icon name="chevron" size={14} className="chevron" />
           </span>
@@ -538,6 +559,11 @@ function PromptWithAttachment({
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
           {running && <SpinnerChar />}
+          {trailingStatusText && (
+            <span className="tool-inline-working">
+              <span className="activity-text marquee">{trailingStatusText}</span>
+            </span>
+          )}
           {isSubAgent && (
             <span className="cmd-prompt-diff-toggle subagent-view-btn">
               <Icon name="chevron" size={14} className="chevron" />

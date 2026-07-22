@@ -4224,6 +4224,14 @@ html[data-has-bg] .select {
   margin: 4px 0;
 }
 
+.live-tool-activity {
+  margin: 2px 0;
+}
+
+.live-tool-activity .activity-steps {
+  margin-top: 0;
+}
+
 .activity-header {
   display: flex;
   align-items: center;
@@ -4458,6 +4466,7 @@ html[data-has-bg] .select {
 .activity-steps .cmd-prompt {
   display: flex;
   align-items: flex-start;
+  --cmd-prompt-indent: 1.6ch;
 }
 
 .activity-steps .cmd-prompt + .cmd-prompt,
@@ -4471,6 +4480,7 @@ html[data-has-bg] .select {
 
 .activity-steps .cmd-prompt-bullet {
   flex: 0 0 auto;
+  width: 1ch;
   margin-right: 0.6ch;
 }
 
@@ -4479,6 +4489,13 @@ html[data-has-bg] .select {
   min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.activity-steps .tool-inline-working {
+  display: block;
+  margin-top: 12px;
+  margin-left: calc(-1 * var(--cmd-prompt-indent));
+  text-align: left;
 }
 
 /* A "Ran ..." line that carries command output or a diff: the whole row
