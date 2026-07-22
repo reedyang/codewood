@@ -76,6 +76,7 @@ from .core.console_utils import (
     GUI_SUBAGENT_SESSION_END,
     _WorkingStatusTicker,
     _ansi_blue,
+    _ansi_bold,
     _ansi_gray,
     _ansi_red,
     _ansi_yellow,
@@ -2689,7 +2690,7 @@ class Agent:
             # command line reads exactly as typed.
             summary = self._tool_call_summary(tool_name, args)
             return self._format_wrapped_command_feedback_line(
-                f"{bullet} {translate('status.ran', self._ui_language())} ",
+                f"{bullet} {_ansi_bold(translate('status.ran', self._ui_language()))} ",
                 summary,
             )
         # Every other tool gets a natural-language action label (no "Ran"
@@ -2697,7 +2698,7 @@ class Agent:
         # phrasing when apply_patch is used to add a brand-new file.
         label, detail = self._natural_tool_action(tool_name, args)
         return self._format_wrapped_command_feedback_line(
-            f"{bullet} {label} ",
+            f"{bullet} {_ansi_bold(label)} ",
             detail,
         )
 

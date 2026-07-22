@@ -18,8 +18,6 @@ export const zhCN: Dict = {
   "activity.working": "处理中...",
   "activity.workedFor": "用时",
   "activity.toolCalls": "调用了 {count} 次工具",
-  "activity.steps": "执行过程",
-  "activity.collapse": "折叠",
   "activity.thinking": "思考中",
   "activity.thoughtFor": "思考用时",
   "tool.label.tool": "工具",

@@ -3574,12 +3574,15 @@ html[data-has-bg] .select {
   line-height: 1.45;
   max-height: 360px;
   overflow: auto;
+  border-radius: 10px;
+  margin-top: 4px;
 }
 
 .diff-side-by-side,
 .diff-inline {
   display: flex;
   flex-direction: column;
+  padding: 4px 0;
 }
 
 .diff-row {
@@ -3649,8 +3652,8 @@ html[data-has-bg] .select {
   flex: 0 0 auto;
   min-width: 2.5em;
   text-align: right;
-  color: var(--text-muted, #888);
-  background: var(--output-bg);
+  font-size: 12px;
+  color: rgba(150, 160, 175, 0.65);
   user-select: none;
   padding: 0 8px 0 8px;
 }
@@ -3658,8 +3661,8 @@ html[data-has-bg] .select {
 .diff-sign {
   flex: 0 0 auto;
   width: 1ch;
-  color: var(--text-muted, #888);
-  background: var(--output-bg);
+  font-size: 12px;
+  color: rgba(150, 160, 175, 0.65);
   user-select: none;
   padding: 0 14px 0 0;
 }
@@ -3669,7 +3672,8 @@ html[data-has-bg] .select {
   min-width: 0;
   background: none;
   border: none;
-  border-left: 2px solid var(--border);
+  font-family: inherit;
+  user-select: text;
   padding: 0 0 0 6px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -4386,12 +4390,8 @@ html[data-has-bg] .select {
 .activity-steps {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 12.5px;
-  background: color-mix(in srgb, var(--output-bg) 30%, transparent);
   color: var(--output-text);
-  padding: 10px 12px;
-  border-radius: 10px;
   margin: 6px 0 0 0;
-  border: 1px solid var(--border);
   user-select: text;
 }
 
@@ -4413,7 +4413,10 @@ html[data-has-bg] .select {
 .activity-steps .cmd-output {
   white-space: pre-wrap;
   word-break: break-word;
-  padding-left: 2ch;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--output-bg) 30%, transparent);
 }
 
 .activity-steps .cmd-output-block + .cmd-output-block,
@@ -4461,7 +4464,8 @@ html[data-has-bg] .select {
 .activity-steps .step-text + .cmd-prompt,
 .activity-steps .cmd-prompt + .step-text,
 .activity-steps .cmd-prompt + .cmd-output,
-.activity-steps .cmd-output + .cmd-prompt {
+.activity-steps .cmd-output + .cmd-prompt,
+.activity-steps .cmd-output + .cmd-output {
   margin-top: 4px;
 }
 
@@ -4499,19 +4503,7 @@ html[data-has-bg] .select {
   opacity: 0;
 }
 
-.activity-steps > .diff-preview {
-  margin-left: -12px;
-  margin-right: -12px;
-  margin-bottom: 8px;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
-  border-radius: 0;
-}
-.activity-steps > .diff-preview:last-child {
-  margin-bottom: -10px;
-  border-radius: 0 0 10px 10px;
-}
+
 
 .diff-preview .diff-iline:not(.diff-del):not(.diff-add),
 .diff-preview .diff-cell:not(.diff-del):not(.diff-add) {
@@ -4701,24 +4693,28 @@ h6.md-h {
 }
 
 /* Syntax-highlighted tool output (read / shell file reads) inside the
-   transcript. Keeps the 2ch indent of a normal command-output block. */
-.activity-steps .cmd-output .syn-output {
+   transcript. Left-aligned with the cmd-prompt bullet, rounded card. */
+.activity-steps .syn-output {
   white-space: normal;
-  padding-left: 2ch;
-  font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.45;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  padding: 4px 8px 4px 0;
 }
-.activity-steps .cmd-output .syn-output pre.hljs {
+.activity-steps .syn-output pre.hljs {
   margin: 0;
   padding: 0;
   background: none;
   color: inherit;
 }
-.activity-steps .cmd-output .syn-output-linenums {
+.activity-steps .syn-output-linenums {
   display: block;
 }
-.activity-steps .cmd-output .syn-output-linenums .syn-line {
+.activity-steps .syn-output-linenums .syn-line {
   display: flex;
   align-items: stretch;
 }
@@ -4726,7 +4722,7 @@ h6.md-h {
    gutter stretches to the row height and rows stack flush, so the tint reads
    as one continuous column). The number itself is tinted so it stands out
    against both light and dark themes. */
-.activity-steps .cmd-output .syn-gutter {
+.activity-steps .syn-gutter {
   flex: 0 0 auto;
   min-width: 4ch;
   margin-right: 1ch;
@@ -4734,13 +4730,13 @@ h6.md-h {
   text-align: right;
   white-space: nowrap;
   user-select: none;
-  color: rgba(150, 160, 175, 0.95);
-  background: rgba(140, 150, 165, 0.16);
-  border-right: 1px solid rgba(140, 150, 165, 0.25);
+  font-size: 12px;
+  color: rgba(150, 160, 175, 0.65);
 }
-.activity-steps .cmd-output .syn-code {
+.activity-steps .syn-code {
   flex: 1 1 auto;
   min-width: 0;
+  font-family: inherit;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -6163,20 +6159,22 @@ body.resizing-y .console-term {
 /* File Change Details */
 .file-change-details {
   background: var(--bg);
+  user-select: text;
 }
 
 .file-change-details .diff-preview {
   border: none;
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
+  border-radius: 0;
+  margin-top: 0;
 }
 
 .file-change-details .diff-preview:first-child {
   border-top: 1px solid var(--border);
 }
 
-.file-change-details .diff-preview:last-child {
-  border-bottom: 1px solid var(--border);
+.file-change-details .diff-side-by-side,
+.file-change-details .diff-inline {
+  padding: 0;
 }
 
 .diff-unmodified-toggle {
