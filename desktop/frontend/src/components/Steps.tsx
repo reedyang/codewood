@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { AnsiText } from "./Ansi";
 import { hostApi } from "../utils/hostApi";
 import { DiffPreview, langFromPath } from "./DiffPreview";
@@ -299,8 +299,19 @@ export function getLastToolPromptBody(text: string): string | null {
   return lastBody;
 }
 
+const SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+function SpinnerChar() {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setI((n) => (n + 1) % SPINNER_CHARS.length), 100);
+    return () => clearInterval(id);
+  }, []);
+  return <span style={{ color: "var(--accent)", marginLeft: "0.5ch", verticalAlign: "-2px" }}>{SPINNER_CHARS[i]}</span>;
+}
+
 /** Render collapsible execution steps, isolating command output blocks. */
-export function StepsView({ text }: { text: string }) {
+export function StepsView({ text, running }: { text: string; running?: boolean }) {
   const segments = normalizeToolSegments(text);
 
   const onPathPreview = useCallback(async (path: string) => {
@@ -314,9 +325,13 @@ export function StepsView({ text }: { text: string }) {
   // previously-expanded diff when the next tool runs" behavior) while the most
   // recent diff stays expanded.
   let lastContentIdx = -1;
+  let lastPromptIdx = -1;
   segments.forEach((seg, i) => {
     if (trimBlankEdges(seg.text)) {
       lastContentIdx = i;
+    }
+    if (seg.kind === "prompt") {
+      lastPromptIdx = i;
     }
   });
   // A "cmd"/"diff" segment that directly follows a "prompt" segment (the
@@ -375,6 +390,7 @@ export function StepsView({ text }: { text: string }) {
               subagentSessionId={subagentSessionId}
               defaultExpanded={false}
               onPathPreview={isBrowserPreview ? onPathPreview : undefined}
+              running={running && index === lastPromptIdx}
             />
           );
         }
@@ -413,6 +429,7 @@ function PromptWithAttachment({
   subagentSessionId,
   defaultExpanded,
   onPathPreview,
+  running,
 }: {
   bullet: string;
   body: string;
@@ -421,6 +438,7 @@ function PromptWithAttachment({
   subagentSessionId: string;
   defaultExpanded: boolean;
   onPathPreview?: (path: string) => void;
+  running?: boolean;
 }) {
   const { enterSubAgentSession, pendingExpandSubAgentId } = useApp();
   const hasCmd = !!cmdPayload;
@@ -459,6 +477,7 @@ function PromptWithAttachment({
         </span>
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
+          {running && <SpinnerChar />}
         </span>
       </div>
     );
@@ -484,6 +503,7 @@ function PromptWithAttachment({
         </span>
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
+          {running && <SpinnerChar />}
           <span className="cmd-prompt-diff-toggle subagent-view-btn">
             <Icon name="chevron" size={14} className="chevron" />
           </span>
@@ -517,6 +537,7 @@ function PromptWithAttachment({
         </span>
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
+          {running && <SpinnerChar />}
           {isSubAgent && (
             <span className="cmd-prompt-diff-toggle subagent-view-btn">
               <Icon name="chevron" size={14} className="chevron" />

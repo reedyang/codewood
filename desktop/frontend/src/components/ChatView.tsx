@@ -13,7 +13,7 @@ import type { HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from
 import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
-import { StepsView, countToolCalls, getLastToolPromptBody, textContainsSubAgentSession } from "./Steps";
+import { StepsView, countToolCalls, textContainsSubAgentSession } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -2270,13 +2270,11 @@ export function shouldShowPendingWorking(
 function LiveToolGroupView({
   rounds,
   now,
-  isLatestGroup,
   waitingForContinuation,
   continuationElapsedMs,
 }: {
   rounds: TurnRound[];
   now: number;
-  isLatestGroup: boolean;
   waitingForContinuation: boolean;
   continuationElapsedMs: number;
 }) {
@@ -2315,7 +2313,6 @@ function LiveToolGroupView({
     )
     .join("\n");
   const toolCount = countToolCalls(toolText);
-  const toolTitle = getLastToolPromptBody(toolText);
   const lastRound = rounds[rounds.length - 1];
   const lastRunning = lastRound?.waitEndedAt === null;
   const elapsedMs = rounds.reduce(
@@ -2325,8 +2322,6 @@ function LiveToolGroupView({
   const waitingText = `${t("activity.working")} (${formatElapsed(
     waitingForContinuation ? continuationElapsedMs : elapsedMs,
   )})`;
-  const running = isLatestGroup && (lastRunning || waitingForContinuation);
-
   if (toolCount === 0 && toolText.trim().length > 0) {
     return (
       <>
@@ -2345,16 +2340,14 @@ function LiveToolGroupView({
       {thinkingNodes}
       <div className="turn-round">
         <div className="activity">
-          {running && (
+          <StepsView text={toolText} running={lastRunning} />
+          {waitingForContinuation && (
             <div className="activity-header running">
               <span className={`activity-text marquee`}>
-                {lastRunning
-                  ? <>{toolTitle ?? waitingText} <Icon name="spinner" size={14} className="icon-spin" /></>
-                  : waitingText}
+                {waitingText}
               </span>
             </div>
           )}
-          <StepsView text={toolText} />
         </div>
       </div>
     </>
@@ -2686,8 +2679,6 @@ export function LiveRoundView({
     .filter((s) => s.kind === "step")
     .map((s) => s.text)
     .join("");
-  const toolCount = countToolCalls(toolText);
-  const toolTitle = getLastToolPromptBody(toolText);
   const hasAnswer = answer.trim().length > 0;
   const hasTools = toolText.trim().length > 0;
   const thinkingRunning = running && Boolean(round.thinkingText) && !round.thinkingEndedAt;
@@ -2703,9 +2694,6 @@ export function LiveRoundView({
       />
     );
   }
-  const timerText = hasTools && toolCount > 0 && running
-    ? <>{toolTitle ?? ""} <Icon name="spinner" size={14} className="icon-spin" /></>
-    : "";
   return (
     <>
       {round.thinkingText && (
@@ -2728,12 +2716,7 @@ export function LiveRoundView({
       {hasTools && (
         <div className="turn-round">
           <div className="activity">
-            {running && timerText && (
-              <div className="activity-header running">
-                <span className="activity-text marquee">{timerText}</span>
-              </div>
-            )}
-            <StepsView text={toolText} />
+            <StepsView text={toolText} running={running} />
           </div>
         </div>
       )}
@@ -2803,7 +2786,6 @@ function TurnView({
               key={`tool-${group.rounds[0]?.id ?? index}`}
               rounds={group.rounds}
               now={now}
-              isLatestGroup={index === liveGroups.length - 1}
               waitingForContinuation={index === liveGroups.length - 1 && hasPendingContinuation}
               continuationElapsedMs={
                 index === liveGroups.length - 1 && lastRound
