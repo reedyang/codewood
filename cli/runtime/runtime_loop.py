@@ -4520,6 +4520,7 @@ def run_agent_loop(agent: Any):
                             self._terminal_cursor_at_line_start = True
 
                 explore_ticker = None
+                gui_prompt_printed_early: List[bool] = []
                 if fallback_plans:
                     # Open a tool-execution round so the GUI shows
                     # "Working…" during long-running tools like
@@ -4528,10 +4529,12 @@ def run_agent_loop(agent: Any):
                     _gui_round_mark(self, True)
                     explore_ticker = None
                     for tool_name, args in fallback_plans:
+                        prompt_printed_early = False
                         if tool_name == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
                             if bool(getattr(self, "_gui_plain_stream", False)):
                                 explore_ticker = _NullStatusTicker()
                                 self._print_tool_call_feedback(tool_name, args, failed=False)
+                                prompt_printed_early = True
                             else:
                                 ticker = _WorkingStatusTicker(
                                     sys.stdout,
@@ -4558,18 +4561,22 @@ def run_agent_loop(agent: Any):
                                 ticker.start()
                                 explore_ticker = ticker
                         else:
-                            # In GUI streaming mode, tools that produce an
-                            # expandable output (everything except run_subagent)
-                            # defer printing the prompt line so it can be sent in
-                            # the same SSE event as the output. This avoids a
-                            # race where the prompt and output arrive in
-                            # different rounds and the output is mis-attributed
-                            # to the wrong tool, or consecutive calls' prompts
-                            # and outputs interleave.
+                            # In GUI streaming mode, print the prompt as soon as
+                            # the tool starts so long-running tools show up
+                            # immediately. The completion path appends only the
+                            # output block to this same tool-execution round.
+                            # apply_patch and request_skill_prompt are the
+                            # exceptions: they emit their own prompt+payload
+                            # block from their specialized paths.
                             _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
-                            _tool_defers_prompt = _gui_stream and tool_name not in ("run_subagent",)
+                            _tool_defers_prompt = _gui_stream and tool_name in (
+                                "apply_patch",
+                                "request_skill_prompt",
+                            )
                             if not _tool_defers_prompt:
                                 self._print_tool_call_feedback(tool_name, args, failed=False)
+                                prompt_printed_early = _gui_stream
+                        gui_prompt_printed_early.append(prompt_printed_early)
                 else:
                     tool_name, args = "", {}
 
@@ -4630,7 +4637,7 @@ def run_agent_loop(agent: Any):
                 continue_after_batch = False
                 break_after_batch = False
 
-                for tool_name, args in fallback_plans:
+                for tool_index, (tool_name, args) in enumerate(fallback_plans):
                     if not tool_name:
                         print(t("runtime.tool_plan_missing_name"))
                         break_after_batch = True
@@ -4909,12 +4916,20 @@ def run_agent_loop(agent: Any):
                         _rounds = getattr(self, "_accumulated_tool_rounds", None) or []
                         if _rounds:
                             _last_round = _rounds[-1]
+                            _prompt_printed_early = (
+                                tool_index < len(gui_prompt_printed_early)
+                                and bool(gui_prompt_printed_early[tool_index])
+                            )
                             try:
                                 if tool_name in ("run_subagent", "apply_patch"):
                                     # Sub-agent calls keep a separate transcript;
                                     # apply_patch already printed prompt+diff
                                     # via _emit_gui_diff_block in apply_patch.py.
                                     pass
+                                elif _prompt_printed_early:
+                                    _output_start = str(_last_round).find(GUI_CMD_OUTPUT_BEGIN)
+                                    if _output_start >= 0:
+                                        print(str(_last_round)[_output_start:])
                                 else:
                                     print(_last_round)
                             except Exception:

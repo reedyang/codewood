@@ -359,6 +359,48 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("merges a deferred tool output block into the already-visible prompt step", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Run command", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\uE004• Ran npx ccusage codex\uE005", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n\uE000command output\uE001", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(1);
+      expect(turns[0].rounds[0].segments).toHaveLength(1);
+      expect(turns[0].rounds[0].segments[0]).toEqual(
+        expect.objectContaining({
+          kind: "step",
+          text: "\uE004• Ran npx ccusage codex\uE005\n\uE000command output\uE001",
+        }),
+      );
+    });
+  });
+
   it("exposes an optimistic active workspace/chat without mutating the raw backend state", async () => {
     render(
       <AppProvider>
