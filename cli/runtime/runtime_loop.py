@@ -25,7 +25,7 @@ from ..config.startup_tips import (
     get_random_startup_tip_entry,
 )
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
-from ..core.console_utils import GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
+from ..core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END, GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
 
 from ..core.text_output_renderer import (
     format_assistant_display_response,
@@ -4795,6 +4795,26 @@ def run_agent_loop(agent: Any):
                             _issuing_msg.setdefault("_tool_rounds_raw", []).append(_skill_raw)
                             try:
                                 self._sync_active_chat_messages()
+                            except Exception:
+                                pass
+                        # In GUI streaming mode, print the request_skill_prompt
+                        # tool round so the frontend renders it during live
+                        # execution (not just on history reload). Without this,
+                        # the frontend sees an empty round between round_start
+                        # and round_end and skips it entirely.
+                        _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
+                        if _gui_stream:
+                            try:
+                                _tool_round = self._format_tool_call_feedback_line(
+                                    "request_skill_prompt",
+                                    {"skill_id": sid},
+                                    failed=False,
+                                )
+                                _tool_round = (
+                                    f"{_tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
+                                    f"{full_prompt}{GUI_CMD_OUTPUT_END}"
+                                )
+                                print(_tool_round)
                             except Exception:
                                 pass
                         next_input = (

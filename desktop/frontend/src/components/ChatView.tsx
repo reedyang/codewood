@@ -44,7 +44,6 @@ import {
 } from "../utils/tokens";
 import type { Segment, TokenKind } from "../utils/tokens";
 import { RichComposer } from "./RichComposer";
-import { shouldShowRoundTimer } from "./chatRoundTimer";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
@@ -1651,7 +1650,7 @@ export function HistoryRoundDetailView({
   round: HistoryRound;
   showText?: boolean;
 }) {
-  const { t, pendingExpandSubAgentId } = useApp();
+  const { t } = useApp();
   const compactNoticeTitle = String(round.compactNoticeTitle || "");
   const compactNoticeBody = String(round.compactNoticeBody || "");
   if (compactNoticeTitle.trim().length > 0 || compactNoticeBody.trim().length > 0) {
@@ -1665,8 +1664,6 @@ export function HistoryRoundDetailView({
   const toolText = String(round.tools || "");
   const toolCount = countToolCalls(toolText);
   const hasToolShell = toolText.trim().length > 0;
-  const autoExpandThisRound =
-    hasToolShell && textContainsSubAgentSession(toolText, pendingExpandSubAgentId);
   const thinkingNode = thinkingText.trim().length > 0 ? (
     <ThinkingPanel
       thinkingText={thinkingText}
@@ -1679,7 +1676,6 @@ export function HistoryRoundDetailView({
       <MarkdownText text={String(round.text || "")} />
     </div>
   ) : null;
-  const visibleTextNode = showText ? textNode : null;
 
   if (hasToolShell) {
     if (toolCount === 0) {
@@ -1697,26 +1693,21 @@ export function HistoryRoundDetailView({
     return (
       <>
         {thinkingNode}
-        <RoundShell
-          timerText={t("activity.toolCalls").replace("{count}", String(toolCount))}
-          running={false}
-          showTimer={true}
-          autoExpand={autoExpandThisRound}
-          detailsNode={<StepsView text={toolText} />}
-          textNode={visibleTextNode}
-        />
+        <div className="turn-round">
+          <StepsView text={toolText} />
+        </div>
       </>
     );
   }
 
-  if (!thinkingNode && !visibleTextNode) {
+  if (!thinkingNode && !textNode) {
     return null;
   }
 
   return (
     <div className="worked-for-body worked-for-plain">
       {thinkingNode}
-      {visibleTextNode}
+      {showText && textNode}
     </div>
   );
 }
@@ -2289,7 +2280,7 @@ function LiveToolGroupView({
   waitingForContinuation: boolean;
   continuationElapsedMs: number;
 }) {
-  const { t, pendingExpandSubAgentId } = useApp();
+  const { t } = useApp();
   const thinkingNodes = rounds.flatMap((round, index) => {
     const thinkingText = String(round.thinkingText || "");
     if (!thinkingText.trim()) {
@@ -2331,18 +2322,9 @@ function LiveToolGroupView({
     (sum, round) => sum + Math.max(0, (round.waitEndedAt ?? now) - round.waitStartedAt),
     0,
   );
-  const completedText = t("activity.toolCalls").replace("{count}", String(toolCount));
-  const autoExpandThisGroup = textContainsSubAgentSession(toolText, pendingExpandSubAgentId);
   const waitingText = `${t("activity.working")} (${formatElapsed(
     waitingForContinuation ? continuationElapsedMs : elapsedMs,
   )})`;
-  const timerText = isLatestGroup
-    ? lastRunning
-      ? (toolTitle ?? completedText)
-      : waitingForContinuation
-        ? waitingText
-        : completedText
-    : completedText;
   const running = isLatestGroup && (lastRunning || waitingForContinuation);
 
   if (toolCount === 0 && toolText.trim().length > 0) {
@@ -2361,14 +2343,20 @@ function LiveToolGroupView({
   return (
     <>
       {thinkingNodes}
-      <RoundShell
-        timerText={timerText}
-        running={running}
-        showTimer={true}
-        autoExpand={autoExpandThisGroup}
-        detailsNode={<StepsView text={toolText} />}
-        textNode={null}
-      />
+      <div className="turn-round">
+        <div className="activity">
+          {running && (
+            <div className="activity-header running">
+              <span className={`activity-text marquee`}>
+                {lastRunning
+                  ? <>{toolTitle ?? waitingText} <Icon name="spinner" size={14} className="icon-spin" /></>
+                  : waitingText}
+              </span>
+            </div>
+          )}
+          <StepsView text={toolText} />
+        </div>
+      </div>
     </>
   );
 }
@@ -2703,12 +2691,6 @@ export function LiveRoundView({
   const hasAnswer = answer.trim().length > 0;
   const hasTools = toolText.trim().length > 0;
   const thinkingRunning = running && Boolean(round.thinkingText) && !round.thinkingEndedAt;
-  const showTimer = shouldShowRoundTimer({
-    running,
-    hasTools,
-    hasAnswer,
-    thinkingRunning,
-  });
   if (!running) {
     return (
       <HistoryRoundDetailView
@@ -2721,9 +2703,9 @@ export function LiveRoundView({
       />
     );
   }
-  const timerText = hasTools && toolCount > 0
-    ? toolTitle ?? t("activity.toolCalls").replace("{count}", String(toolCount))
-    : `${t("activity.working")} (${elapsed})`;
+  const timerText = hasTools && toolCount > 0 && running
+    ? <>{toolTitle ?? ""} <Icon name="spinner" size={14} className="icon-spin" /></>
+    : "";
   return (
     <>
       {round.thinkingText && (
@@ -2734,9 +2716,6 @@ export function LiveRoundView({
             const startedAt = round.thinkingStartedAt ?? round.waitStartedAt;
             const endedAt = round.thinkingEndedAt ?? round.waitEndedAt ?? now;
             const clientElapsed = formatElapsed(endedAt - startedAt);
-            // When the backend provides its own elapsed measurement (via
-            // round_end.thinkingElapsedSeconds), prefer it so the live view
-            // matches the value shown on history reload.
             const backendMs = (round as unknown as { backendElapsedMs?: number }).backendElapsedMs;
             const thoughtForElapsed = backendMs != null && backendMs > 0
               ? formatElapsed(backendMs) : clientElapsed;
@@ -2746,21 +2725,32 @@ export function LiveRoundView({
           })()}
         />
       )}
-      <RoundShell
-        timerText={timerText}
-        expandedTimerText={`${t("activity.working")} (${elapsed})`}
-        running={running}
-        showTimer={showTimer}
-        autoExpand={false}
-        detailsNode={hasTools ? <StepsView text={toolText} /> : null}
-        textNode={
-          answer.trim().length > 0 ? (
-            <div className="answer">
-              <MarkdownText text={answer} />
-            </div>
-          ) : null
-        }
-      />
+      {hasTools && (
+        <div className="turn-round">
+          <div className="activity">
+            {running && timerText && (
+              <div className="activity-header running">
+                <span className="activity-text marquee">{timerText}</span>
+              </div>
+            )}
+            <StepsView text={toolText} />
+          </div>
+        </div>
+      )}
+      {answer.trim().length > 0 && (
+        <div className="answer">
+          <MarkdownText text={answer} />
+        </div>
+      )}
+      {!hasTools && !hasAnswer && running && (
+        <div className="activity">
+          <div className="activity-header running">
+            <span className="activity-text marquee">
+              {t("activity.working")} ({elapsed})
+            </span>
+          </div>
+        </div>
+      )}
     </>
   );
 }

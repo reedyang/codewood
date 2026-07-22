@@ -527,9 +527,10 @@ function PromptWithAttachment({
           </span>
         </span>
       </div>
-      {!isSubAgent && expanded && hasCmd && (
+      {!isSubAgent && expanded && hasCmd && syntaxNode}
+      {!isSubAgent && expanded && hasCmd && !syntaxNode && (
         <div className="cmd-output">
-          {syntaxNode ?? <AnsiText text={cmdPayload} />}
+          <AnsiText text={cmdPayload} />
         </div>
       )}
       {!isSubAgent && expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
