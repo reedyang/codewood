@@ -74,6 +74,7 @@ from .core.console_utils import (
     GUI_DIFF_END,
     GUI_SUBAGENT_SESSION_BEGIN,
     GUI_SUBAGENT_SESSION_END,
+    _SpinnerTicker,
     _WorkingStatusTicker,
     _ansi_blue,
     _ansi_bold,
@@ -2533,6 +2534,7 @@ class Agent:
             self._erase_last_user_input_line()
         line = self._format_direct_shell_command_feedback_line(command, failed=failed)
         print(line)
+        self._last_tool_call_feedback_line = line
         self._last_terminal_block_kind = "feedback"
         self._terminal_cursor_at_line_start = True
 
@@ -2546,6 +2548,7 @@ class Agent:
         self._reset_tool_call_feedback_interstitial_lines()
         line = self._format_tool_call_feedback_line(tool_name, args, failed=failed)
         print(line)
+        self._last_tool_call_feedback_line = line
         self._last_terminal_block_kind = "feedback"
         self._terminal_cursor_at_line_start = True
 
@@ -5887,10 +5890,11 @@ class Agent:
 
         stream_state["on_live_window_desynced"] = _recover_live_window_desync_once
         out_stream, _ = self._create_direct_shell_output_streams(stream_state)
-        status_ticker = _WorkingStatusTicker(
+        feedback_line = str(getattr(self, "_last_tool_call_feedback_line", "") or "")
+        status_ticker = _SpinnerTicker(
             sys.stdout,
+            prefix_line=feedback_line,
             fps=DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS,
-            language=getattr(self, "display_language", None),
         )
         self._start_interrupt_monitor(cancel_task_on_interrupt=False)
         status_ticker.start()

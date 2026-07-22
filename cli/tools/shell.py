@@ -24,6 +24,7 @@ from ..actions.command_execution_buffer import CommandExecutionBuffer
 from ..config.app_info import get_app_runtime_attr_name
 from ..core.console_utils import (
     GUI_CMD_OUTPUT_END,
+    _SpinnerTicker,
     _WorkingStatusTicker,
     _ansi_gray,
     _safe_console_write,
@@ -687,8 +688,10 @@ def action_shell_command(
             # so suppress the terminal ticker (which would otherwise leave a
             # stale "Working... (0s ...)" line in the GUI step output).
             if not bool(getattr(agent, "_gui_plain_stream", False)):
-                status_ticker = _WorkingStatusTicker(
+                feedback_line = str(getattr(agent, "_last_tool_call_feedback_line", "") or "")
+                status_ticker = _SpinnerTicker(
                     sys.stdout,
+                    prefix_line=feedback_line,
                     fps=SHELL_WORKING_STATUS_MARQUEE_FPS,
                 )
                 status_ticker.start()
