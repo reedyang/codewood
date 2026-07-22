@@ -1826,16 +1826,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (next && stateForFocused) {
             if (isStreamingChat) {
               // During streaming, only apply chat list updates (e.g. auto-
-              // generated name) from the incoming state to avoid disrupting
-              // turn content accumulation with a full state replacement.
+              // generated name) and plan changes (e.g. from update_plan) to
+              // avoid disrupting turn content accumulation with a full state
+              // replacement.
               setState((prev) => {
                 if (!prev) return prev;
-                if (!next.chats) return prev;
-                const chats = prev.chats.map((c) => {
-                  const updated = next.chats?.find((nc) => nc.id === c.id);
-                  return updated ? { ...c, ...updated } : c;
-                });
-                return { ...prev, chats };
+                const merged: any = { ...prev };
+                if (next.chats) {
+                  merged.chats = prev.chats.map((c) => {
+                    const updated = next.chats?.find((nc: any) => nc.id === c.id);
+                    return updated ? { ...c, ...updated } : c;
+                  });
+                }
+                if (next.plan) {
+                  merged.plan = next.plan;
+                }
+                return merged;
               });
             } else {
               setState(next);
