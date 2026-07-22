@@ -3706,10 +3706,15 @@ html[data-has-bg] .select {
   flex: 0 0 auto;
   transition: transform 0.12s ease;
   color: var(--text-muted, #888);
+  opacity: 0;
+}
+.diff-step-header:hover .diff-step-chevron {
+  opacity: 1;
 }
 
 .diff-step-chevron.open {
   transform: rotate(90deg);
+  opacity: 1;
 }
 
 .diff-step-title {
@@ -4225,6 +4230,13 @@ html[data-has-bg] .select {
   font-size: 13px;
   padding: 4px 0;
 }
+.activity-header .chevron {
+  opacity: 0;
+}
+.activity-header:hover .chevron,
+.activity-header .chevron.open {
+  opacity: 1;
+}
 
 .activity-header.has-details {
   display: inline-flex;
@@ -4369,23 +4381,7 @@ html[data-has-bg] .select {
   margin-bottom: 0;
 }
 
-.activity-collapse {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  margin-top: 2px;
-  padding: 2px 0;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  color: var(--text-on-dark-muted);
-  border-radius: 4px;
-}
 
-.activity-collapse:hover {
-  background: var(--output-bg);
-}
 
 .activity-steps {
   font-family: "Cascadia Code", "Consolas", monospace;
@@ -4441,6 +4437,13 @@ html[data-has-bg] .select {
   cursor: pointer;
   text-align: left;
 }
+.activity-steps .cmd-output-header .chevron {
+  opacity: 0;
+}
+.activity-steps .cmd-output-header:hover .chevron,
+.activity-steps .cmd-output-header[aria-expanded="true"] .chevron {
+  opacity: 1;
+}
 
 .activity-steps .cmd-output-title {
   font: inherit;
@@ -4481,7 +4484,8 @@ html[data-has-bg] .select {
   cursor: pointer;
 }
 
-.activity-steps .cmd-prompt.has-attachment:hover .cmd-prompt-diff-toggle {
+.activity-steps .cmd-prompt.has-attachment:hover .cmd-prompt-diff-toggle,
+.activity-steps .cmd-prompt.has-attachment[aria-expanded="true"] .cmd-prompt-diff-toggle {
   opacity: 1;
 }
 
@@ -4492,13 +4496,13 @@ html[data-has-bg] .select {
   margin-left: 0.5ch;
   vertical-align: middle;
   color: var(--muted, #8a8a8a);
-  opacity: 0.7;
+  opacity: 0;
 }
 
 .activity-steps > .diff-preview {
   margin-left: -12px;
   margin-right: -12px;
-  margin-bottom: 0;
+  margin-bottom: 8px;
   border-left: none;
   border-right: none;
   border-bottom: none;
@@ -4506,6 +4510,7 @@ html[data-has-bg] .select {
 }
 .activity-steps > .diff-preview:last-child {
   margin-bottom: -10px;
+  border-radius: 0 0 10px 10px;
 }
 
 .diff-preview .diff-iline:not(.diff-del):not(.diff-add),
@@ -4562,9 +4567,14 @@ html[data-has-bg] .select {
 }
 .thinking-header .chevron {
   transition: transform 0.15s;
+  opacity: 0;
+}
+.thinking-header:hover .chevron {
+  opacity: 1;
 }
 .thinking-header .chevron.open {
   transform: rotate(180deg);
+  opacity: 1;
 }
 .thinking-scroll {
   max-height: 100px;
@@ -5896,7 +5906,7 @@ body.resizing-y .console-term {
 /* Sub-agent view button in Steps.tsx */
 .subagent-view-btn {
   cursor: pointer;
-  opacity: 0.7;
+  opacity: 0;
   flex: 0 0 auto;
 }
 
