@@ -227,6 +227,14 @@ interface AppContextValue {
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
+  /** Pending input queue for the active chat (waiting while model is busy). */
+  pendingInputs: string[];
+  /** Whether the pending queue is in auto-send mode (vs. manual-start-on-restart). */
+  pendingAutoSend: boolean;
+  /** Manually start sending the pending input queue (when auto-send is off). */
+  startPendingInputs: () => Promise<void>;
+  /** Cancel a pending input at the given index. Returns the removed text. */
+  cancelPendingInput: (index: number) => string | null;
   compactContext: () => Promise<{ ok: boolean; text?: string }>;
   compactNotice: CompactNoticeData | null;
   answerConfirm: (answer: string) => Promise<void>;
@@ -430,6 +438,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const historyChatRef = useRef<string>("\u0000");
   // Per-chat busy flags so each running chat shows its own state.
   const [busyByChat, setBusyByChat] = useState<Record<string, boolean>>({});
+  const busyByChatRef = useRef<Record<string, boolean>>({});
+  // Per-chat pending inputs: messages typed while the model was busy, waiting
+  // to be sent when the current turn finishes. Keyed by workspace-qualified key.
+  const [pendingInputsByChat, setPendingInputsByChat] = useState<Record<string, string[]>>({});
+  const pendingInputsByChatRef = useRef<Record<string, string[]>>({});
+  // Per-chat auto-send flag: true when pending inputs should be auto-dequeued
+  // on idle (normal operation). False on restart (user must manually start).
+  const [pendingAutoSendByChat, setPendingAutoSendByChat] = useState<Record<string, boolean>>({});
+  const pendingAutoSendByChatRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    pendingInputsByChatRef.current = pendingInputsByChat;
+    pendingAutoSendByChatRef.current = pendingAutoSendByChat;
+  }, [pendingInputsByChat, pendingAutoSendByChat]);
   // Chats whose turn finished while the user was looking at a different chat.
   // They stay flagged as unread (blue dot in the sidebar) until opened.
   const [unreadChatIds, setUnreadChatIds] = useState<Record<string, boolean>>(
@@ -666,6 +687,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The active chat's live turns / busy flag are what the chat view renders.
   const turns = turnsByChat[activeKey] ?? EMPTY_TURNS;
   const busy = busyByChat[activeKey] ?? false;
+  const pendingInputs = pendingInputsByChat[activeKey] ?? [];
+  const pendingAutoSend = pendingAutoSendByChat[activeKey] ?? false;
   const runningChatStartedAtByChat = useMemo(() => {
     const out: Record<string, number> = {};
     for (const [key, list] of Object.entries(turnsByChat)) {
@@ -1648,7 +1671,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if ((prev[chatId] ?? false) === value) {
         return prev;
       }
-      return { ...prev, [chatId]: value };
+      const next = { ...prev, [chatId]: value };
+      busyByChatRef.current = next;
+      return next;
     });
   }, []);
 
@@ -1747,6 +1772,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 pendingHistoryReloadRef.current = false;
               }
               reloadHistoryRef.current();
+            }
+            // Auto-send next pending input if auto-send is enabled for this chat.
+            if (eventKey && pendingAutoSendByChatRef.current[eventKey]) {
+              const pending = pendingInputsByChatRef.current[eventKey];
+              if (pending && pending.length > 0) {
+                setTimeout(() => {
+                  sendNextPendingRef.current(eventKey);
+                }, 200);
+              }
             }
           }
           // When the focused workspace changes to one with no active chat,
@@ -2223,14 +2257,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (value.chats) {
           const wsId = String(value.workspace?.id ?? activeWorkspaceId ?? "");
           const hydrated: Record<string, FileChangeSummary[]> = {};
+          const hydratedInputs: Record<string, string[]> = {};
           for (const ch of value.chats) {
             // ch.fileChanges is now a FileChangeSummary[] from the backend
             if (ch.fileChanges && Array.isArray(ch.fileChanges) && ch.fileChanges.length > 0) {
               hydrated[chatKey(wsId, ch.id)] = ch.fileChanges;
             }
+            // Hydrate pending inputs from persisted state. On restart the auto-send
+            // flag stays false so the user must manually trigger the queue.
+            if (ch.pendingInputs && Array.isArray(ch.pendingInputs) && ch.pendingInputs.length > 0) {
+              hydratedInputs[chatKey(wsId, ch.id)] = ch.pendingInputs;
+            }
           }
           if (Object.keys(hydrated).length > 0) {
             setFileChangesByChat((prev) => ({ ...prev, ...hydrated }));
+          }
+          if (Object.keys(hydratedInputs).length > 0) {
+            setPendingInputsByChat((prev) => ({ ...prev, ...hydratedInputs }));
           }
         }
         // Sync model presets to backend on startup (fire-and-forget).
@@ -2243,17 +2286,56 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [client, appendSegment, startTurn, startRound, endRound, endActiveTurn, setBusyForChat]);
 
+  const persistPendingInputs = useCallback(
+    async (chatId: string, wsId: string, inputs: string[]) => {
+      try {
+        await client.savePendingInputs(chatId, inputs, wsId);
+      } catch {
+        // Best-effort persistence
+      }
+    },
+    [client],
+  );
+
+  const sendNextPending = useCallback(
+    async (chatKeyVal: string) => {
+      const inputs = pendingInputsByChatRef.current[chatKeyVal];
+      if (!inputs || inputs.length === 0) {
+        return;
+      }
+      const next = inputs[0];
+      const remaining = inputs.slice(1);
+      setPendingInputsByChat((prev) => {
+        const nextState = { ...prev, [chatKeyVal]: remaining };
+        if (remaining.length === 0) {
+          delete nextState[chatKeyVal];
+        }
+        return nextState;
+      });
+      const { wsId, chatId } = parseChatKey(chatKeyVal);
+      if (chatId) {
+        void persistPendingInputs(chatId, wsId, remaining);
+      }
+      if (remaining.length === 0) {
+        setPendingAutoSendByChat((prev) => {
+          const next = { ...prev };
+          delete next[chatKeyVal];
+          return next;
+        });
+      }
+      await client.sendInput(next, true, chatId);
+    },
+    [client, persistPendingInputs],
+  );
+  const sendNextPendingRef = useRef(sendNextPending);
+  sendNextPendingRef.current = sendNextPending;
+
   const sendInput = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) {
         return;
       }
-      // In draft (compose) mode the chat hasn't been created yet. Materialize it
-      // now in the chosen workspace as a SINGLE atomic backend op (switch +
-      // create). Doing the workspace switch and chat creation as two separate
-      // calls previously left an extra empty chat behind in the target
-      // workspace, so we let ``newChat`` take the workspace id directly.
       let targetChatId = activeChatIdRef.current;
       let targetWsId = activeWorkspaceIdRef.current;
       if (draftModeRef.current) {
@@ -2263,24 +2345,89 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         targetChatId = target.chatId;
         targetWsId = target.workspaceId;
-        // Optimistically focus the new chat AND echo the user's message right
-        // away instead of waiting for the backend's ``idle`` / ``turn_start``
-        // SSE round-trip. Without the optimistic focus the view keeps
-        // rendering the old/empty chat's bucket (looks like it "stays on the
-        // welcome screen"); without the optimistic echo the message vanishes
-        // until ``turn_start`` lands. ``startTurn`` reconciles the echo in
-        // place when the authoritative event arrives, so there is no
-        // duplicate.
         startOptimisticTurn(trimmed, chatKey(targetWsId, targetChatId));
         setBusyForChat(chatKey(targetWsId, targetChatId), true);
+        await client.sendInput(trimmed, true, targetChatId);
+        return;
       }
-      // Composer input is always a model prompt; the GUI never executes
-      // built-in commands or "!" direct shell typed by the user. Route it to
-      // the focused chat explicitly so it reaches that chat's loop even while
-      // another chat is mid-task.
+      const key = chatKey(targetWsId, targetChatId);
+      const isBusy = busyByChatRef.current[key] ?? false;
+      if (isBusy && targetChatId) {
+        setPendingInputsByChat((prev) => {
+          const existing = prev[key] ?? [];
+          const next = { ...prev, [key]: [...existing, trimmed] };
+          return next;
+        });
+        setPendingAutoSendByChat((prev) => ({ ...prev, [key]: true }));
+        void persistPendingInputs(
+          targetChatId,
+          targetWsId,
+          [...(pendingInputsByChatRef.current[key] ?? []), trimmed],
+        );
+        return;
+      }
+      // When there are pending items with auto-send off (e.g. restart with
+      // unsent queue) and the user sends a new message instead of clicking
+      // the queue's send button, re-enable auto-send so the queue continues
+      // after the new message's turn finishes.
+      if (!isBusy && targetChatId) {
+        const existingPending = pendingInputsByChatRef.current[key];
+        if (existingPending && existingPending.length > 0) {
+          setPendingAutoSendByChat((prev) => ({ ...prev, [key]: true }));
+        }
+      }
       await client.sendInput(trimmed, true, targetChatId);
     },
-    [client, materializeDraftChat, startOptimisticTurn, setBusyForChat],
+    [client, materializeDraftChat, startOptimisticTurn, setBusyForChat, persistPendingInputs],
+  );
+
+  const startPendingInputs = useCallback(async () => {
+    const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+    if (!key) {
+      return;
+    }
+    const inputs = pendingInputsByChatRef.current[key];
+    if (!inputs || inputs.length === 0) {
+      return;
+    }
+    setPendingAutoSendByChat((prev) => ({ ...prev, [key]: true }));
+    await sendNextPendingRef.current(key);
+  }, []);
+
+  const cancelPendingInput = useCallback(
+    (index: number): string | null => {
+      const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      if (!key) {
+        return null;
+      }
+      const inputs = pendingInputsByChatRef.current[key];
+      if (!inputs || index < 0 || index >= inputs.length) {
+        return null;
+      }
+      const removed = inputs[index];
+      const remaining = inputs.filter((_, i) => i !== index);
+      setPendingInputsByChat((prev) => {
+        if (remaining.length === 0) {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        }
+        return { ...prev, [key]: remaining };
+      });
+      if (remaining.length === 0) {
+        setPendingAutoSendByChat((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
+      const { wsId, chatId } = parseChatKey(key);
+      if (chatId) {
+        void persistPendingInputs(chatId, wsId, remaining);
+      }
+      return removed;
+    },
+    [persistPendingInputs],
   );
 
   const runCommand = useCallback(
@@ -2294,6 +2441,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
     if (key) {
       await client.interrupt();
+    }
+    // Stop auto-send for the pending queue: clicking Stop means the user
+    // wants to halt everything, not just the current turn. The pending list
+    // re-shows its send button so the user can manually resume.
+    if (key) {
+      setPendingAutoSendByChat((prev) => {
+        if (!prev[key]) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     }
   }, [client]);
 
@@ -3234,6 +3394,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sendInput,
     runCommand,
     interrupt,
+    pendingInputs,
+    pendingAutoSend,
+    startPendingInputs,
+    cancelPendingInput,
     compactContext: async () => {
       setCompactNoticeState((state) =>
         state.notice

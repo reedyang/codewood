@@ -69,6 +69,15 @@ export class ApiClient {
     });
   }
 
+  async savePendingInputs(chatId: string, inputs: string[], workspaceId = ""): Promise<boolean> {
+    const res = await fetch(`${this.base}/save-pending-inputs`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ chatId, inputs, workspaceId }),
+    });
+    return res.ok;
+  }
+
   async confirm(id: string, answer: string): Promise<void> {
     await fetch(`${this.base}/confirm`, {
       method: "POST",

@@ -797,6 +797,10 @@ export function ChatView() {
     consoleOpen,
     activeSubAgentSession,
     subAgentSessionLoading,
+    pendingInputs,
+    pendingAutoSend,
+    startPendingInputs,
+    cancelPendingInput,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -1041,7 +1045,7 @@ export function ChatView() {
     imageAttachments.length > 0;
 
   const submit = async () => {
-    if ((busy && !askMoreInfo) || !canSend) {
+    if (!canSend) {
       return;
     }
     // While an request_user_input prompt is pending, the turn is paused waiting on
@@ -1169,7 +1173,62 @@ export function ChatView() {
   // on the user's selection — it isn't actively working — so the action
   // button must revert to "send" (not the interrupt/stop affordance) even
   // though the backend busy flag is still set for the turn.
-  const stopMode = busy && !askMoreInfo;
+  // Also switch to "send" when the composer has text while busy: the message
+  // will be queued rather than interrupting the running task.
+  const stopMode = busy && !askMoreInfo && !canSend;
+
+  // Pending task list: shown when there are queued messages waiting to be sent.
+  const [pendingHoverIdx, setPendingHoverIdx] = useState<number | null>(null);
+  const pendingListRef = useRef<HTMLDivElement>(null);
+  const hasPending = pendingInputs.length > 0;
+
+  const pendingList = hasPending ? (
+    <div className="pending-list" ref={pendingListRef}>
+      <div className="pending-list-header">
+        <span className="pending-list-title">
+          {t("chat.pendingListCount", { count: pendingInputs.length })}
+        </span>
+        {!pendingAutoSend && (
+          <button
+            className="pending-list-send"
+            title={t("chat.pendingListSendTip")}
+            onClick={() => void startPendingInputs()}
+          >
+            <Icon name="send" size={14} />
+          </button>
+        )}
+      </div>
+      <div className="pending-list-items">
+        {pendingInputs.map((text, i) => (
+          <div
+            key={i}
+            className={`pending-list-item${i === 0 && pendingAutoSend ? " is-next" : ""}`}
+            onMouseEnter={() => setPendingHoverIdx(i)}
+            onMouseLeave={() => setPendingHoverIdx(null)}
+            title={text}
+          >
+            <span className="pending-list-item-text">{text}</span>
+            <button
+              className="pending-list-cancel"
+              title={t("chat.pendingListCancel")}
+              aria-label={t("chat.pendingListCancel")}
+              onClick={() => {
+                const removed = cancelPendingInput(i);
+                if (removed && draftText.trim().length === 0) {
+                  setSegments([{ kind: "text", value: removed }]);
+                }
+              }}
+            >
+              <Icon name="trash" size={12} />
+            </button>
+            {pendingHoverIdx === i && (
+              <div className="pending-list-tooltip">{text}</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   const composer = (
     <div className="composer">
@@ -1454,7 +1513,12 @@ export function ChatView() {
             )}
           </div>
           </div>
-          <div className="composer-dock">{composer}</div>
+          <div className="composer-dock">
+            <div className="composer-dock-inner">
+              {pendingList}
+              {composer}
+            </div>
+          </div>
         </>
       )}
       <ConsoleDock open={consoleOpen} />

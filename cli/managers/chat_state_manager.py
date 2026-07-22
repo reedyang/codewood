@@ -410,6 +410,7 @@ class ChatStateManager:
             "reasoning_level": "",
             "mode": mode,
             "messages": [],
+            "pending_inputs": [],
             "archived": False,
         }
 
@@ -538,6 +539,14 @@ class ChatStateManager:
         pending = raw.get("pending_request_user_input")
         if isinstance(pending, dict):
             entry["pending_request_user_input"] = dict(pending)
+        # Preserve pending inputs queue (queued messages waiting to be sent
+        # when the model is busy). Persisted alongside messages so they survive
+        # a restart.
+        pending_inputs = raw.get("pending_inputs")
+        if isinstance(pending_inputs, list):
+            entry["pending_inputs"] = [str(x) for x in pending_inputs if str(x).strip()]
+        else:
+            entry["pending_inputs"] = []
         return entry
 
     def default_chat_state(self) -> Dict[str, Any]:
@@ -1212,6 +1221,21 @@ class ChatStateManager:
         # ``_last_context_*`` snapshot current and calls this helper after each
         # update; its only remaining job is to surface the new value to the GUI.
         self._notify_gui_context_usage_changed()
+
+    def save_pending_inputs(self, chat_id: str, inputs: List[str]) -> bool:
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return False
+        lock = self._active_chat_state_lock()
+        if lock is None:
+            return False
+        with lock:
+            chat = self.find_chat_by_id(cid)
+            if not chat:
+                return False
+            chat["pending_inputs"] = [str(x) for x in inputs if str(x).strip()]
+            self.save_chat_state()
+            return True
 
     def clear_chat_context(self, chat_id: str) -> bool:
         cid = str(chat_id or "").strip()

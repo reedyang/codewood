@@ -1222,6 +1222,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     # of defaulting every chat to Agent.
                     "planMode": _chat_mode_is_plan(c),
                     "archived": bool(c.get("archived", False)),
+                    "pendingInputs": [str(x) for x in (c.get("pending_inputs") or []) if str(x).strip()],
                     # Private: keep the on-disk record file stem so side-data
                     # (file_changes.json) can be resolved without find_chat_by_id.
                     "_recordFile": str(c.get("_record_file") or ""),
@@ -2120,6 +2121,22 @@ class ServeApp:
                     fn()
             except Exception:
                 pass
+
+    def save_pending_inputs(self, chat_id: str, ws_id: str, inputs: List[str]) -> bool:
+        """Persist pending input queue for a chat so it survives a restart."""
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return False
+        mgr = getattr(self.agent, "_chat_state_manager", None)
+        if mgr is None:
+            return False
+        ws = str(ws_id or "").strip()
+        if ws and ws != str(getattr(self.agent, "workspace_id", "") or "").strip():
+            ctx = self._persist_ctx_for_workspace(ws)
+            if ctx:
+                return mgr.save_pending_inputs(cid, inputs)
+            return False
+        return mgr.save_pending_inputs(cid, inputs)
 
     def compact_context(self) -> Dict[str, Any]:
         """Trigger manual context compaction via the session memory service.
@@ -5661,6 +5678,16 @@ def _make_handler(app: ServeApp):
                     text, chat_id=chat_id, as_prompt=bool(body.get("asPrompt"))
                 )
                 self._send_json(200, {"ok": True})
+                return
+            if path == "/save-pending-inputs":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                inputs = body.get("inputs")
+                if not isinstance(inputs, list):
+                    inputs = []
+                inputs = [str(x) for x in inputs if str(x).strip()][:50]
+                ok = app.save_pending_inputs(chat_id, ws_id, inputs)
+                self._send_json(200 if ok else 404, {"ok": ok})
                 return
             if path == "/paste-image":
                 chat_id = str(body.get("chatId") or "")[:256]

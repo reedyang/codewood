@@ -50,6 +50,8 @@ export interface ChatSummary {
   archived?: boolean;
   /** Per-chat file-change summaries (list of per-turn summaries, survives restarts via getState). */
   fileChanges?: FileChangeSummary[];
+  /** Pending input queue: messages typed while the model was busy, waiting to be sent. */
+  pendingInputs?: string[];
 }
 
 /** Chat summary as returned by GET /workspace-chats for any workspace. */
