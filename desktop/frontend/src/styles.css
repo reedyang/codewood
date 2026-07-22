@@ -955,6 +955,7 @@ body.resizing-x .browser-frame {
 
 .icon-spin {
   animation: plan-spin 0.9s linear infinite;
+  vertical-align: middle;
 }
 
 .brand-name {
@@ -4394,7 +4395,6 @@ html[data-has-bg] .select {
   margin: 6px 0 0 0;
   user-select: text;
 }
-
 /* Feedback lines ("You ran ...", "Ran ...") render flush-left. */
 .activity-steps .step-text {
   white-space: pre-wrap;
@@ -4413,7 +4413,7 @@ html[data-has-bg] .select {
 .activity-steps .cmd-output {
   white-space: pre-wrap;
   word-break: break-word;
-  padding: 10px 12px;
+  padding: 10px 12px 4px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--output-bg) 30%, transparent);
@@ -4544,7 +4544,7 @@ html[data-has-bg] .select {
   border: none;
 }
 .thinking-activity {
-  margin: 8px 0;
+  margin: 4px 0;
 }
 .thinking-header {
   display: flex !important;
