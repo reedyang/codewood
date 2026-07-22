@@ -846,14 +846,6 @@ class SessionMemoryService:
                     payload = None
                 if isinstance(payload, dict):
                     return True
-            parse_model_tool_result = getattr(self.agent, "_parse_model_tool_result_history_content", None)
-            if callable(parse_model_tool_result):
-                try:
-                    model_payload = parse_model_tool_result(text)
-                except Exception:
-                    model_payload = None
-                if isinstance(model_payload, dict):
-                    return True
             parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
             if callable(parse_worked_summary):
                 try:

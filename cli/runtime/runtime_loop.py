@@ -63,7 +63,6 @@ from ..core.console_utils import (
 _WORKING_STATUS_MARQUEE_FPS = 10.0
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
-_MODEL_TOOL_RESULT_HISTORY_PREFIX = "[MODEL_TOOL_RESULT]"
 _THINKING_TUI_MAX_VISIBLE_LINES = 5
 _THINKING_TUI_INDENT = "  "
 
@@ -1169,19 +1168,7 @@ def _should_fire_plan_finalize_nudge(
 
 
 def _strip_leaked_internal_history_markers(text: Any) -> str:
-    s = str(text or "")
-    if not s:
-        return ""
-    idx = s.find(_MODEL_TOOL_RESULT_HISTORY_PREFIX)
-    if idx < 0:
-        # Also catch malformed sentinels where the model echoed the prefix
-        # without the closing bracket (e.g. "[MODEL_TOOL_RESULT接下来..."),
-        # which the live-stream filter likewise treats as a leak.
-        bare_prefix = _MODEL_TOOL_RESULT_HISTORY_PREFIX.rstrip("]")
-        idx = s.find(bare_prefix)
-        if idx < 0:
-            return s
-    return s[:idx].rstrip()
+    return str(text or "")
 
 
 def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
@@ -1205,34 +1192,6 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
         return pos
 
     lowered = s.lower()
-    internal_marker_idx = s.find(_MODEL_TOOL_RESULT_HISTORY_PREFIX)
-    if internal_marker_idx >= 0:
-        starts.append(internal_marker_idx)
-    else:
-        # ``[MODEL_TOOL_RESULT`` (without the trailing ``]``) is a unique enough
-        # literal that it is virtually never produced by natural prose. Cut at
-        # any occurrence so that malformed sentinels — e.g. when the model
-        # echoes the prefix without the closing bracket, or when the bracket
-        # arrives in a later chunk — never leak to the terminal.
-        bare_prefix = _MODEL_TOOL_RESULT_HISTORY_PREFIX.rstrip("]")
-        bare_idx = s.find(bare_prefix)
-        if bare_idx >= 0:
-            starts.append(bare_idx)
-        elif not final:
-            # Withhold the tail of the buffer while it still looks like the
-            # beginning of an internal "[MODEL_TOOL_RESULT]" sentinel that may
-            # have been split across streaming chunks. Without this, partial
-            # prefixes such as "[MODEL_TOOL_RES" would leak to the terminal
-            # before the full sentinel arrives.
-            marker = _MODEL_TOOL_RESULT_HISTORY_PREFIX
-            # Find the longest non-empty prefix of ``marker`` that is also a
-            # suffix of ``s``. We require length >= 2 so a lone "[" inside
-            # normal prose (e.g. a markdown link) is not silently withheld.
-            max_check = min(len(marker) - 1, len(s))
-            for prefix_len in range(max_check, 1, -1):
-                if s.endswith(marker[:prefix_len]):
-                    starts.append(len(s) - prefix_len)
-                    break
     for marker in ("<tool_calls", "<|assistant"):
         idx = lowered.find(marker)
         if idx >= 0:
@@ -4753,9 +4712,7 @@ def run_agent_loop(agent: Any):
                             session_injected.add(canon_sid)
                         # Record the skill prompt as a real ``role: tool`` result
                         # paired with the model's ``request_skill_prompt`` tool call
-                        # (matching ``tool_call_id``). This replaces the deprecated
-                        # ``[MODEL_TOOL_RESULT]`` assistant message and the extra
-                        # "injected above" user message.
+                        # (matching ``tool_call_id``).
                         skill_tool_call_id = "call_0"
                         _issuing = getattr(self, "_last_tool_issuing_assistant", None)
                         if isinstance(_issuing, dict):

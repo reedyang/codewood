@@ -149,7 +149,6 @@ MemoryService = None  # type: ignore[misc, assignment]
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
-MODEL_TOOL_RESULT_HISTORY_PREFIX = "[MODEL_TOOL_RESULT]"
 CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
@@ -1820,24 +1819,6 @@ class Agent:
                     # output, so the user sees the correct status
                     # without needing live operation_results.
                     #
-                    # If no result message follows, the plan is the
-                    # only place to draw the line; render it here
-                    # with a neutral ``failed=False`` since no error
-                    # signal is available.
-                    next_payload = None
-                    if (idx + 1) < len(hist):
-                        next_item = hist[idx + 1]
-                        if (
-                            isinstance(next_item, dict)
-                            and str(next_item.get("role") or "").strip().lower() == "assistant"
-                        ):
-                            next_payload = self._parse_model_tool_result_history_content(
-                                str(next_item.get("content") or "")
-                            )
-                    next_is_matching_result = bool(
-                        next_payload is not None
-                        and self._model_tool_result_matches_plan(model_tool, model_args, next_payload)
-                    )
                     raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
                     if isinstance(raw_rounds, list) and raw_rounds:
                         try:
@@ -1855,82 +1836,14 @@ class Agent:
                         failed = not bool(result.get("success", True))
                         self._print_tool_call_feedback(model_tool, model_args, failed=failed)
                         last_plan_emitted_feedback = True
-                    elif not next_is_matching_result:
+                    else:
                         self._print_tool_call_feedback(model_tool, model_args, failed=False)
                         last_plan_emitted_feedback = True
-                    else:
-                        last_plan_emitted_feedback = False
                     if has_result and model_tool == "shell":
-                        # Render the shell output from the matching
-                        # operation_results entry, unless the very
-                        # next history message already carries the
-                        # same result payload (the result branch will
-                        # render it instead, to avoid duplicates).
-                        suppress_shell_output = bool(next_is_matching_result)
-                        if not suppress_shell_output:
-                            out_text, err_text = self._extract_model_shell_replay_output(result)
-                            if out_text or err_text:
-                                self._print_direct_shell_history_output(out_text, err_text)
-                            if self._is_model_shell_result_aborted(result) and (
-                                not self._history_item_is_conversation_interrupted(
-                                    hist[idx + 1] if (idx + 1) < len(hist) else None
-                                )
-                            ):
-                                self._print_conversation_interrupted_banner()
-                    continue
-                model_tool_result = self._parse_model_tool_result_history_content(content)
-                if model_tool_result is not None:
-                    model_tool = str(model_tool_result.get("tool") or "").strip()
-                    model_args = model_tool_result.get("args")
-                    if not isinstance(model_args, dict):
-                        model_args = {}
-                    if model_tool:
-                        _, tool_result_cursor = self._consume_tool_call_result_from_operation_results(
-                            operation_results,
-                            tool_result_cursor,
-                            model_tool,
-                            model_args,
-                        )
-                    failed = not bool(model_tool_result.get("success", True))
-                    # The matching plan entry (if it appeared just before this
-                    # result) already printed the feedback line above; skip a
-                    # duplicate render in that case.
-                    prev_item = hist[idx - 1] if idx > 0 else None
-                    prev_plan_payload = (
-                        self._parse_model_tool_plan_history_content(
-                            str((prev_item or {}).get("content") or "")
-                        )
-                        if isinstance(prev_item, dict)
-                        and str(prev_item.get("role") or "").strip().lower() == "assistant"
-                        else None
-                    )
-                    plan_matches_result = bool(
-                        prev_plan_payload is not None
-                        and str(prev_plan_payload.get("tool") or "").strip() == model_tool
-                        and self._model_tool_result_matches_plan(
-                            model_tool, model_args, model_tool_result
-                        )
-                    )
-                    # Only treat a matching prior plan as "already
-                    # rendered" when that plan actually emitted its
-                    # feedback line. When the plan stayed silent
-                    # (no matching operation_results entry, e.g. the
-                    # chat was reopened or the result came from
-                    # session memory rather than a live run), the
-                    # result branch is the only place that can show
-                    # the user what happened.
-                    plan_already_printed = bool(
-                        plan_matches_result
-                        and last_plan_index == idx - 1
-                        and last_plan_emitted_feedback
-                    )
-                    if model_tool and not plan_already_printed:
-                        self._print_tool_call_feedback(model_tool, model_args, failed=failed)
-                    if model_tool == "shell":
-                        out_text, err_text = self._extract_model_shell_replay_output(model_tool_result)
+                        out_text, err_text = self._extract_model_shell_replay_output(result)
                         if out_text or err_text:
                             self._print_direct_shell_history_output(out_text, err_text)
-                        if self._is_model_shell_result_aborted(model_tool_result) and (
+                        if self._is_model_shell_result_aborted(result) and (
                             not self._history_item_is_conversation_interrupted(
                                 hist[idx + 1] if (idx + 1) < len(hist) else None
                             )
@@ -2147,34 +2060,6 @@ class Agent:
                             print("")
                     except Exception:
                         pass
-            return
-        model_tool_result = self._parse_model_tool_result_history_content(content)
-        if model_tool_result is not None:
-            model_tool = str(model_tool_result.get("tool") or "").strip()
-            model_args = model_tool_result.get("args")
-            if not isinstance(model_args, dict):
-                model_args = {}
-            failed = not bool(model_tool_result.get("success", True))
-            if model_tool:
-                self._print_tool_call_feedback(model_tool, model_args, failed=failed)
-            if model_tool == "shell":
-                out_text, err_text = self._extract_model_shell_replay_output(
-                    model_tool_result, full_output=True
-                )
-                if out_text or err_text:
-                    self._print_direct_shell_history_output(
-                        out_text, err_text, apply_gray=False
-                    )
-            elif model_tool == "apply_patch" and not failed:
-                # GUI reload: re-emit the collapsible diff block from the stored
-                # structured preview rows so the change preview reappears after a
-                # restart (the live stream printed it once; on reload the result
-                # message is the source of truth).
-                self._replay_apply_patch_gui_diff_block(model_tool_result)
-            elif model_tool == "run_subagent":
-                gui_marker = str(model_tool_result.get("guiSessionMarker") or "")
-                if gui_marker:
-                    print(gui_marker)
             return
         # Render tool_rounds_raw for assistant messages that carry tool
         # call data in a separate field rather than JSON-encoded content.
@@ -3386,79 +3271,9 @@ class Agent:
             return None
         return payload
 
-    def _build_model_tool_result_history_content(
-        self,
-        tool_name: str,
-        args: Dict[str, Any],
-        result: Dict[str, Any],
-        created_at: Optional[str] = None,
-    ) -> str:
-        t = str(tool_name or "").strip()
-        a = args if isinstance(args, dict) else {}
-        r = result if isinstance(result, dict) else {}
-        success = bool(r.get("success", True))
-        output_text = str(r.get("output") or "")
-        error_text = str(r.get("error") or "")
-        message_text = str(r.get("message") or "")
-        # Some non-shell tools (e.g. apply_patch) report failures through
-        # `error`/`message` only. Mirror that into `output` for history so
-        # replay/log viewers never end up with a blank failed tool result.
-        # (The trailing-newline normalization needed for prompt placement on
-        # reload is applied at render time in _extract_model_shell_replay_output
-        # so legacy records are fixed too.)
-        if not output_text:
-            if not success:
-                output_text = error_text or message_text
-            else:
-                # MCP tools return data in tool-specific keys like
-                # "result", "prompts", "contents", etc.
-                # instead of "output". Auto-capture any non-metadata keys.
-                _meta_keys = {"success", "error", "message", "return_code", "output",
-                              "server", "tool", "prompt", "uri", "arguments",
-                              "from_cache", "count", "total_count", "ok_count",
-                              "error_count", "has_error", "calls"}
-                data = {k: v for k, v in r.items() if k not in _meta_keys}
-                if data:
-                    output_text = json.dumps(data, ensure_ascii=False, default=str)
-        full_output_path = str(r.get("full_output_path") or "")
-        payload = {
-            "kind": "model_tool_result",
-            "tool": t,
-            "args": a,
-            "success": success,
-            "return_code": r.get("return_code"),
-            "output": output_text,
-            "error": error_text,
-            "message": message_text,
-            "created_at": created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        if full_output_path:
-            payload["full_output_path"] = full_output_path
-        gui_marker = str(r.get("_guiSessionMarker") or "")
-        if gui_marker:
-            payload["guiSessionMarker"] = gui_marker
-        return f"{MODEL_TOOL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
-
-    def _parse_model_tool_result_history_content(self, content: str) -> Optional[Dict[str, Any]]:
-        text = str(content or "")
-        if not text.startswith(MODEL_TOOL_RESULT_HISTORY_PREFIX):
-            return None
-        body = text[len(MODEL_TOOL_RESULT_HISTORY_PREFIX):].strip()
-        if not body:
-            return None
-        try:
-            payload = json.loads(body)
-        except Exception:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        if str(payload.get("kind") or "").strip() != "model_tool_result":
-            return None
-        return payload
-
     def _parse_model_tool_plan_history_content(self, content: str) -> Optional[Dict[str, Any]]:
         text = str(content or "").strip()
-        if not text or text.startswith(MODEL_TOOL_RESULT_HISTORY_PREFIX):
+        if not text:
             return None
         if not text.startswith("{") and not text.startswith("["):
             return None
@@ -3520,13 +3335,6 @@ class Agent:
         return self._parse_conversation_interrupted_history_content(
             str(msg.get("content") or "")
         ) is not None
-
-    # Tools whose result is purely a control signal for the runtime loop and
-    # should not pollute chat history (no user-visible side effect).
-    _MODEL_TOOL_RESULT_HISTORY_SKIP_TOOLS = frozenset({
-        "",
-        "request_skill_prompt",
-    })
 
     @staticmethod
     def _extract_tool_result_output(tool_name: str, result: Dict[str, Any]) -> str:
@@ -3624,7 +3432,7 @@ class Agent:
         result: Dict[str, Any],
     ) -> None:
         t = str(tool_name or "").strip().lower()
-        if t in self._MODEL_TOOL_RESULT_HISTORY_SKIP_TOOLS:
+        if t in frozenset({"", "request_skill_prompt"}):
             return
         r = result if isinstance(result, dict) else {}
         success = bool(r.get("success", True))
@@ -7697,12 +7505,10 @@ class Agent:
                 if not isinstance(msg, dict):
                     continue
                 content = str(msg.get("content") or "")
-                if "[MODEL_TOOL_RESULT]" not in content:
-                    continue
                 try:
-                    payload = json.loads(content.split("[MODEL_TOOL_RESULT]", 1)[1])
+                    payload = json.loads(content) if (content.startswith("{") or content.startswith("[")) else None
                 except Exception:
-                    continue
+                    payload = None
                 if not isinstance(payload, dict):
                     continue
                 marker = str(payload.get("guiSessionMarker") or "")

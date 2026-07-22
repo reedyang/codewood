@@ -25,7 +25,6 @@ from cli.runtime.runtime_loop import (
     _summarize_active_plan,
     _sync_command_input_history,
     _should_record_command_input_history,
-    _strip_leaked_internal_history_markers,
     _stream_visible_text_with_json_pause,
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
@@ -533,14 +532,6 @@ class RuntimeLoopTests(unittest.TestCase):
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw.split("[", 1)[0].rstrip())
-
-    def test_stream_visible_text_hides_internal_model_tool_result_marker(self):
-        raw = (
-            "Done\n\n"
-            "[MODEL_TOOL_RESULT]{\"kind\":\"model_tool_result\",\"tool\":\"done\",\"args\":{}}"
-        )
-        out = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out, "Done")
 
     def test_stream_visible_text_with_json_pause_caches_partial_plain_tool_json(self):
         raw = (
@@ -1636,43 +1627,6 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertEqual(plans, [("shell", {"command": "echo hi"})])
         self.assertIn('"tool_calls"', pseudo_text)
         self.assertIn('"command": "echo hi"', pseudo_text)
-
-    def test_strip_leaked_internal_history_markers_removes_suffix(self):
-        text = (
-            "Final answer\n\n"
-            "[MODEL_TOOL_RESULT]{\"kind\":\"model_tool_result\",\"tool\":\"done\"}"
-        )
-        self.assertEqual(_strip_leaked_internal_history_markers(text), "Final answer")
-
-    def test_strip_leaked_internal_history_markers_handles_bare_prefix(self):
-        """Malformed sentinels missing the closing bracket (e.g. when the
-        model echoes the prefix as ``[MODEL_TOOL_RESULT接下来...``) must also
-        be stripped from persisted assistant content."""
-        text = (
-            "Final answer\n\n"
-            "[MODEL_TOOL_RESULT接下来我将继续工作"
-        )
-        self.assertEqual(_strip_leaked_internal_history_markers(text), "Final answer")
-
-    def test_stream_visible_text_withholds_partial_internal_marker_prefix(self):
-        """While a streaming chunk only contains the beginning of
-        ``[MODEL_TOOL_RESULT]``, the partial prefix must be withheld from the
-        terminal until the rest arrives, otherwise users see leaks like
-        ``[MODEL_TOOL_RES`` flash into the live output."""
-        raw = "Hello\n[MODEL_TOOL_R"
-        out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, "Hello")
-
-    def test_stream_visible_text_hides_internal_model_tool_result_marker_without_closing_bracket(self):
-        """If the model echoes the literal sentinel without the trailing
-        ``]`` (a common hallucination pattern when echoing chat history),
-        the live stream must still cut at the leak so the user never sees
-        ``[MODEL_TOOL_RESULT接下来...`` in the terminal."""
-        raw = "Done\n[MODEL_TOOL_RESULT接下来我将使用获取到的实时数据"
-        out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, "Done")
-        out_final = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out_final, "Done")
 
     def test_stream_visible_text_does_not_withhold_plain_bracket_prefix(self):
         """Lone ``[`` characters in normal prose (e.g. ``[link](...)``) must
