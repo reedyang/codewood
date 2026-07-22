@@ -29,6 +29,25 @@ const SUBAGENT_SESSION_BEGIN = "\uE008";
 const SUBAGENT_SESSION_END = "\uE009";
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const BOX_DRAWING_RE = /[\u2500-\u257F]/g;
+
+/** Lines that after trimming consist mostly of box-drawing characters are
+ *  table borders.  When present, the container should shrink-wrap to the
+ *  longest such line so tables don't wrap, while long plain-text lines
+ *  still wrap normally. */
+function getLongestTableBorderWidth(text: string): number {
+  let maxW = 0;
+  for (const rawLine of text.split("\n")) {
+    const cleaned = rawLine.replace(ANSI_SGR_RE, "").replace(ANSI_CSI_RE, "");
+    const trimmed = cleaned.trim();
+    if (!trimmed) continue;
+    const boxCount = (trimmed.match(BOX_DRAWING_RE) || []).length;
+    if (boxCount / trimmed.length > 0.6) {
+      maxW = Math.max(maxW, cleaned.length);
+    }
+  }
+  return maxW;
+}
 
 type SegKind = "text" | "cmd" | "prompt" | "diff" | "subagent_session";
 type Segment = { kind: SegKind; text: string };
@@ -591,20 +610,36 @@ function PromptWithAttachment({
         </span>
       </div>
       {!isSubAgent && expanded && hasCmd && syntaxNode}
-      {!isSubAgent && expanded && hasCmd && !syntaxNode && (
-        <div className="cmd-output">
-          <AnsiText text={cmdPayload} />
-        </div>
-      )}
+      {!isSubAgent && expanded && hasCmd && !syntaxNode && (() => {
+        const tw = getLongestTableBorderWidth(cmdPayload);
+        return (
+          <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
+            {tw ? (
+              <div style={{ width: `${tw + 2}ch`, wordBreak: "normal" }}>
+                <AnsiText text={cmdPayload} />
+              </div>
+            ) : (
+              <AnsiText text={cmdPayload} />
+            )}
+          </div>
+        );
+      })()}
       {!isSubAgent && expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
     </>
   );
 }
 
 function CmdOutputBlock({ text }: { text: string }) {
+  const tw = getLongestTableBorderWidth(text);
   return (
-    <div className="cmd-output">
-      <AnsiText text={text} />
+    <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
+      {tw ? (
+        <div style={{ width: `${tw + 2}ch`, wordBreak: "normal" }}>
+          <AnsiText text={text} />
+        </div>
+      ) : (
+        <AnsiText text={text} />
+      )}
     </div>
   );
 }
