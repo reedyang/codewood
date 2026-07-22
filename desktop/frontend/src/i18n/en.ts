@@ -144,7 +144,7 @@ export const en: Dict = {
   "chat.inputPlaceholder": "Send a message to the model…",
   "chat.send": "Send",
   "chat.interrupt": "Stop",
-  "chat.busy": "Working\u2026",
+  "chat.busy": "Working…",
   "chat.unread": "Unread updates",
   "chat.you": "You",
   "chat.pendingListCount": "{count} pending",
