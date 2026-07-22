@@ -1,6 +1,8 @@
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
@@ -531,36 +533,32 @@ function useOutsideClose(open: boolean, onClose: () => void) {
 }
 
 /** A read-only view of a sub-agent session's conversation history,
- *  styled to match the main chat transcript.
+ *  styled to match the main chat transcript. Rendered as a single
+ *  "user turn" with the sub-agent's prompt followed by the work block.
  *
- *  Tool display is driven entirely by ``tool_rounds`` — backend-rendered text
- *  already wrapped in the main chat's ``StepsView`` / ``PromptWithAttachment``
- *  sentinels with ANSI-colored bullets and full paths.  Raw ``role: "tool"``
- *  and ``role: "tool"`` messages are skipped in the transcript; they
- *  exist solely as a faithful archive of the sub-agent's real interaction
- *  protocol and token statistics.
+ *  When the session is still streaming (``endedAt === null``), each
+ *  assistant round is rendered inline with live thinking/tool states and
+ *  a trailing "Working..." indicator — matching the ``TurnView``
+ *  structure of the main conversation.
+ *
+ *  When the session has finished, all assistant rounds are wrapped in a
+ *  single collapsible ``RoundShell`` ("Worked for Xs") whose expanded
+ *  body mirrors ``HistoryRoundDetailView`` — matching the
+ *  ``CompletedTurnView`` structure of the main conversation.
  */
 function SubAgentSessionView({ session, now }: { session: import("../api/types").SubAgentSession; now: number }) {
   const { t, state } = useApp();
   const lang = normalizeLang(state?.language);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isLive = !session.endedAt;
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [session.messages.length, session.output, session.messages[session.messages.length - 1]?.content]);
-
-    const toolTitleFor = (count: number) =>
-    t("activity.toolCalls").replace("{count}", String(count));
-
-
-
-
-  // Merge consecutive tool-only assistant messages into single "Called N tools" groups.
-  // Handles both persisted messages (with tool_rounds) and live SSE messages (with
-  // only tool_calls, no tool_rounds). Tool role results are appended as output.
-  const mergedMessages = (() => {
+  // Merge consecutive tool-only assistant messages into a single group.
+  const mergedMessages = useMemo(() => {
     const result: SubAgentMessage[] = [];
     let i = 0;
     const visibleTextOf = (m: SubAgentMessage): string => {
@@ -573,16 +571,11 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     while (i < session.messages.length) {
       const msg = session.messages[i];
       const msgRounds = getSubAgentMessageToolRounds(msg, { lang });
-      // Non-assistant or no tool rounds: push as-is.
       if (msg.role !== "assistant" || msgRounds.length === 0) {
         result.push(msg);
         i++;
         continue;
       }
-      // This message has tool rounds (may also have thinking / visible text).
-      // Absorb subsequent pure tool-call messages (no thinking, no visible text)
-      // into this message's tool_rounds group. Stop when the next message has
-      // its own thinking — that message starts a new group on the next iteration.
       const allRounds: string[] = [...msgRounds];
       let j = i + 1;
       while (j < session.messages.length) {
@@ -593,12 +586,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           getSubAgentMessageToolRounds(next, { lang }).length > 0
         ) {
           const nt = String((next as unknown as { _thinking?: string })._thinking || "").trim();
-          if (nt) {
-            // This adjacent message has its own thinking — it starts a new
-            // group. Stop merging here so the next iteration creates a
-            // separate group for it (absorbing subsequent pure tool calls).
-            break;
-          }
+          if (nt) break;
           allRounds.push(...getSubAgentMessageToolRounds(next, { lang }));
           j++;
         } else if (next.role === "tool") {
@@ -607,148 +595,228 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           break;
         }
       }
-      // Keep the anchor message intact (preserving _thinking_elapsed_seconds
-      // and any other metadata) but replace its tool_rounds with the merged set.
       const merged: SubAgentMessage = { ...msg, tool_rounds: allRounds };
       result.push(merged);
       i = j;
     }
     return result;
-  })();
+  }, [session.messages, lang]);
 
+  // Build HistoryRound-compatible objects from merged assistant messages.
+  const { rounds, workedForSeconds } = useMemo(() => {
+    const out: HistoryRound[] = [];
+    let totalWait = 0;
+    for (const msg of mergedMessages) {
+      if (msg.role !== "assistant") continue;
+      const thinking = String((msg as unknown as { _thinking?: string })._thinking || "").trim();
+      const tools = getSubAgentMessageToolRounds(msg, { lang }).join("\n\n");
+      const msgAny = msg as unknown as Record<string, unknown>;
+      const hasClean = Object.prototype.hasOwnProperty.call(msgAny, "_clean_content");
+      const text = hasClean
+        ? String(msgAny["_clean_content"] ?? "").trim()
+        : stripHiddenAssistantMarkers(msg.content || "").trim();
+      const waitSeconds = (msg as unknown as { _thinking_elapsed_seconds?: number })._thinking_elapsed_seconds ?? 0;
+      totalWait += waitSeconds;
+      if (!thinking && !tools && !text) continue;
+      out.push({ waitSeconds, text, tools, thinking });
+    }
+    return { rounds: out, workedForSeconds: totalWait };
+  }, [mergedMessages, lang]);
+
+  const userPrompt = session.messages.find((m) => m.role === "user");
+  const startedAt = session.startedAt ? new Date(session.startedAt).getTime() : 0;
+  const finalAnswerText = session.output || "";
+
+  const messageHandlers: MessageHandlers = {
+    onCopy: (text: string) => {
+      void navigator.clipboard?.writeText(text);
+    },
+    onFork: () => {},
+    onEdit: () => {},
+  };
+
+  // ── History mode (session has finished) ──────────────────────────
+  if (!isLive) {
+    const detailNodes = rounds.map((round, index) => {
+      const isFinalAnswer =
+        finalAnswerText.length > 0 &&
+        index === rounds.length - 1 &&
+        round.text === finalAnswerText;
+      return (
+        <HistoryRoundDetailView
+          key={`round-${index}`}
+          round={round}
+          showText={!isFinalAnswer}
+        />
+      );
+    });
+    const hasDetails = detailNodes.length > 0;
+    const timerText = `${t("activity.workedFor")} ${formatElapsed(workedForSeconds * 1000)}`;
+
+    return (
+      <div className="transcript" ref={scrollRef}>
+        <div className="transcript-inner">
+          <div className="turn">
+            {userPrompt && (
+              <UserEntry
+                text={userPrompt.content}
+                timeMs={startedAt}
+                index={0}
+                handlers={messageHandlers}
+              />
+            )}
+            {hasDetails && (
+              <RoundShell
+                timerText={timerText}
+                running={false}
+                showTimer={true}
+                autoExpand={false}
+                detailsBeforeText={true}
+                detailsNode={
+                  <div className="worked-for-body">{detailNodes}</div>
+                }
+                textNode={null}
+              />
+            )}
+            {finalAnswerText && (
+              <div className="answer">
+                <MarkdownText text={finalAnswerText} />
+              </div>
+            )}
+            {session.endedAt && session.startedAt && (
+              <div
+                style={{
+                  opacity: 0.5,
+                  fontSize: 12,
+                  textAlign: "center",
+                  marginTop: 16,
+                }}
+              >
+                {formatDuration(
+                  new Date(session.endedAt).getTime() -
+                    new Date(session.startedAt).getTime(),
+                )}
+                {session.success !== null && (
+                  <span style={{ marginLeft: 8 }}>
+                    {session.success ? "✓" : "✗"}
+                  </span>
+                )}
+              </div>
+            )}
+            {session.maxRoundsReached && (
+              <div
+                style={{
+                  color: "var(--warning)",
+                  fontSize: 13,
+                  textAlign: "center",
+                  marginTop: 8,
+                }}
+              >
+                {t("subagents.error.max_rounds") || "Maximum rounds reached"}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Live mode (session is still streaming) ───────────────────────
   return (
     <div className="transcript" ref={scrollRef}>
       <div className="transcript-inner">
-        {mergedMessages.map((msg, index) => {
-        if (msg.role === "system") return null;
+        <div className="turn">
+          {userPrompt && (
+            <UserEntry
+              text={userPrompt.content}
+              timeMs={startedAt}
+              index={0}
+              handlers={messageHandlers}
+            />
+          )}
+          {rounds.map((round, index) => {
+            const isLast = index === rounds.length - 1;
+            const hasContent = round.text.length > 0;
+            const hasTools = round.tools.length > 0;
+            const thinkingRunning =
+              !!round.thinking && isLive && isLast && !hasContent && !hasTools;
 
-        if (msg.role === "user") {
-          return (
-            <div key={index} className="turn">
-              <div className="user-message">
-                <div className="entry-input">
-                  <span className="entry-label">{t("chat.you")}</span>
-                  <div className="entry-text">{msg.content}</div>
-                </div>
-                {index === 1 && session.startedAt && (
-                  <div className="entry-actions" style={{ visibility: "visible" }}>
-                    <span className="entry-time">
-                      {new Date(session.startedAt).toLocaleTimeString()}
-                    </span>
+            return (
+              <Fragment key={index}>
+                {round.thinking && (
+                  <ThinkingPanel
+                    thinkingText={round.thinking}
+                    running={thinkingRunning}
+                    timerText={
+                      thinkingRunning
+                        ? `${t("activity.thinking")} (${formatElapsed(now - startedAt)})`
+                        : round.waitSeconds > 0
+                          ? `${t("activity.thoughtFor")} ${formatElapsed(round.waitSeconds * 1000)}`
+                          : `${t("activity.thoughtFor")}`
+                    }
+                  />
+                )}
+                {hasTools && (
+                  <div className="turn-round">
+                    <div className="activity">
+                      <StepsView
+                        text={round.tools}
+                        running={isLast && isLive && !hasContent}
+                      />
+                    </div>
                   </div>
                 )}
-              </div>
-            </div>
-          );
-        }
-
-        if (msg.role === "assistant") {
-          // Prefer the stored sanitized form when present. _clean_content is
-          // authoritative: when the key exists it was recorded by the backend
-          // (empty string means "no visible text", e.g. raw was entirely
-          // "<|channel>thought ... <channel|>" markers) and we must NOT fall
-          // back to re-cleaning the raw content. Only fall back to the raw
-          // content for legacy records that predate _clean_content support.
-          const msgAny = msg as unknown as Record<string, unknown>;
-          const hasClean = Object.prototype.hasOwnProperty.call(msgAny, "_clean_content");
-          const displayContent = hasClean
-            ? String(msgAny["_clean_content"] ?? "")
-            : stripHiddenAssistantMarkers(msg.content || "");
-          const answer = displayContent ? (
+                {hasContent && (
+                  <div className="answer">
+                    <MarkdownText text={round.text} />
+                  </div>
+                )}
+              </Fragment>
+            );
+          })}
+          {session.output && (
             <div className="answer">
-              <MarkdownText text={displayContent} />
+              <MarkdownText text={session.output} />
             </div>
-          ) : null;
-          const toolRounds = getSubAgentMessageToolRounds(msg, { lang });
-          const thinkingText = String((msg as unknown as { _thinking?: string })._thinking || "").trim();
-          const thinkingElapsedSeconds = (msg as unknown as { _thinking_elapsed_seconds?: number })._thinking_elapsed_seconds;
-          console.debug("[subagent-debug] render assistant", { index, hasAnswer: !!answer, toolRounds: toolRounds?.length, thinkingLen: thinkingText.length });
-          if (!answer && !toolRounds?.length && !thinkingText) return null;
-
-          // A thinking block is "running" only while the session is still live
-          // and this is the last assistant message being streamed. Once the
-          // model starts emitting visible text or tool calls the thinking phase
-          // has ended, even if the session is still in progress.
-          const isLastAssistant = index === mergedMessages.length - 1;
-          const hasMessageContent = !!answer;
-          const hasMessageToolCalls = !!(msg.tool_calls && msg.tool_calls.length > 0);
-          const thinkingRunning = Boolean(thinkingText) && !session.endedAt && isLastAssistant && !hasMessageContent && !hasMessageToolCalls;
-
-          // When the message carries its own visible answer text, the thinking
-          // belongs to that answer (final-answer round) — skip the standalone
-          // thinking block so it doesn't appear as a spurious "Thought for 0s"
-          // during live streaming.
-          const showThinking = Boolean(thinkingText) && !hasMessageContent;
-          const thinkingNode = showThinking ? (
-            <ThinkingPanel
-              thinkingText={thinkingText}
-              running={thinkingRunning}
-              timerText={
-                thinkingRunning
-                  ? `${t("activity.thinking")} (${formatElapsed(now - new Date(session.startedAt).getTime())})`
-                  : thinkingElapsedSeconds != null
-                    ? `${t("activity.thoughtFor")} ${formatElapsed(thinkingElapsedSeconds * 1000)}`
-                    : `${t("activity.thoughtFor")}`
-              }
-            />
-          ) : null;
-
-          return (
-            <div key={index} className="turn">
-              {thinkingNode}
-              {answer}
-              {toolRounds && toolRounds.length > 0 && (
-                <RoundShell
-                  timerText={toolTitleFor(toolRounds.length)}
-                  running={false}
-                  showTimer={true}
-                  autoExpand={index === 0}
-                  detailsNode={<StepsView text={toolRounds.join("\n\n")} />}
-                  textNode={null}
-                />
-              )}
+          )}
+          {isLive && (
+            <div
+              style={{
+                marginTop: -12,
+                marginBottom: 0,
+                padding: 0,
+                lineHeight: 1,
+              }}
+            >
+              <span
+                className="activity-header running"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 13,
+                  opacity: 0.7,
+                }}
+              >
+                <span className="activity-text marquee">
+                  {t("activity.working")} ({formatElapsed(now - startedAt)})
+                </span>
+              </span>
             </div>
-          );
-        }
-
-        return null;
-      })}
-
-      {/* Session in-progress indicator */}
-      {!session.endedAt && (
-        <div style={{ marginTop: -12, marginBottom: 0, padding: 0, lineHeight: 1 }}>
-          <span className="activity-header running" style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, opacity: 0.7 }}>
-            <span className="activity-text marquee">{t("activity.working")} ({formatElapsed(now - new Date(session.startedAt).getTime())})</span>
-          </span>
-        </div>
-      )}
-
-      {/* Final output — shown always (live and after session ends) */}
-      {session.output && (
-        <div className="turn">
-          <div className="answer">
-            <MarkdownText text={session.output} />
-          </div>
-        </div>
-      )}
-
-      {/* Session footer: duration + success */}
-      {session.endedAt && session.startedAt && (
-        <div className="turn" style={{ opacity: 0.5, fontSize: 12, textAlign: "center" }}>
-          {formatDuration(new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime())}
-          {session.success !== null && (
-            <span style={{ marginLeft: 8 }}>
-              {session.success ? "✓" : "✗"}
-            </span>
+          )}
+          {session.maxRoundsReached && (
+            <div
+              style={{
+                color: "var(--warning)",
+                fontSize: 13,
+                textAlign: "center",
+                marginTop: 8,
+              }}
+            >
+              {t("subagents.error.max_rounds") || "Maximum rounds reached"}
+            </div>
           )}
         </div>
-      )}
-
-      {session.maxRoundsReached && (
-        <div className="turn" style={{ color: "var(--warning)", fontSize: 13, textAlign: "center" }}>
-          {t("subagents.error.max_rounds") || "Maximum rounds reached"}
-        </div>
-      )}
       </div>
     </div>
   );
@@ -1365,7 +1433,7 @@ export function ChatView() {
       ) : subAgentSessionLoading ? (
         <div className="subagent-session-loading">
           <div className="subagent-session-loading-spinner" />
-          <span>Loading sub-agent session...</span>
+          <span>{t("subagents.loading")}</span>
         </div>
       ) : showEmpty ? emptyContent : (
         <>

@@ -17,7 +17,6 @@ export const zhCN: Dict = {
 
   "activity.working": "处理中...",
   "activity.workedFor": "用时",
-  "activity.toolCalls": "调用了 {count} 次工具",
   "activity.thinking": "思考中",
   "activity.thoughtFor": "思考用时",
   "tool.label.tool": "工具",
@@ -196,6 +195,8 @@ export const zhCN: Dict = {
   "console.clear": "清屏",
   "console.empty": "尚未打开终端窗口。点击 + 按钮新建一个。",
   "subagents.emptyHint": "尚未配置任何子智能体。点击“添加”来创建一个。",
+  "subagents.loading": "正在加载子智能体会话……",
+  "subagents.error.max_rounds": "已达到最大轮数限制",
   "subagents.enabled": "启用",
   "subagents.add": "添加子智能体",
   "subagents.edit": "编辑子智能体",
@@ -326,7 +327,6 @@ export const zhCN: Dict = {
   "models.thinking": "启用深度思考/推理",
   "models.thinkingHint": "允许模型输出内部推理过程。",
   "thinking.show": "显示思考",
-  "thinking.hide": "隐藏思考",
   "models.extraHeaders": "Extra headers",
   "models.headerName": "Header",
   "models.headerValue": "Value",
@@ -382,7 +382,7 @@ export const zhCN: Dict = {
 
 "noModel.title": "请先配置模型",
   "noModel.body":
-    "尚未配置任何模型。请打开\u201c设置 \u2192 模型\u201d添加供应商和模型，然后返回即可开始对话。",
+    "尚未配置任何模型。请打开\“设置 \u2192 模型\”添加供应商和模型，然后返回即可开始对话。",
   "noModel.openSettings": "打开模型设置",
 
   "fileChange.header": "修改了 {count} 个文件",

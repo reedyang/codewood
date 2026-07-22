@@ -5,11 +5,9 @@ vi.mock("../state/AppContext", () => ({
   useApp: () => ({
     t: (key: string) => {
       const translations: Record<string, string> = {
-        "activity.toolCalls": "Called {count} tools",
         "activity.thoughtFor": "Thought for",
         "activity.working": "Working...",
         "activity.thinking": "Thinking",
-        "activity.collapse": "Collapse",
         "thinking.show": "Thinking",
       };
       return translations[key] ?? key;
