@@ -321,12 +321,6 @@ export function StepsView({
   trailingStatusText?: string;
 }) {
   const segments = normalizeToolSegments(text);
-  console.log("[steps] render", {
-    textLen: text.length,
-    textPreview: text.substring(0, 300),
-    segKinds: segments.map((s, i) => ({ i, kind: s.kind, textLen: s.text.length, textPreview: s.text.substring(0, 100) })),
-    running,
-  });
 
   const onPathPreview = useCallback(async (path: string) => {
     const api = hostApi();
@@ -365,24 +359,36 @@ export function StepsView({
         }
         if (seg.kind === "prompt") {
           const { bullet, body } = splitPromptBullet(value);
-          // Find the next non-blank segment; if it is a command-output, diff,
-          // or subagent_session block, fuse it into the command row.
+          // Find the next command-output, diff, or subagent_session block
+          // that belongs to this prompt, skipping blank/text segments and
+          // stopping at the next prompt if nothing is found.
           let cmdIdx = -1;
           let cmdPayload = "";
           let diffIdx = -1;
           let subagentSessionId = "";
           for (let j = index + 1; j < segments.length; j += 1) {
+            if (segments[j].kind === "prompt") {
+              break;
+            }
             if (!trimBlankEdges(segments[j].text)) {
+              continue;
+            }
+            if (segments[j].kind === "text") {
               continue;
             }
             if (segments[j].kind === "cmd") {
               cmdIdx = j;
               cmdPayload = trimBlankEdges(segments[j].text);
-            } else if (segments[j].kind === "diff") {
+              break;
+            }
+            if (segments[j].kind === "diff") {
               diffIdx = j;
-            } else if (segments[j].kind === "subagent_session") {
+              continue;
+            }
+            if (segments[j].kind === "subagent_session") {
               subagentSessionId = trimBlankEdges(segments[j].text);
               consumed.add(j);
+              continue;
             }
             break;
           }
@@ -415,6 +421,10 @@ export function StepsView({
           );
         }
         if (seg.kind === "cmd") {
+          const hasPrecedingPrompt = segments.slice(0, index).some((s) => s.kind === "prompt");
+          if (hasPrecedingPrompt) {
+            return null;
+          }
           return <CmdOutputBlock key={index} text={value} />;
         }
         if (seg.kind === "subagent_session") {
@@ -526,14 +536,14 @@ function PromptWithAttachment({
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
           {running && <SpinnerChar />}
+          <span className="cmd-prompt-diff-toggle subagent-view-btn">
+            <Icon name="chevron" size={14} className="chevron" />
+          </span>
           {trailingStatusText && (
             <span className="tool-inline-working">
               <span className="activity-text marquee">{trailingStatusText}</span>
             </span>
           )}
-          <span className="cmd-prompt-diff-toggle subagent-view-btn">
-            <Icon name="chevron" size={14} className="chevron" />
-          </span>
         </span>
       </div>
     );
@@ -565,11 +575,6 @@ function PromptWithAttachment({
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
           {running && <SpinnerChar />}
-          {trailingStatusText && (
-            <span className="tool-inline-working">
-              <span className="activity-text marquee">{trailingStatusText}</span>
-            </span>
-          )}
           {isSubAgent && (
             <span className="cmd-prompt-diff-toggle subagent-view-btn">
               <Icon name="chevron" size={14} className="chevron" />
@@ -578,6 +583,11 @@ function PromptWithAttachment({
           <span className="cmd-prompt-diff-toggle">
             <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>
+          {trailingStatusText && (
+            <span className="tool-inline-working">
+              <span className="activity-text marquee">{trailingStatusText}</span>
+            </span>
+          )}
         </span>
       </div>
       {!isSubAgent && expanded && hasCmd && syntaxNode}
@@ -592,23 +602,9 @@ function PromptWithAttachment({
 }
 
 function CmdOutputBlock({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <div className="cmd-output-block">
-      <button
-        type="button"
-        className="cmd-output-header"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        title={expanded ? "Collapse output" : "Expand output"}
-      >
-        <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
-      </button>
-      {expanded && (
-        <div className="cmd-output">
-          <AnsiText text={text} />
-        </div>
-      )}
+    <div className="cmd-output">
+      <AnsiText text={text} />
     </div>
   );
 }

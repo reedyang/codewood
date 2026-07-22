@@ -4251,6 +4251,10 @@ html[data-has-bg] .select {
   opacity: 1;
 }
 
+.activity-header.running {
+  cursor: default;
+}
+
 .activity-header.has-details {
   display: inline-flex;
   width: auto;
@@ -4402,6 +4406,7 @@ html[data-has-bg] .select {
   color: var(--output-text);
   margin: 6px 0 0 0;
   user-select: text;
+  --cmd-prompt-indent: 1.6ch;
 }
 /* Feedback lines ("You ran ...", "Ran ...") render flush-left. */
 .activity-steps .step-text {
@@ -4466,7 +4471,6 @@ html[data-has-bg] .select {
 .activity-steps .cmd-prompt {
   display: flex;
   align-items: flex-start;
-  --cmd-prompt-indent: 1.6ch;
 }
 
 .activity-steps .cmd-prompt + .cmd-prompt,
@@ -4496,6 +4500,7 @@ html[data-has-bg] .select {
   margin-top: 12px;
   margin-left: calc(-1 * var(--cmd-prompt-indent));
   text-align: left;
+  cursor: default;
 }
 
 /* A "Ran ..." line that carries command output or a diff: the whole row
