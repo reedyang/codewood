@@ -1897,7 +1897,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "output": {
-          appendSegment("step", String(data.text ?? ""), eventKey);
+          const stepText = String(data.text ?? "");
+          console.log("[output-step] SSE", {
+            eventKey,
+            textLen: stepText.length,
+            textPreview: stepText.substring(0, 200),
+          });
+          appendSegment("step", stepText, eventKey);
           break;
         }
         case "assistant": {
@@ -2149,6 +2155,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             }
             delete subAgentThinkingStartRef.current[sessionId];
+            const newMsgIdx = msgs.length;
+            console.log("[sa-tc] push tool_call", {
+              sessionId,
+              idx: newMsgIdx,
+              toolName: String(d.toolName || ""),
+            });
             msgs.push({
               role: "assistant",
               content: "",
@@ -2168,14 +2180,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const current = activeSubAgentSessionRef.current;
           if (current && current.id === sessionId) {
             const msgs = [...current.messages];
-            // Prefer the backend-rendered toolRound, but synthesize one from
-            // the paired tool_call + tool output when a sub-agent session only
-            // carries raw tool data or the live event omitted the rendered row.
+            const outputToolName = String(d.toolName || "");
+            const scanResult: Array<{ idx: number; tcCount: number; trCount: number; nextName: string }> = [];
+            // Walk backwards to find the assistant message whose next
+            // pending tool call name matches this output's toolName.
+            let matchedIdx = -1;
             for (let i = msgs.length - 1; i >= 0; i--) {
               const msg = msgs[i];
               if (!msg || msg.role !== "assistant") {
                 continue;
               }
+              const existing = msg.tool_rounds || [];
+              const nextCall = Array.isArray(msg.tool_calls)
+                ? msg.tool_calls[existing.length]
+                : undefined;
+              const callName = String(nextCall?.function?.name || nextCall?.name || "");
+              scanResult.push({
+                idx: i,
+                tcCount: Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0,
+                trCount: existing.length,
+                nextName: callName,
+              });
+              if (callName && callName === outputToolName) {
+                matchedIdx = i;
+                break;
+              }
+            }
+            console.log("[sa-output] matching", {
+              sessionId,
+              toolName: outputToolName,
+              hasToolRound: typeof d.toolRound === "string" ? (d.toolRound?.length ?? 0) : "nil",
+              scan: scanResult,
+              matchedIdx,
+            });
+            if (matchedIdx >= 0) {
+              const msg = msgs[matchedIdx];
               const existing = msg.tool_rounds || [];
               const nextCall = Array.isArray(msg.tool_calls)
                 ? msg.tool_calls[existing.length]
@@ -2188,9 +2227,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
                     : buildFallbackToolRound(String(d.toolName || ""), {}, String(d.text || ""), "", { lang })
                 );
               if (nextRound) {
-                msgs[i] = { ...msg, tool_rounds: [...existing, nextRound] };
+                msgs[matchedIdx] = { ...msg, tool_rounds: [...existing, nextRound] };
               }
-              break;
+            } else {
+              // No matching pending tool call exists — the output arrived
+              // before its tool_call event, or the tool_call was already
+              // resolved. Push a new standalone assistant message so the
+              // output never leaks onto an unrelated tool call.
+              const standaloneRound =
+                d.toolRound ||
+                buildFallbackToolRound(String(d.toolName || ""), {}, String(d.text || ""), "", { lang });
+              msgs.push({
+                role: "assistant",
+                content: "",
+                tool_calls: [{ name: String(d.toolName || "") }],
+                tool_rounds: standaloneRound ? [standaloneRound] : [],
+              });
             }
             msgs.push({
               role: "tool" as const,

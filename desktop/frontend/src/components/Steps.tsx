@@ -321,6 +321,12 @@ export function StepsView({
   trailingStatusText?: string;
 }) {
   const segments = normalizeToolSegments(text);
+  console.log("[steps] render", {
+    textLen: text.length,
+    textPreview: text.substring(0, 300),
+    segKinds: segments.map((s, i) => ({ i, kind: s.kind, textLen: s.text.length, textPreview: s.text.substring(0, 100) })),
+    running,
+  });
 
   const onPathPreview = useCallback(async (path: string) => {
     const api = hostApi();

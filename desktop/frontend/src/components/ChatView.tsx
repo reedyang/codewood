@@ -587,6 +587,11 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
         ) {
           const nt = String((next as unknown as { _thinking?: string })._thinking || "").trim();
           if (nt) break;
+          // Don't absorb messages that carry their own tool_calls: they came
+          // from a separate sub_agent_tool_call SSE event and represent an
+          // independent tool invocation. Only absorb adjacent messages whose
+          // tool_rounds were split across rows by the backend history renderer.
+          if (Array.isArray(next.tool_calls) && next.tool_calls.length > 0) break;
           allRounds.push(...getSubAgentMessageToolRounds(next, { lang }));
           j++;
         } else if (next.role === "tool") {
@@ -601,6 +606,15 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     }
     return result;
   }, [session.messages, lang]);
+
+  { console.log("[sa-merge] mergedMessages", session.messages.map((m, i) => ({
+    i,
+    role: m.role,
+    tc: (m as any).tool_calls?.map((tc: any) => tc.name ?? tc.function?.name),
+    trLen: Array.isArray((m as any).tool_rounds) ? (m as any).tool_rounds.length : 0,
+    thinkingLen: String((m as any)._thinking || "").length,
+    textLen: ((m as any)._clean_content ?? m.content ?? "").length,
+  }))); }
 
   // Build HistoryRound-compatible objects from merged assistant messages.
   const { rounds, workedForSeconds } = useMemo(() => {
@@ -622,6 +636,20 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     }
     return { rounds: out, workedForSeconds: totalWait };
   }, [mergedMessages, lang]);
+
+  { console.log("[sa-rounds] built", {
+    roundCount: rounds.length,
+    workedForSeconds,
+    rounds: rounds.map((r, i) => ({
+      i,
+      thinkingLen: r.thinking?.length ?? 0,
+      toolsLen: r.tools.length,
+      textLen: r.text.length,
+      waitSeconds: r.waitSeconds,
+      toolsPreview: r.tools ? r.tools.substring(0, 120) : "",
+    })),
+    finalAnswerText: session.output ? session.output.substring(0, 80) : "",
+  }); }
 
   const userPrompt = session.messages.find((m) => m.role === "user");
   const startedAt = session.startedAt ? new Date(session.startedAt).getTime() : 0;
@@ -738,6 +766,13 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
             const isLast = index === rounds.length - 1;
             const hasContent = round.text.length > 0;
             const hasTools = round.tools.length > 0;
+            // A tool round is still running only while it has no output yet
+            // (the tool_round text only carries the prompt sentinel, not the
+            // CMD_OUTPUT_BEGIN sentinel). Once output arrives or the next
+            // round starts, the spin stops — matching the main conversation's
+            // ``waitEndedAt``-driven tool-state logic.
+            const toolOutputReceived = hasTools && round.tools.includes("\uE000");
+            const toolRunning = isLive && isLast && !hasContent && !toolOutputReceived;
             const thinkingRunning =
               !!round.thinking && isLive && isLast && !hasContent && !hasTools;
 
@@ -759,10 +794,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
                 {hasTools && (
                   <div className="turn-round">
                     <div className="activity">
-                      <StepsView
-                        text={round.tools}
-                        running={isLast && isLive && !hasContent}
-                      />
+                      <StepsView text={round.tools} running={toolRunning} />
                     </div>
                   </div>
                 )}
@@ -779,31 +811,24 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
               <MarkdownText text={session.output} />
             </div>
           )}
-          {isLive && (
-            <div
-              style={{
-                marginTop: -12,
-                marginBottom: 0,
-                padding: 0,
-                lineHeight: 1,
-              }}
-            >
-              <span
-                className="activity-header running"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontSize: 13,
-                  opacity: 0.7,
-                }}
-              >
-                <span className="activity-text marquee">
-                  {t("activity.working")} ({formatElapsed(now - startedAt)})
-                </span>
-              </span>
-            </div>
-          )}
+          {(() => {
+            const lastRound = rounds[rounds.length - 1];
+            const showWorking =
+              isLive &&
+              !session.output &&
+              (rounds.length === 0 ||
+                (lastRound && !lastRound.text && !lastRound.thinking));
+            if (!showWorking) return null;
+            return (
+              <div className="activity">
+                <div className="activity-header running">
+                  <span className="activity-text marquee">
+                    {t("activity.working")} ({formatElapsed(now - startedAt)})
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
           {session.maxRoundsReached && (
             <div
               style={{
