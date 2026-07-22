@@ -1543,7 +1543,6 @@ export function RoundShell({
   detailsNode: ReactNode;
   textNode: ReactNode;
 }) {
-  const { t } = useApp();
   const hasDetails = Boolean(detailsNode);
   const [expanded, setExpanded] = useState(autoExpand && hasDetails);
   // Expand (but never auto-collapse) when autoExpand is requested.
@@ -1568,17 +1567,7 @@ export function RoundShell({
         )}
       </button>
       {hasDetails && expanded && (
-        <>
-          {detailsNode}
-          <button
-            className="activity-collapse"
-            onClick={() => setExpanded(false)}
-            title={t("activity.collapse")}
-            aria-label={t("activity.collapse")}
-          >
-            <Icon name="chevron" size={14} className="chevron up" />
-          </button>
-        </>
+        <>{detailsNode}</>
       )}
     </div>
   ) : null;
@@ -2133,14 +2122,6 @@ function ThinkingPanel({
                 <MarkdownText text={thinkingText} />
               </div>
             </div>
-            <button
-              className="activity-collapse"
-              onClick={() => setExpanded(false)}
-              title={t("activity.collapse")}
-              aria-label={t("activity.collapse")}
-            >
-              <Icon name="chevron" size={14} className="chevron up" />
-            </button>
           </>
         )}
       </div>
