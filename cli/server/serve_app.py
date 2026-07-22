@@ -2039,6 +2039,19 @@ class ServeApp:
             # All other slash commands: mark them so the runtime loop runs it
             # but keeps them out of the user's input history (history.json).
             line = GUI_INTERNAL_COMMAND_PREFIX + line
+            # Editing a message while a task is running: interrupt the task first
+            # so the edit command is processed immediately after the task unwinds
+            # rather than waiting for the entire task to complete.
+            if stripped.startswith("/chat edit"):
+                # Suppress the "task interrupted" banner: the edit command
+                # truncates the conversation history, so the interrupted task's
+                # context is already gone and the banner would be misleading.
+                try:
+                    self.agent._conversation_interrupt_banner_recent = True
+                    self.agent._conversation_interrupt_banner_recent_at = 0.0
+                except Exception:
+                    pass
+                self.interrupt()
         cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
         rt = self._get_or_spawn_runtime(cid)
         rt.input_queue.put(line)
