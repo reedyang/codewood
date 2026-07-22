@@ -399,3 +399,94 @@ class _WorkingStatusTicker:
                 self._stream.flush()
             except Exception:
                 pass
+
+
+class _SpinnerTicker:
+    """Renders a rotating spinner character at the end of a prefix line in-place.
+
+    The ticker moves up to overwrite the feedback line (which was already printed
+    by ``_print_tool_call_feedback``) and appends a spinner character. On stop it
+    restores the original prefix line. This replaces the separate "Working..." line
+    during tool execution.
+    """
+
+    SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(
+        self,
+        stream: Any,
+        prefix_line: str = "",
+        fps: float = 10.0,
+        min_interval_seconds: float = 0.02,
+    ) -> None:
+        self._stream = stream
+        self._prefix = str(prefix_line).rstrip("\n")
+        safe_fps = max(0.1, float(fps or 10.0))
+        safe_min_interval = max(0.001, float(min_interval_seconds or 0.02))
+        self._interval = max(safe_min_interval, 1.0 / safe_fps)
+        self._line_count = max(1, self._prefix.count("\n") + 1)
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._started = False
+        self._is_first_frame = True
+
+    def _is_tty(self) -> bool:
+        try:
+            return bool(hasattr(self._stream, "isatty") and self._stream.isatty())
+        except Exception:
+            return False
+
+    def _render_frame(self, frame: int) -> None:
+        char = self.SPINNER_CHARS[frame % len(self.SPINNER_CHARS)]
+        last_newline = self._prefix.rfind("\n")
+        if last_newline >= 0:
+            display = self._prefix[: last_newline + 1] + self._prefix[last_newline + 1 :] + f" {char}"
+        else:
+            display = f"{self._prefix} {char}"
+        # First frame: cursor is on the blank line below the feedback,
+        # so we need to move up ``line_count`` lines to reach line 0.
+        # Subsequent frames: cursor is at the end of the display (last line),
+        # so we move up ``line_count - 1`` lines to reach line 0.
+        up_count = self._line_count if self._is_first_frame else (self._line_count - 1)
+        self._is_first_frame = False
+        up = "\x1b[1A" * up_count if up_count > 0 else ""
+        try:
+            self._stream.write(f"\r{up}\r\x1b[2K{display}")
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        frame = 0
+        while not self._stop_event.wait(timeout=self._interval):
+            self._render_frame(frame=frame)
+            frame += 1
+
+    def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        if not self._is_tty():
+            return
+        self._render_frame(frame=0)
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"{get_app_logger_root()}-spinner",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._started:
+            return
+        self._stop_event.set()
+        th = self._thread
+        if th is not None and th.is_alive():
+            th.join(timeout=self._interval + 0.2)
+        if self._is_tty():
+            try:
+                up = "\x1b[1A" * (self._line_count - 1) if self._line_count > 1 else ""
+                self._stream.write(f"\r{up}\r\x1b[2K{self._prefix}\n")
+                self._stream.flush()
+            except Exception:
+                pass
