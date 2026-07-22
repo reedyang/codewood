@@ -1028,6 +1028,7 @@ def run_subagent(
                     _tc_data["thinkingElapsedSeconds"] = _thinking_sent_elapsed
                     _thinking_sent_elapsed = None  # only send once
                 _emit_subagent_event(agent, "sub_agent_tool_call", _tc_data)
+                logger.debug("[sa-tc] emitted tool_call session=%s tool=%s idx=%s", session_id, str(tool_name), idx)
 
                 if t in _EXCLUDED_SUBAGENT_TOOLS:
                     tool_result: Dict[str, Any] = {
@@ -1076,17 +1077,24 @@ def run_subagent(
                 # ``_tool_rounds_raw`` so the GUI and TUI renderers are shared.
                 r = tool_result if isinstance(tool_result, dict) else {}
                 _round_output = ""
-                try:
-                    _extract = getattr(agent, "_extract_tool_result_output", None)
-                    if callable(_extract):
+                _extract = getattr(agent, "_extract_tool_result_output", None)
+                if callable(_extract):
+                    try:
                         _out_src = r
                         # MCP tool results wrap the underlying tool output in
                         # ``r["result"]``; extract its raw content.
                         if t.startswith("mcp__") and isinstance(r.get("result"), dict):
                             _out_src = r["result"]
                         _round_output = _extract(str(tool_name), _out_src) or str(r.get("message") or "")
-                except Exception:
-                    _round_output = ""
+                    except Exception:
+                        _round_output = ""
+                # When the extractor produced nothing, fall back to the common
+                # output carriers, mirroring ``_render_subagent_tool_round`` so
+                # persisted data matches the live SSE rendering.
+                if not _round_output:
+                    _round_output = str(r.get("output") or r.get("content") or "")
+                if not _round_output and not bool(r.get("success", True)):
+                    _round_output = str(r.get("error") or r.get("message") or "")
                 raw_entry = {
                     "tool": str(tool_name),
                     "args": dict(args) if isinstance(args, dict) else {},
@@ -1098,6 +1106,14 @@ def run_subagent(
                 if _marker:
                     raw_entry["marker"] = _marker
                 round_raw.append(raw_entry)
+                logger.debug(
+                    "[sa-output] raw_entry session=%s tool=%s failed=%s outputLen=%s outputPreview=%s",
+                    session_id,
+                    str(tool_name),
+                    raw_entry["failed"],
+                    len(_round_output or ""),
+                    (_round_output or "")[:200] if _round_output else "<empty>",
+                )
 
                 # Pre-render the tool round via the SAME pipeline the main
                 # session's GUI renderer uses (agent._rerender_tool_rounds), so
@@ -1116,6 +1132,13 @@ def run_subagent(
                     "toolName": str(tool_name),
                     "toolRound": tool_round,
                 })
+                logger.debug(
+                    "[sa-output] emitted session=%s tool=%s toolRoundLen=%s textLen=%s",
+                    session_id,
+                    str(tool_name),
+                    len(tool_round or ""),
+                    len(result_text or ""),
+                )
 
             # Persist only the structured ``_tool_rounds_raw``. The GUI derives
             # both the tool description and the expandable tool output from this

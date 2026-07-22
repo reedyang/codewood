@@ -4479,7 +4479,6 @@ def run_agent_loop(agent: Any):
                             self._terminal_cursor_at_line_start = True
 
                 explore_ticker = None
-                gui_prompt_printed_early: List[bool] = []
                 if fallback_plans:
                     # Open a tool-execution round so the GUI shows
                     # "Working…" during long-running tools like
@@ -4487,55 +4486,6 @@ def run_agent_loop(agent: Any):
                     # model round ends.
                     _gui_round_mark(self, True)
                     explore_ticker = None
-                    for tool_name, args in fallback_plans:
-                        prompt_printed_early = False
-                        if tool_name == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
-                            if bool(getattr(self, "_gui_plain_stream", False)):
-                                explore_ticker = _NullStatusTicker()
-                                self._print_tool_call_feedback(tool_name, args, failed=False)
-                                prompt_printed_early = True
-                            else:
-                                ticker = _WorkingStatusTicker(
-                                    sys.stdout,
-                                    fps=_WORKING_STATUS_MARQUEE_FPS,
-                                    language=getattr(self, "display_language", None),
-                                )
-                                def _explore_render(elapsed_seconds, frame, _t=ticker, _self=self, _args=args):
-                                    lang = getattr(_self, "display_language", None)
-                                    label_fn = getattr(_self, "_explore_running_label", None)
-                                    if callable(label_fn):
-                                        label = label_fn(_args if isinstance(_args, dict) else {})
-                                    else:
-                                        label = "Exploring..."
-                                    line = _render_working_status_line(
-                                        elapsed_seconds=elapsed_seconds, frame=frame,
-                                        label=label, language=lang,
-                                    )
-                                    try:
-                                        sys.stdout.write(f"\r\x1b[2K{line}")
-                                        sys.stdout.flush()
-                                    except Exception:
-                                        pass
-                                ticker._render_frame = _explore_render
-                                ticker.start()
-                                explore_ticker = ticker
-                        else:
-                            # In GUI streaming mode, print the prompt as soon as
-                            # the tool starts so long-running tools show up
-                            # immediately. The completion path appends only the
-                            # output block to this same tool-execution round.
-                            # apply_patch and request_skill_prompt are the
-                            # exceptions: they emit their own prompt+payload
-                            # block from their specialized paths.
-                            _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
-                            _tool_defers_prompt = _gui_stream and tool_name in (
-                                "apply_patch",
-                                "request_skill_prompt",
-                            )
-                            if not _tool_defers_prompt:
-                                self._print_tool_call_feedback(tool_name, args, failed=False)
-                                prompt_printed_early = _gui_stream
-                        gui_prompt_printed_early.append(prompt_printed_early)
                 else:
                     tool_name, args = "", {}
 
@@ -4761,24 +4711,22 @@ def run_agent_loop(agent: Any):
                                 self._sync_active_chat_messages()
                             except Exception:
                                 pass
-                        # In GUI streaming mode, print the request_skill_prompt
-                        # tool round so the frontend renders it during live
-                        # execution (not just on history reload). Without this,
-                        # the frontend sees an empty round between round_start
-                        # and round_end and skips it entirely.
+                        # In GUI streaming mode, follow the same prompt→output
+                        # pattern as every other tool so prompts and outputs
+                        # never interleave.
                         _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
                         if _gui_stream:
                             try:
-                                _tool_round = self._format_tool_call_feedback_line(
+                                self._print_tool_call_feedback(
                                     "request_skill_prompt",
                                     {"skill_id": sid},
                                     failed=False,
                                 )
-                                _tool_round = (
-                                    f"{_tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
+                                _output_tail = (
+                                    f"{GUI_CMD_OUTPUT_BEGIN}"
                                     f"{full_prompt}{GUI_CMD_OUTPUT_END}"
                                 )
-                                print(_tool_round)
+                                print(_output_tail)
                             except Exception:
                                 pass
                         next_input = (
@@ -4819,6 +4767,40 @@ def run_agent_loop(agent: Any):
 
                     if self._consume_task_interrupt_requested():
                         raise KeyboardInterrupt
+                    # Print the prompt line before execution so the user sees a
+                    # live "• Running tool ..." for every tool.  For explore
+                    # sub-agents also start an animation ticker.
+                    _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
+                    if _gui_stream and tool_name != "request_skill_prompt":
+                        self._print_tool_call_feedback(tool_name, args, failed=False)
+                    if tool_name == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
+                        if _gui_stream:
+                            explore_ticker = _NullStatusTicker()
+                        else:
+                            ticker = _WorkingStatusTicker(
+                                sys.stdout,
+                                fps=_WORKING_STATUS_MARQUEE_FPS,
+                                language=getattr(self, "display_language", None),
+                            )
+                            def _explore_render(elapsed_seconds, frame, _t=ticker, _self=self, _args=args):
+                                lang = getattr(_self, "display_language", None)
+                                label_fn = getattr(_self, "_explore_running_label", None)
+                                if callable(label_fn):
+                                    label = label_fn(_args if isinstance(_args, dict) else {})
+                                else:
+                                    label = "Exploring..."
+                                line = _render_working_status_line(
+                                    elapsed_seconds=elapsed_seconds, frame=frame,
+                                    label=label, language=lang,
+                                )
+                                try:
+                                    sys.stdout.write(f"\r\x1b[2K{line}")
+                                    sys.stdout.flush()
+                                except Exception:
+                                    pass
+                            ticker._render_frame = _explore_render
+                            ticker.start()
+                            explore_ticker = ticker
                     result = self.execute_tool_call(tool_name, args)
                     repaint_up_lines = 1
                     if tool_name == "shell":
@@ -4861,34 +4843,21 @@ def run_agent_loop(agent: Any):
                             recorder(tool_name, args, result if isinstance(result, dict) else {})
                         except Exception:
                             pass
-                    # In GUI streaming mode, tools that deferred their prompt
-                    # line now print the accumulated tool_round (prompt +
-                    # output as a single SSE event). This guarantees the
-                    # frontend receives a coherent CMD_PROMPT / CMD_OUTPUT
-                    # pair that cannot be split across rounds by a race,
-                    # and consecutive tool calls' prompts and outputs never
-                    # interleave.
+                    # In GUI streaming mode, print only the output suffix — the
+                    # prompt line was already printed before execution.
                     _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
                     if _gui_stream:
                         _rounds = getattr(self, "_accumulated_tool_rounds", None) or []
                         if _rounds:
                             _last_round = _rounds[-1]
-                            _prompt_printed_early = (
-                                tool_index < len(gui_prompt_printed_early)
-                                and bool(gui_prompt_printed_early[tool_index])
-                            )
                             try:
-                                if tool_name in ("run_subagent", "apply_patch"):
-                                    # Sub-agent calls keep a separate transcript;
-                                    # apply_patch already printed prompt+diff
-                                    # via _emit_gui_diff_block in apply_patch.py.
+                                if tool_name == "run_subagent":
+                                    # Sub-agent calls keep a separate transcript.
                                     pass
-                                elif _prompt_printed_early:
+                                else:
                                     _output_start = str(_last_round).find(GUI_CMD_OUTPUT_BEGIN)
                                     if _output_start >= 0:
                                         print(str(_last_round)[_output_start:])
-                                else:
-                                    print(_last_round)
                             except Exception:
                                 pass
                     # Real-time context tracking: after each tool result is
@@ -5075,10 +5044,14 @@ def run_agent_loop(agent: Any):
                                 if isinstance(m, dict) and m.get("_tool_rounds_raw"):
                                     rendered = _rerender(m["_tool_rounds_raw"])
                                     if rendered:
+                                        # The last tool round in the batch is the
+                                        # explore completion; previous tools'
+                                        # rounds were already emitted inline.
+                                        _explore_completed = rendered[-1]
                                         if bool(getattr(self, "_gui_plain_stream", False)):
-                                            print(str(rendered[0]).rstrip("\n"))
+                                            print(str(_explore_completed).rstrip("\n"))
                                             break
-                                        clean = rendered[0].split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
+                                        clean = _explore_completed.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                                         if sys.stdout.isatty():
                                             sys.stdout.write("\033[1A\033[K")
                                             sys.stdout.flush()

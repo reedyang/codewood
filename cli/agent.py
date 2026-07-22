@@ -2770,7 +2770,25 @@ class Agent:
         return translate("subagent.explore.running", lang)
 
     def _explore_completed_label(self, args: Dict[str, Any], elapsed: Any = None) -> str:
-        elapsed_text = "" if elapsed is None else f"{elapsed}"
+        elapsed_text = ""
+        if elapsed is not None:
+            try:
+                secs = float(elapsed)
+            except (TypeError, ValueError):
+                secs = 0.0
+            mins = int(secs // 60)
+            secs_rem = int(secs % 60)
+            lang = self._ui_language()
+            if mins > 0:
+                if lang == "zh-CN":
+                    elapsed_text = f"{mins}分{secs_rem}秒"
+                else:
+                    elapsed_text = f"{mins}m {secs_rem}s"
+            else:
+                if lang == "zh-CN":
+                    elapsed_text = f"{int(secs)}秒"
+                else:
+                    elapsed_text = f"{int(secs)}s"
         topic = self._explore_topic_label(args)
         lang = self._ui_language()
         if topic:
@@ -3527,6 +3545,11 @@ class Agent:
         if t == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
             elapsed = r.get("_elapsed_seconds")
             explore_text = self._explore_completed_label(args, elapsed)
+            _space = explore_text.find(" ")
+            if _space > 0:
+                explore_text = f"{_ansi_bold(explore_text[:_space])} {explore_text[_space+1:]}"
+            else:
+                explore_text = _ansi_bold(explore_text)
             tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
@@ -3745,6 +3768,11 @@ class Agent:
             if tool == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
                 elapsed = item.get("elapsed")
                 explore_text = self._explore_completed_label(args, elapsed)
+                _space = explore_text.find(" ")
+                if _space > 0:
+                    explore_text = f"{_ansi_bold(explore_text[:_space])} {explore_text[_space+1:]}"
+                else:
+                    explore_text = _ansi_bold(explore_text)
                 tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
             # For apply_patch with a preview ref, embed the diff block
             # directly after the prompt line so it renders in the right
