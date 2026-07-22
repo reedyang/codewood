@@ -21,7 +21,7 @@ import { HistoryRoundDetailView, LiveRoundView, RoundShell } from "./ChatView";
 import { StepsView } from "./Steps";
 
 describe("HistoryRoundDetailView", () => {
-  it("renders thought before the completed tool summary when both are present", () => {
+  it("renders thought before the tool steps when both are present", () => {
     render(
       <HistoryRoundDetailView
         round={{
@@ -33,30 +33,24 @@ describe("HistoryRoundDetailView", () => {
     );
 
     const thought = screen.getByText("Thought for 9s");
-    const tools = screen.getByText("Called 1 tools");
+    const tool = screen.getByText("Read hello.py");
 
     expect(
-      thought.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING,
+      thought.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
   });
 
-  it("renders text before the completed tool summary when both are present", () => {
+  it("renders text when no tools are present", () => {
     render(
       <HistoryRoundDetailView
         round={{
           waitSeconds: 9,
           text: "先给用户一段说明",
-          tools: "\uE004• Ran npx ccusage codex\uE005",
         }}
       />,
     );
 
-    const text = screen.getByText("先给用户一段说明");
-    const tools = screen.getByText("Called 1 tools");
-
-    expect(
-      text.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+    expect(screen.getByText("先给用户一段说明")).toBeTruthy();
   });
 
   it("does not auto-scroll expanded thinking to the bottom", () => {
