@@ -536,7 +536,7 @@ function useOutsideClose(open: boolean, onClose: () => void) {
  *  Tool display is driven entirely by ``tool_rounds`` — backend-rendered text
  *  already wrapped in the main chat's ``StepsView`` / ``PromptWithAttachment``
  *  sentinels with ANSI-colored bullets and full paths.  Raw ``role: "tool"``
- *  and ``[MODEL_TOOL_RESULT]`` messages are skipped in the transcript; they
+ *  and ``role: "tool"`` messages are skipped in the transcript; they
  *  exist solely as a faithful archive of the sub-agent's real interaction
  *  protocol and token statistics.
  */

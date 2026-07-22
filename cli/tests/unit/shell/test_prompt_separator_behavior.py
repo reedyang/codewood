@@ -903,17 +903,6 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
             {
                 "role": "assistant",
-                "content": agent._build_model_tool_result_history_content(
-                    "shell",
-                    command,
-                    {
-                        "success": False,
-                        "output": "old output\ncommand aborted by user\n",
-                    },
-                ),
-            },
-            {
-                "role": "assistant",
                 "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"ping example.com\"}}",
             },
         ]
@@ -921,10 +910,11 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             {
                 "command": {"tool": "shell", "args": command},
                 "result": {
+                    "tool": "shell",
                     "success": False,
                     "output": "old output\ncommand aborted by user\n",
                 },
-            }
+            },
         ]
         with (
             patch("builtins.print"),
@@ -945,19 +935,17 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                 "role": "assistant",
                 "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"test\"}}",
             },
+        ]
+        agent.operation_results = [
             {
-                "role": "assistant",
-                "content": agent._build_model_tool_result_history_content(
-                    "shell",
-                    {"command": "test"},
-                    {
-                        "success": False,
-                        "output": "'test' is not recognized\n",
-                    },
-                ),
+                "command": {"tool": "shell", "args": {"command": "test"}},
+                "result": {
+                    "tool": "shell",
+                    "success": False,
+                    "output": "'test' is not recognized\n",
+                },
             },
         ]
-        agent.operation_results = []
         with (
             patch("builtins.print"),
             patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
@@ -974,14 +962,17 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.conversation_history = [
             {
                 "role": "assistant",
-                "content": agent._build_model_tool_result_history_content(
-                    "shell",
-                    {"command": "ping example.com"},
-                    {
-                        "success": False,
-                        "output": "line\ncommand aborted by user\n",
-                    },
-                ),
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"ping example.com\"}}",
+            },
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": {"command": "ping example.com"}},
+                "result": {
+                    "tool": "shell",
+                    "success": False,
+                    "output": "line\ncommand aborted by user\n",
+                },
             },
         ]
         with (
@@ -1005,14 +996,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.conversation_history = [
             {
                 "role": "assistant",
-                "content": agent._build_model_tool_result_history_content(
-                    "shell",
-                    {"command": "ping example.com"},
-                    {
-                        "success": False,
-                        "output": "line\ncommand aborted by user\n",
-                    },
-                ),
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"ping example.com\"}}",
             },
             {
                 "role": "assistant",
@@ -1020,6 +1004,16 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                     interrupted_kind="task",
                     reason="user_interrupt",
                 ),
+            },
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": {"command": "ping example.com"}},
+                "result": {
+                    "tool": "shell",
+                    "success": False,
+                    "output": "line\ncommand aborted by user\n",
+                },
             },
         ]
         with (
@@ -1037,18 +1031,20 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.conversation_history = [
             {
                 "role": "assistant",
-                "content": agent._build_model_tool_result_history_content(
-                    "shell",
-                    {"command": "test"},
-                    {
-                        "success": True,
-                        "output": "partial",
-                    },
-                ),
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"test\"}}",
             },
             {
                 "role": "assistant",
                 "content": "final answer",
+            },
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": {"command": "test"}},
+                "result": {
+                    "success": True,
+                    "output": "partial",
+                },
             },
         ]
 
@@ -1089,18 +1085,19 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.conversation_history = [
             {
                 "role": "assistant",
-                "content": agent._build_model_tool_result_history_content(
-                    "shell",
-                    {"command": "test"},
-                    {
-                        "success": True,
-                        "output": "line one\nline two\nline three\n",
-                        "display_output": "old formatted display\n",
-                    },
-                ),
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"test\"}}",
             },
         ]
-        agent.operation_results = []
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": {"command": "test"}},
+                "result": {
+                    "tool": "shell",
+                    "success": True,
+                    "output": "line one\nline two\nline three\n",
+                },
+            },
+        ]
         with (
             patch("builtins.print"),
             patch("cli.agent.tools_shell._dynamic_tail_line_limit", return_value=2),
@@ -1117,23 +1114,6 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertNotIn("line one\n", replay_out)
         self.assertNotIn("old formatted display", replay_out)
         self.assertEqual(replay_err, "")
-
-    def test_model_shell_result_history_stores_raw_output_without_display_payload(self):
-        agent = self._build_agent()
-        content = agent._build_model_tool_result_history_content(
-            "shell",
-            {"command": "test"},
-            {
-                "success": True,
-                "output": "full output\n",
-                "display_output": "old display\n",
-            },
-        )
-        payload = agent._parse_model_tool_result_history_content(content)
-        self.assertIsNotNone(payload)
-        self.assertEqual(payload.get("output"), "full output\n")
-        self.assertNotIn("display_output", payload)
-        self.assertNotIn("stderr", payload)
 
     def test_extract_model_shell_replay_output_appends_trailing_newline(self):
         """A cancelled command stores its message under ``output`` without a
@@ -1154,11 +1134,13 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.conversation_history = [
             {
                 "role": "assistant",
-                "content": agent._build_model_tool_result_history_content(
-                    "shell",
-                    {"command": "true"},
-                    {"success": True, "output": ""},
-                ),
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"true\"}}",
+            },
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": {"command": "true"}},
+                "result": {"success": True, "output": ""},
             },
         ]
         with (

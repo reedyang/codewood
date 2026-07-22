@@ -324,8 +324,7 @@ def _render_subagent_tool_round(
             pass
         prompt = f"{GUI_CMD_PROMPT_BEGIN}{bullet} {label}{(' ' + detail) if detail else ''}{GUI_CMD_PROMPT_END}"
 
-    # Extract the human-readable result payload (mirrors the main chat's
-    # _build_model_tool_result_history_content).
+    # Extract the human-readable result payload.
     r = tool_result if isinstance(tool_result, dict) else {}
     content = r.get("content")
     output_text = str(content) if isinstance(content, str) and content else ""
@@ -344,9 +343,7 @@ def _render_subagent_tool_round(
     return f"{prompt}\n{GUI_CMD_OUTPUT_BEGIN}{output_text}{GUI_CMD_OUTPUT_END}"
 
 
-# Keys that carry metadata rather than user-facing tool output; mirrored from
-# agent._build_model_tool_result_history_content so non-success tool results
-# with tool-specific data keys still surface their payload.
+# Keys that carry metadata rather than user-facing tool output.
 _META_KEYS = {
     "success", "error", "message", "return_code", "output", "content",
     "file", "call", "server", "tool", "prompt", "uri", "arguments",

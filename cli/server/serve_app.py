@@ -244,18 +244,10 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 return False
             if agent._parse_model_tool_plan_history_content(content) is not None:
                 return False
-            if agent._parse_model_tool_result_history_content(content) is not None:
-                return False
         except Exception:
             return False
         try:
             return bool(format_assistant_display_response(content))
-        except Exception:
-            return False
-
-    def _is_tool_result(content: str) -> bool:
-        try:
-            return agent._parse_model_tool_result_history_content(content) is not None
         except Exception:
             return False
 
@@ -409,63 +401,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             except Exception:
                 pass
 
-        # A tool result belongs to the round whose model message requested it,
-        # accumulating its wait into that round's total time.
-        if _is_tool_result(content):
-            turn = _ensure_turn()
-            if current_round is None:
-                current_round = _new_round(turn, 0)
-            if ts is not None and prev_ts is not None:
-                current_round["waitSeconds"] += max(0, int(round(ts - prev_ts)))
-            # When the tool_plan message that issued this call already carries
-            # pre-rendered tool_rounds (e.g. ``_tool_rounds_raw``), its branch
-            # above already appended the complete round (prompt line + expandable
-            # output) for every tool in the batch. Rendering the feedback line
-            # again here would produce a duplicate prompt line that trails the
-            # real ones, making tools appear twice or out of order.
-            _covered_by_raw_rounds = False
-            for _j in range(idx - 1, max(idx - 20, -1), -1):
-                _prev = hist[_j]
-                if not isinstance(_prev, dict):
-                    continue
-                if str(_prev.get("role") or "").strip().lower() != "assistant":
-                    continue
-                if _is_tool_plan(str(_prev.get("content") or "")):
-                    _raw = _prev.get("_tool_rounds_raw") if isinstance(_prev, dict) else None
-                    if isinstance(_raw, list) and _raw:
-                        _covered_by_raw_rounds = True
-                    break
-            if not _covered_by_raw_rounds:
-                rendered = _render_step(idx, msg)
-                if rendered.strip():
-                    current_round["tools"] = current_round["tools"] + rendered + "\n"
-            else:
-                # When the tool-call prompt already rendered the prompt line
-                # via _tool_rounds_raw, and diffs are NOT already inline
-                # (old conversations without previewRef), emit the apply_patch
-                # diff block from the previews.json sidecar.
-                if not current_round.get("_has_inline_diffs"):
-                    try:
-                        _parsed = agent._parse_model_tool_result_history_content(content)
-                        if (
-                            isinstance(_parsed, dict)
-                            and str(_parsed.get("tool") or "").strip().lower() == "apply_patch"
-                            and bool(_parsed.get("success", True))
-                        ):
-                            _buf = io.StringIO()
-                            with contextlib.redirect_stdout(_buf):
-                                agent._replay_apply_patch_gui_diff_block(_parsed)
-                            _diff = _buf.getvalue().strip()
-                            if _diff:
-                                current_round["tools"] = current_round["tools"] + _diff + "\n"
-                    except Exception:
-                        pass
-            if ts is not None:
-                prev_ts = ts
-            continue
-
-        # New-format role:tool messages — same treatment as old-format
-        # [MODEL_TOOL_RESULT] tool results.
+        # New-format role:tool messages.
         if role == "tool":
             turn = _ensure_turn()
             if current_round is None:
@@ -473,8 +409,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             if ts is not None and prev_ts is not None:
                 current_round["waitSeconds"] += max(0, int(round(ts - prev_ts)))
             # Emit apply_patch diff block from previews.json sidecar
-            # unless diffs are already inline in the tool round text
-            # (new conversations with previewRef in _tool_rounds_raw).
+            # unless diffs are already inline in the tool round text.
             if not current_round.get("_has_inline_diffs"):
                 try:
                     if str(msg.get("name") or "").strip().lower() == "apply_patch":
@@ -488,6 +423,9 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                                 current_round["tools"] = current_round["tools"] + _diff + "\n"
                 except Exception:
                     pass
+            rendered = _render_step(idx, msg)
+            if rendered.strip():
+                current_round["tools"] = current_round["tools"] + rendered + "\n"
             if ts is not None:
                 prev_ts = ts
             continue

@@ -22,18 +22,22 @@ def _tool_plan(tool: str, args: dict) -> str:
     )
 
 
-def _tool_result(tool: str, args: dict, output: str = "") -> str:
-    return "[MODEL_TOOL_RESULT]" + json.dumps(
-        {
-            "kind": "model_tool_result",
-            "tool": tool,
-            "args": args,
-            "success": True,
-            "output": output,
-            "created_at": "2026-07-08 18:21:43",
-        },
-        ensure_ascii=False,
-    )
+def _tool_result(tool: str, args: dict, output: str = "") -> dict:
+    content = json.dumps({
+        "kind": "model_tool_result",
+        "tool": tool,
+        "args": args,
+        "success": True,
+        "output": output,
+        "created_at": "2026-07-08 18:21:43",
+    }, ensure_ascii=False)
+    return {
+        "role": "tool",
+        "name": tool,
+        "content": content,
+        "tool_call_id": "call_0",
+        "created_at": "2026-07-08 18:21:43",
+    }
 
 
 class _FakeSessionMemoryService:
@@ -76,29 +80,21 @@ class _FakeAgent:
                 "content": _tool_plan("request_skill_prompt", {"skill_id": "codex-usage"}),
                 "created_at": "2026-07-08 18:21:41",
             },
-            {
-                "role": "assistant",
-                "content": _tool_result(
-                    "request_skill_prompt",
-                    {"skill_id": "codex-usage"},
-                    output="skill prompt body",
-                ),
-                "created_at": "2026-07-08 18:21:42",
-            },
+            _tool_result(
+                "request_skill_prompt",
+                {"skill_id": "codex-usage"},
+                output="skill prompt body",
+            ),
             {
                 "role": "assistant",
                 "content": _tool_plan("shell", {"command": "npx ccusage codex daily --compact"}),
                 "created_at": "2026-07-08 18:21:45",
             },
-            {
-                "role": "assistant",
-                "content": _tool_result(
-                    "shell",
-                    {"command": "npx ccusage codex daily --compact"},
-                    output="command output",
-                ),
-                "created_at": "2026-07-08 18:21:46",
-            },
+            _tool_result(
+                "shell",
+                {"command": "npx ccusage codex daily --compact"},
+                output="command output",
+            ),
             {
                 "role": "assistant",
                 "content": "最终答案",
@@ -141,16 +137,6 @@ class _FakeAgent:
             args = {}
         return {"tool": tool, "args": args}
 
-    def _parse_model_tool_result_history_content(self, content):
-        text = str(content or "")
-        prefix = "[MODEL_TOOL_RESULT]"
-        if not text.startswith(prefix):
-            return None
-        try:
-            return json.loads(text[len(prefix) :])
-        except Exception:
-            return None
-
     def _parse_internal_slash_result_history_content(self, content):
         return None
 
@@ -158,19 +144,21 @@ class _FakeAgent:
         return None
 
     def _render_transcript_single_message(self, idx, msg, hist):
+        if str(msg.get("role") or "").strip().lower() == "tool":
+            content = str(msg.get("content") or "")
+            try:
+                payload = json.loads(content)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                tool = str(payload.get("tool") or "")
+                if tool == "request_skill_prompt":
+                    print("• Request skill prompt (skill_id=codex-usage)")
+                elif tool == "shell":
+                    print("• Ran npx ccusage codex daily --compact")
+            return
         plan = self._parse_model_tool_plan_history_content(msg.get("content"))
         if plan is not None:
-            tool = str(plan.get("tool") or "")
-            if tool == "request_skill_prompt":
-                print("• Request skill prompt (skill_id=codex-usage)")
-            return
-        result = self._parse_model_tool_result_history_content(msg.get("content"))
-        if result is not None:
-            tool = str(result.get("tool") or "")
-            if tool == "request_skill_prompt":
-                print("• Request skill prompt (skill_id=codex-usage)")
-            elif tool == "shell":
-                print("• Ran npx ccusage codex daily --compact")
             return
         content = str(msg.get("content") or "").strip()
         if content:
@@ -194,14 +182,13 @@ class _FakeAgentWithReadRender(_FakeAgent):
         return out
 
     def _render_transcript_single_message(self, idx, msg, hist):
+        if str(msg.get("role") or "").strip().lower() == "tool":
+            return
         plan = self._parse_model_tool_plan_history_content(msg.get("content"))
         if plan is not None:
             tool = str(plan.get("tool") or "")
             if tool == "read":
                 print(f"• Ran read {plan.get('args', {}).get('path', '')}")
-            return
-        result = self._parse_model_tool_result_history_content(msg.get("content"))
-        if result is not None and str(result.get("tool") or "") == "read":
             return
         content = str(msg.get("content") or "").strip()
         if content:
