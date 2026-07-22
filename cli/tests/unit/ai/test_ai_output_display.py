@@ -370,7 +370,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         # snake_case tool name is humanized and the args follow in parentheses.
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Read "))
         self.assertIn("<H>a.txt</H>", line)
@@ -380,7 +380,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.agent.display_language = "zh-CN"
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line("shell", {"command": "git status"}, failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 执行 "))
         self.assertIn("<H>git status</H>", line)
@@ -390,7 +390,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.agent.display_language = "zh-CN"
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line(
                 "run_subagent", {"subagent": "coder"}, failed=False
             )
@@ -400,7 +400,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_tool_call_feedback_line_includes_explore_topic(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line(
                 "run_subagent",
                 {"subagent": "explore", "topic": "sub-agent architecture"},
@@ -423,7 +423,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.agent.display_language = "zh-CN"
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line(
                 "apply_patch",
                 {"path": "new.py", "patch": "*** Add File: new.py\n+x\n"},
@@ -435,7 +435,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         # apply_patch that adds a new file reads as "Create file".
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line(
                 "apply_patch",
                 {"path": "new.py", "patch": "*** Add File: new.py\n+hello\n"},
@@ -448,7 +448,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         # apply_patch editing an existing file reads as "Apply patch".
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line(
                 "apply_patch",
                 {"path": "edit.py", "patch": "@@\n-old\n+new\n"},
@@ -460,7 +460,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=True)
         self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Read "))
         self.assertIn("<H>a.txt</H>", line)
@@ -468,7 +468,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_direct_shell_command_feedback_line_uses_shared_highlighter(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> You ran "))
         self.assertIn("<H>git status</H>", line)
@@ -477,7 +477,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.agent.display_language = "zh-CN"
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
             line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 你执行了 "))
         self.assertIn("<H>git status</H>", line)

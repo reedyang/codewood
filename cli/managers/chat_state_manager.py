@@ -1211,7 +1211,7 @@ class ChatStateManager:
             if prev_messages == msgs:
                 return
             if msgs:
-                chat["updated_at"] = self._now_text()
+                chat["updated_at"] = msgs[-1]["created_at"]
         self.save_chat_state()
         self._notify_gui_context_usage_changed()
 

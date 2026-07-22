@@ -499,16 +499,21 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
                     ]},
                     ca,
                 )
-            # Active chat only retains the first apply_patch result.
-            agent._find_chat_by_id = lambda _cid: {
-                "messages": [
-                    {
-                        "role": "tool",
-                        "name": "apply_patch",
-                        "content": '{"success": true, "created_at": "2026-06-24 10:00:00"}',
-                    }
-                ]
-            }
+            # Active conversation history only retains the first apply_patch result.
+            agent.conversation_history = [
+                {
+                    "role": "assistant",
+                    "content": "Applying patch",
+                    "_tool_rounds_raw": [
+                        {
+                            "tool": "apply_patch",
+                            "previewRef": "2026-06-24 10:00:00",
+                            "args": {"file_path": "a.py"},
+                            "failed": False,
+                        }
+                    ],
+                }
+            ]
             agent._prune_apply_patch_preview_sidecar()
             store = agent._load_apply_patch_preview_store()
             self.assertEqual(set(store.keys()), {"2026-06-24 10:00:00"})
