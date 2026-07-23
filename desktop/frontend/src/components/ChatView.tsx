@@ -1943,14 +1943,14 @@ function TranscriptMinimap({
     const di = domIndicesRef.current;
     const userCount = ut.length;
 
-    const turnEls = Array.from(container.querySelectorAll(':scope > .turn'));
+    const turnEls = Array.from(container.querySelectorAll(':scope > .transcript-inner > .turn'));
     const scrollTop = container.scrollTop;
     const viewBottom = scrollTop + container.clientHeight;
     let domStart = turnEls.length;
     let domEnd = 0;
     for (let i = 0; i < turnEls.length; i++) {
       const el = turnEls[i] as HTMLElement;
-      const elTop = el.offsetTop;
+      const elTop = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
       const elBottom = elTop + el.offsetHeight;
       if (elBottom > scrollTop && elTop < viewBottom) {
         if (i < domStart) domStart = i;
@@ -2032,20 +2032,25 @@ function TranscriptMinimap({
     return Math.round(MINIMAP_LINE_MAX - t * (MINIMAP_LINE_MAX - MINIMAP_LINE_MIN));
   };
 
-  const handleClick = () => {
-    if (hoveredIdx === null) return;
+  const handleClick = (e: React.MouseEvent) => {
+    const rect = minimapRef.current?.getBoundingClientRect();
+    if (!rect || totalLines === 0) return;
+    const y = e.clientY - rect.top;
+    const idx = Math.round(y / lineStep);
+    const clickedIdx = Math.max(0, Math.min(idx, totalLines - 1));
     const container = scrollRef.current;
     if (!container) return;
-    const domIdx = domIndices[hoveredIdx];
+    const domIdx = domIndices[clickedIdx];
     if (domIdx === undefined) return;
-    if (hoveredIdx < unloadedCount) {
+    if (clickedIdx < unloadedCount) {
       container.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-    const turnEls = Array.from(container.querySelectorAll(':scope > .turn'));
+    const turnEls = Array.from(container.querySelectorAll(':scope > .transcript-inner > .turn'));
     const target = turnEls[domIdx] as HTMLElement | undefined;
     if (target) {
-      container.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
+      const scrollTop = target.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+      container.scrollTo({ top: scrollTop, behavior: 'smooth' });
     }
   };
 
