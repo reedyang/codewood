@@ -690,23 +690,8 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     cached = freedom_try_cached_user_script_review(agent, k, body, command)
                     if cached is not None:
                         skip_c, reason_c = cached
-                        tag = _t(
-                            agent,
-                            "execution_policy.review.cache.tag.skip"
-                            if skip_c
-                            else "execution_policy.review.cache.tag.manual",
-                            fallback="auto-confirm can be skipped" if skip_c else "manual confirmation required",
-                        )
-                        _print_with_auto_hide_tracking(
-                            agent,
-                            f"{mode_prefix} {_t(agent, 'execution_policy.review.cache_used', fallback='used script review cache from config file (script and command hashes match), {tag} - {reason}', tag=tag, reason=reason_c)}",
-                        )
                         agent._manual_confirm_required_shell_once = not bool(skip_c)
                         return skip_c
-                _print_with_auto_hide_tracking(
-                    agent,
-                    f"{mode_prefix} {_t(agent, 'execution_policy.review.reviewing_script_content', fallback='reviewing script safety and manipulation content...')}"
-                )
                 skip, reason, inj_risk = ai_assess_ephemeral_script_combined(
                     agent, sp, body, command
                 )
