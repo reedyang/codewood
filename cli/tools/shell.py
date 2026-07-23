@@ -75,6 +75,15 @@ def _collapse_cr_output(text: str) -> str:
     out = []
     for line in lines:
         if "\r" in line:
+            parts = line.split("\r")
+            non_empty = [p for p in parts if p]
+            # Multiple \\r frames on one line → spinner / progress bar
+            # whose last frame was never finalized (cursor moved to next
+            # line with \\n before the last frame was overwritten).
+            # Clear the entire line.
+            if len(non_empty) >= 2:
+                out.append("")
+                continue
             line = line.rsplit("\r", 1)[-1]
         if "\b" in line:
             line = _handle_backspace_collapse(line)
