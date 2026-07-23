@@ -4731,10 +4731,22 @@ class Agent:
                 return 0
             if bool(self._shared_state.get("disable_live_render", False)):
                 return len(s)
-            # Normalize CRLF to LF; keep bare CR so the character loop
-            # can handle \r-based overwrites (spinners, progress bars) by
-            # clearing the current line and resetting to column 0.
+            # Normalize CRLF to LF; collapse \\r-based overwrites so the
+            # scrolling TUI shows only the latest frame of each spinner.
             s = s.replace("\r\n", "\n")
+            if "\r" in s:
+                lines = s.split("\n")
+                cleaned = []
+                for line in lines:
+                    if "\r" in line:
+                        line = "\r" + line.rsplit("\r", 1)[-1]
+                        self._line_start = True
+                        self._visual_col = 0
+                        # Treat \r-overwritten output as a new logical
+                        # "first line" so it gets the tree connector.
+                        self._shared_state["first_line_emitted"] = False
+                    cleaned.append(line)
+                s = "\n".join(cleaned)
             if (
                 bool(self._shared_state.get("drop_until_next_newline", False))
                 and not bool(self._shared_state.get("suspend_drop_until_next_newline", False))
