@@ -1722,6 +1722,7 @@ export function RoundShell({
           <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
         )}
       </button>
+      {hasDetails && <div className="activity-divider" />}
       {hasDetails && expanded && (
         <>{detailsNode}</>
       )}
@@ -1764,7 +1765,7 @@ export function HistoryRoundDetailView({
       timerText={`${t("activity.thoughtFor")} ${formatElapsed(round.waitSeconds * 1000)}`}
     />
   ) : null;
-  const textNode = String(round.text || "").trim().length > 0 ? (
+  const textNode = showText && String(round.text || "").trim().length > 0 ? (
     <div className="answer">
       <MarkdownText text={String(round.text || "")} />
     </div>
@@ -2167,13 +2168,19 @@ function CompletedTurnView({
       return;
     }
     const isFinalRoundWithAnswer = index === detailRounds.length - 1 && finalAnswerText.length > 0;
-    detailNodes.push(
-      <HistoryRoundDetailView
-        key={`round-${index}`}
-        round={round}
-        showText={!isFinalRoundWithAnswer}
-      />,
-    );
+    const showText = !isFinalRoundWithAnswer;
+    const roundText = String(round.text || "").trim();
+    const roundTools = String(round.tools || "").trim();
+    const roundThinking = String(round.thinking || "").trim();
+    if (roundTools.length > 0 || roundThinking.length > 0 || (showText && roundText.length > 0)) {
+      detailNodes.push(
+        <HistoryRoundDetailView
+          key={`round-${index}`}
+          round={round}
+          showText={showText}
+        />,
+      );
+    }
   });
   const hasDetails = detailNodes.length > 0;
   const hasCompactNotices = compactNoticeNodes.length > 0;

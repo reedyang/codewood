@@ -4274,6 +4274,12 @@ html[data-has-bg] .select {
   margin: 4px 0;
 }
 
+.activity-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
 .live-tool-activity {
   margin: 2px 0;
 }
