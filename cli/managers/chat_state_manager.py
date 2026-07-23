@@ -669,6 +669,7 @@ class ChatStateManager:
 
             index_chats = []
             current_record_paths = set()
+            index_dirty = False
             for chat in chats:
                 if not isinstance(chat, dict):
                     continue
@@ -756,6 +757,7 @@ class ChatStateManager:
                             json.dump(record_payload, f, ensure_ascii=False, indent=2)
                             f.write("\n")
                         _safe_replace(tmp_path, record_path)
+                        index_dirty = True
                 index_chats.append(
                     {
                         "id": cid,
@@ -770,64 +772,74 @@ class ChatStateManager:
                     }
                 )
 
-            index_payload = {
-                "version": CHAT_STATE_VERSION,
-                "active": active,
-                "chats": index_chats,
-            }
-            tmp_index = index_path.with_name(index_path.name + ".tmp")
-            with open(tmp_index, "w", encoding="utf-8") as f:
-                json.dump(index_payload, f, ensure_ascii=False, indent=2)
-                f.write("\n")
-            _safe_replace(tmp_index, index_path)
+            # Detect chat additions/deletions even when no record was rewritten:
+            # if the index size changed since last save, we must rewrite.
+            if not index_dirty:
+                last_count = getattr(self._agent, "_last_saved_index_count", None)
+                if last_count is None or last_count != len(index_chats):
+                    index_dirty = True
 
-            # Only sweep record files we know used to belong to this index
-            # and are now gone from memory. A record on disk that this
-            # process never had in memory may have been created by another
-            # codewood process — deleting it would destroy a peer's chat,
-            # so leave unknown records untouched.
-            known_record_files = set()
-            try:
-                known = getattr(self._agent, "_known_record_files_seen", None)
-                if isinstance(known, set):
-                    known_record_files = known
-            except Exception:
+            # Only rewrite the index when something actually changed — avoids
+            # needless I/O and reduces the risk window for index corruption.
+            if index_dirty:
+                index_payload = {
+                    "version": CHAT_STATE_VERSION,
+                    "active": active,
+                    "chats": index_chats,
+                }
+                tmp_index = index_path.with_name(index_path.name + ".tmp")
+                with open(tmp_index, "w", encoding="utf-8") as f:
+                    json.dump(index_payload, f, ensure_ascii=False, indent=2)
+                    f.write("\n")
+                _safe_replace(tmp_index, index_path)
+                self._agent._last_saved_index_count = len(index_chats)
+
+                # Only sweep record files we know used to belong to this index
+                # and are now gone from memory. A record on disk that this
+                # process never had in memory may have been created by another
+                # codewood process — deleting it would destroy a peer's chat,
+                # so leave unknown records untouched.
                 known_record_files = set()
-            for stale in records_dir.glob("*.json"):
                 try:
-                    if stale.resolve() == index_path.resolve():
-                        continue
-                    if stale.resolve() in current_record_paths:
-                        continue
-                    if stale.name not in known_record_files:
-                        # Unknown to this process: assume a peer owns it.
-                        continue
-                    logger.info(
-                        "save_chat_state stale-sweep deleting record_file=%s "
-                        "(not in current_index, known=%s)",
-                        stale.name,
-                        stale.name in known_record_files,
-                    )
-                    stale.unlink()
-                    # Delete the chat's side-data directory alongside its record.
-                    self.delete_chat_data(stale.name)
+                    known = getattr(self._agent, "_known_record_files_seen", None)
+                    if isinstance(known, set):
+                        known_record_files = known
+                except Exception:
+                    known_record_files = set()
+                for stale in records_dir.glob("*.json"):
+                    try:
+                        if stale.resolve() == index_path.resolve():
+                            continue
+                        if stale.resolve() in current_record_paths:
+                            continue
+                        if stale.name not in known_record_files:
+                            continue
+                        logger.info(
+                            "save_chat_state stale-sweep deleting record_file=%s "
+                            "(not in current_index, known=%s)",
+                            stale.name,
+                            stale.name in known_record_files,
+                        )
+                        stale.unlink()
+                        # Delete the chat's side-data directory alongside its record.
+                        self.delete_chat_data(stale.name)
+                    except Exception:
+                        pass
+
+                # Remember every record file we just wrote so a future save can
+                # safely sweep one that genuinely disappears from this process's
+                # memory (e.g. the user deleted the chat here).
+                try:
+                    seen = getattr(self._agent, "_known_record_files_seen", None)
+                    if not isinstance(seen, set):
+                        seen = set()
+                        self._agent._known_record_files_seen = seen
+                    for entry in index_chats:
+                        rf = str(entry.get("record_file") or "").strip()
+                        if rf:
+                            seen.add(rf)
                 except Exception:
                     pass
-
-            # Remember every record file we just wrote so a future save can
-            # safely sweep one that genuinely disappears from this process's
-            # memory (e.g. the user deleted the chat here).
-            try:
-                seen = getattr(self._agent, "_known_record_files_seen", None)
-                if not isinstance(seen, set):
-                    seen = set()
-                    self._agent._known_record_files_seen = seen
-                for entry in index_chats:
-                    rf = str(entry.get("record_file") or "").strip()
-                    if rf:
-                        seen.add(rf)
-            except Exception:
-                pass
         except Exception as e:
             print(
                 translate(
@@ -892,6 +904,7 @@ class ChatStateManager:
             if not p.exists():
                 if create_default_chat:
                     self._agent._chat_state = self.default_chat_state()
+                    self._agent._last_saved_index_count = len(self._agent._chat_state.get("chats", []))
                     self.activate_chat(
                         self._agent._chat_state["active"],
                         announce=False,
@@ -901,6 +914,7 @@ class ChatStateManager:
                     )
                 else:
                     self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
+                    self._agent._last_saved_index_count = 0
                     self._agent.active_chat_name = "New Chat"
                 return
             with open(p, "r", encoding="utf-8") as f:
@@ -979,6 +993,7 @@ class ChatStateManager:
                 )
                 active = str(chats[0].get("id") or "")
             self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": active, "chats": chats}
+            self._agent._last_saved_index_count = len(chats)
             # Drop any orphan chat side-data directories whose chat record is
             # gone (e.g. a chat deleted by a peer process) so pasted images and
             # preview sidecars never outlive their chat.
