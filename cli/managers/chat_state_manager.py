@@ -686,6 +686,7 @@ class ChatStateManager:
                 # and if it is strictly newer we both keep it on disk
                 # (skip the overwrite) and refresh our in-memory copy so
                 # subsequent reads/saves stay consistent.
+                write_record = True
                 if cid not in actively_running_ids and record_path.exists():
                     try:
                         with open(record_path, "r", encoding="utf-8") as f:
@@ -719,41 +720,42 @@ class ChatStateManager:
                                 }
                             )
                             continue
+                        if disk_ts == mem_ts:
+                            # Unchanged: skip the record write but keep the index entry.
+                            write_record = False
 
-                for msg in chat.get("messages", []):
-                    if isinstance(msg, dict) and msg.get("role") == "assistant" and not msg.get("_clean_content"):
-                        raw = str(msg.get("content") or "")
-                        from ..runtime.runtime_loop import _stream_visible_text_with_json_pause, _strip_channel_thought_markers
-                        cleaned = _stream_visible_text_with_json_pause(raw, final=True)
-                        if cleaned == raw:
-                            cleaned = _strip_channel_thought_markers(raw)
-                        if cleaned != raw:
-                            # Record even an empty cleaned form: it signals the
-                            # raw content was entirely hidden markers, so the
-                            # renderer must not fall back to the raw string.
-                            msg["_clean_content"] = cleaned
-                record_payload = {
-                    k: v for k, v in chat.items()
-                    if (not str(k).startswith("_") or k == "_tool_rounds_raw")
-                    and k != "archived"
-                }
-                # Guard: the record payload's id must match the chat id from the
-                # index. A mismatch means the in-memory dict was cross-contaminated
-                # and writing it would permanently corrupt the record file.
-                if str(record_payload.get("id") or "").strip() != cid:
-                    logger.error(
-                        "save_chat_state: refusing to write %s — record id=%r != chat_id=%r. "
-                        "Cross-contamination prevented.",
-                        record_path.name,
-                        str(record_payload.get("id") or "").strip(),
-                        cid,
-                    )
-                    continue
-                tmp_path = record_path.with_name(record_path.name + ".tmp")
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(record_payload, f, ensure_ascii=False, indent=2)
-                    f.write("\n")
-                _safe_replace(tmp_path, record_path)
+                if write_record:
+                    for msg in chat.get("messages", []):
+                        if isinstance(msg, dict) and msg.get("role") == "assistant" and not msg.get("_clean_content"):
+                            raw = str(msg.get("content") or "")
+                            from ..runtime.runtime_loop import _stream_visible_text_with_json_pause, _strip_channel_thought_markers
+                            cleaned = _stream_visible_text_with_json_pause(raw, final=True)
+                            if cleaned == raw:
+                                cleaned = _strip_channel_thought_markers(raw)
+                            if cleaned != raw:
+                                msg["_clean_content"] = cleaned
+                    record_payload = {
+                        k: v for k, v in chat.items()
+                        if (not str(k).startswith("_") or k == "_tool_rounds_raw")
+                        and k != "archived"
+                    }
+                    # Guard: the record payload's id must match the chat id from the
+                    # index. A mismatch means the in-memory dict was cross-contaminated
+                    # and writing it would permanently corrupt the record file.
+                    if str(record_payload.get("id") or "").strip() != cid:
+                        logger.error(
+                            "save_chat_state: refusing to write %s — record id=%r != chat_id=%r. "
+                            "Cross-contamination prevented; index entry preserved from memory.",
+                            record_path.name,
+                            str(record_payload.get("id") or "").strip(),
+                            cid,
+                        )
+                    else:
+                        tmp_path = record_path.with_name(record_path.name + ".tmp")
+                        with open(tmp_path, "w", encoding="utf-8") as f:
+                            json.dump(record_payload, f, ensure_ascii=False, indent=2)
+                            f.write("\n")
+                        _safe_replace(tmp_path, record_path)
                 index_chats.append(
                     {
                         "id": cid,
