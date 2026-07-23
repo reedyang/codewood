@@ -628,7 +628,7 @@ export function RichComposer({
   const undoStackRef = useRef<Segment[][]>([]);
   const redoStackRef = useRef<Segment[][]>([]);
   const suppressHistoryRef = useRef<boolean>(false);
-  const lastHistorySigRef = useRef<string>("");
+  const lastHistorySigRef = useRef<string>("__init__");
   const segmentsSigRef = useRef<string>("__init__");
   const lastPrevSegmentsRef = useRef<Segment[]>(segments);
   const MAX_HISTORY = 200;
@@ -708,10 +708,9 @@ export function RichComposer({
   useEffect(() => {
     const prevSig = segmentsSigRef.current;
     const nextSig = segmentsSignature(segments);
-    if (prevSig === "__init__" || prevSig === "") {
+    if (prevSig === "__init__") {
       // First observation: seed baseline, nothing to record.
       segmentsSigRef.current = nextSig;
-      lastHistorySigRef.current = nextSig;
       lastPrevSegmentsRef.current = segments;
       return;
     }
@@ -1206,7 +1205,7 @@ export function RichComposer({
     const current = lastPrevSegmentsRef.current;
     redoStackRef.current.push(current.map((s) => ({ ...s })));
     suppressHistoryRef.current = true;
-    lastHistorySigRef.current = segmentsSignature(prev);
+    lastHistorySigRef.current = "__init__";
     lastRenderedRef.current = FORCE_REBUILD; // force the DOM to rebuild from the model
     // Place the caret at the end of whatever the undo changed (insert/delete
     // rule), computed by diffing the outgoing and incoming models.
@@ -1225,7 +1224,7 @@ export function RichComposer({
     const current = lastPrevSegmentsRef.current;
     undoStackRef.current.push(current.map((s) => ({ ...s })));
     suppressHistoryRef.current = true;
-    lastHistorySigRef.current = segmentsSignature(next);
+    lastHistorySigRef.current = "__init__";
     lastRenderedRef.current = FORCE_REBUILD;
     pendingCaretRef.current = snapshotForCanonical(
       next,
