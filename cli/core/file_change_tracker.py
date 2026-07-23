@@ -20,9 +20,10 @@ class FileChangeRecord:
     patch: Optional[List[Dict[str, Any]]] = None  # structured diff segments
     added_lines: int = 0
     deleted_lines: int = 0
+    backup_path: Optional[str] = None  # relative backup filename for delete recovery
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "filePath": self.file_path,
             "changeType": self.change_type,
             "source": self.source,
@@ -31,6 +32,9 @@ class FileChangeRecord:
             "deletedLines": self.deleted_lines,
             "patch": self.patch,
         }
+        if self.backup_path:
+            result["backupPath"] = self.backup_path
+        return result
 
 
 class FileChangeTracker:
@@ -98,6 +102,29 @@ class FileChangeTracker:
             patch=segments,
         )
 
+    def record_delete(
+        self,
+        file_path: str,
+        source: str,
+        content_before: str,
+        backup_path: Optional[str] = None,
+    ) -> FileChangeRecord:
+        """Record a file deletion with the pre-deletion content."""
+        deleted_lines = len(content_before.splitlines())
+        record = FileChangeRecord(
+            file_path=file_path,
+            change_type="delete",
+            source=source,
+            content_before=content_before,
+            content_after=None,
+            patch=None,
+            added_lines=0,
+            deleted_lines=deleted_lines,
+            backup_path=backup_path,
+        )
+        self._changes.append(record)
+        return record
+
     def get_changes(self) -> List[FileChangeRecord]:
         """Get all recorded changes."""
         return list(self._changes)
@@ -133,13 +160,17 @@ class FileChangeTracker:
         for change in self._changes:
             path = change.file_path
             if path not in files:
-                diff_rows = _convert_segments_to_diff_rows(change.patch, _to_diff_rows)
+                if change.change_type == "delete":
+                    diff_rows: List[Dict[str, Any]] = []
+                else:
+                    diff_rows = _convert_segments_to_diff_rows(change.patch, _to_diff_rows)
                 files[path] = {
                     "filePath": path,
                     "changeType": change.change_type,
-                    "addedLines": 0,
-                    "deletedLines": 0,
+                    "addedLines": change.added_lines,
+                    "deletedLines": change.deleted_lines,
                     "patch": diff_rows,
+                    "backupPath": change.backup_path,
                     "_first_before": change.content_before,
                     "_last_after": change.content_after,
                 }
@@ -147,9 +178,13 @@ class FileChangeTracker:
                 files[path]["addedLines"] += change.added_lines
                 files[path]["deletedLines"] += change.deleted_lines
                 files[path]["_last_after"] = change.content_after
+                if change.change_type == "delete":
+                    files[path]["changeType"] = "delete"
         for path, entry in files.items():
             _first = entry.pop("_first_before", None)
             _last = entry.pop("_last_after", None)
+            if entry["changeType"] == "delete":
+                continue
             if (
                 _first is not None
                 and _last is not None
