@@ -3,6 +3,7 @@ import threading
 import unittest
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from cli.agent import Agent
 from cli.managers.chat_state_manager import CHAT_STATE_VERSION, ChatStateManager
@@ -873,7 +874,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(chat.get("updated_at"), original_updated_at)
             self.assertEqual(save_calls, [])
 
-    def test_sync_active_chat_messages_sets_updated_at_to_latest_message_time(self):
+    def test_sync_active_chat_messages_sets_updated_at_to_current_time(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             agent = _FakeAgent(workspace)
@@ -903,11 +904,13 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 {"role": "assistant", "content": "reply", "created_at": "2026-07-08 15:12:34"},
             ]
 
-            manager.sync_active_chat_messages()
+            fake_now = "2026-07-23 16:00:00"
+            with patch.object(ChatStateManager, "_now_text", return_value=fake_now):
+                manager.sync_active_chat_messages()
 
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
-            self.assertEqual(chat.get("updated_at"), "2026-07-08 15:12:34")
+            self.assertEqual(chat.get("updated_at"), fake_now)
 
 
 class RefreshChatRecordFromDiskTests(unittest.TestCase):
