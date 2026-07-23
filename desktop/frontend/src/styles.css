@@ -1822,6 +1822,7 @@ body.resizing-x .browser-frame {
   flex: 1;
   overflow-y: auto;
   padding: 18px 40px;
+  position: relative;
 }
 
 .transcript-inner {
