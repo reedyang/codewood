@@ -4772,12 +4772,7 @@ def run_agent_loop(agent: Any):
                     # sub-agents also start an animation ticker.
                     _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
                     if tool_name != "request_skill_prompt":
-                        # In TUI mode always print. In GUI mode defer for tools
-                        # that have their own inline rendering (apply_patch,
-                        # request_skill_prompt).
-                        _defer = _gui_stream and tool_name in ("apply_patch",)
-                        if not _defer:
-                            self._print_tool_call_feedback(tool_name, args, failed=False)
+                        self._print_tool_call_feedback(tool_name, args, failed=False)
                     if tool_name == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
                         if _gui_stream:
                             explore_ticker = _NullStatusTicker()
