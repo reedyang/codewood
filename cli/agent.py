@@ -2572,6 +2572,7 @@ class Agent:
         tool_name: str,
         args: Dict[str, Any],
         failed: bool = False,
+        is_add_file: Optional[bool] = None,
     ) -> str:
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         name = str(tool_name or "").strip().lower()
@@ -2586,14 +2587,26 @@ class Agent:
         # Every other tool gets a natural-language action label (no "Ran"
         # prefix), e.g. "Apply patch (path=...)", and the special "Create file"
         # phrasing when apply_patch is used to add a brand-new file.
-        label, detail = self._natural_tool_action(tool_name, args)
+        label, detail = self._natural_tool_action(tool_name, args, is_add_file=is_add_file)
         return self._format_wrapped_command_feedback_line(
             f"{bullet} {_ansi_bold(label)} ",
             detail,
         )
 
+    def _is_apply_patch_add_file(self, args: Dict[str, Any]) -> bool:
+        """Return True if the apply_patch args describe creating a new file."""
+        if not isinstance(args, dict):
+            return False
+        patch_v = args.get("patch")
+        if isinstance(patch_v, str) and "*** Add File:" in patch_v:
+            return True
+        p = str(args.get("path") or "").strip()
+        if p and not self._resolve_user_path(p).exists():
+            return True
+        return False
+
     def _natural_tool_action(
-        self, tool_name: str, args: Dict[str, Any]
+        self, tool_name: str, args: Dict[str, Any], is_add_file: Optional[bool] = None
     ) -> tuple:
         """Return ``(label, detail)`` for a non-shell tool call.
 
@@ -2607,15 +2620,14 @@ class Agent:
         # apply_patch reads as "Apply patch", or "Create file" when the patch is
         # an Add-File operation (a new file rather than an edit).
         if name == "apply_patch":
-            patch_v = a.get("patch")
-            is_add_file = isinstance(patch_v, str) and "*** Add File:" in patch_v
+            p = str(a.get("path") or "").strip()
+            add_file = is_add_file if is_add_file is not None else self._is_apply_patch_add_file(a)
             label = (
                 translate("status.create_file", self._ui_language())
-                if is_add_file
+                if add_file
                 else translate("status.apply_patch", self._ui_language())
             )
-            p = str(a.get("path") or "").strip()
-            detail = f"({p})" if p else ""
+            detail = f" {p}" if p else ""
             return (label, detail)
         if name == "read":
             p = str(a.get("path") or "").strip()
@@ -3453,6 +3465,7 @@ class Agent:
         tool_name: str,
         args: Dict[str, Any],
         result: Dict[str, Any],
+        is_add_file: Optional[bool] = None,
     ) -> None:
         t = str(tool_name or "").strip().lower()
         if t in frozenset({"", "request_skill_prompt"}):
@@ -3607,6 +3620,17 @@ class Agent:
             "elapsed": r.get("_elapsed_seconds"),
             "output": round_output or "",
         }
+        # Persist whether apply_patch was creating a new file, so history
+        # reload can render the correct label after the file exists on disk.
+        # Prefer the pre-execution snapshot captured by the runtime loop;
+        # fall back to on-disk detection for callers that don't pass it.
+        if t == "apply_patch":
+            if is_add_file is not None:
+                raw_entry["is_add_file"] = is_add_file
+            else:
+                raw_entry["is_add_file"] = self._is_apply_patch_add_file(
+                    args if isinstance(args, dict) else {},
+                )
         # Store the preview ref (hashcode) so _rerender_tool_rounds can
         # embed the diff block inline — in the right position — on reload.
         # The full diff rows live in previews.json, out of the model context.
@@ -3766,7 +3790,10 @@ class Agent:
             tool = str(item.get("tool") or "").strip().lower()
             args = item.get("args", {}) if isinstance(item.get("args"), dict) else {}
             failed = bool(item.get("failed", False))
-            tool_round = self._format_tool_call_feedback_line(tool, args, failed=failed)
+            tool_round = self._format_tool_call_feedback_line(
+                tool, args, failed=failed,
+                is_add_file=bool(item.get("is_add_file")) if tool == "apply_patch" else None,
+            )
             if tool == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
                 elapsed = item.get("elapsed")
                 explore_text = self._explore_completed_label(args, elapsed)

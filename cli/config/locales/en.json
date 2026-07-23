@@ -10,7 +10,7 @@
   "status.ran": "Ran",
   "status.call": "Call",
   "status.apply_patch": "Edit",
-  "status.create_file": "Create file",
+  "status.create_file": "Add",
   "tool.label.read": "Read",
   "tool.label.run_subagent": "Run subagent",
   "tool.label.update_plan": "Update plan",
