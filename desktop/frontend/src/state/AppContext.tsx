@@ -1907,11 +1907,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "output": {
           const stepText = String(data.text ?? "");
-          console.log("[output-step] SSE", {
-            eventKey,
-            textLen: stepText.length,
-            textPreview: stepText.substring(0, 200),
-          });
           appendSegment("step", stepText, eventKey);
           break;
         }

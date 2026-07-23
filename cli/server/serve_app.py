@@ -739,7 +739,7 @@ class _OutputBridge(io.TextIOBase):
             return 0
         if bool(getattr(self._tls, "suppressed", False)):
             return len(text)
-        cleaned = strip_ansi_keep_sgr(text).replace("\r\n", "\n").replace("\r", "")
+        cleaned = strip_ansi_keep_sgr(text).replace("\r\n", "\n")
         if cleaned:
             self._broadcaster.publish(
                 str(tag or "output"),
