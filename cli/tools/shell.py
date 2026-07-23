@@ -121,6 +121,7 @@ if _WINPTY_PTYPROCESS is not None:
             self._activity_tracker = activity_tracker
             self._buf = ""
             self._virtual_col = 0
+            self._pending_cha = None
         def read(self, n=1024):
             try:
                 while True:
@@ -180,8 +181,29 @@ if _WINPTY_PTYPROCESS is not None:
                                 self._virtual_col -= 1
                         elif ch != "\x1b":
                             self._virtual_col += 1
-                    if stripped:
-                        return stripped.encode("utf-8", errors="replace")
+                    if not stripped:
+                        continue
+                    # If the previous chunk was a single visible character, it
+                    # may be the target of an upcoming CHA+EL erase (e.g. the
+                    # trailing \\ that ConPTY emits before clearing a table
+                    # row). Buffer it until the next read arrives.
+                    visible = stripped.replace("\r", "").replace("\n", "").replace("\b", "")
+                    if visible == stripped and len(stripped) == 1 and stripped not in "\r\n\b":
+                        if self._pending_cha is None:
+                            self._pending_cha = stripped
+                            continue
+                    # If the current chunk is only \\r characters (CHA/EL
+                    # conversion), and we have a buffered single-char, the
+                    # character was being erased — flush only the \\r tail.
+                    if visible == "" and stripped.strip("\r") == "":
+                        if self._pending_cha is not None:
+                            self._pending_cha = None
+                        continue
+                    # Emit: prepend any non-erased buffered character.
+                    if self._pending_cha is not None:
+                        stripped = self._pending_cha + stripped
+                        self._pending_cha = None
+                    return stripped.encode("utf-8", errors="replace")
             except EOFError:
                 return b""
         def read1(self, n=1024):

@@ -682,14 +682,15 @@ function PromptWithAttachment({
       {!isSubAgent && expanded && hasCmd && syntaxNode}
       {!isSubAgent && expanded && hasCmd && !syntaxNode && (() => {
         const tw = getLongestTableBorderWidth(cmdPayload);
+        const cleaned = handleCarriageReturn(cmdPayload);
         return (
           <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
             {tw ? (
               <div style={{ width: `${tw + 2}ch`, wordBreak: "normal" }}>
-                <AnsiText text={handleCarriageReturn(cmdPayload)} />
+                <AnsiText text={cleaned} />
               </div>
             ) : (
-              <AnsiText text={handleCarriageReturn(cmdPayload)} />
+              <AnsiText text={cleaned} />
             )}
           </div>
         );
