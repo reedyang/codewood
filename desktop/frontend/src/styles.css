@@ -4556,7 +4556,6 @@ html[data-has-bg] .select {
 .activity-steps .tool-inline-working {
   display: block;
   margin-top: 12px;
-  margin-left: calc(-1 * var(--cmd-prompt-indent));
   text-align: left;
   cursor: default;
 }
