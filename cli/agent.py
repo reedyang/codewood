@@ -4731,9 +4731,10 @@ class Agent:
                 return 0
             if bool(self._shared_state.get("disable_live_render", False)):
                 return len(s)
-            # Normalize CR/CRLF to LF for stable wrapped rendering; raw carriage
-            # returns can move cursor to line start and leave an orphaned prefix.
-            s = s.replace("\r\n", "\n").replace("\r", "\n")
+            # Normalize CRLF to LF; keep bare CR so the character loop
+            # can handle \r-based overwrites (spinners, progress bars) by
+            # clearing the current line and resetting to column 0.
+            s = s.replace("\r\n", "\n")
             if (
                 bool(self._shared_state.get("drop_until_next_newline", False))
                 and not bool(self._shared_state.get("suspend_drop_until_next_newline", False))
@@ -4807,6 +4808,11 @@ class Agent:
             for ch in s:
                 if ch == "\n":
                     out_parts.append("\n")
+                    self._line_start = True
+                    self._visual_col = 0
+                    continue
+                if ch == "\r":
+                    out_parts.append("\r")
                     self._line_start = True
                     self._visual_col = 0
                     continue
