@@ -261,6 +261,24 @@ class ChatStateManager:
         record_file = self._chat_record_filename_for_chat(chat)
         return self._chat_data_dir_for_record_file(record_file)
 
+    def _backup_corrupted_record(self, record_path: Path, expected_id: str, reason: str) -> None:
+        """Back up a corrupted record file before it is skipped or overwritten."""
+        try:
+            corrupted = record_path.with_name(record_path.name + ".corrupted." + str(int(time.time())))
+        except Exception:
+            corrupted = record_path.with_name(record_path.name + ".corrupted")
+        try:
+            shutil.copy2(str(record_path), str(corrupted))
+            logger.warning(
+                "backup_corrupted_record: %s backed up to %s — %s",
+                record_path.name, corrupted.name, reason,
+            )
+        except Exception:
+            logger.warning(
+                "backup_corrupted_record: could not back up %s (%s)",
+                record_path.name, reason,
+            )
+
     def _previews_path_for_record_file(self, record_file: str) -> Optional[Path]:
         data_dir = self._chat_data_dir_for_record_file(record_file)
         if data_dir is None:
@@ -719,6 +737,18 @@ class ChatStateManager:
                     if (not str(k).startswith("_") or k == "_tool_rounds_raw")
                     and k != "archived"
                 }
+                # Guard: the record payload's id must match the chat id from the
+                # index. A mismatch means the in-memory dict was cross-contaminated
+                # and writing it would permanently corrupt the record file.
+                if str(record_payload.get("id") or "").strip() != cid:
+                    logger.error(
+                        "save_chat_state: refusing to write %s — record id=%r != chat_id=%r. "
+                        "Cross-contamination prevented.",
+                        record_path.name,
+                        str(record_payload.get("id") or "").strip(),
+                        cid,
+                    )
+                    continue
                 tmp_path = record_path.with_name(record_path.name + ".tmp")
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(record_payload, f, ensure_ascii=False, indent=2)
@@ -897,6 +927,8 @@ class ChatStateManager:
                     if not isinstance(chat_raw, dict):
                         raise ValueError("chat record root must be object")
                     if str(chat_raw.get("id") or "").strip() != cid:
+                        self._backup_corrupted_record(record_path, cid,
+                            f"record file id={str(chat_raw.get('id') or '').strip()!r} != index id={cid!r}")
                         raise ValueError("chat record id mismatch")
                     chat = self._validate_chat_entry(chat_raw)
                 except Exception as ve:
