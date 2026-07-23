@@ -44,8 +44,27 @@ SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
 SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
+# Strips ConPTY-injected CSI sequences (window ops, DA, private modes)
+# while preserving SGR color/style codes (which end with 'm').
+_PTY_CSI_STRIP_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-lno-~]")
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
+
+def _collapse_cr_output(text: str) -> str:
+    """Collapse \\r-based line overwrites (spinners, progress bars) in captured output.
+
+    Each line overwritten by consecutive \\r is reduced to just the last segment.
+    CRLF (\\r\\n) is preserved as LF.
+    """
+    text = text.replace("\r\n", "\n")
+    lines = text.split("\n")
+    out = []
+    for line in lines:
+        if "\r" in line:
+            line = line.rsplit("\r", 1)[-1]
+        out.append(line)
+    return "\n".join(out)
+
 
 # On Windows, try to use winpty (ConPTY) so child processes like
 # timeout.exe see a real console handle instead of a redirected pipe.
@@ -82,9 +101,9 @@ if _WINPTY_PTYPROCESS is not None:
                             self._activity_tracker()
                         except Exception:
                             pass
-                    # Strip ANSI escape sequences that the ConPTY layer
-                    # injects (DA responses, mode sets, window ops, etc.).
-                    stripped = ANSI_ESCAPE_RE.sub("", data)
+                    # Strip ConPTY-injected sequences (window ops, DA responses,
+                    # private mode sets) but preserve SGR color/style codes.
+                    stripped = _PTY_CSI_STRIP_RE.sub("", data)
                     stripped = ANSI_OSC_RE.sub("", stripped)
                     if stripped:
                         return stripped.encode("utf-8", errors="replace")
@@ -907,6 +926,7 @@ def action_shell_command(
                     t_out.join(timeout=0.2)
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
+                    out = _collapse_cr_output(out)
                     consume_abort = getattr(agent, "_consume_process_aborted", None)
                     if callable(consume_abort):
                         aborted_by_user = bool(consume_abort(process))
@@ -1210,6 +1230,7 @@ def action_shell_command(
                     t_out.join(timeout=0.2)
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
+                    out = _collapse_cr_output(out)
                     if aborted_by_user:
                         out = str(out) + ("command aborted by user\n")
                 finally:
