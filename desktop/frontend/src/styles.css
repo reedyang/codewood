@@ -4404,6 +4404,7 @@ html[data-has-bg] .select {
 .compact-notice-text {
   min-width: 0;
   white-space: pre-wrap;
+  user-select: text;
 }
 
 /* While compaction is in progress, sweep a gradient across the banner text
@@ -4438,6 +4439,7 @@ html[data-has-bg] .select {
   border-radius: 10px;
   background: color-mix(in srgb, var(--surface-alt, #f0f0f0) 82%, transparent);
   color: var(--text);
+  user-select: text;
 }
 
 .compact-notice-body > :first-child {
