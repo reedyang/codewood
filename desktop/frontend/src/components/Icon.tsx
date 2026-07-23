@@ -29,6 +29,7 @@ import arrowLeft from "../assets/icons/arrow-left.svg";
 import arrowRight from "../assets/icons/arrow-right.svg";
 import listCheck from "../assets/icons/list-check.svg";
 import circle from "../assets/icons/circle.svg";
+import circleSquare from "../assets/icons/circle-square.svg";
 import checkCircle from "../assets/icons/check-circle.svg";
 import spinner from "../assets/icons/spinner.svg";
 import eye from "../assets/icons/eye.svg";
@@ -76,6 +77,7 @@ const SOURCES = {
   "arrow-right": arrowRight,
   "list-check": listCheck,
   circle,
+  "circle-square": circleSquare,
   "check-circle": checkCircle,
   spinner,
   eye,

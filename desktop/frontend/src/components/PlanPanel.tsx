@@ -7,7 +7,7 @@ function statusIcon(status: string): { name: IconName; className: string } {
     return { name: "check-circle", className: "plan-step-icon completed" };
   }
   if (status === "in_progress") {
-    return { name: "spinner", className: "plan-step-icon in-progress" };
+    return { name: "circle-square", className: "plan-step-icon in-progress" };
   }
   return { name: "circle", className: "plan-step-icon pending" };
 }

@@ -1796,8 +1796,7 @@ body.resizing-x .browser-frame {
 }
 
 .plan-step-icon.in-progress {
-  color: var(--accent);
-  animation: plan-spin 0.9s linear infinite;
+  color: var(--text-muted);
 }
 
 .plan-step.completed .plan-step-text {
