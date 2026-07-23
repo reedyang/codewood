@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -45,6 +46,99 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
+
+# On Windows, try to use winpty (ConPTY) so child processes like
+# timeout.exe see a real console handle instead of a redirected pipe.
+# Tests can set this to None to disable.
+import subprocess as _subprocess_mod
+_ORIG_SUBPROCESS_POPEN = _subprocess_mod.Popen
+_WINPTY_PTYPROCESS = None
+if sys.platform == "win32":
+    try:
+        from winpty import PtyProcess as _WINPTY_PTYPROCESS
+    except ImportError:
+        pass
+
+if _WINPTY_PTYPROCESS is not None:
+
+    class _WinPtyReader:
+        """Wrap winpty read() as a byte-stream pipe for _stream_and_capture."""
+        def __init__(self, pty_proc, activity_tracker=None):
+            self._pty = pty_proc
+            self._activity_tracker = activity_tracker
+        def read(self, n=1024):
+            try:
+                data = self._pty.read(4096)
+                if not data:
+                    return b""
+                if self._activity_tracker is not None:
+                    try:
+                        self._activity_tracker()
+                    except Exception:
+                        pass
+                return data.encode("utf-8", errors="replace")
+            except EOFError:
+                return b""
+        def read1(self, n=1024):
+            return self.read(n)
+        def close(self):
+            pass
+
+    class _WinPtyWriter:
+        """Wrap winpty write() to accept bytes (like subprocess.PIPE)."""
+        def __init__(self, pty_proc):
+            self._pty = pty_proc
+        def write(self, data: bytes):
+            self._pty.write(data.decode("utf-8", errors="replace"))
+        def flush(self):
+            pass
+        def close(self):
+            pass
+
+    class _WinPtyProc:
+        """Mimic subprocess.Popen interface backed by a winpty ConPTY process."""
+        _IDLE_EOF_TIMEOUT = 3.0
+
+        def __init__(self, pty_proc):
+            self._pty = pty_proc
+            self.pid = pty_proc.pid
+            self.returncode = None
+            self._last_activity = time.time()
+            self.stdout = _WinPtyReader(pty_proc, activity_tracker=self._track_activity)
+            self.stdin = None
+        def _track_activity(self):
+            self._last_activity = time.time()
+        def _maybe_send_eof(self):
+            if hasattr(self._pty, "sendeof"):
+                try:
+                    self._pty.sendeof()
+                except Exception:
+                    pass
+        def wait(self, timeout=None):
+            import subprocess as _sp
+            if timeout is None:
+                while self._pty.isalive():
+                    time.sleep(0.1)
+                    if time.time() - self._last_activity > self._IDLE_EOF_TIMEOUT:
+                        self._maybe_send_eof()
+            else:
+                deadline = time.time() + timeout
+                while self._pty.isalive() and time.time() < deadline:
+                    time.sleep(0.05)
+                    if time.time() - self._last_activity > self._IDLE_EOF_TIMEOUT:
+                        self._maybe_send_eof()
+                if self._pty.isalive():
+                    raise _sp.TimeoutExpired(cmd=self.pid, timeout=timeout)
+            self.returncode = self._pty.exitstatus or 0
+            return self.returncode
+        def poll(self):
+            if not self._pty.isalive():
+                self.returncode = self._pty.exitstatus or 0
+            return self.returncode
+        def kill(self):
+            self._pty.kill()
+        def terminate(self):
+            self._pty.terminate(force=True)
 
 
 def _resolve_shell_execution_cwd(agent: Any) -> Path:
@@ -1034,16 +1128,31 @@ def action_shell_command(
 
                 try:
                     process = None
-                    process = subprocess.Popen(
-                        command,
-                        shell=True,
-                        cwd=str(execution_cwd.resolve()),
-                        env=run_env,
-                        stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=False,
-                    )
+                    _winpty_obj = None
+                    if _WINPTY_PTYPROCESS is not None and subprocess.Popen is _ORIG_SUBPROCESS_POPEN:
+                        try:
+                            _comspec = run_env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
+                            _raw_pty = _WINPTY_PTYPROCESS.spawn(
+                                [_comspec, "/c", command],
+                                cwd=str(execution_cwd.resolve()),
+                                env=run_env,
+                            )
+                            _winpty_obj = _WinPtyProc(_raw_pty)
+                            _winpty_obj.stdin = _WinPtyWriter(_raw_pty)
+                            process = _winpty_obj
+                        except Exception:
+                            _winpty_obj = None
+                    if process is None:
+                        process = subprocess.Popen(
+                            command,
+                            shell=True,
+                            cwd=str(execution_cwd.resolve()),
+                            env=run_env,
+                            stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=False,
+                        )
                     process_ref["process"] = process
                     if run_input is not None:
                         try:

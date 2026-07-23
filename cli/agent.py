@@ -5929,17 +5929,32 @@ class Agent:
         self._start_interrupt_monitor(cancel_task_on_interrupt=False)
         status_ticker.start()
         try:
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                # Merge stderr into stdout so rendered output order follows
-                # real arrival order and avoids cross-thread stream races.
-                stderr=subprocess.STDOUT,
-                cwd=str(cwd),
-                text=False,
-            )
+            _winpty_proc = None
+            if getattr(tools_shell, "_WINPTY_PTYPROCESS", None) is not None and subprocess.Popen is tools_shell._ORIG_SUBPROCESS_POPEN:
+                try:
+                    _comspec = os.environ.get("COMSPEC") or "cmd.exe"
+                    _raw_pty = tools_shell._WINPTY_PTYPROCESS.spawn(
+                        [_comspec, "/c", command],
+                        cwd=str(cwd),
+                        env=None,
+                    )
+                    _winpty_proc = tools_shell._WinPtyProc(_raw_pty)
+                    _winpty_proc.stdin = tools_shell._WinPtyWriter(_raw_pty)
+                    process = _winpty_proc
+                except Exception:
+                    _winpty_proc = None
+            if process is None:
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    # Merge stderr into stdout so rendered output order follows
+                    # real arrival order and avoids cross-thread stream races.
+                    stderr=subprocess.STDOUT,
+                    cwd=str(cwd),
+                    text=False,
+                )
             self._register_interruptible_process(process)
             t_out: Optional[threading.Thread] = None
             stdout_pipe = getattr(process, "stdout", None)
