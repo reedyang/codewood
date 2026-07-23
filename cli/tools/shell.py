@@ -66,17 +66,28 @@ if _WINPTY_PTYPROCESS is not None:
         def __init__(self, pty_proc, activity_tracker=None):
             self._pty = pty_proc
             self._activity_tracker = activity_tracker
+            self._buf = ""
         def read(self, n=1024):
             try:
-                data = self._pty.read(4096)
-                if not data:
-                    return b""
-                if self._activity_tracker is not None:
-                    try:
-                        self._activity_tracker()
-                    except Exception:
-                        pass
-                return data.encode("utf-8", errors="replace")
+                while True:
+                    if self._buf:
+                        data = self._buf
+                        self._buf = ""
+                    else:
+                        data = self._pty.read(4096)
+                        if not data:
+                            return b""
+                    if self._activity_tracker is not None:
+                        try:
+                            self._activity_tracker()
+                        except Exception:
+                            pass
+                    # Strip ANSI escape sequences that the ConPTY layer
+                    # injects (DA responses, mode sets, window ops, etc.).
+                    stripped = ANSI_ESCAPE_RE.sub("", data)
+                    stripped = ANSI_OSC_RE.sub("", stripped)
+                    if stripped:
+                        return stripped.encode("utf-8", errors="replace")
             except EOFError:
                 return b""
         def read1(self, n=1024):
