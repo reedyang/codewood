@@ -721,9 +721,6 @@ class ChatStateManager:
                                 }
                             )
                             continue
-                        if disk_ts == mem_ts:
-                            # Unchanged: skip the record write but keep the index entry.
-                            write_record = False
 
                 if write_record:
                     for msg in chat.get("messages", []):
@@ -752,12 +749,23 @@ class ChatStateManager:
                             cid,
                         )
                     else:
-                        tmp_path = record_path.with_name(record_path.name + ".tmp")
-                        with open(tmp_path, "w", encoding="utf-8") as f:
-                            json.dump(record_payload, f, ensure_ascii=False, indent=2)
-                            f.write("\n")
-                        _safe_replace(tmp_path, record_path)
-                        index_dirty = True
+                        # Compare with on-disk content; skip the write if unchanged.
+                        # Avoids needless I/O and prevents rewriting identical records.
+                        new_text = json.dumps(record_payload, ensure_ascii=False, indent=2) + "\n"
+                        skip_write = False
+                        if record_path.exists():
+                            try:
+                                existing = record_path.read_text(encoding="utf-8")
+                                if existing == new_text:
+                                    skip_write = True
+                            except Exception:
+                                pass
+                        if not skip_write:
+                            tmp_path = record_path.with_name(record_path.name + ".tmp")
+                            with open(tmp_path, "w", encoding="utf-8") as f:
+                                f.write(new_text)
+                            _safe_replace(tmp_path, record_path)
+                            index_dirty = True
                 index_chats.append(
                     {
                         "id": cid,
