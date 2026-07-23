@@ -417,7 +417,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             elapsed=12.3,
         )
 
-        self.assertEqual(label, f"Explored {'x' * 77}... for 12.3s")
+        self.assertEqual(label, f"Explored {'x' * 77}... for 12s")
 
     def test_format_tool_call_feedback_line_apply_patch_localized(self):
         self.agent.display_language = "zh-CN"
