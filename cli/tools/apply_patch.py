@@ -466,16 +466,9 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             get_logger("codewood.file_change").debug(f"[file_changes] apply_patch record error: {_e}")
             pass
         # GUI: render the change preview as a collapsible, highlighted diff
-        # block in the transcript.  Print the tool-call prompt line FIRST so
-        # the frontend orders them prompt-then-preview during live execution.
+        # block in the transcript.  The runtime loop already printed the
+        # tool-call prompt line before executing; only emit the diff block here.
         if gui_mode and preview_segments:
-            try:
-                formatter = getattr(agent, "_format_tool_call_feedback_line", None)
-                if callable(formatter):
-                    _call_args = {"path": file_path, "patch": patch}
-                    print(formatter("apply_patch", _call_args, failed=False))
-            except Exception:
-                pass
             _emit_gui_diff_block(str(resolved), preview_segments)
         change_preview_rows: List[Dict[str, Any]] = []
         if preview_segments:
