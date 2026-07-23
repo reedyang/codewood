@@ -780,11 +780,14 @@ class ChatStateManager:
                     }
                 )
 
-            # Detect chat additions/deletions even when no record was rewritten:
-            # if the index size changed since last save, we must rewrite.
+            # Detect chat additions/deletions or active-chat changes even when
+            # no record was rewritten: the index must be updated.
             if not index_dirty:
                 last_count = getattr(self._agent, "_last_saved_index_count", None)
                 if last_count is None or last_count != len(index_chats):
+                    index_dirty = True
+                last_active = getattr(self._agent, "_last_saved_active", None)
+                if last_active is not None and last_active != active:
                     index_dirty = True
 
             # Only rewrite the index when something actually changed — avoids
@@ -801,6 +804,7 @@ class ChatStateManager:
                     f.write("\n")
                 _safe_replace(tmp_index, index_path)
                 self._agent._last_saved_index_count = len(index_chats)
+                self._agent._last_saved_active = active
 
                 # Only sweep record files we know used to belong to this index
                 # and are now gone from memory. A record on disk that this
@@ -913,6 +917,7 @@ class ChatStateManager:
                 if create_default_chat:
                     self._agent._chat_state = self.default_chat_state()
                     self._agent._last_saved_index_count = len(self._agent._chat_state.get("chats", []))
+                    self._agent._last_saved_active = self._agent._chat_state.get("active", "")
                     self.activate_chat(
                         self._agent._chat_state["active"],
                         announce=False,
@@ -923,6 +928,7 @@ class ChatStateManager:
                 else:
                     self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
                     self._agent._last_saved_index_count = 0
+                    self._agent._last_saved_active = ""
                     self._agent.active_chat_name = "New Chat"
                 return
             with open(p, "r", encoding="utf-8") as f:
@@ -1002,6 +1008,7 @@ class ChatStateManager:
                 active = str(chats[0].get("id") or "")
             self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": active, "chats": chats}
             self._agent._last_saved_index_count = len(chats)
+            self._agent._last_saved_active = active
             # Drop any orphan chat side-data directories whose chat record is
             # gone (e.g. a chat deleted by a peer process) so pasted images and
             # preview sidecars never outlive their chat.
