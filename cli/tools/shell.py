@@ -45,25 +45,59 @@ SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 # Strips ConPTY-injected CSI sequences (window ops, DA, private modes)
-# while preserving SGR color/style codes (which end with 'm').
-_PTY_CSI_STRIP_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-lno-~]")
+# while preserving SGR color/style codes (which end with 'm'), cursor
+# movement (A/B/C/D → \b/space), cursor position (H → \b via vcol),
+# horizontal-absolute (G → \r), and erase-line (K → \r).
+_PTY_CSI_STRIP_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@E-GI-JL-lno-~]")
+_CURSOR_LEFT_RE = re.compile(r"\x1b\[([0-9]*)D")
+_CURSOR_RIGHT_RE = re.compile(r"\x1b\[([0-9]*)C")
+_CURSOR_UP_RE = re.compile(r"\x1b\[([0-9]*)A")
+_CURSOR_DOWN_RE = re.compile(r"\x1b\[([0-9]*)B")
+_CUP_RE = re.compile(r"\x1b\[(\d+);(\d+)H")
+_CHA_RE = re.compile(r"\x1b\[(\d*)G")
+_EL_RE = re.compile(r"\x1b\[\d*K")
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
 def _collapse_cr_output(text: str) -> str:
-    """Collapse \\r-based line overwrites (spinners, progress bars) in captured output.
+    """Collapse \\r-based line overwrites and \\b-based backspaces
+    (spinners, progress bars, timeout countdowns) in captured output.
 
-    Each line overwritten by consecutive \\r is reduced to just the last segment.
+    Each line overwritten by consecutive \\r is reduced to just the last
+    segment. Consecutive \\b overwrites are collapsed by processing
+    backspace character-by-character.
     CRLF (\\r\\n) is preserved as LF.
     """
     text = text.replace("\r\n", "\n")
+    # Handle carriage-return: keep only the last \\r-separated segment per line.
     lines = text.split("\n")
     out = []
     for line in lines:
         if "\r" in line:
             line = line.rsplit("\r", 1)[-1]
+        if "\b" in line:
+            line = _handle_backspace_collapse(line)
         out.append(line)
     return "\n".join(out)
+
+
+def _handle_backspace_collapse(text: str) -> str:
+    """Process \\b (backspace) overwrite semantics on a single line."""
+    if "\b" not in text:
+        return text
+    cur = []
+    col = 0
+    for ch in text:
+        if ch == "\b":
+            if col > 0:
+                col -= 1
+        else:
+            if col < len(cur):
+                cur[col] = ch
+            else:
+                cur.append(ch)
+            col += 1
+    return "".join(cur)
 
 
 # On Windows, try to use winpty (ConPTY) so child processes like
@@ -86,6 +120,7 @@ if _WINPTY_PTYPROCESS is not None:
             self._pty = pty_proc
             self._activity_tracker = activity_tracker
             self._buf = ""
+            self._virtual_col = 0
         def read(self, n=1024):
             try:
                 while True:
@@ -105,6 +140,46 @@ if _WINPTY_PTYPROCESS is not None:
                     # private mode sets) but preserve SGR color/style codes.
                     stripped = _PTY_CSI_STRIP_RE.sub("", data)
                     stripped = ANSI_OSC_RE.sub("", stripped)
+                    # Convert CUP (Cursor Position) to backspace using a
+                    # virtual-column tracker so timeout.exe-style countdowns
+                    # that jump to row 2, col N translate to the right number
+                    # of \\b to overwrite the target digit.
+                    def _handle_cup(m):
+                        row = int(m.group(1) or 1)
+                        col = int(m.group(2) or 1)
+                        target = max(0, col - 1)
+                        cur = self._virtual_col
+                        if row <= 2 and cur > target:
+                            return "\b" * (cur - target)
+                        if row <= 2 and cur < target:
+                            return " " * (target - cur)
+                        return ""
+                    stripped = _CUP_RE.sub(_handle_cup, stripped)
+                    # Convert cursor-movement CSI / CHA / EL.
+                    stripped = _CURSOR_LEFT_RE.sub(
+                        lambda m: "\b" * int(m.group(1) or 1), stripped,
+                    )
+                    stripped = _CURSOR_RIGHT_RE.sub(
+                        lambda m: " " * int(m.group(1) or 1), stripped,
+                    )
+                    stripped = _CURSOR_UP_RE.sub("\r", stripped)
+                    stripped = _CURSOR_DOWN_RE.sub("\n", stripped)
+                    stripped = _CHA_RE.sub(
+                        lambda m: "\r" if int(m.group(1) or 1) <= 1 else "", stripped,
+                    )
+                    stripped = _EL_RE.sub("\r", stripped)
+                    # Advance virtual column for visible characters so that
+                    # subsequent CUP conversions compute the correct offset.
+                    for ch in stripped:
+                        if ch == "\r":
+                            self._virtual_col = 0
+                        elif ch == "\n":
+                            self._virtual_col = 0
+                        elif ch == "\b":
+                            if self._virtual_col > 0:
+                                self._virtual_col -= 1
+                        elif ch != "\x1b":
+                            self._virtual_col += 1
                     if stripped:
                         return stripped.encode("utf-8", errors="replace")
             except EOFError:

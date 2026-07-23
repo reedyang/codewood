@@ -7,6 +7,81 @@ import { Icon } from "./Icon";
 import { useApp } from "../state/AppContext";
 import type { DiffRow } from "../api/types";
 
+/** Process \\b within a single line (no \\r, no \\n).
+ *  Each \\b moves the cursor back one column; the following character
+ *  overwrites. Trailing non-overwritten characters are left as-is
+ *  (matching terminal behaviour where \\b doesn't erase). */
+function handleBackspace(text: string): string {
+  if (!text.includes("\b")) return text;
+  let cur = "";
+  let col = 0;
+  for (const ch of text) {
+    if (ch === "\b") {
+      if (col > 0) col--;
+    } else {
+      if (col < cur.length) {
+        cur = cur.slice(0, col) + ch + cur.slice(col + 1);
+      } else {
+        cur += ch;
+      }
+      col++;
+    }
+  }
+  return cur;
+}
+
+/** Process \\r (carriage return) with terminal-like overwrite:
+ *  each line is split on \\r; the last non-empty segment wins.
+ *  For lines that end with \\n (completed lines), a trailing empty
+ *  \\r segment means the cursor was moved to column 0 with nothing
+ *  written after — the line should be cleared (spinner stopped).
+ *  \\b is also handled inside each segment.
+ *  ANSI CSI sequences are preserved for AnsiText. */
+function handleControlChars(text: string): string {
+  const hasBS = text.includes("\b");
+  const hasCR = text.includes("\r");
+  if (!hasBS && !hasCR) return text;
+
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  const lastIdx = lines.length - 1;
+
+  return lines
+    .map((line, idx) => {
+      if (!line.includes("\r")) {
+        return hasBS && line.includes("\b") ? handleBackspace(line) : line;
+      }
+      const parts = line.split("\r");
+      const isCompletedLine = idx < lastIdx;
+      // Completed line whose last \r segment is empty AND there are
+      // multiple non-empty frames (spinner was cleared by \r\n).
+      if (isCompletedLine && parts[parts.length - 1] === "") {
+        const nonEmptyCount = parts.filter((p) => p !== "").length;
+        if (nonEmptyCount > 1) return "";
+      }
+      // Line with 2+ trailing empty \r segments means the line was
+      // explicitly cleared by EL (erase-line) CSI converted to \r.
+      let trailingEmpties = 0;
+      for (let i = parts.length - 1; i >= 0 && parts[i] === ""; i--) {
+        trailingEmpties++;
+      }
+      if (trailingEmpties >= 2) return "";
+      // Take the last non-empty \r segment; run backspace on it.
+      for (let i = parts.length - 1; i >= 0; i--) {
+        if (parts[i]) return handleBackspace(parts[i]);
+      }
+      return "";
+    })
+    .join("\n");
+}
+
+/** Backward-compat alias. */
+function handleCarriageReturn(text: string): string {
+  return handleControlChars(text);
+}
+
 // Private-use sentinels wrapping raw command output, emitted by the backend in
 // GUI mode (kept in sync with src/core/console_utils.py). They let us render
 // command output in its own padded node so the indent survives soft-wrapping.
@@ -138,7 +213,7 @@ function normalizeEllipsis(text: string): string {
 }
 
 function stripInvisibleText(text: string): string {
-  return text.replace(ANSI_CSI_RE, "").replace(/\r/g, "");
+  return handleCarriageReturn(text).replace(ANSI_CSI_RE, "").trim();
 }
 
 function getExplorePromptState(text: string): ExplorePromptState | null {
@@ -453,7 +528,7 @@ export function StepsView({
         }
         return (
           <div className="step-text" key={index}>
-            <AnsiText text={value} />
+            <AnsiText text={handleCarriageReturn(value)} />
           </div>
         );
       })}
@@ -611,10 +686,10 @@ function PromptWithAttachment({
           <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
             {tw ? (
               <div style={{ width: `${tw + 2}ch`, wordBreak: "normal" }}>
-                <AnsiText text={cmdPayload} />
+                <AnsiText text={handleCarriageReturn(cmdPayload)} />
               </div>
             ) : (
-              <AnsiText text={cmdPayload} />
+              <AnsiText text={handleCarriageReturn(cmdPayload)} />
             )}
           </div>
         );
@@ -630,15 +705,16 @@ function PromptWithAttachment({
 }
 
 function CmdOutputBlock({ text }: { text: string }) {
-  const tw = getLongestTableBorderWidth(text);
+  const clean = handleCarriageReturn(text);
+  const tw = getLongestTableBorderWidth(clean);
   return (
     <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
       {tw ? (
         <div style={{ width: `${tw + 2}ch`, wordBreak: "normal" }}>
-          <AnsiText text={text} />
+          <AnsiText text={clean} />
         </div>
       ) : (
-        <AnsiText text={text} />
+        <AnsiText text={clean} />
       )}
     </div>
   );
