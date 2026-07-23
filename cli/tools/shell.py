@@ -178,7 +178,7 @@ if _WINPTY_PTYPROCESS is not None:
                     stripped = _CHA_RE.sub(
                         lambda m: "\r" if int(m.group(1) or 1) <= 1 else "", stripped,
                     )
-                    stripped = _EL_RE.sub("\r", stripped)
+                    stripped = _EL_RE.sub("", stripped)
                     # Advance virtual column for visible characters so that
                     # subsequent CUP conversions compute the correct offset.
                     for ch in stripped:
