@@ -429,10 +429,10 @@ class AiOutputDisplayTests(unittest.TestCase):
                 {"path": "new.py", "patch": "*** Add File: new.py\n+x\n"},
                 failed=False,
             )
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 创建文件 "))
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 新增 "))
 
     def test_format_tool_call_feedback_line_apply_patch_create_file(self):
-        # apply_patch that adds a new file reads as "Create file".
+        # apply_patch that adds a new file reads as "Add".
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
@@ -441,21 +441,23 @@ class AiOutputDisplayTests(unittest.TestCase):
                 {"path": "new.py", "patch": "*** Add File: new.py\n+hello\n"},
                 failed=False,
             )
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Create file "))
-        self.assertIn("<H>(new.py)</H>", line)
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Add "))
+        self.assertIn("<H>new.py</H>", line)
 
     def test_format_tool_call_feedback_line_apply_patch_edit(self):
-        # apply_patch editing an existing file reads as "Apply patch".
+        # apply_patch editing an existing file reads as "Edit".
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
-        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text), patch.object(
+            self.agent, "_is_apply_patch_add_file", return_value=False
+        ):
             line = self.agent._format_tool_call_feedback_line(
                 "apply_patch",
                 {"path": "edit.py", "patch": "@@\n-old\n+new\n"},
                 failed=False,
             )
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Edit "))
-        self.assertIn("<H>(edit.py)</H>", line)
+        self.assertIn("<H>edit.py</H>", line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
