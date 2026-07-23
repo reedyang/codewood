@@ -4773,6 +4773,14 @@ def run_agent_loop(agent: Any):
                     _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
                     if tool_name != "request_skill_prompt":
                         self._print_tool_call_feedback(tool_name, args, failed=False)
+                    # Capture add-file status before execution — after the tool
+                    # runs the file exists and on-disk detection would be wrong.
+                    _is_add = None
+                    if tool_name == "apply_patch":
+                        try:
+                            _is_add = self._is_apply_patch_add_file(args if isinstance(args, dict) else {})
+                        except Exception:
+                            pass
                     if tool_name == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
                         if _gui_stream:
                             explore_ticker = _NullStatusTicker()
@@ -4840,7 +4848,7 @@ def run_agent_loop(agent: Any):
                     recorder = getattr(self, "_record_model_tool_execution_history", None)
                     if callable(recorder):
                         try:
-                            recorder(tool_name, args, result if isinstance(result, dict) else {})
+                            recorder(tool_name, args, result if isinstance(result, dict) else {}, is_add_file=_is_add)
                         except Exception:
                             pass
                     # In GUI streaming mode, print only the output suffix — the
@@ -4849,15 +4857,15 @@ def run_agent_loop(agent: Any):
                     if _gui_stream:
                         _rounds = getattr(self, "_accumulated_tool_rounds", None) or []
                         if _rounds:
-                            _last_round = _rounds[-1]
+                            _last_round = str(_rounds[-1])
                             try:
                                 if tool_name == "run_subagent":
                                     # Sub-agent calls keep a separate transcript.
                                     pass
                                 else:
-                                    _output_start = str(_last_round).find(GUI_CMD_OUTPUT_BEGIN)
+                                    _output_start = _last_round.find(GUI_CMD_OUTPUT_BEGIN)
                                     if _output_start >= 0:
-                                        print(str(_last_round)[_output_start:])
+                                        print(_last_round[_output_start:])
                             except Exception:
                                 pass
                     # Real-time context tracking: after each tool result is

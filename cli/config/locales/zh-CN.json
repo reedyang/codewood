@@ -10,7 +10,7 @@
   "status.ran": "执行",
   "status.call": "调用",
   "status.apply_patch": "修改文件",
-  "status.create_file": "创建文件",
+  "status.create_file": "新增",
   "tool.label.read": "读取",
   "tool.label.run_subagent": "调用子智能体",
   "tool.label.update_plan": "更新计划",
