@@ -319,6 +319,7 @@ def prompt_confirm_yes_no_maybe_always(
     display_command: Optional[str] = None,
     preview_segments: Optional[List[Dict[str, Any]]] = None,
     code_language: Optional[str] = None,
+    confirm_reason: Optional[str] = None,
 ) -> bool:
     """
     kind: 'shell' | 'script' | 'text_file'. Returns True if user proceeds.
@@ -333,6 +334,9 @@ def prompt_confirm_yes_no_maybe_always(
         agent, shell_command
     ):
         return True
+
+    if confirm_reason:
+        prompt_core = f"{prompt_core}\n  AI review: {confirm_reason}"
 
     # Preferred path: a fixed-option single-choice question (same style as the
     # request_user_input tool) instead of a y/n/a text prompt. The user's pick
@@ -715,24 +719,13 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     agent._manual_confirm_required_shell_once = True
                     return False
                 if skip:
-                    _print_with_auto_hide_tracking(
-                        agent,
-                        f"{mode_prefix} {_t(agent, 'execution_policy.review.auto_skippable', fallback='classified as auto-skippable confirmation - {reason}', reason=reason)}"
-                    )
                     agent._manual_confirm_required_shell_once = False
                 else:
-                    _print_with_auto_hide_tracking(
-                        agent,
-                        f"{mode_prefix} {_t(agent, 'execution_policy.review.manual_confirmation', fallback='classified as manual confirmation required - {reason}', reason=reason)}"
-                    )
                     agent._manual_confirm_required_shell_once = True
+                    agent._last_auto_confirm_reason = reason
                 return skip
 
             if k in agent._ai_created_path_keys:
-                _print_with_auto_hide_tracking(
-                    agent,
-                    f"{mode_prefix} {_t(agent, 'execution_policy.review.ai_generated_paths', fallback='command targets AI-generated paths tracked in this session, confirmation skipped.')}",
-                )
                 agent._manual_confirm_required_shell_once = False
                 return True
 

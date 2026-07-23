@@ -725,18 +725,21 @@ def action_shell_command(
                 "execution_policy.prompt.manual_confirmation_required_no_command",
                 fallback="⚠️ AI requires manual confirmation. Please confirm this command before continuing.",
             )
+            confirm_reason = getattr(agent, "_last_auto_confirm_reason", None) or None
         else:
             prompt_text = _t(
                 agent,
                 "execution_policy.prompt.confirm_shell_no_command",
                 fallback="⚠️ Confirm executing this system command?",
             )
+            confirm_reason = None
         ok = agent._prompt_confirm_yes_no_maybe_always(
             prompt_text,
             offer_always=agent._shell_confirm_should_offer_always(command),
             kind="shell",
             shell_command=command,
             display_command=command,
+            confirm_reason=confirm_reason,
         )
         if not ok:
             return {"success": False, "error": "Operation cancelled by user"}
