@@ -100,6 +100,15 @@ export interface CompletionCatalog {
   mcpPrompts: { server: string; name: string; description: string }[];
 }
 
+/** Per-skill summary on the Skills settings page. */
+export interface SkillSummary {
+  skillId: string;
+  name: string;
+  description: string;
+  source: string;
+  enabled: boolean;
+}
+
 /** Editable MCP server entry. Matches the JSONC shape in mcp.jsonc; only the
  *  subset of fields the GUI exposes is enumerated, but ``[unknown: string]``
  *  is allowed so the editor round-trips fields it doesn't render. */

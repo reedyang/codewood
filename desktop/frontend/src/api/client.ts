@@ -8,6 +8,7 @@ import type {
   McpServerDetails,
   McpServerSummary,
   ServerEvent,
+  SkillSummary,
   SubAgentConfig,
   SubAgentSession,
   SubAgentsOverview,
@@ -727,6 +728,30 @@ export class ApiClient {
     } catch {
       return { ok: false, error: "network" };
     }
+  }
+
+  async getSkillsOverview(): Promise<SkillSummary[]> {
+    const res = await fetch(`${this.base}/skills-overview`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) return [];
+    try {
+      const data = (await res.json()) as { ok?: boolean; skills?: SkillSummary[] };
+      return Array.isArray(data.skills) ? data.skills : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async setSkillEnabled(skillId: string, enabled: boolean): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-skill-enabled`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ skillId, enabled }),
+    });
+    return res.ok;
   }
 
   async getSubAgentsOverview(): Promise<SubAgentsOverview> {

@@ -2,7 +2,9 @@
 Load Agent Skills from Anthropic-style folders: ``<skills_root>/<id>/SKILL.md`` (YAML frontmatter + body).
 
 - **Builtin:** typically ``<project_root>/skills/`` (lowest priority)
+- **Agents external:** ``~/.agents/skills/`` (system-wide agent skills, e.g. from Cursor/Codex)
 - **Global external:** ``<config_dir>/skills/``
+- **Workspace agents external:** ``<workspace_dir>/.agents/skills/`` (workspace-local agent skills)
 - **Workspace external:** ``<workspace_dir>/<app_config_dir>/skills/`` (highest priority)
 
 See: https://github.com/anthropics/skills/blob/main/README.md
@@ -60,6 +62,8 @@ class SkillRecord:
     bundle_root: str
     # From optional SKILL.md YAML frontmatter (model_context_file_env): host-supplied temp file path env.
     model_context_file_env: Optional[str] = None
+    # Source of this skill: "builtin", "agents", "global", or "workspace"
+    source: str = "builtin"
 
 
 def _split_frontmatter(text: str) -> Tuple[Optional[dict], str]:
@@ -109,7 +113,7 @@ def _split_frontmatter(text: str) -> Tuple[Optional[dict], str]:
         return meta, body
 
 
-def _scan_skills_root(skills_root: Path, language: Optional[str] = None) -> List[SkillRecord]:
+def _scan_skills_root(skills_root: Path, language: Optional[str] = None, source: str = "builtin") -> List[SkillRecord]:
     """Scan <skills_root>/*/SKILL.md and return SkillRecord list (sorted by folder name)."""
     root = Path(skills_root).expanduser().resolve()
     if not root.is_dir():
@@ -140,6 +144,7 @@ def _scan_skills_root(skills_root: Path, language: Optional[str] = None) -> List
                     skill_id=child.name,
                     bundle_root=str(bundle_path),
                     model_context_file_env=None,
+                    source=source,
                 )
             )
             continue
@@ -164,6 +169,7 @@ def _scan_skills_root(skills_root: Path, language: Optional[str] = None) -> List
                 skill_id=child.name,
                 bundle_root=str(bundle_path),
                 model_context_file_env=bridge_env,
+                source=source,
             )
         )
     return out
@@ -178,6 +184,14 @@ def _workspace_config_skills_root(workspace_dir: Path) -> Path:
     return Path(workspace_dir).expanduser().resolve() / "skills"
 
 
+def _workspace_agents_skills_root(workspace_dir: Path) -> Path:
+    return Path(workspace_dir).expanduser().resolve() / ".agents" / "skills"
+
+
+def _agents_skills_root() -> Path:
+    return Path("~/.agents/skills").expanduser().resolve()
+
+
 def load_skills_merged(
     config_dir: Path,
     builtin_skills_dir: Optional[Path] = None,
@@ -185,27 +199,37 @@ def load_skills_merged(
     language: Optional[str] = None,
 ) -> List[SkillRecord]:
     """
-    Merge builtin, global external, and workspace external Agent Skills.
+    Merge builtin, agents external, global external, workspace agents, and workspace external Agent Skills.
 
     Priority (low -> high):
     - Builtin: ``builtin_skills_dir`` (typically ``<project_root>/skills/``)
+    - Agents external: ``~/.agents/skills/`` (system-wide, e.g. from Cursor/Codex)
     - Global external: ``<config_dir>/skills/`` (user / config-side skills)
-    - Workspace external: ``<workspace_storage_dir>/skills/`` (workspace-local skills)
+    - Workspace agents external: ``<workspace_dir>/.agents/skills/`` (workspace-local agent skills)
+    - Workspace external: ``<workspace_dir>/skills/`` (workspace-local skills, highest)
 
     Same ``skill_id`` (folder name): higher-priority source overrides lower-priority source.
     """
     workspace: List[SkillRecord] = []
     if workspace_dir is not None:
-        workspace = _scan_skills_root(_workspace_config_skills_root(Path(workspace_dir)), language=language)
-    external = _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills", language=language)
+        workspace = _scan_skills_root(_workspace_config_skills_root(Path(workspace_dir)), language=language, source="workspace")
+    workspace_agents: List[SkillRecord] = []
+    if workspace_dir is not None:
+        workspace_agents = _scan_skills_root(_workspace_agents_skills_root(Path(workspace_dir)), language=language, source="workspaceAgents")
+    external = _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills", language=language, source="global")
+    agents = _scan_skills_root(_agents_skills_root(), language=language, source="agents")
     builtin: List[SkillRecord] = []
     if builtin_skills_dir is not None:
-        builtin = _scan_skills_root(builtin_skills_dir, language=language)
+        builtin = _scan_skills_root(builtin_skills_dir, language=language, source="builtin")
 
     by_id: Dict[str, SkillRecord] = {}
     for s in builtin:
         by_id[s.skill_id] = s
+    for s in agents:
+        by_id[s.skill_id] = s
     for s in external:
+        by_id[s.skill_id] = s
+    for s in workspace_agents:
         by_id[s.skill_id] = s
     for s in workspace:
         by_id[s.skill_id] = s
@@ -251,7 +275,11 @@ def calc_skills_dirs_fingerprint(
     """
     payload: Dict[str, object] = {
         "global_external": _skills_root_fingerprint_part(Path(config_dir).expanduser().resolve() / "skills"),
+        "agents_external": _skills_root_fingerprint_part(_agents_skills_root()),
         "builtin": _skills_root_fingerprint_part(builtin_skills_dir) if builtin_skills_dir is not None else None,
+        "workspace_agents_external": _skills_root_fingerprint_part(_workspace_agents_skills_root(Path(workspace_dir)))
+        if workspace_dir is not None
+        else None,
         "workspace_external": _skills_root_fingerprint_part(_workspace_config_skills_root(Path(workspace_dir)))
         if workspace_dir is not None
         else None,

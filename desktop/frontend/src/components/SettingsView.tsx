@@ -4,6 +4,7 @@ import { Icon, type IconName } from "./Icon";
 import { ModelsSettings } from "./ModelsSettings";
 import { GeneralSettings } from "./GeneralSettings";
 import { McpSettings } from "./McpSettings";
+import { SkillsSettings } from "./SkillsSettings";
 import { SubAgentsSettings } from "./SubAgentsSettings";
 import { ConsoleSettings } from "./ConsoleSettings";
 import { ArchivedChatsSettings } from "./ArchivedChatsSettings";
@@ -18,7 +19,7 @@ const NAV_MIN = 160;
 const NAV_MAX = 360;
 const NAV_WIDTH_KEY = "codewood.settingsNavWidth";
 
-type PageId = "appearance" | "general" | "models" | "mcp" | "subagents" | "console" | "archivedChats";
+type PageId = "appearance" | "general" | "models" | "skills" | "mcp" | "subagents" | "console" | "archivedChats";
 
 function loadNavWidth(): number {
   const raw = Number(window.localStorage.getItem(NAV_WIDTH_KEY));
@@ -45,6 +46,7 @@ export function SettingsView() {
     v === "appearance" ||
     v === "general" ||
     v === "models" ||
+    v === "skills" ||
     v === "mcp" ||
     v === "subagents" ||
     v === "console" ||
@@ -154,6 +156,7 @@ export function SettingsView() {
     { id: "general", label: t("settings.page.general"), icon: "gear" },
     { id: "appearance", label: t("settings.page.appearance"), icon: "sun" },
     { id: "models", label: t("settings.page.models"), icon: "cube" },
+    { id: "skills", label: t("settings.page.skills"), icon: "sparkles" },
     { id: "mcp", label: t("settings.page.mcp"), icon: "plus" },
     { id: "subagents", label: t("settings.page.subagents"), icon: "robot" },
     { id: "console", label: t("settings.page.console"), icon: "terminal" },
@@ -279,6 +282,7 @@ export function SettingsView() {
         {page === "models" && (
           <ModelsSettings onDirtyChange={handleModelsDirtyChange} saveSignal={saveSignal} />
         )}
+        {page === "skills" && <SkillsSettings />}
         {page === "mcp" && <McpSettings />}
         {page === "subagents" && <SubAgentsSettings />}
         {page === "console" && <ConsoleSettings />}
