@@ -6235,6 +6235,23 @@ body.resizing-y .console-term {
   transform: rotate(90deg);
 }
 
+.file-change-item.deleted .file-change-item-header {
+  cursor: default;
+}
+
+.file-change-item.deleted .file-change-item-header:hover {
+  background: transparent;
+}
+
+.file-change-item.deleted .file-change-item-name {
+  color: var(--danger-color, #ef4444);
+}
+
+.file-change-delete-icon {
+  flex-shrink: 0;
+  color: var(--danger-color, #ef4444);
+}
+
 /* File Change Details */
 .file-change-details {
   background: var(--bg);

@@ -437,6 +437,7 @@ export interface FileChangeRecord {
   addedLines: number;
   deletedLines: number;
   patch?: DiffRow[];
+  backupPath?: string;
 }
 
 /** Summary of all file changes */

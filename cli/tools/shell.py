@@ -11,6 +11,7 @@ import contextlib
 import datetime
 import os
 import re
+import secrets
 import shlex
 import shutil
 import sys
@@ -875,6 +876,15 @@ def action_shell_command(
 
     merge_path: Optional[str] = None
     execution_cwd = _resolve_shell_execution_cwd(agent)
+
+    # Snapshot files that may be deleted by this command so we can backup
+    # their content and record a delete change if the command removes them.
+    _delete_snapshots: Dict[str, str] = {}
+    if _is_potential_delete_command(command):
+        _delete_targets = _extract_delete_file_paths(command, execution_cwd)
+        if _delete_targets:
+            _delete_snapshots = _snapshot_files_content(_delete_targets)
+
     try:
         run_env = os.environ.copy()
         run_env.setdefault("PYTHONUTF8", "1")
@@ -1464,6 +1474,33 @@ def action_shell_command(
             }
             if _shell_was_truncated:
                 base_out["full_output_path"] = str(_shell_output_path)
+
+            # Check for file deletions: compare snapshotted files against
+            # current filesystem state, backup deleted content, and record
+            # a delete change via the file_change_tracker.
+            if _delete_snapshots:
+                try:
+                    _chat_mgr2 = getattr(agent, "_chat_state_manager", None)
+                    _chat_id2 = str(getattr(agent, "active_chat_id", "") or "")
+                    _backups_dir: Optional[Path] = None
+                    if _chat_mgr2 is not None and _chat_id2:
+                        _backups_dir = _chat_mgr2.chat_backups_dir_for_chat(_chat_id2)
+                    _tracker = getattr(agent, "file_change_tracker", None)
+                    for _path_str, _content in _delete_snapshots.items():
+                        _p = Path(_path_str)
+                        if not _p.exists():
+                            _backup_name: Optional[str] = None
+                            if _backups_dir is not None:
+                                _backup_name = _backup_deleted_file(_content, _p, _backups_dir)
+                            if _tracker is not None:
+                                _tracker.record_delete(
+                                    file_path=_path_str,
+                                    source="shell",
+                                    content_before=_content,
+                                    backup_path=_backup_name,
+                                )
+                except Exception:
+                    pass
         finally:
             _stop_status_ticker()
             if merge_path:
@@ -2383,6 +2420,160 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
     return head + "\n\n---\n" + marker + "\n" + extra
 
 
+# ---------------------------------------------------------------------------
+# File-deletion detection helpers
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate a command may delete files.
+# Group 1 captures the command keyword; group 2 captures the rest.
+_DELETE_CMD_PATTERNS = [
+    # Unix / Linux / macOS
+    re.compile(r"(?<!\S)(rm)(?:\s+(-\S+(?:\s+-\S+)*)\s+)?(.+)", re.I),
+    re.compile(r"(?<!\S)(unlink)(?:\s+)(.+)", re.I),
+    # Windows CMD
+    re.compile(r"(?<!\S)(del)(?:\s+(/\S+(?:\s+/\S+)*)\s+)?(.+)", re.I),
+    re.compile(r"(?<!\S)(erase)(?:\s+(/\S+(?:\s+/\S+)*)\s+)?(.+)", re.I),
+    # Windows / cross-platform PowerShell cmdlets
+    re.compile(r"(?<!\S)(Remove-Item)(?:\s+(-\S+(?:\s+-\S+)*)\s+)?(.+)", re.I),
+    # rmdir / rd (delete directory) — capture paths in case they point at files
+    re.compile(r"(?<!\S)(rmdir|rd)(?:\s+(/\S+(?:\s+/\S+)*)\s+)?(.+)", re.I),
+]
+
+
+def _is_potential_delete_command(command: str) -> bool:
+    """Quick check whether *command* may delete files so we can avoid the
+    overhead of path extraction when the command is purely informational."""
+    if not command:
+        return False
+    lowered = command.strip().lower()
+    for keyword in ("rm ", "rm\t", "del ", "del\t", "erase ", "erase\t",
+                    "remove-item ", "remove-item\t", "unlink ", "unlink\t",
+                    "rmdir ", "rd "):
+        if keyword in lowered:
+            return True
+    # Also match PowerShell encoded commands that may contain Remove-Item
+    if "remove-item" in lowered:
+        return True
+    return False
+
+
+def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
+    """Parse *command* for file paths that are likely deletion targets.
+
+    Handles plain shell commands and PowerShell ``-Command`` wrappers.
+    Resolves relative paths against *cwd* and returns only paths that
+    currently exist as regular files.
+    """
+    if not command:
+        return []
+    cwd = Path(cwd).resolve()
+    paths: List[Path] = []
+    cmd_stripped = command.strip()
+
+    # If the command is wrapped in powershell -Command "...", unwrap one layer
+    # so we can inspect the payload for Remove-Item / rm calls.
+    ps_match = _WIN_POWERSHELL_COMMAND_RE.match(cmd_stripped)
+    if ps_match:
+        payload_raw = ps_match.group("payload").strip()
+        payload, _ = _strip_powershell_payload_quotes(payload_raw)
+        if payload:
+            cmd_stripped = payload
+
+    # Try each delete-command pattern against both the original command and
+    # any unwrapped PowerShell payload.
+    candidates = [cmd_stripped]
+    if cmd_stripped != command.strip():
+        candidates.append(command.strip())
+
+    for candidate in candidates:
+        for pattern in _DELETE_CMD_PATTERNS:
+            m = pattern.search(candidate)
+            if not m:
+                continue
+            rest = m.group(3) or ""
+            # Split the rest by whitespace to get individual path tokens
+            tokens = shlex.split(rest) if rest else []
+            for token in tokens:
+                # Skip flags/options
+                if token.startswith("-") or token.startswith("/"):
+                    continue
+                # Strip surrounding quotes
+                token = token.strip().strip("'\"")
+                if not token or token in (".", ".."):
+                    continue
+                # Resolve path
+                p = Path(token)
+                if not p.is_absolute():
+                    p = cwd / p
+                try:
+                    p = p.resolve()
+                except OSError:
+                    continue
+                # Support glob expansion (e.g. rm *.log)
+                if "*" in token or "?" in token:
+                    parent = p.parent if not token.startswith("*") else cwd
+                    glob_pattern = p.name if not token.startswith("*") else token
+                    try:
+                        for matched in parent.glob(glob_pattern):
+                            if matched.is_file() and matched not in paths:
+                                paths.append(matched)
+                    except Exception:
+                        pass
+                elif p.is_file() and p not in paths:
+                    paths.append(p)
+
+    # Filter to only files within the workspace (or at least under cwd)
+    workspace_paths = []
+    for p in paths:
+        try:
+            p.relative_to(cwd)
+        except ValueError:
+            continue
+        workspace_paths.append(p)
+
+    return workspace_paths
+
+
+def _snapshot_files_content(paths: List[Path]) -> Dict[str, str]:
+    """Read the contents of *paths* into a dict mapping str(path) -> content."""
+    snapshots: Dict[str, str] = {}
+    for p in paths:
+        try:
+            if p.is_file():
+                snapshots[str(p)] = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    return snapshots
+
+
+def _backup_deleted_file(
+    content: str,
+    original_path: Path,
+    backups_dir: Path,
+) -> Optional[str]:
+    """Write *content* to a backup file under *backups_dir*.
+
+    Returns the short backup filename (without the directory prefix) on
+    success, or ``None`` on failure.  The filename includes a timestamp
+    and random suffix to avoid collisions.
+    """
+    try:
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = secrets.token_hex(4)
+        name = original_path.name
+        backup_name = f"{name}_{ts}_{suffix}.bak"
+        backup_path = backups_dir / backup_name
+        tmp = backup_path.with_suffix(backup_path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        tmp.replace(backup_path)
+        return backup_name
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 
 from .base import BaseTool  # noqa: E402
 from ..core.security.git_guard import guard_git_clone_precheck  # noqa: E402

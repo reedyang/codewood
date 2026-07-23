@@ -44,9 +44,13 @@ export function FileChangeList({ summary, t }: FileChangeListProps) {
     let added = 0;
     let deleted = 0;
     for (const file of summary.files) {
-      const s = computeStats(file.patch);
-      added += s.added;
-      deleted += s.deleted;
+      if (file.changeType === "delete") {
+        deleted += file.deletedLines;
+      } else {
+        const s = computeStats(file.patch);
+        added += s.added;
+        deleted += s.deleted;
+      }
     }
     return { added, deleted };
   }, [summary.files]);
@@ -90,19 +94,31 @@ function FileChangeItem({ file, isExpanded, onToggle, t }: FileChangeItemProps) 
     return parts[parts.length - 1];
   }, [file.filePath]);
 
-  const stats = useMemo(() => computeStats(file.patch), [file.patch]);
+  const isDelete = file.changeType === "delete";
+  const stats = useMemo(() => {
+    if (isDelete) {
+      return { added: 0, deleted: file.deletedLines };
+    }
+    return computeStats(file.patch);
+  }, [file.patch, file.deletedLines, isDelete]);
 
   return (
-    <div className={`file-change-item ${isExpanded ? "expanded" : ""}`}>
-      <div className="file-change-item-header" onClick={onToggle}>
+    <div className={`file-change-item ${isDelete ? "deleted" : ""} ${isExpanded ? "expanded" : ""}`}>
+      <div
+        className="file-change-item-header"
+        onClick={isDelete ? undefined : onToggle}
+      >
+        {isDelete && <Icon name="trash" size={14} className="file-change-delete-icon" />}
         <span className="file-change-item-name">{fileName}</span>
         <span className="file-change-item-stats">
           <span className="file-change-added">+{stats.added}</span>
           <span className="file-change-deleted">-{stats.deleted}</span>
         </span>
-        <Icon name="chevron" size={14} className={`chevron ${isExpanded ? "open" : ""}`} />
+        {!isDelete && (
+          <Icon name="chevron" size={14} className={`chevron ${isExpanded ? "open" : ""}`} />
+        )}
       </div>
-      {isExpanded && file.patch && (
+      {!isDelete && isExpanded && file.patch && (
         <FileChangeDetails file={file} t={t} />
       )}
     </div>

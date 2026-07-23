@@ -1181,17 +1181,21 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                 for _f in (_s.get("files") or []):
                     _fp = str(_f.get("filePath") or "")
                     _patch = _f.get("patch")
+                    _ct = _f.get("changeType", "modify")
                     if _fp not in _by_file:
                         _by_file[_fp] = {
                             "filePath": _fp,
-                            "changeType": _f.get("changeType", "modify"),
+                            "changeType": _ct,
                             "addedLines": 0,
                             "deletedLines": 0,
                             "patch": [],
                         }
                         _file_order.append(_fp)
                     _m = _by_file[_fp]
-                    if isinstance(_patch, list):
+                    if _ct == "delete":
+                        _m["addedLines"] += _f.get("addedLines", 0)
+                        _m["deletedLines"] += _f.get("deletedLines", 0)
+                    elif isinstance(_patch, list):
                         _m["patch"].extend(_patch)
                         for _r in _patch:
                             if not isinstance(_r, dict):
@@ -1204,7 +1208,10 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                             elif _t == "change":
                                 _m["addedLines"] += 1
                                 _m["deletedLines"] += 1
-                    _m["changeType"] = _f.get("changeType", _m["changeType"])
+                    _m["changeType"] = _ct if _ct == "delete" else _m["changeType"]
+                    _bp = _f.get("backupPath")
+                    if _bp:
+                        _m["backupPath"] = _bp
             _files = [_by_file[_fp] for _fp in _file_order]
             return [{
                 "totalFiles": len(_files),

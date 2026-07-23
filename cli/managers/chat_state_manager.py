@@ -231,6 +231,7 @@ class ChatStateManager:
     _CHAT_DATA_DIRNAME = "data"
     _CHAT_PREVIEWS_FILENAME = "previews.json"
     _CHAT_FILE_CHANGES_FILENAME = "file_changes.json"
+    _CHAT_BACKUPS_DIRNAME = "backups"
 
     def _chat_data_dir_for_record_file(self, record_file: str) -> Optional[Path]:
         """Resolve ``chats/data/<record-stem>/`` for a chat record file name."""
@@ -260,6 +261,14 @@ class ChatStateManager:
             return None
         record_file = self._chat_record_filename_for_chat(chat)
         return self._chat_data_dir_for_record_file(record_file)
+
+    def chat_backups_dir_for_chat(self, chat_id: str) -> Optional[Path]:
+        """Resolve the backups directory for ``chat_id`` under its chat data
+        directory. Returns None when the chat is unknown."""
+        data_dir = self.chat_data_dir_for_chat(chat_id)
+        if data_dir is None:
+            return None
+        return data_dir / self._CHAT_BACKUPS_DIRNAME
 
     def _backup_corrupted_record(self, record_path: Path, expected_id: str, reason: str) -> None:
         """Back up a corrupted record file before it is skipped or overwritten."""
