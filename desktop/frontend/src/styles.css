@@ -3440,6 +3440,56 @@ html[data-has-bg] .select {
   color: var(--text-muted);
 }
 
+/* Skills settings — grouped by source. */
+.skills-group {
+  margin-bottom: 18px;
+}
+
+.skills-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 8px;
+}
+.skills-group-header:hover {
+  background: var(--bg-hover);
+}
+
+.skills-group-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+}
+
+.skills-group-label {
+  flex: 0 0 auto;
+}
+
+.skills-group-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.skills-group-body .mcp-server {
+  margin-bottom: 6px;
+  border-radius: 8px;
+}
+
 /* Composer plus-button menu. Sits inside the regular dropdown wrapper but
    anchors a button that switches its tint when Plan mode is engaged so the
    user always sees which mode the next message will use. */

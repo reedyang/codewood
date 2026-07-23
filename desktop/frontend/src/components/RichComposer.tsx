@@ -688,12 +688,18 @@ export function RichComposer({
   const atFilesRef = useRef(atFiles);
   atFilesRef.current = atFiles;
 
-  // Load catalog once when the composer mounts and refresh it whenever the
-  // user opens the slash menu so newly-added skills / reconnected MCP servers
-  // become available without a manual refresh.
+  // Load catalog when the composer mounts and re-fetch whenever the user
+  // opens the slash menu so newly-added skills / reconnected MCP servers
+  // become available without a manual refresh. Silently ignore fetch failures
+  // (e.g. backend restarting) — the pool stays at its last-known-good state.
   useEffect(() => {
-    void getCompletionCatalog().then((c) => setPool(buildFullSlashPool(c)));
+    void getCompletionCatalog().then((c) => setPool(buildFullSlashPool(c))).catch(() => {});
   }, [getCompletionCatalog]);
+  useEffect(() => {
+    if (slash.open) {
+      void getCompletionCatalog().then((c) => setPool(buildFullSlashPool(c))).catch(() => {});
+    }
+  }, [slash.open, getCompletionCatalog]);
 
   // Track the incoming model and feed the undo history. When ``segments``
   // changes for any reason other than an undo/redo we apply ourselves, record

@@ -35,6 +35,7 @@ from .core.config.skills_loader import (
     calc_skills_dirs_fingerprint,
     load_skills_merged,
 )
+from .core.config.skills_watcher import start_skills_watcher, stop_skills_watcher, update_workspace_paths
 from .core.config.config_env import resolve_string_values_in_data
 from .core.config.config_jsonc import (
     CONFIG_JSONC_FILENAME,
@@ -284,6 +285,7 @@ class Agent:
         bootstrap.setup_subagents(self)
         bootstrap.setup_prompt_and_mcp(self)
         bootstrap.setup_skills(self, builtin_skills_dir=builtin_skills_dir)
+        self._start_skills_watcher()
 
         bootstrap.setup_input_handler(
             self,
@@ -6268,6 +6270,7 @@ class Agent:
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
         self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
         self._reload_skills()
+        self._update_skills_watcher_workspace()
         self.memory_service = None
 
 
@@ -6372,8 +6375,101 @@ class Agent:
             self._skills_dirs_fingerprint = latest_fp
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
             self._refresh_input_handler_skill_completions()
+            self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
+            self._prune_stale_skill_disable_entries()
         except Exception as e:
             print(translate("warning.skill_hot_reload_failed", self._ui_language(), error=e))
+
+    def _prune_stale_skill_disable_entries(self) -> None:
+        """Remove disabled-skill entries from skills.jsonc for skills that no longer exist."""
+        try:
+            current_ids: set = set()
+            for s in getattr(self, "skills", []) or []:
+                sid = str(getattr(s, "skill_id", "") or "")
+                if sid:
+                    current_ids.add(sid)
+            # Global config: builtin/agents/global all share one file
+            self._prune_one_skills_jsonc(self.config_dir / "skills.jsonc", current_ids)
+            # Workspace config: workspace/workspaceAgents share one file
+            ws_cfg = self.workspace_config_dir
+            if ws_cfg:
+                self._prune_one_skills_jsonc(Path(ws_cfg) / "skills.jsonc", current_ids)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _prune_one_skills_jsonc(path: Path, current_ids: set) -> None:
+        try:
+            if not path.is_file():
+                return
+            from .core.config.config_jsonc import load_config_jsonc, save_config_jsonc
+            data = load_config_jsonc(path) or {}
+            if not isinstance(data, dict):
+                return
+            disabled: list = data.get("disabledSkills") or []
+            if not isinstance(disabled, list):
+                return
+            stale = [s for s in disabled if isinstance(s, str) and s.strip() and s.strip() not in current_ids]
+            if not stale:
+                return
+            cleaned = [s for s in disabled if isinstance(s, str) and s.strip() and s.strip() in current_ids]
+            data["disabledSkills"] = cleaned
+            save_config_jsonc(path, data)
+        except Exception:
+            pass
+
+    def _start_skills_watcher(self) -> None:
+        """Start a watchdog-based file watcher for non-builtin skill dirs and skills.jsonc."""
+        if getattr(self, "_skills_watcher", None) is not None:
+            return
+        try:
+            config_dir = self.config_dir
+            ws_cfg = self.workspace_config_dir
+            from .core.config.skills_loader import _agents_skills_root, _workspace_agents_skills_root, _workspace_config_skills_root
+
+            def _reload() -> None:
+                self._reload_skills(force=True)
+
+            handle = start_skills_watcher(
+                reload_fn=_reload,
+                builtin=self._builtin_skills_root,
+                agents=_agents_skills_root(),
+                global_dir=config_dir / "skills",
+                ws_agents=_workspace_agents_skills_root(ws_cfg) if ws_cfg else None,
+                ws_dir=_workspace_config_skills_root(ws_cfg) if ws_cfg else None,
+                global_jsonc=config_dir / "skills.jsonc",
+                ws_jsonc=ws_cfg / "skills.jsonc" if ws_cfg else None,
+            )
+            self._skills_watcher = handle
+        except Exception:
+            self._skills_watcher = None
+
+    def _stop_skills_watcher(self) -> None:
+        """Stop the skills file watcher if running."""
+        handle = getattr(self, "_skills_watcher", None)
+        if handle is None:
+            return
+        self._skills_watcher = None
+        stop_skills_watcher(handle)
+
+    def _update_skills_watcher_workspace(self) -> None:
+        """Update the workspace-specific watched paths after a workspace switch."""
+        handle = getattr(self, "_skills_watcher", None)
+        if handle is None:
+            self._start_skills_watcher()
+            return
+        try:
+            ws_cfg = self.workspace_config_dir
+            from .core.config.skills_loader import _workspace_agents_skills_root, _workspace_config_skills_root
+
+            update_workspace_paths(
+                handle,
+                ws_agents=_workspace_agents_skills_root(ws_cfg) if ws_cfg else None,
+                ws_dir=_workspace_config_skills_root(ws_cfg) if ws_cfg else None,
+                ws_jsonc=ws_cfg / "skills.jsonc" if ws_cfg else None,
+            )
+        except Exception:
+            pass
 
     def _load_mcp_config(self) -> Dict[str, Any]:
         """Load MCP configuration from <config_dir>/mcp.jsonc."""
@@ -7711,6 +7807,10 @@ class Agent:
         """
         Shut down runtime resources in a unified way. Non-blocking by default so background thread pools/tasks do not delay exit.
         """
+        try:
+            self._stop_skills_watcher()
+        except Exception:
+            pass
         try:
             self._shutdown_workspace_services(wait=wait)
         except Exception:

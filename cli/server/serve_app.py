@@ -3504,7 +3504,8 @@ class ServeApp:
         Includes:
           - ``skills``: list of {name, description}. Sourced from the loaded
             skill records on the agent (already merged across builtin/global/
-            workspace skill roots and respecting language).
+            workspace skill roots and respecting language). Disabled skills
+            (via ``skills.jsonc``) are filtered out.
           - ``mcpTools``: list of {server, name, description} for every
             enabled MCP server with a cached catalog. Disabled tools (via
             ``disabled_tools`` policy) are filtered out so the user can't
@@ -3516,9 +3517,21 @@ class ServeApp:
         it can be polled on every slash keypress without throttling.
         """
         agent = self.agent
+        # Collect disabled skill IDs from each source's own skills.jsonc
+        disabled_by_source: Dict[str, set] = {}
+        try:
+            for src in ("builtin", "agents", "global", "workspaceAgents", "workspace"):
+                cfg = self._skills_load_jsonc(src)
+                disabled_by_source[src] = set(cfg.get("disabledSkills") or [])
+        except Exception:
+            pass
         out_skills: List[Dict[str, str]] = []
         try:
             for record in getattr(agent, "skills", []) or []:
+                skill_id = str(getattr(record, "skill_id", "") or "")
+                source = str(getattr(record, "source", "builtin") or "builtin")
+                if skill_id in disabled_by_source.get(source, set()):
+                    continue
                 name = str(getattr(record, "name", "") or "")
                 desc = str(getattr(record, "description", "") or "")
                 if name:
@@ -4321,6 +4334,110 @@ class ServeApp:
         except Exception:
             pass
         return names
+
+    # ----- Skills config CRUD -------------------------------------------
+    _SKILLS_CONFIG_PATH = "skills.jsonc"
+
+    def _skills_config_dir_for(self, source: str) -> Path:
+        """Return the config directory for a skill based on its source.
+        Workspace / workspaceAgents skills use <workspace>/.codewood/, everything else uses the global config dir.
+        """
+        if source in ("workspace", "workspaceAgents"):
+            ws_cfg = getattr(self.agent, "workspace_config_dir", None)
+            if ws_cfg:
+                return Path(ws_cfg)
+        return self.agent.config_dir
+
+    def _skills_load_jsonc(self, source: str = "builtin") -> Dict[str, Any]:
+        """Load skills configuration from the appropriate config dir."""
+        try:
+            from ..core.config.config_jsonc import load_config_jsonc
+
+            cfg_dir = self._skills_config_dir_for(source)
+            path = cfg_dir / self._SKILLS_CONFIG_PATH
+            if not path.is_file():
+                return {"disabledSkills": []}
+            data = load_config_jsonc(path) or {}
+            if not isinstance(data, dict):
+                return {"disabledSkills": []}
+            disabled = data.get("disabledSkills")
+            if not isinstance(disabled, list):
+                data["disabledSkills"] = []
+            else:
+                data["disabledSkills"] = [str(s) for s in disabled if isinstance(s, str) and s.strip()]
+            return data
+        except Exception:
+            return {"disabledSkills": []}
+
+    def _skills_save_jsonc(self, data: Dict[str, Any], source: str = "builtin") -> bool:
+        try:
+            from ..core.config.config_jsonc import save_config_jsonc
+
+            cfg_dir = self._skills_config_dir_for(source)
+            path = cfg_dir / self._SKILLS_CONFIG_PATH
+            save_config_jsonc(path, data)
+            return True
+        except Exception:
+            return False
+
+    def get_skills_overview(self) -> Dict[str, Any]:
+        """Return all non-workspace skills with source and enabled/disabled status.
+        Workspace and workspaceAgents skills are excluded — they belong to workspace-level settings.
+        """
+        skills_data: List[Dict[str, object]] = []
+        try:
+            for record in getattr(self.agent, "skills", []) or []:
+                source = str(getattr(record, "source", "builtin") or "builtin")
+                if source in ("workspace", "workspaceAgents"):
+                    continue
+                skill_id = str(getattr(record, "skill_id", "") or "")
+                name = str(getattr(record, "name", "") or "")
+                desc = str(getattr(record, "description", "") or "")
+                cfg = self._skills_load_jsonc(source)
+                disabled_set: set = set(cfg.get("disabledSkills") or [])
+                enabled = skill_id not in disabled_set
+                skills_data.append({
+                    "skillId": skill_id,
+                    "name": name,
+                    "description": desc,
+                    "source": source,
+                    "enabled": enabled,
+                })
+        except Exception:
+            skills_data = []
+
+        return {"ok": True, "skills": skills_data}
+
+    def _find_skill_source(self, skill_id: str) -> Optional[str]:
+        """Look up a skill's source from the loaded skills list."""
+        for record in getattr(self.agent, "skills", []) or []:
+            if str(getattr(record, "skill_id", "") or "") == skill_id:
+                return str(getattr(record, "source", "builtin") or "builtin")
+        return None
+
+    def set_skill_enabled(self, skill_id: str, enabled: bool) -> bool:
+        """Enable or disable a skill. Config file determined by skill source:
+        workspace skills -> <workspace>/.codewood/skills.jsonc
+        all others -> <global_config_dir>/skills.jsonc
+        """
+        sid = str(skill_id or "").strip()
+        if not sid:
+            return False
+        try:
+            source = self._find_skill_source(sid) or "builtin"
+            cfg = self._skills_load_jsonc(source)
+            disabled: list = list(cfg.get("disabledSkills") or [])
+            if enabled:
+                disabled = [s for s in disabled if s != sid]
+            else:
+                if sid not in disabled:
+                    disabled.append(sid)
+            cfg["disabledSkills"] = disabled
+            if not self._skills_save_jsonc(cfg, source):
+                return False
+        except Exception:
+            return False
+        return True
 
     def get_subagents_overview(self) -> Dict[str, Any]:
         """List configured sub-agents plus the model/tool option catalogs."""
@@ -5905,6 +6022,15 @@ def _make_handler(app: ServeApp):
                 tools = body.get("tools")
                 enabled = bool(body.get("enabled", True))
                 ok = app.set_mcp_tools_enabled(srv, tools, enabled)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/skills-overview":
+                self._send_json(200, app.get_skills_overview())
+                return
+            if path == "/set-skill-enabled":
+                sid = str(body.get("skillId") or "")[:256]
+                enabled = bool(body.get("enabled", True))
+                ok = app.set_skill_enabled(sid, enabled)
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/subagents-overview":

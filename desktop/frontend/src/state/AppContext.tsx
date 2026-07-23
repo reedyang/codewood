@@ -24,6 +24,7 @@ import type {
   McpServerSummary,
   SegmentKind,
   ServerEvent,
+  SkillSummary,
   SubAgentConfig,
   SubAgentMessage,
   SubAgentSession,
@@ -305,6 +306,8 @@ interface AppContextValue {
     config: McpServerConfigEntry,
   ) => Promise<{ ok: boolean; error?: string }>;
   deleteMcpServer: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  getSkillsOverview: () => Promise<SkillSummary[]>;
+  setSkillEnabled: (skillId: string, enabled: boolean) => Promise<boolean>;
   getSubAgentsOverview: () => Promise<SubAgentsOverview>;
   saveSubAgent: (
     payload: Partial<SubAgentConfig> & { originalName?: string },
@@ -3524,6 +3527,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       config: McpServerConfigEntry,
     ) => client.updateMcpServer(originalName, name, config),
     deleteMcpServer: (name: string) => client.deleteMcpServer(name),
+    getSkillsOverview: () => client.getSkillsOverview(),
+    setSkillEnabled: (skillId: string, enabled: boolean) =>
+      client.setSkillEnabled(skillId, enabled),
     getSubAgentsOverview: () => client.getSubAgentsOverview(),
     saveSubAgent: (payload) => client.saveSubAgent(payload),
     deleteSubAgent: (name: string) => client.deleteSubAgent(name),
