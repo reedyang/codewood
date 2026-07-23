@@ -6983,6 +6983,7 @@ class Agent:
         display_command: Optional[str] = None,
         preview_segments: Optional[List[Dict[str, Any]]] = None,
         code_language: Optional[str] = None,
+        confirm_reason: Optional[str] = None,
     ) -> bool:
         return execution_policy_service.prompt_confirm_yes_no_maybe_always(
             self,
@@ -6994,6 +6995,7 @@ class Agent:
             display_command=display_command,
             preview_segments=preview_segments,
             code_language=code_language,
+            confirm_reason=confirm_reason,
         )
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
