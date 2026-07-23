@@ -55,19 +55,24 @@ function handleControlChars(text: string): string {
       }
       const parts = line.split("\r");
       const isCompletedLine = idx < lastIdx;
-      // Completed line whose last \r segment is empty AND there are
-      // multiple non-empty frames (spinner was cleared by \r\n).
-      if (isCompletedLine && parts[parts.length - 1] === "") {
+      // Completed line with multiple \r-separated non-empty segments
+      // → spinner / progress bar that was never finalized. Clear it.
+      if (isCompletedLine) {
         const nonEmptyCount = parts.filter((p) => p !== "").length;
-        if (nonEmptyCount > 1) return "";
+        if (nonEmptyCount >= 2) return "";
+        // Single non-empty frame starting with \r: spinner/progress
+        // that wasn't finalized (cursor moved to next line with \n).
+        if (nonEmptyCount === 1 && parts[0] === "") return "";
       }
-      // Line with 2+ trailing empty \r segments means the line was
-      // explicitly cleared by EL (erase-line) CSI converted to \r.
-      let trailingEmpties = 0;
-      for (let i = parts.length - 1; i >= 0 && parts[i] === ""; i--) {
-        trailingEmpties++;
+      // Completed line with 2+ trailing empty \r segments means the
+      // line was explicitly cleared by EL (erase-line) CSI → \r.
+      if (isCompletedLine && parts.length > 1) {
+        let trailingEmpties = 0;
+        for (let i = parts.length - 1; i >= 0 && parts[i] === ""; i--) {
+          trailingEmpties++;
+        }
+        if (trailingEmpties >= 2) return "";
       }
-      if (trailingEmpties >= 2) return "";
       // Take the last non-empty \r segment; run backspace on it.
       for (let i = parts.length - 1; i >= 0; i--) {
         if (parts[i]) return handleBackspace(parts[i]);
