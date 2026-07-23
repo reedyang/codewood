@@ -602,11 +602,6 @@ function PromptWithAttachment({
           <span className="cmd-prompt-diff-toggle">
             <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>
-          {trailingStatusText && (
-            <span className="tool-inline-working">
-              <span className="activity-text marquee">{trailingStatusText}</span>
-            </span>
-          )}
         </span>
       </div>
       {!isSubAgent && expanded && hasCmd && syntaxNode}
@@ -625,6 +620,11 @@ function PromptWithAttachment({
         );
       })()}
       {!isSubAgent && expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
+      {trailingStatusText && (
+        <span className="tool-inline-working">
+          <span className="activity-text marquee">{trailingStatusText}</span>
+        </span>
+      )}
     </>
   );
 }
