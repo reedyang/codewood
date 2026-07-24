@@ -907,10 +907,29 @@ def action_shell_command(
     # detect file creations and modifications after the command runs.
     _before_file_list = _snapshot_workspace_file_list(execution_cwd)
 
+    _repo_root = _git_repo_root(execution_cwd)
+    # Query untracked files BEFORE stash push — they'll be removed from
+    # disk by --include-untracked and must not be reported as deletions.
+    _stash_removed_paths: set = set()
+    if _repo_root is not None:
+        try:
+            result = _subprocess_mod.run(
+                ["git", "-C", str(_repo_root), "ls-files", "--others", "--exclude-standard"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    path = (_repo_root / line).resolve()
+                    _stash_removed_paths.add(str(path))
+            _log.info("untracked files (will be stashed): %s", _stash_removed_paths or "none")
+        except Exception as e:
+            _log.info("ls-files error: %s", e)
     # Push a temporary git stash so we can later retrieve the exact
     # pre-execution content of any modified file (including uncommitted
     # changes).  Uses --keep-index so staged files are untouched.
-    _repo_root = _git_repo_root(execution_cwd)
     _stash_pushed = bool(_repo_root and _git_stash_push(execution_cwd))
     if _repo_root:
         _log.info("repo_root=%s stash_pushed=%s", _repo_root, _stash_pushed)
@@ -1655,10 +1674,16 @@ def action_shell_command(
                         _shell_diff_entries[-1]["backupPath"] = _backup_name
                 # Record deletions that were detected via filesystem diff
                 # but NOT captured by the delete-target parser (e.g. files
-                # deleted as side effects of a script).
+                # deleted as side effects of a script).  Also skip files that
+                # were removed by git stash (e.g. untracked files via
+                # --include-untracked) to avoid false deletion reports.
                 for _path_str in _ws_deleted:
                     if _path_str in _delete_snapshots:
                         continue
+                    if _path_str in _stash_removed_paths:
+                        _log.info("skipping stash-removed: %s", _path_str)
+                        continue
+                    _log.info("recording delete: %s", _path_str)
                     if _tracker2 is not None:
                         _tracker2.record_delete(
                             file_path=_path_str,
