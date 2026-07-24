@@ -25,6 +25,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..actions.command_execution_buffer import CommandExecutionBuffer
 from ..config.app_info import get_app_config_dirname, get_app_runtime_attr_name
+from ..core.logging.app_logging import get_logger
+
+_log = get_logger("codewood.shell_diff")
 from ..core.console_utils import (
     GUI_CMD_OUTPUT_END,
     GUI_DIFF_BEGIN,
@@ -909,6 +912,8 @@ def action_shell_command(
     # changes).  Uses --keep-index so staged files are untouched.
     _repo_root = _git_repo_root(execution_cwd)
     _stash_pushed = bool(_repo_root and _git_stash_push(execution_cwd))
+    if _repo_root:
+        _log.info("repo_root=%s stash_pushed=%s", _repo_root, _stash_pushed)
 
     try:
         run_env = os.environ.copy()
@@ -1552,17 +1557,35 @@ def action_shell_command(
                         _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
                     except Exception:
                         continue
+                    # If the file was untracked before the shell ran, git stash
+                    # (--include-untracked) may have stored its original content.
+                    # Try to retrieve it so we can show a real diff instead of
+                    # marking the whole file as added.
+                    _new_before: Optional[str] = None
+                    if _stash_pushed and _repo_root is not None:
+                        _new_before = _git_content_before_via_stash(_repo_root, _path_str)
+                    if _new_before is not None:
+                        _diff_rows_new = _build_real_diff_rows(_new_before, _content)
+                        _change_type = "modify"
+                        _cb_new = _new_before
+                        _log.info("new file got before from stash: %s", _path_str)
+                    else:
+                        _diff_rows_new = _build_all_add_diff_rows(_content)
+                        _change_type = "create"
+                        _cb_new = ""
+                        _log.info("new file no before: %s", _path_str)
                     if _tracker2 is not None:
                         _tracker2.record_change(
                             file_path=_path_str,
-                            change_type="create",
+                            change_type=_change_type,
                             source="shell",
+                            content_before=_cb_new,
                             content_after=_content,
-                            patch=None,
+                            patch=_diff_rows_new,
                         )
                     _shell_diff_entries.append({
                         "file": _path_str,
-                        "diffRows": _build_all_add_diff_rows(_content),
+                        "diffRows": _diff_rows_new,
                     })
                 for _path_str in _modified:
                     try:
@@ -1571,7 +1594,7 @@ def action_shell_command(
                         continue
                     # Detect binary files — diff rows are meaningless and
                     # we should back up the old content for recovery.
-                    _is_binary = _is_binary_content(_content)
+                    _is_binary = _is_binary_file(_path_str)
                     _backup_name: Optional[str] = None
                     if _is_binary:
                         _before_binary: Optional[str] = None
@@ -1602,22 +1625,27 @@ def action_shell_command(
                                 backup_path=_backup_name,
                             )
                     else:
-                        _before: Optional[str] = None
+                        # Try git stash to get pre-execution content.
+                        _before_for_diff: Optional[str] = None
                         if _stash_pushed and _repo_root is not None:
-                            _before = _git_content_before_via_stash(_repo_root, _path_str)
-                        if _before is not None:
-                            _diff_rows = _build_real_diff_rows(_before, _content)
+                            _before_for_diff = _git_content_before_via_stash(_repo_root, _path_str)
+                        if _before_for_diff is not None:
+                            _diff_rows = _build_real_diff_rows(_before_for_diff, _content)
+                            _cb = _before_for_diff
+                            _log.info("got before content (%d bytes) for %s", len(_before_for_diff), _path_str)
                         else:
-                            _before = None
+                            _before_for_diff = None
                             _diff_rows = _build_all_add_diff_rows(_content)
+                            _cb = ""
+                            _log.info("no before content for %s, showing all as added", _path_str)
                         if _tracker2 is not None:
                             _tracker2.record_change(
                                 file_path=_path_str,
                                 change_type="modify",
                                 source="shell",
-                                content_before=_before,
+                                content_before=_cb,
                                 content_after=_content,
-                                patch=None,
+                                patch=_diff_rows,
                             )
                     _shell_diff_entries.append({
                         "file": _path_str,
@@ -2778,12 +2806,15 @@ def _build_all_add_diff_rows(content: str) -> List[Dict[str, Any]]:
     ]
 
 
-def _is_binary_content(content: str) -> bool:
-    """Return True if *content* looks like binary data (contains null bytes
-    in the first 8 KB)."""
-    if not content:
+def _is_binary_file(file_path: str) -> bool:
+    """Return True if *file_path* looks like binary data by checking the
+    first 8 KB of raw bytes for null characters."""
+    try:
+        with open(file_path, "rb") as fh:
+            chunk = fh.read(8192)
+        return b"\0" in chunk
+    except Exception:
         return False
-    return "\0" in (content[:8192] if len(content) > 8192 else content)
 
 
 def _git_stash_push(cwd: Path) -> bool:
@@ -2852,7 +2883,8 @@ def _git_content_before_via_stash(
     try:
         rel = Path(file_path).resolve().relative_to(repo_root)
         rel_str = str(rel).replace("\\", "/")
-    except (ValueError, OSError):
+    except (ValueError, OSError) as e:
+        _log.warning("path resolve failed: file=%s repo=%s err=%s", file_path, repo_root, e)
         return None
     # Try stash first (unstaged + untracked state)
     try:
@@ -2863,8 +2895,9 @@ def _git_content_before_via_stash(
         )
         if result.returncode == 0:
             return result.stdout
-    except Exception:
-        pass
+        _log.debug("stash miss: %s rc=%s stderr=%s", rel_str, result.returncode, result.stderr[:200])
+    except Exception as e:
+        _log.warning("stash error: %s err=%s", rel_str, e)
     # Try index (staged state, which --keep-index preserves)
     try:
         result = _subprocess_mod.run(
@@ -2887,6 +2920,7 @@ def _git_content_before_via_stash(
             return result.stdout
     except Exception:
         pass
+    _log.debug("all sources miss: file=%s rel=%s", file_path, rel_str)
     return None
 
 

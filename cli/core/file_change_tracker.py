@@ -281,11 +281,17 @@ def _convert_segments_to_diff_rows(
     """Convert raw preview segments to frontend DiffRow[] format.
 
     ``segments`` is the list of dicts produced by apply_patch with keys
-    ``old_lines``/``new_lines``/``old_start_line``/``new_start_line``.
+    ``old_lines``/``new_lines``/``old_start_line``/``new_start_line``,
+    OR a list already in DiffRow format (with ``type`` key).
     ``converter`` is ``ChangePreviewFormatter.format_segments_structured``
     (or None when the import failed).
     """
-    if not segments or not converter:
+    if not segments or not isinstance(segments, list) or len(segments) == 0:
+        return []
+    first = segments[0]
+    if isinstance(first, dict) and "type" in first:
+        return segments
+    if not converter:
         return []
     try:
         rows = converter(segments)

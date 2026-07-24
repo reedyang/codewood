@@ -3641,7 +3641,7 @@ class Agent:
             "args": dict(args) if isinstance(args, dict) else {},
             "failed": not success,
             "elapsed": r.get("_elapsed_seconds"),
-            "output": round_output or "",
+            "output": self._extract_tool_result_output(t, r),
         }
         # Persist whether apply_patch was creating a new file, so history
         # reload can render the correct label after the file exists on disk.
@@ -3657,7 +3657,7 @@ class Agent:
         # Store the preview ref (hashcode) so _rerender_tool_rounds can
         # embed the diff block inline — in the right position — on reload.
         # The full diff rows live in previews.json, out of the model context.
-        if t == "apply_patch" and _preview_ref:
+        if t in ("apply_patch", "shell") and _preview_ref:
             raw_entry["previewRef"] = _preview_ref
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
@@ -3826,28 +3826,30 @@ class Agent:
                 else:
                     explore_text = _ansi_bold(explore_text)
                 tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
-            # For apply_patch with a preview ref, embed the diff block
+            # For apply_patch / shell with a preview ref, embed the diff block
             # directly after the prompt line so it renders in the right
             # position within the tool round (one preview per tool call).
-            if tool == "apply_patch":
+            if tool in ("apply_patch", "shell"):
                 preview_ref = item.get("previewRef")
                 if preview_ref:
                     try:
                         store = self._load_apply_patch_preview_store()
-                        preview = store.get(str(preview_ref))
-                        if isinstance(preview, dict) and preview.get("diffRows"):
-                            if tui_mode:
-                                preview_lines = preview.get("previewLines")
-                                if isinstance(preview_lines, list) and preview_lines:
-                                    for ln in preview_lines:
-                                        tool_round = f"{tool_round}\n{ln}"
+                        refs = str(preview_ref).split("|")
+                        for _ref in refs:
+                            preview = store.get(_ref)
+                            if isinstance(preview, dict) and preview.get("diffRows"):
+                                if tui_mode:
+                                    preview_lines = preview.get("previewLines")
+                                    if isinstance(preview_lines, list) and preview_lines:
+                                        for ln in preview_lines:
+                                            tool_round = f"{tool_round}\n{ln}"
+                                    else:
+                                        for ln in self._render_diff_rows_as_text(preview["diffRows"]):
+                                            tool_round = f"{tool_round}\n{ln}"
                                 else:
-                                    for ln in self._render_diff_rows_as_text(preview["diffRows"]):
-                                        tool_round = f"{tool_round}\n{ln}"
-                            else:
-                                import json as _json
-                                payload = _json.dumps(preview, ensure_ascii=False)
-                                tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
+                                    import json as _json
+                                    payload = _json.dumps(preview, ensure_ascii=False)
+                                    tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
                     except Exception:
                         pass
             # Expand the tool output (generic ``output`` field) as a collapsible
