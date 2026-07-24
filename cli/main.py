@@ -999,7 +999,13 @@ def main(argv: list[str] | None = None):
 
     config_dir = None  # Config directory used for history persistence
     # Built-in Agent Skills live at the project root, outside cli/.
-    builtin_skills_dir = str(project_root / "skills")
+    # When frozen by PyInstaller, __file__ resolves to sys._MEIPASS + "/main.py"
+    # (without the "cli/" prefix), so project_root / "skills" would be wrong.
+    # Use sys._MEIPASS (the _internal/ directory) when available.
+    if getattr(sys, "frozen", False):
+        builtin_skills_dir = str(Path(sys._MEIPASS) / "skills")
+    else:
+        builtin_skills_dir = str(project_root / "skills")
 
     if os.path.exists(user_config):
         config_path = user_config
