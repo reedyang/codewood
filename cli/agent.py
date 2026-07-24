@@ -3636,12 +3636,18 @@ class Agent:
         # call records a generic ``output`` field (not just ``read``) so history
         # reload can expand the tool output regardless of tool type.
         pending_raw = list(getattr(self, "_accumulated_tool_rounds_raw", None) or [])
+        output = self._extract_tool_result_output(t, r)
+        # If the tool was cancelled by the user, set a localized output so
+        # the tool step shows "User cancelled" in the GUI transcript.
+        if not success and self._result_indicates_user_cancelled(r):
+            from .core.localization import translate
+            output = translate("tool.cancelled_by_user", self._ui_language())
         raw_entry = {
             "tool": t,
             "args": dict(args) if isinstance(args, dict) else {},
             "failed": not success,
             "elapsed": r.get("_elapsed_seconds"),
-            "output": self._extract_tool_result_output(t, r),
+            "output": output,
         }
         # Persist whether apply_patch was creating a new file, so history
         # reload can render the correct label after the file exists on disk.

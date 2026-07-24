@@ -555,6 +555,8 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             # "Worked for" section — they are status messages, not tool steps.
             is_interrupted = agent._parse_conversation_interrupted_history_content(content) is not None
             if is_interrupted:
+                if current_round is None or current_round.get("text") or current_round.get("interrupted"):
+                    current_round = _new_round(turn, wait)
                 current_round["interrupted"] = strip_ansi(rendered)
             else:
                 has_own_thinking = bool(str(msg.get("_thinking") or "").strip()) if isinstance(msg, dict) else False
