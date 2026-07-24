@@ -98,12 +98,16 @@ function FileChangeItem({ file, isExpanded, onToggle, t, workspaceRoot }: FileCh
   }, [file.filePath]);
 
   const isDelete = file.changeType === "delete";
+  const isBinary = file.changeType === "modify" && file.addedLines === 0 && file.deletedLines === 0 && (!file.patch || file.patch.length === 0);
   const stats = useMemo(() => {
     if (isDelete) {
       return { added: 0, deleted: file.deletedLines };
     }
+    if (isBinary) {
+      return { added: 0, deleted: 0 };
+    }
     return computeStats(file.patch);
-  }, [file.patch, file.deletedLines, isDelete]);
+  }, [file.patch, file.deletedLines, isDelete, isBinary]);
 
   const relativePath = useMemo(() => {
     const normalized = file.filePath.replace(/\\/g, "/");
@@ -120,22 +124,28 @@ function FileChangeItem({ file, isExpanded, onToggle, t, workspaceRoot }: FileCh
   }, [file.filePath, workspaceRoot]);
 
   return (
-    <div className={`file-change-item ${isDelete ? "deleted" : ""} ${isExpanded ? "expanded" : ""}`}>
+    <div className={`file-change-item ${isDelete ? "deleted" : ""} ${isBinary ? "binary" : ""} ${isExpanded ? "expanded" : ""}`}>
       <div
         className="file-change-item-header"
-        onClick={isDelete ? undefined : onToggle}
+        onClick={isDelete || isBinary ? undefined : onToggle}
         title={relativePath}
       >
         <span className={`file-change-item-name ${isDelete ? "strikethrough" : ""}`}>{fileName}</span>
         <span className="file-change-item-stats">
-          <span className="file-change-added">+{stats.added}</span>
-          <span className="file-change-deleted">-{stats.deleted}</span>
+          {isBinary ? (
+            <span className="file-change-binary">Binary</span>
+          ) : (
+            <>
+              <span className="file-change-added">+{stats.added}</span>
+              <span className="file-change-deleted">-{stats.deleted}</span>
+            </>
+          )}
         </span>
-        {!isDelete && (
+        {!isDelete && !isBinary && (
           <Icon name="chevron" size={14} className={`chevron ${isExpanded ? "open" : ""}`} />
         )}
       </div>
-      {!isDelete && isExpanded && file.patch && (
+      {!isDelete && !isBinary && isExpanded && file.patch && (
         <FileChangeDetails file={file} t={t} />
       )}
     </div>
