@@ -6166,6 +6166,7 @@ body.resizing-y .console-term {
   font-weight: 600;
   font-size: 14px;
   color: var(--text);
+  user-select: text;
 }
 
 .file-change-stats {
@@ -6173,6 +6174,7 @@ body.resizing-y .console-term {
   gap: 8px;
   font-size: 13px;
   font-family: monospace;
+  user-select: text;
 }
 
 .file-change-added {
@@ -6202,6 +6204,7 @@ body.resizing-y .console-term {
   gap: 12px;
   padding: 10px 16px;
   cursor: pointer;
+  user-select: text;
   transition: background 0.15s;
 }
 
