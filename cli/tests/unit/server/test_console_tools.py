@@ -27,14 +27,38 @@ class ConsoleToolGatingTests(unittest.TestCase):
 
     def test_tool_without_dispatch_errors(self):
         class _A:
-            pass
+            execution_policy = "confirmation"
+
+            def _load_confirm_allowlist(self):
+                pass
+
+            def _shell_command_in_allowlist(self, _command):
+                return False
+
+            def _shell_confirm_should_offer_always(self, _command):
+                return False
+
+            def _prompt_confirm_yes_no_maybe_always(self, _prompt, **kwargs):
+                return True
 
         res = ConsoleExecTool().execute(_A(), {"command": "ls"})
         self.assertFalse(res.get("success"))
 
     def test_exec_forwards_command(self):
         class _A:
-            pass
+            execution_policy = "confirmation"
+
+            def _load_confirm_allowlist(self):
+                pass
+
+            def _shell_command_in_allowlist(self, _command):
+                return False
+
+            def _shell_confirm_should_offer_always(self, _command):
+                return False
+
+            def _prompt_confirm_yes_no_maybe_always(self, _prompt, **kwargs):
+                return True
 
         agent = _A()
         seen = {}
@@ -73,7 +97,19 @@ class ConsoleToolGatingTests(unittest.TestCase):
 
     def test_exec_requires_command(self):
         class _A:
-            pass
+            execution_policy = "confirmation"
+
+            def _load_confirm_allowlist(self):
+                pass
+
+            def _shell_command_in_allowlist(self, _command):
+                return False
+
+            def _shell_confirm_should_offer_always(self, _command):
+                return False
+
+            def _prompt_confirm_yes_no_maybe_always(self, _prompt, **kwargs):
+                return True
 
         agent = _A()
         agent._console_dispatch = lambda action, payload=None: {"success": True}
@@ -91,7 +127,19 @@ class ConsoleToolGatingTests(unittest.TestCase):
                 return {"allowed": False, "error": "Blocked shell command: test"}
 
         class _A:
-            pass
+            execution_policy = "confirmation"
+
+            def _load_confirm_allowlist(self):
+                pass
+
+            def _shell_command_in_allowlist(self, _command):
+                return False
+
+            def _shell_confirm_should_offer_always(self, _command):
+                return False
+
+            def _prompt_confirm_yes_no_maybe_always(self, _prompt, **kwargs):
+                return True
 
         agent = _A()
         agent.path_policy = _DenyPolicy()
@@ -106,7 +154,19 @@ class ConsoleToolGatingTests(unittest.TestCase):
                 return {"allowed": True, "error": ""}
 
         class _A:
-            pass
+            execution_policy = "confirmation"
+
+            def _load_confirm_allowlist(self):
+                pass
+
+            def _shell_command_in_allowlist(self, _command):
+                return False
+
+            def _shell_confirm_should_offer_always(self, _command):
+                return False
+
+            def _prompt_confirm_yes_no_maybe_always(self, _prompt, **kwargs):
+                return True
 
         seen = {}
         agent = _A()

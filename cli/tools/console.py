@@ -19,6 +19,12 @@ from .base import BaseTool
 from .shell import is_ai_workspace_script_command, is_dependency_install_command
 
 
+def _t(agent: Any, key: str, fallback: Optional[str] = None, **kwargs: Any) -> str:
+    from ..core.localization import get_display_language, translate
+
+    return translate(key, get_display_language(agent), fallback=fallback, **kwargs)
+
+
 def _dispatch(agent: Any, action: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     fn = getattr(agent, "_console_dispatch", None)
     if not callable(fn):
@@ -58,6 +64,29 @@ class ConsoleExecTool(BaseTool):
             )
             if not decision.get("allowed", False):
                 return {"success": False, "error": decision.get("error", "")}
+        # Enforce the same execution-policy confirmation as the ``shell`` tool.
+        agent._load_confirm_allowlist()
+        execution_policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
+        in_allowlist = agent._shell_command_in_allowlist(command)
+        should_prompt = (
+            (execution_policy == "confirmation")
+            or (execution_policy in ("moderate", "unlimited") and not in_allowlist)
+        )
+        if should_prompt:
+            prompt_text = _t(
+                agent,
+                "execution_policy.prompt.confirm_shell_no_command",
+                fallback="⚠️ Confirm executing this command in the embedded console?",
+            )
+            ok = agent._prompt_confirm_yes_no_maybe_always(
+                prompt_text,
+                offer_always=agent._shell_confirm_should_offer_always(command),
+                kind="console",
+                shell_command=command,
+                display_command=command,
+            )
+            if not ok:
+                return {"success": False, "error": "Operation cancelled by user"}
         return _dispatch(agent, "exec", {"command": command})
 
 
