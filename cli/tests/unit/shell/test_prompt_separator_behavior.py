@@ -87,7 +87,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent = self._build_agent()
         agent._show_separator_next_prompt = True
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch.object(agent, "_print_prompt_separator") as mock_separator,
         ):
             out = agent._get_user_input_with_history()
@@ -98,7 +98,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
     def test_separator_is_not_rendered_by_default(self):
         agent = self._build_agent()
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch.object(agent, "_print_prompt_separator") as mock_separator,
         ):
             out = agent._get_user_input_with_history()
@@ -118,7 +118,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             events.append(str(text))
 
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch("cli.agent._ansi_yellow", side_effect=lambda s: s),
             patch("builtins.print", side_effect=_capture_print),
         ):
@@ -658,7 +658,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent._remember_active_chat_history_first_visible_index(2)
         widths = iter([100, 100])
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch.object(agent, "_terminal_columns_for_prompt_separator", side_effect=lambda default=80: next(widths)),
             patch.object(agent, "_print_chat_history") as mock_history,
             patch("cli.agent.os.system"),
@@ -691,7 +691,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
     def test_resize_check_first_snapshot_does_not_reload(self):
         agent = self._build_agent()
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch.object(agent, "_terminal_columns_for_prompt_separator", return_value=120),
             patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
         ):
@@ -717,7 +717,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                 return 100
         agent.input_handler = _InputHandlerCols100()
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch("cli.agent.os.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
             patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
         ):
@@ -730,7 +730,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent = self._build_agent()
         agent._force_reload_chat_history_from_anchor_once = True
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
             patch.object(agent, "_maybe_reload_chat_history_on_terminal_resize") as mock_maybe,
         ):
@@ -752,7 +752,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
         agent.input_handler = _InputHandlerCols120()
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
             patch.object(agent, "_maybe_reload_chat_history_on_terminal_resize") as mock_maybe,
         ):
@@ -776,7 +776,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
         agent.input_handler = _InputHandlerCols120()
         with (
-            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status", "")),
             patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
             patch.object(agent, "_maybe_reload_chat_history_on_terminal_resize") as mock_maybe,
         ):

@@ -5,24 +5,24 @@ from cli.core import status_bar as sb
 
 class StatusBarTokenUsageTests(unittest.TestCase):
     def test_status_bar_includes_chat_usage_percent(self):
-        frags, plain = sb.build_status_bar_render_data(
+        frags, plain, usage = sb.build_status_bar_render_data(
             "gpt-4o-mini",
             "Default",
             "Demo Chat",
             37,
         )
-        self.assertIn("(37%)", plain)
-        self.assertEqual(frags[-1][0], "fg:ansibrightblack")
-        self.assertEqual(frags[-1][1], "(37%)")
+        self.assertEqual(usage, "(37%)")
+        self.assertNotIn("(37%)", plain)
 
     def test_status_usage_percent_is_clamped(self):
-        _frags, plain = sb.build_status_bar_render_data(
+        _frags, plain, usage = sb.build_status_bar_render_data(
             "gpt-4o-mini",
             "Default",
             "Demo Chat",
             12345,
         )
-        self.assertIn("(999%)", plain)
+        self.assertEqual(usage, "(999%)")
+        self.assertNotIn("(999%)", plain)
 
     def test_refresh_without_service_keeps_cached_usage(self):
         class FakeService:
