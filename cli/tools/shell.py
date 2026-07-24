@@ -1609,6 +1609,8 @@ def action_shell_command(
                         _new_before = _git_content_before_via_stash(_repo_root, _path_str)
                     if _new_before is None:
                         _new_before = _untracked_snapshot.get(_path_str)
+                    if _new_before is None:
+                        _new_before = _untracked_snapshot.get(_path_str)
                     if _new_before is not None:
                         _diff_rows_new = _build_real_diff_rows(_new_before, _content)
                         _change_type = "modify"
@@ -1648,6 +1650,8 @@ def action_shell_command(
                             _before_binary = _git_content_before_via_stash(_repo_root, _path_str)
                         if _before_binary is None:
                             _before_binary = _untracked_snapshot.get(_path_str)
+                        if _before_binary is None:
+                            _before_binary = _untracked_snapshot.get(_path_str)
                         if _before_binary is not None:
                             try:
                                 __chat_mgr = getattr(agent, "_chat_state_manager", None)
@@ -1678,10 +1682,15 @@ def action_shell_command(
                             _before_for_diff = _git_content_before_via_stash(_repo_root, _path_str)
                         if _before_for_diff is None:
                             _before_for_diff = _untracked_snapshot.get(_path_str)
+                        if _before_for_diff is None:
+                            _before_for_diff = _untracked_snapshot.get(_path_str)
                         if _before_for_diff is not None:
                             _diff_rows = _build_real_diff_rows(_before_for_diff, _content)
                             _cb = _before_for_diff
                             _log.info("got before content (%d bytes) for %s", len(_before_for_diff), _path_str)
+                            if _before_for_diff != _content:
+                                _log.info("content changed, first 200 chars before: %r  after: %r",
+                                          _before_for_diff[:200], _content[:200])
                         else:
                             _before_for_diff = None
                             _diff_rows = _build_all_add_diff_rows(_content)
@@ -2934,6 +2943,9 @@ def _git_content_before_via_stash(
     1. ``stash@{0}:<rel>``  -- unstaged + untracked changes
     2. ``:<rel>``           -- staged (index) version
     3. ``HEAD:<rel>``       -- last commit
+
+    Captures raw bytes from git and decodes as UTF-8 to avoid locale-
+    dependent text encoding issues on Windows.
     """
     try:
         rel = Path(file_path).resolve().relative_to(repo_root)
@@ -2941,40 +2953,23 @@ def _git_content_before_via_stash(
     except (ValueError, OSError) as e:
         _log.warning("path resolve failed: file=%s repo=%s err=%s", file_path, repo_root, e)
         return None
-    # Try stash first (unstaged + untracked state)
-    try:
-        result = _subprocess_mod.run(
-            ["git", "-C", str(repo_root), "show", f"stash@{{0}}:{rel_str}"],
-            capture_output=True, text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout
-        _log.debug("stash miss: %s rc=%s stderr=%s", rel_str, result.returncode, result.stderr[:200])
-    except Exception as e:
-        _log.warning("stash error: %s err=%s", rel_str, e)
-    # Try index (staged state, which --keep-index preserves)
-    try:
-        result = _subprocess_mod.run(
-            ["git", "-C", str(repo_root), "show", f":{rel_str}"],
-            capture_output=True, text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout
-    except Exception:
-        pass
-    # Fall back to HEAD
-    try:
-        result = _subprocess_mod.run(
-            ["git", "-C", str(repo_root), "show", f"HEAD:{rel_str}"],
-            capture_output=True, text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout
-    except Exception:
-        pass
+    for _git_ref, _label in [
+        (f"stash@{{0}}:{rel_str}", "stash"),
+        (f":{rel_str}", "index"),
+        (f"HEAD:{rel_str}", "HEAD"),
+    ]:
+        try:
+            result = _subprocess_mod.run(
+                ["git", "-C", str(repo_root), "show", _git_ref],
+                capture_output=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout.decode("utf-8", errors="replace")
+            _log.debug("%s miss: %s rc=%s stderr=%s", _label, rel_str,
+                        result.returncode, result.stderr.decode("utf-8", errors="replace")[:200])
+        except Exception as e:
+            _log.warning("%s error: %s err=%s", _label, rel_str, e)
     _log.debug("all sources miss: file=%s rel=%s", file_path, rel_str)
     return None
 
