@@ -1642,12 +1642,14 @@ def action_shell_command(
                 _shell_diff_entries = []
             if _shell_diff_entries:
                 base_out["_shell_diff_entries"] = _shell_diff_entries
-                # Emit GUI diff blocks for live rendering
+                # Emit GUI diff blocks for live rendering (GUI mode only).
                 try:
-                    for _entry in _shell_diff_entries:
-                        _payload = json.dumps(_entry, ensure_ascii=False)
-                        sys.stdout.write(f"{GUI_DIFF_BEGIN}{_payload}{GUI_DIFF_END}")
-                        sys.stdout.flush()
+                    _is_gui = bool(getattr(agent, "_gui_no_wrap", False))
+                    if _is_gui:
+                        for _entry in _shell_diff_entries:
+                            _payload = json.dumps(_entry, ensure_ascii=False)
+                            sys.stdout.write(f"{GUI_DIFF_BEGIN}{_payload}{GUI_DIFF_END}")
+                            sys.stdout.flush()
                 except Exception:
                     pass
 
@@ -2722,16 +2724,16 @@ def _snapshot_files_content(paths: List[Path]) -> Dict[str, str]:
 def _snapshot_workspace_file_list(cwd: Path) -> Dict[str, Tuple[float, int]]:
     """Walk *cwd* recursively and return ``{path_str: (mtime, size)}`` for
     every regular file.  The snapshot is lightweight (metadata only).
-    The app config directory (e.g. ``.codewood``) and everything under it
-    is excluded to avoid picking up backups, chat data, and internal
-    indexes as spurious file changes."""
+    The app config directory and common build/scm directories are excluded
+    to avoid picking up irrelevant data as spurious file changes."""
     _config_dirname = get_app_config_dirname()
+    _skip_dirs = {_config_dirname, ".git", "node_modules", "__pycache__", ".vite"}
     snapshot: Dict[str, Tuple[float, int]] = {}
     try:
         for entry in cwd.rglob("*"):
             try:
                 if entry.is_file():
-                    if any(p.name == _config_dirname for p in entry.parents):
+                    if any(p.name in _skip_dirs for p in entry.parents):
                         continue
                     stat = entry.stat()
                     snapshot[str(entry)] = (stat.st_mtime, stat.st_size)

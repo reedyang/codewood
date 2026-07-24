@@ -569,6 +569,8 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         ), patch(
             "cli.tools.shell._safe_console_write",
             side_effect=_capture_write,
+        ), patch(
+            "cli.tools.shell._git_repo_root", return_value=None
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
@@ -586,6 +588,8 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
         with patch("subprocess.Popen", return_value=_FakePopenResult("line1\nline2\n")) as popen_mock, patch(
             "cli.tools.shell._dynamic_tail_line_limit", return_value=5
+        ), patch(
+            "cli.tools.shell._git_repo_root", return_value=None
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
@@ -621,6 +625,8 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         with patch("subprocess.Popen", return_value=_FakePopenResult("", "")) as popen_mock, patch(
             "cli.tools.shell._safe_console_write",
             side_effect=_capture_write,
+        ), patch(
+            "cli.tools.shell._git_repo_root", return_value=None
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
