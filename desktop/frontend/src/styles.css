@@ -6251,6 +6251,20 @@ body.resizing-y .console-term {
   text-decoration: line-through;
 }
 
+.file-change-binary {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.file-change-item.binary .file-change-item-header {
+  cursor: default;
+}
+
+.file-change-item.binary .file-change-item-header:hover {
+  background: transparent;
+}
+
 /* File Change Details */
 .file-change-details {
   background: var(--bg);

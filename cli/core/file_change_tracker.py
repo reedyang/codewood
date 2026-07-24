@@ -53,6 +53,7 @@ class FileChangeTracker:
         content_before: Optional[str] = None,
         content_after: Optional[str] = None,
         patch: Optional[List[Dict[str, Any]]] = None,
+        backup_path: Optional[str] = None,
     ) -> FileChangeRecord:
         """Record a file change."""
         # Calculate line changes
@@ -80,6 +81,7 @@ class FileChangeTracker:
             patch=patch,
             added_lines=added_lines,
             deleted_lines=deleted_lines,
+            backup_path=backup_path,
         )
         self._changes.append(record)
         return record

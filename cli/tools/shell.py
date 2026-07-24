@@ -1569,28 +1569,62 @@ def action_shell_command(
                         _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
                     except Exception:
                         continue
-                    # Get pre-execution content via stash, index, or HEAD.
-                    _before: Optional[str] = None
-                    if _stash_pushed and _repo_root is not None:
-                        _before = _git_content_before_via_stash(_repo_root, _path_str)
-                    if _before is not None:
-                        _diff_rows = _build_real_diff_rows(_before, _content)
+                    # Detect binary files — diff rows are meaningless and
+                    # we should back up the old content for recovery.
+                    _is_binary = _is_binary_content(_content)
+                    _backup_name: Optional[str] = None
+                    if _is_binary:
+                        _before_binary: Optional[str] = None
+                        _backups_dir_mod: Optional[Path] = None
+                        if _stash_pushed and _repo_root is not None:
+                            _before_binary = _git_content_before_via_stash(_repo_root, _path_str)
+                        if _before_binary is not None:
+                            try:
+                                __chat_mgr = getattr(agent, "_chat_state_manager", None)
+                                __chat_id = str(getattr(agent, "active_chat_id", "") or "")
+                                if __chat_mgr is not None and __chat_id:
+                                    _backups_dir_mod = __chat_mgr.chat_backups_dir_for_chat(__chat_id)
+                            except Exception:
+                                pass
+                        if _backups_dir_mod is not None:
+                            _backup_name = _backup_deleted_file(
+                                _before_binary, Path(_path_str), _backups_dir_mod,
+                            )
+                        _diff_rows: List[Dict[str, Any]] = []
+                        if _tracker2 is not None:
+                            _tracker2.record_change(
+                                file_path=_path_str,
+                                change_type="modify",
+                                source="shell",
+                                content_before=None,
+                                content_after=None,
+                                patch=None,
+                                backup_path=_backup_name,
+                            )
                     else:
-                        _before = None
-                        _diff_rows = _build_all_add_diff_rows(_content)
-                    if _tracker2 is not None:
-                        _tracker2.record_change(
-                            file_path=_path_str,
-                            change_type="modify",
-                            source="shell",
-                            content_before=_before,
-                            content_after=_content,
-                            patch=None,
-                        )
+                        _before: Optional[str] = None
+                        if _stash_pushed and _repo_root is not None:
+                            _before = _git_content_before_via_stash(_repo_root, _path_str)
+                        if _before is not None:
+                            _diff_rows = _build_real_diff_rows(_before, _content)
+                        else:
+                            _before = None
+                            _diff_rows = _build_all_add_diff_rows(_content)
+                        if _tracker2 is not None:
+                            _tracker2.record_change(
+                                file_path=_path_str,
+                                change_type="modify",
+                                source="shell",
+                                content_before=_before,
+                                content_after=_content,
+                                patch=None,
+                            )
                     _shell_diff_entries.append({
                         "file": _path_str,
                         "diffRows": _diff_rows,
                     })
+                    if _backup_name:
+                        _shell_diff_entries[-1]["backupPath"] = _backup_name
                 # Record deletions that were detected via filesystem diff
                 # but NOT captured by the delete-target parser (e.g. files
                 # deleted as side effects of a script).
@@ -2740,6 +2774,14 @@ def _build_all_add_diff_rows(content: str) -> List[Dict[str, Any]]:
         }
         for i, line in enumerate(lines)
     ]
+
+
+def _is_binary_content(content: str) -> bool:
+    """Return True if *content* looks like binary data (contains null bytes
+    in the first 8 KB)."""
+    if not content:
+        return False
+    return "\0" in (content[:8192] if len(content) > 8192 else content)
 
 
 def _git_stash_push(cwd: Path) -> bool:
