@@ -892,10 +892,13 @@ def action_shell_command(
     # Snapshot files that may be deleted by this command so we can backup
     # their content and record a delete change if the command removes them.
     _delete_snapshots: Dict[str, str] = {}
-    if _is_potential_delete_command(command):
-        _delete_targets = _extract_delete_file_paths(command, execution_cwd)
-        if _delete_targets:
-            _delete_snapshots = _snapshot_files_content(_delete_targets)
+    try:
+        if _is_potential_delete_command(command):
+            _delete_targets = _extract_delete_file_paths(command, execution_cwd)
+            if _delete_targets:
+                _delete_snapshots = _snapshot_files_content(_delete_targets)
+    except Exception:
+        pass
 
     # Snapshot the entire workspace file listing (metadata only) so we can
     # detect file creations and modifications after the command runs.
@@ -1292,7 +1295,16 @@ def action_shell_command(
                 try:
                     process = None
                     _winpty_obj = None
-                    if _WINPTY_PTYPROCESS is not None and subprocess.Popen is _ORIG_SUBPROCESS_POPEN:
+                    # PowerShell -Command invocations don't need a pty;
+                    # winpty's ConPTY can interfere with output capture.
+                    _is_ps_command = bool(
+                        re.match(r"(?i)^powershell(?:\.exe)?\s", command.strip())
+                    )
+                    if (
+                        _WINPTY_PTYPROCESS is not None
+                        and subprocess.Popen is _ORIG_SUBPROCESS_POPEN
+                        and not _is_ps_command
+                    ):
                         try:
                             _comspec = run_env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
                             _raw_pty = _WINPTY_PTYPROCESS.spawn(
@@ -2614,8 +2626,13 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
             if not m:
                 continue
             rest = m.group(3) or ""
-            # Split the rest by whitespace to get individual path tokens
-            tokens = shlex.split(rest) if rest else []
+            # Split the rest by whitespace to get individual path tokens.
+            # shlex may fail on mismatched quotes (e.g. when a trailing
+            # quote from a PowerShell -Command wrapper leaks in).
+            try:
+                tokens = shlex.split(rest) if rest else []
+            except ValueError:
+                tokens = rest.split()
             for token in tokens:
                 # Skip flags/options
                 if token.startswith("-") or token.startswith("/"):
