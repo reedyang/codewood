@@ -3497,6 +3497,25 @@ class Agent:
                 r,
                 _preview_ref,
             )
+        elif t == "shell":
+            _shell_entries = r.get("_shell_diff_entries")
+            if isinstance(_shell_entries, list) and _shell_entries:
+                import secrets as _secrets
+                _pending = getattr(self, "_pending_preview_refs", None)
+                if not isinstance(_pending, list):
+                    _pending = []
+                    self._pending_preview_refs = _pending
+                _refs: List[str] = []
+                for _entry in _shell_entries:
+                    _ref = _secrets.token_hex(8)
+                    _refs.append(_ref)
+                    _pending.append(_ref)
+                    self._persist_apply_patch_preview_sidecar(
+                        {"file_path": _entry.get("file") or ""},
+                        {"change_preview_rows": _entry.get("diffRows") or [], "file": _entry.get("file") or ""},
+                        _ref,
+                    )
+                _preview_ref = "|".join(_refs)
 
         # Build the result payload for the tool message.
         # For apply_patch, only include the essential result fields
@@ -3533,8 +3552,12 @@ class Agent:
         if gui_marker:
             payload["guiSessionMarker"] = gui_marker
         payload["created_at"] = created_at
-        if t == "apply_patch" and _preview_ref:
+        if _preview_ref:
             payload["_previewRef"] = _preview_ref
+        # Strip shell diff entries from the model-context payload (they are
+        # stored in the preview sidecar and looked up on reload instead).
+        if t == "shell" and "_shell_diff_entries" in payload:
+            del payload["_shell_diff_entries"]
         tool_content = json.dumps(payload, ensure_ascii=False)
 
         # Store as a role:tool message in conversation_history with a
@@ -7673,6 +7696,49 @@ class Agent:
         except Exception:
             pass
 
+    def _prune_backup_files(self) -> None:
+        """Delete ``.bak`` backup files that are no longer referenced by any
+        remaining file-change record.  Called after a message edit truncates
+        the conversation so orphaned backup files don't linger."""
+        try:
+            mgr = getattr(self, "_chat_state_manager", None)
+            if mgr is None:
+                return
+            chat_id = str(getattr(self, "active_chat_id", "") or "")
+            backups_dir = mgr.chat_backups_dir_for_chat(chat_id)
+            if backups_dir is None or not backups_dir.exists():
+                return
+            # Collect all backupPath values from the remaining file_changes.
+            live_backups: set = set()
+            fc_path = mgr.chat_file_changes_path(chat_id)
+            if fc_path is not None and fc_path.exists():
+                try:
+                    with open(fc_path, "r", encoding="utf-8") as fh:
+                        fc_data = json.load(fh)
+                except Exception:
+                    fc_data = {}
+                if isinstance(fc_data, dict):
+                    for _ref, _summary in fc_data.items():
+                        if not isinstance(_summary, dict):
+                            continue
+                        for _f in (_summary.get("files") or []):
+                            _bp = str(_f.get("backupPath") or "").strip()
+                            if _bp:
+                                live_backups.add(_bp)
+            # Delete .bak files not referenced by any remaining change.
+            for child in list(backups_dir.iterdir()):
+                if not child.is_file():
+                    continue
+                if not child.name.endswith(".bak"):
+                    continue
+                if child.name not in live_backups:
+                    try:
+                        child.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _prune_subagent_session_files(self) -> None:
         """Delete orphaned sub-agent session JSON files whose tool result no
         longer exists in the active chat history. Called after editing a message
@@ -7754,7 +7820,11 @@ class Agent:
         """Re-emit the GUI collapsible diff block during transcript replay
         (reload) by looking up the per-chat preview sidecar. In GUI mode this
         emits a JSON block wrapped in GUI_DIFF sentinels; in TUI mode it
-        prints the pre-formatted ANSI preview lines."""
+        prints the pre-formatted ANSI preview lines.
+
+        Supports pipe-separated multi-key ``_previewRef`` values produced by
+        the shell tool when a single command creates or modifies several files.
+        """
         is_gui = callable(getattr(self, "_confirm_choice_provider", None))
         key = str(tool_result.get("_previewRef") or "")
         if not key:
@@ -7762,37 +7832,39 @@ class Agent:
         if not key:
             return
         store = self._load_apply_patch_preview_store()
-        entry = store.get(key)
-        if not isinstance(entry, dict):
-            return
-        rows = entry.get("diffRows")
-        if not isinstance(rows, list) or not rows:
-            return
-        try:
-            if is_gui:
-                import json as _json
-                payload = _json.dumps(
-                    {"file": entry.get("file") or "", "diffRows": rows},
-                    ensure_ascii=False,
-                )
-                print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
-            else:
-                preview_lines = entry.get("previewLines")
-                if isinstance(preview_lines, list) and preview_lines:
-                    file_name = entry.get("file") or ""
-                    try:
-                        lang = self._ui_language()
-                    except Exception:
-                        lang = "en"
-                    from .core.localization import translate
-                    print(translate("change_preview.markers", lang))
-                    for ln in preview_lines:
-                        print(ln)
+        keys = key.split("|") if "|" in key else [key]
+        for _k in keys:
+            entry = store.get(_k)
+            if not isinstance(entry, dict):
+                continue
+            rows = entry.get("diffRows")
+            if not isinstance(rows, list) or not rows:
+                continue
+            try:
+                if is_gui:
+                    import json as _json
+                    payload = _json.dumps(
+                        {"file": entry.get("file") or "", "diffRows": rows},
+                        ensure_ascii=False,
+                    )
+                    print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
                 else:
-                    for ln in self._render_diff_rows_as_text(rows):
-                        print(ln)
-        except Exception:
-            pass
+                    preview_lines = entry.get("previewLines")
+                    if isinstance(preview_lines, list) and preview_lines:
+                        file_name = entry.get("file") or ""
+                        try:
+                            lang = self._ui_language()
+                        except Exception:
+                            lang = "en"
+                        from .core.localization import translate
+                        print(translate("change_preview.markers", lang))
+                        for ln in preview_lines:
+                            print(ln)
+                    else:
+                        for ln in self._render_diff_rows_as_text(rows):
+                            print(ln)
+            except Exception:
+                pass
 
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         dispatcher = getattr(self, "tool_dispatcher", None)

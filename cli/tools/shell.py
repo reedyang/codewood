@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import datetime
+import json
 import os
 import re
 import secrets
@@ -26,6 +27,8 @@ from ..actions.command_execution_buffer import CommandExecutionBuffer
 from ..config.app_info import get_app_runtime_attr_name
 from ..core.console_utils import (
     GUI_CMD_OUTPUT_END,
+    GUI_DIFF_BEGIN,
+    GUI_DIFF_END,
     _SpinnerTicker,
     _WorkingStatusTicker,
     _ansi_gray,
@@ -894,6 +897,16 @@ def action_shell_command(
         if _delete_targets:
             _delete_snapshots = _snapshot_files_content(_delete_targets)
 
+    # Snapshot the entire workspace file listing (metadata only) so we can
+    # detect file creations and modifications after the command runs.
+    _before_file_list = _snapshot_workspace_file_list(execution_cwd)
+
+    # Push a temporary git stash so we can later retrieve the exact
+    # pre-execution content of any modified file (including uncommitted
+    # changes).  Uses --keep-index so staged files are untouched.
+    _repo_root = _git_repo_root(execution_cwd)
+    _stash_pushed = bool(_repo_root and _git_stash_push(execution_cwd))
+
     try:
         run_env = os.environ.copy()
         run_env.setdefault("PYTHONUTF8", "1")
@@ -1510,6 +1523,92 @@ def action_shell_command(
                                 )
                 except Exception:
                     pass
+
+            # Detect file creations and modifications by comparing the pre-
+            # and post-execution workspace file listings.  Record create /
+            # modify changes via the file_change_tracker and collect diff
+            # preview data for GUI rendering.
+            _shell_diff_entries: List[Dict[str, Any]] = []
+            try:
+                _after_file_list = _snapshot_workspace_file_list(execution_cwd)
+                _new, _modified, _ws_deleted = _diff_workspace_snapshots(
+                    _before_file_list, _after_file_list,
+                )
+                _tracker2 = getattr(agent, "file_change_tracker", None)
+                for _path_str in _new:
+                    try:
+                        _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    if _tracker2 is not None:
+                        _tracker2.record_change(
+                            file_path=_path_str,
+                            change_type="create",
+                            source="shell",
+                            content_after=_content,
+                            patch=None,
+                        )
+                    _shell_diff_entries.append({
+                        "file": _path_str,
+                        "diffRows": _build_all_add_diff_rows(_content),
+                    })
+                for _path_str in _modified:
+                    try:
+                        _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    # Get pre-execution content via stash, index, or HEAD.
+                    _before: Optional[str] = None
+                    if _stash_pushed and _repo_root is not None:
+                        _before = _git_content_before_via_stash(_repo_root, _path_str)
+                    if _before is not None:
+                        _diff_rows = _build_real_diff_rows(_before, _content)
+                    else:
+                        _before = None
+                        _diff_rows = _build_all_add_diff_rows(_content)
+                    if _tracker2 is not None:
+                        _tracker2.record_change(
+                            file_path=_path_str,
+                            change_type="modify",
+                            source="shell",
+                            content_before=_before,
+                            content_after=_content,
+                            patch=None,
+                        )
+                    _shell_diff_entries.append({
+                        "file": _path_str,
+                        "diffRows": _diff_rows,
+                    })
+                # Record deletions that were detected via filesystem diff
+                # but NOT captured by the delete-target parser (e.g. files
+                # deleted as side effects of a script).
+                for _path_str in _ws_deleted:
+                    if _path_str in _delete_snapshots:
+                        continue
+                    if _tracker2 is not None:
+                        _tracker2.record_delete(
+                            file_path=_path_str,
+                            source="shell",
+                            content_before="",
+                            backup_path=None,
+                        )
+            except Exception:
+                _shell_diff_entries = []
+            if _shell_diff_entries:
+                base_out["_shell_diff_entries"] = _shell_diff_entries
+                # Emit GUI diff blocks for live rendering
+                try:
+                    for _entry in _shell_diff_entries:
+                        _payload = json.dumps(_entry, ensure_ascii=False)
+                        sys.stdout.write(f"{GUI_DIFF_BEGIN}{_payload}{GUI_DIFF_END}")
+                        sys.stdout.flush()
+                except Exception:
+                    pass
+
+            # Restore the pre-execution stash so the working tree returns
+            # to its original state (unstaged changes come back).
+            if _stash_pushed:
+                _git_stash_restore(execution_cwd)
         finally:
             _stop_status_ticker()
             if merge_path:
@@ -2567,6 +2666,232 @@ def _snapshot_files_content(paths: List[Path]) -> Dict[str, str]:
         except Exception:
             pass
     return snapshots
+
+
+def _snapshot_workspace_file_list(cwd: Path) -> Dict[str, Tuple[float, int]]:
+    """Walk *cwd* recursively and return ``{path_str: (mtime, size)}`` for
+    every regular file.  The snapshot is lightweight (metadata only)."""
+    snapshot: Dict[str, Tuple[float, int]] = {}
+    try:
+        for entry in cwd.rglob("*"):
+            try:
+                if entry.is_file():
+                    stat = entry.stat()
+                    snapshot[str(entry)] = (stat.st_mtime, stat.st_size)
+            except OSError:
+                pass
+    except (OSError, PermissionError):
+        pass
+    return snapshot
+
+
+def _diff_workspace_snapshots(
+    before: Dict[str, Tuple[float, int]],
+    after: Dict[str, Tuple[float, int]],
+) -> Tuple[List[str], List[str], List[str]]:
+    """Return ``(new_files, modified_files, deleted_files)`` by comparing the
+    pre- and post-execution workspace snapshots."""
+    new_files = [p for p in after if p not in before]
+    deleted_files = [p for p in before if p not in after]
+    modified_files = [
+        p for p in before
+        if p in after and before[p] != after[p]
+    ]
+    return new_files, modified_files, deleted_files
+
+
+def _build_all_add_diff_rows(content: str) -> List[Dict[str, Any]]:
+    """Build ``DiffRow[]`` representing the entire *content* as added lines
+    (used for newly-created files or modified files where we lack the
+    pre-modification content)."""
+    if not content:
+        return []
+    lines = content.splitlines()
+    return [
+        {
+            "type": "add",
+            "oldNo": None,
+            "newNo": i + 1,
+            "oldText": "",
+            "newText": line,
+        }
+        for i, line in enumerate(lines)
+    ]
+
+
+def _git_stash_push(cwd: Path) -> bool:
+    """Push a temporary stash to capture the pre-execution working-tree
+    state.  Uses ``--keep-index`` so staged changes stay in the index and
+    working tree; unstaged and untracked changes go into the stash.
+    Returns True on success."""
+    try:
+        result = _subprocess_mod.run(
+            ["git", "-C", str(cwd), "stash", "push", "--keep-index",
+             "--include-untracked", "-m", "codewood_shell_pre"],
+            capture_output=True, text=True,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _git_stash_restore(cwd: Path) -> None:
+    """Pop the temporary stash.  If the shell modified files that overlap
+    with stashed changes, ``git stash pop`` may fail with conflicts — in
+    that case we drop the stash (the post-shell working tree is kept)."""
+    try:
+        result = _subprocess_mod.run(
+            ["git", "-C", str(cwd), "stash", "pop"],
+            capture_output=True, text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            _subprocess_mod.run(
+                ["git", "-C", str(cwd), "stash", "drop"],
+                capture_output=True, text=True,
+                timeout=10,
+            )
+    except Exception:
+        pass
+
+
+def _git_repo_root(cwd: Path) -> Optional[Path]:
+    """Return the git repository root for *cwd*, or None."""
+    try:
+        result = _subprocess_mod.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return Path(result.stdout.strip()).resolve()
+    except Exception:
+        pass
+    return None
+
+
+def _git_content_before_via_stash(
+    repo_root: Path, file_path: str,
+) -> Optional[str]:
+    """Return the pre-execution content of *file_path* after a
+    ``--keep-index`` stash has been pushed.
+
+    Resolution order:
+    1. ``stash@{0}:<rel>``  -- unstaged + untracked changes
+    2. ``:<rel>``           -- staged (index) version
+    3. ``HEAD:<rel>``       -- last commit
+    """
+    try:
+        rel = Path(file_path).resolve().relative_to(repo_root)
+        rel_str = str(rel).replace("\\", "/")
+    except (ValueError, OSError):
+        return None
+    # Try stash first (unstaged + untracked state)
+    try:
+        result = _subprocess_mod.run(
+            ["git", "-C", str(repo_root), "show", f"stash@{{0}}:{rel_str}"],
+            capture_output=True, text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+    # Try index (staged state, which --keep-index preserves)
+    try:
+        result = _subprocess_mod.run(
+            ["git", "-C", str(repo_root), "show", f":{rel_str}"],
+            capture_output=True, text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+    # Fall back to HEAD
+    try:
+        result = _subprocess_mod.run(
+            ["git", "-C", str(repo_root), "show", f"HEAD:{rel_str}"],
+            capture_output=True, text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+    return None
+
+
+def _build_real_diff_rows(content_before: str, content_after: str) -> List[Dict[str, Any]]:
+    """Compute frontend ``DiffRow[]`` from two content strings via difflib."""
+    import difflib
+    before_lines = content_before.splitlines()
+    after_lines = content_after.splitlines()
+    matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines)
+    rows: List[Dict[str, Any]] = []
+    old_no = 1
+    new_no = 1
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                rows.append({
+                    "type": "context",
+                    "oldNo": old_no + k, "newNo": new_no + k,
+                    "oldText": before_lines[i1 + k],
+                    "newText": after_lines[j1 + k],
+                })
+            old_no += i2 - i1
+            new_no += j2 - j1
+        elif tag == "replace":
+            for k in range(max(i2 - i1, j2 - j1)):
+                rows.append({
+                    "type": "change",
+                    "oldNo": old_no + k if i1 + k < i2 else None,
+                    "newNo": new_no + k if j1 + k < j2 else None,
+                    "oldText": before_lines[i1 + k] if i1 + k < i2 else "",
+                    "newText": after_lines[j1 + k] if j1 + k < j2 else "",
+                })
+            old_no += i2 - i1
+            new_no += j2 - j1
+        elif tag == "delete":
+            for k in range(i2 - i1):
+                rows.append({
+                    "type": "del",
+                    "oldNo": old_no + k, "newNo": None,
+                    "oldText": before_lines[i1 + k], "newText": "",
+                })
+            old_no += i2 - i1
+        elif tag == "insert":
+            for k in range(j2 - j1):
+                rows.append({
+                    "type": "add",
+                    "oldNo": None, "newNo": new_no + k,
+                    "oldText": "", "newText": after_lines[j1 + k],
+                })
+            new_no += j2 - j1
+    return rows
+    """Try to read the pre-modification content of *file_path* from git.
+
+    Returns the HEAD version of the file (relative to *cwd*) if the
+    workspace is a git repository and the file is tracked, or ``None``
+    if git is unavailable or the file isn't tracked."""
+    try:
+        repo_root = _git_repo_root(cwd)
+        if repo_root is None:
+            return None
+        rel = Path(file_path).resolve().relative_to(repo_root)
+        rel_str = str(rel).replace("\\", "/")
+        result = _subprocess_mod.run(
+            ["git", "-C", str(repo_root), "show", f"HEAD:{rel_str}"],
+            capture_output=True, text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+    return None
 
 
 def _backup_deleted_file(
