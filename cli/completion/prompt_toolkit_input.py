@@ -1128,6 +1128,70 @@ def _truncate_to_display_width(text: str, max_width: int) -> str:
     return "".join(out)
 
 
+def _truncate_colored_to_display_width(text: str, max_width: int) -> str:
+    """Truncate text to *max_width* display columns, preserving ANSI CSI sequences.
+
+    Standard ``_truncate_to_display_width`` counts ANSI escape bytes (``\\x1b``,
+    ``[``, digits, ``;``) as width-1 characters because the fallback
+    ``_display_width`` path treats them as neutral-width.  This variant
+    recognises CSI sequences (``\\x1b[…``) and skips their bytes during width
+    accounting, so coloured text is truncated to the correct *visible* width.
+    """
+    s = str(text or "")
+    cap = max(0, int(max_width or 0))
+    if cap <= 0 or not s:
+        return ""
+    out: List[str] = []
+    used = 0
+    after_escape = False
+    in_csi = False
+    for ch in s:
+        if ch == "\x1b":
+            after_escape = True
+            in_csi = False
+            out.append(ch)
+            continue
+        if after_escape:
+            out.append(ch)
+            if ch == "[":
+                in_csi = True
+            after_escape = False
+            continue
+        if in_csi:
+            out.append(ch)
+            # CSI final byte range: 0x40-0x7E (the introducer ``[`` 0x5B
+            # is already consumed above, so it never reaches this check).
+            if "@" <= ch <= "~":
+                in_csi = False
+            continue
+        ch_w = _display_width(ch)
+        if ch_w <= 0:
+            out.append(ch)
+            continue
+        if used + ch_w > cap:
+            break
+        out.append(ch)
+        used += ch_w
+    return "".join(out)
+
+
+def _truncate_colored_with_ellipsis(text: str, max_width: int) -> str:
+    """Truncate colored text to *max_width* display columns, appending ``…`` when truncated."""
+    s = str(text or "")
+    cap = max(0, int(max_width or 0))
+    if cap <= 0 or not s:
+        return ""
+    plain = _strip_ansi_sgr(s)
+    if _display_width(plain) <= cap:
+        return s
+    ellipsis = "\u2026"
+    ellipsis_w = _display_width(ellipsis)
+    inner_cap = max(0, cap - ellipsis_w)
+    if inner_cap <= 0:
+        return ellipsis
+    return _truncate_colored_to_display_width(s, inner_cap) + ellipsis
+
+
 def _shell_mode_effective_right_padding() -> int:
     # On Windows terminals (Windows Terminal / Cursor / VS Code integrated),
     # the right edge often appears with one extra visual cell. Render one fewer
@@ -2058,6 +2122,7 @@ class PromptToolkitInputHandler:
         self._transcript_mode_requested = False
         self.history = []
         self._status_bar_text = ""
+        self._status_bar_usage_text = ""
         self._status_bar_fragments = []
         self._status_bar_enabled = True
         self._shell_mode_active = False
@@ -2608,14 +2673,28 @@ class PromptToolkitInputHandler:
             return base_colored
         label_colored = _ansi_gray(label_plain)
         right_padding = 1
+        # Gap between the left-side text (chat name tail) and the right-side
+        # group so the two never visually touch.
+        left_gap = "  "
+        # Context usage is always shown right before the mode/label group so
+        # it is never truncated by the left-side overflow logic.
+        usage_plain = str(getattr(self, "_status_bar_usage_text", "") or "")
+        usage_colored = _ansi_gray(usage_plain) if usage_plain else ""
+        usage_gap = "  " if usage_plain else ""
         # Optional mode marker sits to the LEFT of the transcript hint with a
         # two-space gap so the two gray segments read as separate items.
         mode_plain = self._plan_mode_status_label()
         mode_gap = "  " if mode_plain else ""
         mode_segment_plain = f"{mode_plain}{mode_gap}" if mode_plain else ""
         mode_colored = _ansi_gray(mode_plain) if mode_plain else ""
+        usage_segment_plain = f"{usage_plain}{usage_gap}" if usage_plain else ""
         cols = _get_output_columns(self.session, default=80)
-        right_len = _display_width(label_plain) + _display_width(mode_segment_plain)
+        right_len = (
+            _display_width(left_gap)
+            + _display_width(usage_segment_plain)
+            + _display_width(mode_segment_plain)
+            + _display_width(label_plain)
+        )
         start_col = max(1, int(cols) - right_len - right_padding + 1)
         left_cap = max(0, start_col - 1)
         base_plain = _strip_ansi_sgr(base_colored)
@@ -2624,9 +2703,12 @@ class PromptToolkitInputHandler:
             base_render = base_colored
         else:
             # Avoid overlap with the right-aligned hint when the left side is wide.
-            base_render = _truncate_to_display_width(base_plain, left_cap)
+            # Preserve ANSI color codes and append ``…`` when truncated.
+            base_render = _truncate_colored_with_ellipsis(base_colored, left_cap)
         right_render = (
-            f"{mode_colored}{mode_gap}{label_colored}" if mode_plain else label_colored
+            f"{left_gap}{usage_colored}{usage_gap}{mode_colored}{mode_gap}{label_colored}"
+            if mode_plain
+            else f"{left_gap}{usage_colored}{usage_gap}{label_colored}"
         )
         return f"{base_render}\x1b[{start_col}G{right_render}{' ' * right_padding}"
 
@@ -2648,8 +2730,8 @@ class PromptToolkitInputHandler:
             base_render = base_colored
         else:
             # When left area overflows, trim plain text to prevent overlap with the
-            # right-aligned shell-mode marker.
-            base_render = _truncate_to_display_width(base_plain, left_cap)
+            # right-aligned shell-mode marker. Preserve ANSI color codes.
+            base_render = _truncate_colored_with_ellipsis(base_colored, left_cap)
         return f"{base_render}\x1b[{start_col}G{label_colored}{' ' * right_padding}"
 
     @staticmethod
@@ -3092,6 +3174,7 @@ class PromptToolkitInputHandler:
         prompt: str,
         status_bar_text: str = "",
         status_bar_fragments: Optional[List[Tuple[str, str]]] = None,
+        status_bar_usage_text: str = "",
         show_status_bar: bool = True,
         show_separator: bool = True,
     ) -> str:
@@ -3130,6 +3213,7 @@ class PromptToolkitInputHandler:
             if isinstance(status_bar_fragments, list)
             else []
         )
+        self._status_bar_usage_text = str(status_bar_usage_text or "")
         self._status_bar_enabled = bool(show_status_bar)
         self._shell_mode_active = bool(getattr(self, "_pending_shell_mode_active", False))
         try:
@@ -3208,6 +3292,7 @@ class PromptToolkitInputHandler:
                         prompt,
                         status_bar_text=status_bar_text,
                         status_bar_fragments=status_bar_fragments,
+                        status_bar_usage_text=status_bar_usage_text,
                         show_status_bar=show_status_bar,
                         show_separator=show_separator,
                     )

@@ -8094,7 +8094,7 @@ class Agent:
             context_hint=context_hint,
         )
 
-    def _status_bar_render_data(self) -> Tuple[List[Tuple[str, str]], str]:
+    def _status_bar_render_data(self) -> Tuple[List[Tuple[str, str]], str, str]:
         return build_status_bar_render_data(
             str(getattr(self, "model_name", "") or ""),
             str(getattr(self, "workspace_name", "") or ""),
@@ -8119,7 +8119,7 @@ class Agent:
         else:
             self._maybe_reload_chat_history_on_terminal_resize()
 
-        status_bar_fragments, status_bar_plain = self._status_bar_render_data()
+        status_bar_fragments, status_bar_plain, status_bar_usage = self._status_bar_render_data()
         prompt = INPUT_PROMPT
         startup_prompt_pending = bool(getattr(self, "_startup_prompt_pending", True))
         if startup_prompt_pending:
@@ -8157,6 +8157,7 @@ class Agent:
                         prompt,
                         status_bar_text=status_bar_plain,
                         status_bar_fragments=status_bar_fragments,
+                        status_bar_usage_text=status_bar_usage,
                         show_status_bar=True,
                         show_separator=show_separator,
                     )

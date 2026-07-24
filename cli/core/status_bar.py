@@ -28,7 +28,7 @@ def build_status_bar_render_data(
     active_chat_name: str,
     last_context_usage_percent: Any,
     reasoning_effort: str = "",
-) -> Tuple[List[Tuple[str, str]], str]:
+) -> Tuple[List[Tuple[str, str]], str, str]:
     usage_pct = clamp_status_token_usage_percent(last_context_usage_percent)
     usage_text = f"({usage_pct}%)"
     level = str(reasoning_effort or "").strip()
@@ -44,7 +44,6 @@ def build_status_bar_render_data(
             (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(workspace_name)),
             ("", " "),
             ("", str(active_chat_name)),
-            ("fg:ansibrightblack", usage_text),
         ]
     )
     # ESC[3m = italic (ESC[23m clears italic). Keep it in the model color.
@@ -57,9 +56,8 @@ def build_status_bar_render_data(
         f"  {_ansi_rgb(str(model_name), *STATUS_MODEL_COLOR_RGB)}{level_plain} "
         f"{_ansi_rgb(str(workspace_name), *STATUS_WORKSPACE_COLOR_RGB)} "
         f"{str(active_chat_name)}"
-        f"{_ansi_gray(usage_text)}"
     )
-    return status_bar_fragments, status_bar_plain
+    return status_bar_fragments, status_bar_plain, usage_text
 
 
 def refresh_status_context_usage_snapshot(
