@@ -94,29 +94,8 @@ rem directory (the project root here), unlike --add-data sources which are
 rem resolved relative to --specpath. So the venv path must NOT use "../../".
 rem 1) codewood.exe (console, one-dir) carries ALL terminal-UI and GUI
 rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
-"%PYINSTALLER%" --onedir --noconfirm --name codewood ^
-  --icon "../../build/app_icon.ico" ^
-  --add-data "../../vendors/rg.exe;bin" ^
-  --add-data "../../skills;skills" ^
-  --add-data "../../additional-subagents;additional-subagents" ^
-  --add-data "../../cli;cli" ^
-  --add-data "../../desktop/frontend/dist;frontend" ^
-  --add-data "../../desktop/host;host" ^
-  --add-data "../../models;models" ^
-  --paths "%VENV_PATH%" ^
-  --collect-all webview ^
-  --collect-all pythonnet ^
-  --collect-all clr_loader ^
-  --collect-all winpty ^
-  --hidden-import clr ^
-  --hidden-import winpty ^
-  --hidden-import winpty.ptyprocess ^
-  --hidden-import winpty.enums ^
-  --collect-all tiktoken ^
-  --hidden-import tiktoken_ext ^
-  --hidden-import tiktoken_ext.openai_public ^
-  --specpath "build\\codewood" ^
-  "%ENTRY_SCRIPT%"
+rem    Uses the pre-generated spec file which includes the application manifest.
+"%PYINSTALLER%" --noconfirm "build\\codewood\\codewood.spec"
 if errorlevel 1 (
   echo codewood.exe build failed.
   exit /b 1
@@ -127,15 +106,16 @@ rem standard library (no pywebview / prompt_toolkit / etc.) and simply starts
 rem "codewood app" with no console window, so a double-click opens the GUI
 rem without flashing a terminal window. It is emitted INTO the codewood
 rem one-dir folder so it sits next to codewood.exe (single shippable folder).
-"%PYINSTALLER%" --onefile --noconfirm --noconsole --name codewood-gui ^
-  --icon "../../build/app_icon.ico" ^
-  --distpath "dist\\codewood" ^
-  --specpath "build\\codewood-gui" ^
-  "desktop\host\launcher.py"
+"%PYINSTALLER%" --noconfirm --distpath "dist\\codewood" "build\\codewood-gui\\codewood-gui.spec"
 if errorlevel 1 (
   echo codewood-gui.exe build failed.
   exit /b 1
 )
+
+rem ---- Remove Mark of the Web from built executables (motw can cause
+rem ---- "untrusted mount point" errors when accessing junctions/symlinks) ----
+echo Removing Mark of the Web from executables...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem dist\codewood\*.exe | Unblock-File -ErrorAction SilentlyContinue"
 
 echo PyInstaller build completed. The shippable folder is "dist\codewood".
 echo   codewood\codewood.exe       - terminal UI (default) and "codewood app" for the GUI

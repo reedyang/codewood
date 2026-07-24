@@ -39,13 +39,18 @@ def _resolve_watch_dir(path: Optional[Path]) -> Optional[Path]:
     if path is None:
         return None
     p = Path(path).expanduser().resolve()
-    # For directories that don't exist yet, return the parent if it exists
-    # so the watcher can pick up creation events.
-    if p.is_dir():
-        return p
+    try:
+        if p.is_dir():
+            return p
+    except OSError:
+        # e.g. Windows untrusted mount point (junction/symlink)
+        return None
     parent = p.parent
-    if parent.is_dir():
-        return parent
+    try:
+        if parent.is_dir():
+            return parent
+    except OSError:
+        pass
     return None
 
 
@@ -55,11 +60,17 @@ def _resolve_watch_file(path: Optional[Path]) -> Optional[Path]:
     if path is None:
         return None
     p = Path(path).expanduser().resolve()
-    if p.is_file():
-        return p
+    try:
+        if p.is_file():
+            return p
+    except OSError:
+        return None
     parent = p.parent
-    if parent.is_dir():
-        return parent
+    try:
+        if parent.is_dir():
+            return parent
+    except OSError:
+        pass
     return None
 
 
