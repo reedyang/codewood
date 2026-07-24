@@ -19,9 +19,10 @@ function computeStats(patch?: DiffRow[]): { added: number; deleted: number } {
 interface FileChangeListProps {
   summary: FileChangeSummary;
   t: (key: string, params?: Record<string, string | number>) => string;
+  workspaceRoot?: string;
 }
 
-export function FileChangeList({ summary, t }: FileChangeListProps) {
+export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProps) {
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
 
   const toggleFile = (filePath: string) => {
@@ -74,6 +75,7 @@ export function FileChangeList({ summary, t }: FileChangeListProps) {
             isExpanded={expandedFiles.has(file.filePath)}
             onToggle={() => toggleFile(file.filePath)}
             t={t}
+            workspaceRoot={workspaceRoot}
           />
         ))}
       </div>
@@ -86,9 +88,10 @@ interface FileChangeItemProps {
   isExpanded: boolean;
   onToggle: () => void;
   t: (key: string, params?: Record<string, string | number>) => string;
+  workspaceRoot?: string;
 }
 
-function FileChangeItem({ file, isExpanded, onToggle, t }: FileChangeItemProps) {
+function FileChangeItem({ file, isExpanded, onToggle, t, workspaceRoot }: FileChangeItemProps) {
   const fileName = useMemo(() => {
     const parts = file.filePath.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1];
@@ -102,14 +105,28 @@ function FileChangeItem({ file, isExpanded, onToggle, t }: FileChangeItemProps) 
     return computeStats(file.patch);
   }, [file.patch, file.deletedLines, isDelete]);
 
+  const relativePath = useMemo(() => {
+    const normalized = file.filePath.replace(/\\/g, "/");
+    if (workspaceRoot) {
+      const root = workspaceRoot.replace(/\\/g, "/").replace(/\/$/, "");
+      if (normalized.startsWith(root + "/")) {
+        return normalized.slice(root.length + 1);
+      }
+      if (normalized.startsWith(root)) {
+        return normalized.slice(root.length);
+      }
+    }
+    return normalized;
+  }, [file.filePath, workspaceRoot]);
+
   return (
     <div className={`file-change-item ${isDelete ? "deleted" : ""} ${isExpanded ? "expanded" : ""}`}>
       <div
         className="file-change-item-header"
         onClick={isDelete ? undefined : onToggle}
+        title={relativePath}
       >
-        {isDelete && <Icon name="trash" size={14} className="file-change-delete-icon" />}
-        <span className="file-change-item-name">{fileName}</span>
+        <span className={`file-change-item-name ${isDelete ? "strikethrough" : ""}`}>{fileName}</span>
         <span className="file-change-item-stats">
           <span className="file-change-added">+{stats.added}</span>
           <span className="file-change-deleted">-{stats.deleted}</span>

@@ -2470,8 +2470,9 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
     """Parse *command* for file paths that are likely deletion targets.
 
     Handles plain shell commands and PowerShell ``-Command`` wrappers.
-    Resolves relative paths against *cwd* and returns only paths that
-    currently exist as regular files.
+    Resolves relative paths against *cwd* and returns paths that currently
+    exist as regular files.  When a directory is targeted (e.g. ``rm -rf
+    dir/``), all files under that directory are collected recursively.
     """
     if not command:
         return []
@@ -2493,6 +2494,20 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
     candidates = [cmd_stripped]
     if cmd_stripped != command.strip():
         candidates.append(command.strip())
+
+    def _collect_file(p: Path) -> None:
+        """Add *p* to paths if it is a regular file that isn't already
+        tracked; if *p* is a directory, recurse into it."""
+        try:
+            if p.is_file():
+                if p not in paths:
+                    paths.append(p)
+            elif p.is_dir():
+                for entry in p.rglob("*"):
+                    if entry.is_file() and entry not in paths:
+                        paths.append(entry)
+        except (OSError, PermissionError):
+            pass
 
     for candidate in candidates:
         for pattern in _DELETE_CMD_PATTERNS:
@@ -2524,12 +2539,11 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
                     glob_pattern = p.name if not token.startswith("*") else token
                     try:
                         for matched in parent.glob(glob_pattern):
-                            if matched.is_file() and matched not in paths:
-                                paths.append(matched)
+                            _collect_file(matched)
                     except Exception:
                         pass
-                elif p.is_file() and p not in paths:
-                    paths.append(p)
+                else:
+                    _collect_file(p)
 
     # Filter to only files within the workspace (or at least under cwd)
     workspace_paths = []
