@@ -12,6 +12,7 @@ See: https://github.com/anthropics/skills/blob/main/README.md
 
 from __future__ import annotations
 
+import logging
 import re
 import hashlib
 import json
@@ -20,8 +21,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
-from ...config.app_info import get_app_config_dirname, get_app_prompt_name
+from ...config.app_info import get_app_config_dirname, get_app_logger_root, get_app_prompt_name
 from ..localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, translate
+
+_logger = logging.getLogger(get_app_logger_root())
 
 
 def _t(language: Optional[str], key: str, **kwargs: object) -> str:
@@ -121,19 +124,30 @@ def _scan_skills_root(skills_root: Path, language: Optional[str] = None, source:
 
     out: List[SkillRecord] = []
     for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-        if not child.is_dir():
+        try:
+            if not child.is_dir():
+                continue
+        except OSError as e:
+            _logger.warning("Skipping skill directory %s: %s", child, e)
             continue
         skill_md = child / "SKILL.md"
-        if not skill_md.is_file():
+        try:
+            if not skill_md.is_file():
+                continue
+        except OSError as e:
+            _logger.warning("Failed to stat %s: %s", skill_md, e)
             continue
         try:
             raw = skill_md.read_text(encoding="utf-8")
         except OSError as e:
-            print(_t(language, "skills_loader.read_failed", path=skill_md, error=e))
+            _logger.warning("Failed to read %s: %s", skill_md, e)
             continue
 
         meta, body = _split_frontmatter(raw)
-        bundle_path = child.resolve()
+        try:
+            bundle_path = child.resolve()
+        except OSError:
+            bundle_path = child
         if meta is None:
             # No valid frontmatter: use whole file as body, id from folder name
             out.append(
@@ -242,10 +256,16 @@ def _skills_root_fingerprint_part(skills_root: Path) -> Dict[str, object]:
         return {"exists": False, "root": str(root), "skills": []}
     skills: List[Dict[str, object]] = []
     for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-        if not child.is_dir():
+        try:
+            if not child.is_dir():
+                continue
+        except OSError:
             continue
         skill_md = child / "SKILL.md"
-        if not skill_md.is_file():
+        try:
+            if not skill_md.is_file():
+                continue
+        except OSError:
             continue
         try:
             st = skill_md.stat()
