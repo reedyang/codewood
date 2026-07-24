@@ -1650,8 +1650,9 @@ def action_shell_command(
                             _before_binary = _git_content_before_via_stash(_repo_root, _path_str)
                         if _before_binary is None:
                             _before_binary = _untracked_snapshot.get(_path_str)
-                        if _before_binary is None:
-                            _before_binary = _untracked_snapshot.get(_path_str)
+                        if _before_binary is not None and _before_binary == _content:
+                            # Content unchanged — mtime-only touch, skip.
+                            continue
                         if _before_binary is not None:
                             try:
                                 __chat_mgr = getattr(agent, "_chat_state_manager", None)
@@ -1696,6 +1697,8 @@ def action_shell_command(
                             _diff_rows = _build_all_add_diff_rows(_content)
                             _cb = ""
                             _log.info("no before content for %s, showing all as added", _path_str)
+                        if _cb is not None and _cb == _content:
+                            continue
                         if _tracker2 is not None:
                             _tracker2.record_change(
                                 file_path=_path_str,
