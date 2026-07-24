@@ -2156,7 +2156,19 @@ function CompletedTurnView({
     detailRounds.some((r) => textContainsSubAgentSession(String(r.tools || ""), pendingExpandSubAgentId));
   const detailNodes: ReactNode[] = [];
   const compactNoticeNodes: ReactNode[] = [];
+  const interruptedNodes: ReactNode[] = [];
   detailRounds.forEach((round, index) => {
+    const interruptedText = String(round.interrupted || "").trim();
+    if (interruptedText.length > 0) {
+      interruptedNodes.push(
+        <div className="turn-round" key={`interrupted-${index}`}>
+          <div className="activity-centered">
+            <span className="interrupted-banner">{interruptedText}</span>
+          </div>
+        </div>,
+      );
+      return;
+    }
     const compactNoticeTitle = String(round.compactNoticeTitle || "").trim();
     const compactNoticeBody = String(round.compactNoticeBody || "").trim();
     if (compactNoticeTitle.length > 0 || compactNoticeBody.length > 0) {
@@ -2200,7 +2212,7 @@ function CompletedTurnView({
       <MarkdownText text={finalAnswerText} />
     </div>
   ) : null;
-  if (!hasDetails && !finalAnswer && !hasCompactNotices) {
+  if (!hasDetails && !finalAnswer && !hasCompactNotices && interruptedNodes.length === 0) {
     return (
       <div className="turn">
         {turn.userText && (
@@ -2242,6 +2254,7 @@ function CompletedTurnView({
       ) : (
         finalAnswer
       )}
+      {interruptedNodes}
       {(() => {
         return turn.fileChanges ? <FileChangeList summary={turn.fileChanges} t={t} workspaceRoot={state?.workspace?.root} /> : null;
       })()}

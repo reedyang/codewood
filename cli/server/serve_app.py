@@ -550,29 +550,36 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round["tools"] = "\n".join(tool_rounds) + "\n"
         else:
             rendered = _render_step(idx, msg)
-            has_own_thinking = bool(str(msg.get("_thinking") or "").strip()) if isinstance(msg, dict) else False
-            if current_round is None or current_round.get("text") or has_own_thinking:
-                current_round = _new_round(turn, wait)
+            # Conversation-interrupted banners are rendered as a separate
+            # field so the frontend can display them outside the collapsible
+            # "Worked for" section — they are status messages, not tool steps.
+            is_interrupted = agent._parse_conversation_interrupted_history_content(content) is not None
+            if is_interrupted:
+                current_round["interrupted"] = strip_ansi(rendered)
             else:
-                current_round["waitSeconds"] += max(0, int(round(wait)))
-            # Emit tool_rounds for new-format assistant messages
-            raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
-            if isinstance(raw_rounds, list) and raw_rounds:
-                try:
-                    tool_rounds = agent._rerender_tool_rounds(raw_rounds)
-                except Exception:
+                has_own_thinking = bool(str(msg.get("_thinking") or "").strip()) if isinstance(msg, dict) else False
+                if current_round is None or current_round.get("text") or has_own_thinking:
+                    current_round = _new_round(turn, wait)
+                else:
+                    current_round["waitSeconds"] += max(0, int(round(wait)))
+                # Emit tool_rounds for new-format assistant messages
+                raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
+                if isinstance(raw_rounds, list) and raw_rounds:
+                    try:
+                        tool_rounds = agent._rerender_tool_rounds(raw_rounds)
+                    except Exception:
+                        tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+                    if isinstance(raw_rounds, list) and any(
+                        isinstance(r, dict) and r.get("previewRef") for r in raw_rounds
+                    ):
+                        current_round["_has_inline_diffs"] = True
+                else:
                     tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
-                if isinstance(raw_rounds, list) and any(
-                    isinstance(r, dict) and r.get("previewRef") for r in raw_rounds
-                ):
-                    current_round["_has_inline_diffs"] = True
-            else:
-                tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
-            if isinstance(tool_rounds, list) and tool_rounds:
-                current_round["tools"] = current_round["tools"] + "\n".join(tool_rounds) + "\n"
-            elif rendered.strip():
-                current_round["tools"] = current_round["tools"] + rendered + "\n"
-            _extract_thinking(msg, current_round)
+                if isinstance(tool_rounds, list) and tool_rounds:
+                    current_round["tools"] = current_round["tools"] + "\n".join(tool_rounds) + "\n"
+                elif rendered.strip():
+                    current_round["tools"] = current_round["tools"] + rendered + "\n"
+                _extract_thinking(msg, current_round)
         if ts is not None:
             prev_ts = ts
 
@@ -586,6 +593,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 "thinking": str(r.get("thinking") or "").strip(),
                 "compactNoticeTitle": str(r.get("compactNoticeTitle") or "").strip(),
                 "compactNoticeBody": str(r.get("compactNoticeBody") or "").strip(),
+                "interrupted": str(r.get("interrupted") or "").strip(),
             }
             for r in turn.get("rounds", [])
         ]
@@ -602,6 +610,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 or r["thinking"].strip()
                 or r["compactNoticeTitle"].strip()
                 or r["compactNoticeBody"].strip()
+                or r["interrupted"].strip()
             )
         ]
     # Attach per-turn file-change summaries from the sidecar.
