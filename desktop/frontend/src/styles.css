@@ -6247,9 +6247,8 @@ body.resizing-y .console-term {
   color: var(--danger-color, #ef4444);
 }
 
-.file-change-delete-icon {
-  flex-shrink: 0;
-  color: var(--danger-color, #ef4444);
+.file-change-item-name.strikethrough {
+  text-decoration: line-through;
 }
 
 /* File Change Details */

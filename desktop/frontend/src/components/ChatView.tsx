@@ -2140,7 +2140,7 @@ function CompletedTurnView({
   negIndex: number;
   handlers: MessageHandlers;
 }) {
-  const { t, pendingExpandSubAgentId } = useApp();
+  const { t, pendingExpandSubAgentId, state } = useApp();
   const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
   const turnHasTarget = pendingExpandSubAgentId !== "" &&
     detailRounds.some((r) => textContainsSubAgentSession(String(r.tools || ""), pendingExpandSubAgentId));
@@ -2233,7 +2233,7 @@ function CompletedTurnView({
         finalAnswer
       )}
       {(() => {
-        return turn.fileChanges ? <FileChangeList summary={turn.fileChanges} t={t} /> : null;
+        return turn.fileChanges ? <FileChangeList summary={turn.fileChanges} t={t} workspaceRoot={state?.workspace?.root} /> : null;
       })()}
     </div>
   );
@@ -2851,7 +2851,7 @@ function TurnView({
   negIndex: number;
   handlers: MessageHandlers;
 }) {
-  const { t } = useApp();
+  const { t, state } = useApp();
   const liveGroups = groupLiveRounds(turn.rounds);
   const lastRound = turn.rounds[turn.rounds.length - 1];
   const hasPendingContinuation = hasPendingInvisibleRound(turn);
@@ -2915,7 +2915,7 @@ function TurnView({
           </div>
         </div>
       )}
-      {fileChanges && <FileChangeList summary={fileChanges} t={t} />}
+      {fileChanges && <FileChangeList summary={fileChanges} t={t} workspaceRoot={state?.workspace?.root} />}
     </div>
   );
 }
