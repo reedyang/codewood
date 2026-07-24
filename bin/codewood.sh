@@ -50,17 +50,13 @@ download_embedding_model() {
 }
 
 
-if [ -x "$VENV_PYTHON" ]; then
-    set_title_from_app_info
-    download_embedding_model
-    run_main "$@"
-fi
-
-echo "Virtual environment not found. Creating \"$VENV_DIR\"..."
-"$PY_BOOTSTRAP" -m venv "$VENV_DIR"
-if [ $? -ne 0 ]; then
-    echo "Failed to create virtual environment."
-    exit 1
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "Virtual environment not found. Creating \"$VENV_DIR\"..."
+    "$PY_BOOTSTRAP" -m venv "$VENV_DIR"
+    if [ $? -ne 0 ]; then
+        echo "Failed to create virtual environment."
+        exit 1
+    fi
 fi
 
 if [ ! -f "$REQ_FILE" ]; then
@@ -68,9 +64,23 @@ if [ ! -f "$REQ_FILE" ]; then
     exit 1
 fi
 
-MISSING=$("$VENV_PYTHON" -m pip install --dry-run -r "$REQ_FILE" 2>&1 | \
-    grep -v -E "Requirement already satisfied|^\[notice\]|--upgrade pip")
-if echo "$MISSING" | grep -q "Could not find\|No matching distribution"; then
+# Check for missing dependencies every time: the venv may have been created on a
+# different platform (e.g. Windows) where some packages were not installed.
+MISSING=$("$VENV_PYTHON" -c "
+import subprocess, sys, re
+r = subprocess.run([sys.executable, '-m', 'pip', 'list', '--format=freeze'], capture_output=True, text=True)
+installed = {line.split('==')[0].lower() for line in r.stdout.strip().splitlines() if '==' in line}
+with open('$REQ_FILE') as f:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        name = re.split(r'[>=<!~]', line)[0].strip().lower()
+        if name and name not in installed:
+            print(name)
+            sys.exit(1)
+" 2>/dev/null)
+if [ -n "$MISSING" ]; then
     echo "Missing dependencies detected."
     install_dependencies
 fi
