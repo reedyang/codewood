@@ -908,11 +908,9 @@ def action_shell_command(
     _before_file_list = _snapshot_workspace_file_list(execution_cwd)
 
     _repo_root = _git_repo_root(execution_cwd)
-    # Untracked files will be stashed away by --include-untracked and
-    # must be restored to disk so the shell command can operate on them.
-    # We also snapshot their content for later diff comparison.
+    # Snapshot untracked file content before stash so we have a fallback
+    # source for before-content comparison.
     _untracked_snapshot: Dict[str, str] = {}
-    _stash_removed_paths: set = set()
     if _repo_root is not None:
         try:
             result = _subprocess_mod.run(
@@ -925,38 +923,25 @@ def action_shell_command(
                     if not line:
                         continue
                     abs_path = (_repo_root / line).resolve()
-                    _stash_removed_paths.add(str(abs_path))
                     try:
                         _untracked_snapshot[str(abs_path)] = abs_path.read_text(
                             encoding="utf-8", errors="replace",
                         )
                     except Exception:
                         pass
-            _log.info("untracked files (will be stashed): %s", _stash_removed_paths or "none")
+            _log.info("untracked files snapshot: %d files", len(_untracked_snapshot))
         except Exception as e:
             _log.info("ls-files error: %s", e)
-    # Push a temporary git stash so we can later retrieve the exact
-    # pre-execution content of any modified file (including uncommitted
-    # changes).  Uses --keep-index so staged files are untouched, and
-    # --include-untracked to capture untracked files.
+    # Push a temporary git stash to capture the pre-execution state.
+    # Immediately apply it back so files stay on disk for the shell command.
     _stash_pushed = bool(_repo_root and _git_stash_push(execution_cwd))
     if _repo_root:
         _log.info("repo_root=%s stash_pushed=%s", _repo_root, _stash_pushed)
-    # Restore stashed untracked files back to disk so the shell command
-    # can find them.
     if _stash_pushed:
-        for _path_str in _stash_removed_paths:
-            try:
-                Path(_path_str).write_text(
-                    _untracked_snapshot.get(_path_str, ""),
-                    encoding="utf-8",
-                )
-                # Update pre-snapshot mtime so the file isn't detected as
-                # modified just because we restored it.
-                _stat = Path(_path_str).stat()
-                _before_file_list[_path_str] = (_stat.st_mtime, _stat.st_size)
-            except Exception:
-                pass
+        # Apply the stash back so tracked unstaged changes and untracked
+        # files are restored to disk.  The stash entry is kept so we can
+        # still retrieve pre-execution content via stash@{0}.
+        _git_stash_apply(execution_cwd)
 
     try:
         run_env = os.environ.copy()
@@ -1639,6 +1624,7 @@ def action_shell_command(
                         _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
                     except Exception:
                         continue
+                    _log.info("checking modified: %s (len=%d)", _path_str, len(_content))
                     # Detect binary files — diff rows are meaningless and
                     # we should back up the old content for recovery.
                     _is_binary = _is_binary_file(_path_str)
@@ -1650,8 +1636,9 @@ def action_shell_command(
                             _before_binary = _git_content_before_via_stash(_repo_root, _path_str)
                         if _before_binary is None:
                             _before_binary = _untracked_snapshot.get(_path_str)
-                        if _before_binary is not None and _before_binary == _content:
-                            # Content unchanged — mtime-only touch, skip.
+                        # Normalize line endings for comparison — git may
+                        # convert CRLF↔LF during stash/apply.
+                        if _before_binary is not None and _before_binary.replace("\r\n", "\n").replace("\r", "\n") == _content.replace("\r\n", "\n").replace("\r", "\n"):
                             continue
                         if _before_binary is not None:
                             try:
@@ -1697,7 +1684,7 @@ def action_shell_command(
                             _diff_rows = _build_all_add_diff_rows(_content)
                             _cb = ""
                             _log.info("no before content for %s, showing all as added", _path_str)
-                        if _cb is not None and _cb == _content:
+                        if _cb is not None and _cb.replace("\r\n", "\n").replace("\r", "\n") == _content.replace("\r\n", "\n").replace("\r", "\n"):
                             continue
                         if _tracker2 is not None:
                             _tracker2.record_change(
@@ -1722,10 +1709,6 @@ def action_shell_command(
                 for _path_str in _ws_deleted:
                     if _path_str in _delete_snapshots:
                         continue
-                    if _path_str in _stash_removed_paths:
-                        _log.info("skipping stash-removed: %s", _path_str)
-                        continue
-                    _log.info("recording delete: %s", _path_str)
                     if _tracker2 is not None:
                         _tracker2.record_delete(
                             file_path=_path_str,
@@ -2899,6 +2882,20 @@ def _git_stash_push(cwd: Path) -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+def _git_stash_apply(cwd: Path) -> None:
+    """Apply the temporary stash back to the working tree without dropping
+    it, so the shell command sees the original files.  The stash entry
+    remains available for before-content retrieval via stash@{0}."""
+    try:
+        _subprocess_mod.run(
+            ["git", "-C", str(cwd), "stash", "apply"],
+            capture_output=True, text=True,
+            timeout=30,
+        )
+    except Exception:
+        pass
 
 
 def _git_stash_restore(cwd: Path) -> None:
