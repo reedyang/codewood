@@ -4782,7 +4782,7 @@ h6.md-h {
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
-  padding: 4px 8px 4px 0;
+  padding: 4px 8px 4px 12px;
 }
 .activity-steps .syn-output pre.hljs {
   margin: 0;
