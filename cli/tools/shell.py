@@ -908,8 +908,10 @@ def action_shell_command(
     _before_file_list = _snapshot_workspace_file_list(execution_cwd)
 
     _repo_root = _git_repo_root(execution_cwd)
-    # Query untracked files BEFORE stash push — they'll be removed from
-    # disk by --include-untracked and must not be reported as deletions.
+    # Untracked files will be stashed away by --include-untracked and
+    # must be restored to disk so the shell command can operate on them.
+    # We also snapshot their content for later diff comparison.
+    _untracked_snapshot: Dict[str, str] = {}
     _stash_removed_paths: set = set()
     if _repo_root is not None:
         try:
@@ -922,17 +924,39 @@ def action_shell_command(
                     line = line.strip()
                     if not line:
                         continue
-                    path = (_repo_root / line).resolve()
-                    _stash_removed_paths.add(str(path))
+                    abs_path = (_repo_root / line).resolve()
+                    _stash_removed_paths.add(str(abs_path))
+                    try:
+                        _untracked_snapshot[str(abs_path)] = abs_path.read_text(
+                            encoding="utf-8", errors="replace",
+                        )
+                    except Exception:
+                        pass
             _log.info("untracked files (will be stashed): %s", _stash_removed_paths or "none")
         except Exception as e:
             _log.info("ls-files error: %s", e)
     # Push a temporary git stash so we can later retrieve the exact
     # pre-execution content of any modified file (including uncommitted
-    # changes).  Uses --keep-index so staged files are untouched.
+    # changes).  Uses --keep-index so staged files are untouched, and
+    # --include-untracked to capture untracked files.
     _stash_pushed = bool(_repo_root and _git_stash_push(execution_cwd))
     if _repo_root:
         _log.info("repo_root=%s stash_pushed=%s", _repo_root, _stash_pushed)
+    # Restore stashed untracked files back to disk so the shell command
+    # can find them.
+    if _stash_pushed:
+        for _path_str in _stash_removed_paths:
+            try:
+                Path(_path_str).write_text(
+                    _untracked_snapshot.get(_path_str, ""),
+                    encoding="utf-8",
+                )
+                # Update pre-snapshot mtime so the file isn't detected as
+                # modified just because we restored it.
+                _stat = Path(_path_str).stat()
+                _before_file_list[_path_str] = (_stat.st_mtime, _stat.st_size)
+            except Exception:
+                pass
 
     try:
         run_env = os.environ.copy()
@@ -1583,6 +1607,8 @@ def action_shell_command(
                     _new_before: Optional[str] = None
                     if _stash_pushed and _repo_root is not None:
                         _new_before = _git_content_before_via_stash(_repo_root, _path_str)
+                    if _new_before is None:
+                        _new_before = _untracked_snapshot.get(_path_str)
                     if _new_before is not None:
                         _diff_rows_new = _build_real_diff_rows(_new_before, _content)
                         _change_type = "modify"
@@ -1620,6 +1646,8 @@ def action_shell_command(
                         _backups_dir_mod: Optional[Path] = None
                         if _stash_pushed and _repo_root is not None:
                             _before_binary = _git_content_before_via_stash(_repo_root, _path_str)
+                        if _before_binary is None:
+                            _before_binary = _untracked_snapshot.get(_path_str)
                         if _before_binary is not None:
                             try:
                                 __chat_mgr = getattr(agent, "_chat_state_manager", None)
@@ -1648,6 +1676,8 @@ def action_shell_command(
                         _before_for_diff: Optional[str] = None
                         if _stash_pushed and _repo_root is not None:
                             _before_for_diff = _git_content_before_via_stash(_repo_root, _path_str)
+                        if _before_for_diff is None:
+                            _before_for_diff = _untracked_snapshot.get(_path_str)
                         if _before_for_diff is not None:
                             _diff_rows = _build_real_diff_rows(_before_for_diff, _content)
                             _cb = _before_for_diff
