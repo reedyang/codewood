@@ -332,6 +332,9 @@ export interface HistoryRound {
   selection?: string;
   /** Model thinking/reasoning content for this round. */
   thinking?: string;
+  /** Conversation-interrupted banner text, rendered outside the "Worked for"
+   *  collapsible section so the user always sees the status message. */
+  interrupted?: string;
 }
 
 /** A previously-recorded turn loaded from chat history (already classified). */

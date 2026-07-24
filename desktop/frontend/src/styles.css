@@ -4264,6 +4264,16 @@ html[data-has-bg] .select {
   margin-bottom: 18px;
 }
 
+/* Conversation-interrupted banner shown outside the "Worked for" section. */
+.interrupted-banner {
+  display: block;
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--danger-color, #ef4444);
+  margin: 4px 0;
+  user-select: text;
+}
+
 /* One model round inside a turn: wait timer + model text + tool output,
    stacked in natural order. Consecutive rounds get a little breathing room. */
 .turn-round + .turn-round {
