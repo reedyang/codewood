@@ -2159,6 +2159,8 @@ function CompletedTurnView({
   const interruptedNodes: ReactNode[] = [];
   detailRounds.forEach((round, index) => {
     const interruptedText = String(round.interrupted || "").trim();
+    const compactNoticeTitle = String(round.compactNoticeTitle || "").trim();
+    const compactNoticeBody = String(round.compactNoticeBody || "").trim();
     if (interruptedText.length > 0) {
       interruptedNodes.push(
         <div className="turn-round" key={`interrupted-${index}`}>
@@ -2167,10 +2169,7 @@ function CompletedTurnView({
           </div>
         </div>,
       );
-      return;
     }
-    const compactNoticeTitle = String(round.compactNoticeTitle || "").trim();
-    const compactNoticeBody = String(round.compactNoticeBody || "").trim();
     if (compactNoticeTitle.length > 0 || compactNoticeBody.length > 0) {
       compactNoticeNodes.push(
         <div className="turn compact-notice-turn" key={`compact-notice-${index}`}>

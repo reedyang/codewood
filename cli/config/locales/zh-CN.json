@@ -351,6 +351,7 @@
   "runtime.tool_plan_missing_name": "❌ 工具计划缺少工具名称。本轮结束。",
   "runtime.apply_patch_failed": "❌ apply_patch 失败：{error}",
   "runtime.user_cancelled_task": "⏹️ 检测到用户取消。当前任务已终止。",
+  "tool.cancelled_by_user": "⏹️ 用户已取消",
   "runtime.conversation_interrupted": "■ 对话已中断 - 告诉模型接下来应该怎么做。有什么问题吗？",
   "runtime.request_user_input.default_question": "请选择如何继续：",
   "runtime.request_user_input.required": "🙋 继续前需要你的选择。",
