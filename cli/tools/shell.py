@@ -2899,21 +2899,16 @@ def _git_stash_apply(cwd: Path) -> None:
 
 
 def _git_stash_restore(cwd: Path) -> None:
-    """Pop the temporary stash.  If the shell modified files that overlap
-    with stashed changes, ``git stash pop`` may fail with conflicts — in
-    that case we drop the stash (the post-shell working tree is kept)."""
+    """Drop the temporary stash now that its before-content has been used
+    for diffs.  The stash was already applied back to the working tree
+    before the shell command ran, so popping would undo the shell's
+    changes (e.g. restoring deleted files)."""
     try:
-        result = _subprocess_mod.run(
-            ["git", "-C", str(cwd), "stash", "pop"],
+        _subprocess_mod.run(
+            ["git", "-C", str(cwd), "stash", "drop"],
             capture_output=True, text=True,
-            timeout=30,
+            timeout=10,
         )
-        if result.returncode != 0:
-            _subprocess_mod.run(
-                ["git", "-C", str(cwd), "stash", "drop"],
-                capture_output=True, text=True,
-                timeout=10,
-            )
     except Exception:
         pass
 
