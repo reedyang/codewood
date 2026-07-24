@@ -886,6 +886,7 @@ export function ChatView() {
     setDraftWorkspace,
     askMoreInfo,
     answerAskMoreInfo,
+    confirmRequest,
     consoleOpen,
     activeSubAgentSession,
     subAgentSessionLoading,
@@ -1043,12 +1044,21 @@ export function ChatView() {
   // Live updates stick to the bottom ONLY while the user is already pinned
   // there. If they scrolled up to read earlier messages, streaming tokens
   // and the per-second timer tick must leave their viewport alone.
-  useEffect(() => {
+  // Also includes confirmRequest so the confirm dialog is fully scrolled
+  // into view (the dialog may contain a tall command block or diff preview
+  // that needs a full layout pass before scrollHeight is accurate).
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && stickToBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
+      // Defer to rAF so the browser has laid out the full dialog content
+      // (command code block, diff preview) before we read scrollHeight.
+      requestAnimationFrame(() => {
+        if (el && stickToBottomRef.current) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
     }
-  }, [turns, now, compactNotice]);
+  }, [turns, now, compactNotice, confirmRequest]);
 
   // When history turns change: a prepend (older page) preserves the viewport;
   // a replacement (initial load / switch) jumps to the bottom.

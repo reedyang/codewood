@@ -20,6 +20,16 @@ import { useApp } from "../state/AppContext";
  */
 export function AskMoreInfoPanel() {
   const { askMoreInfo, answerAskMoreInfo, t } = useApp();
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  // Scroll the panel into view when it appears so the user sees all
+  // options without having to scroll manually.
+  useEffect(() => {
+    if (!askMoreInfo) return;
+    requestAnimationFrame(() => {
+      panelRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
+    });
+  }, [askMoreInfo]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [otherOpen, setOtherOpen] = useState(false);
   const [freeform, setFreeform] = useState("");
@@ -105,6 +115,7 @@ export function AskMoreInfoPanel() {
 
   return (
     <div
+      ref={panelRef}
       className="ask-more-info-panel"
       role="region"
       aria-label={t("askMoreInfo.regionLabel")}

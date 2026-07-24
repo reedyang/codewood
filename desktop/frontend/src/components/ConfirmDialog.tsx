@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useApp } from "../state/AppContext";
 import { DiffPreview, langFromPath } from "./DiffPreview";
 
@@ -22,6 +23,18 @@ function extractPatchPath(prompt: string): string {
 
 export function ConfirmDialog() {
   const { confirmRequest, answerConfirm, t } = useApp();
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  // Scroll the dialog into view when it appears so the user sees all
+  // options, even if the command preview or diff is tall.  Defer to rAF
+  // so the browser has laid out the full content (command block, diff
+  // preview) before we measure.
+  useEffect(() => {
+    if (!confirmRequest) return;
+    requestAnimationFrame(() => {
+      panelRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
+    });
+  }, [confirmRequest]);
 
   if (!confirmRequest) {
     return null;
@@ -53,6 +66,7 @@ export function ConfirmDialog() {
 
   return (
     <div
+      ref={panelRef}
       className="ask-more-info-panel"
       role="region"
       aria-label={t("confirm.title")}
