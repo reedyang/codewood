@@ -64,23 +64,11 @@ if [ ! -f "$REQ_FILE" ]; then
     exit 1
 fi
 
-# Check for missing dependencies every time: the venv may have been created on a
-# different platform (e.g. Windows) where some packages were not installed.
-MISSING=$("$VENV_PYTHON" -c "
-import subprocess, sys, re
-r = subprocess.run([sys.executable, '-m', 'pip', 'list', '--format=freeze'], capture_output=True, text=True)
-installed = {line.split('==')[0].lower() for line in r.stdout.strip().splitlines() if '==' in line}
-with open('$REQ_FILE') as f:
-    for line in f:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        name = re.split(r'[>=<!~]', line)[0].strip().lower()
-        if name and name not in installed:
-            print(name)
-            sys.exit(1)
-" 2>/dev/null)
-if [ -n "$MISSING" ]; then
+# Check for missing dependencies every time: the venv is platform-specific, so
+# a freshly created venv has no packages installed yet.
+# Use ``import numpy`` as a canary: the first run on a new venv will trigger a
+# full ``pip install -r requirements.txt`` once.
+if ! "$VENV_PYTHON" -c "import numpy" 2>/dev/null; then
     echo "Missing dependencies detected."
     install_dependencies
 fi
