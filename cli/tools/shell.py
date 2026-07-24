@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..actions.command_execution_buffer import CommandExecutionBuffer
-from ..config.app_info import get_app_runtime_attr_name
+from ..config.app_info import get_app_config_dirname, get_app_runtime_attr_name
 from ..core.console_utils import (
     GUI_CMD_OUTPUT_END,
     GUI_DIFF_BEGIN,
@@ -2687,12 +2687,18 @@ def _snapshot_files_content(paths: List[Path]) -> Dict[str, str]:
 
 def _snapshot_workspace_file_list(cwd: Path) -> Dict[str, Tuple[float, int]]:
     """Walk *cwd* recursively and return ``{path_str: (mtime, size)}`` for
-    every regular file.  The snapshot is lightweight (metadata only)."""
+    every regular file.  The snapshot is lightweight (metadata only).
+    The app config directory (e.g. ``.codewood``) and everything under it
+    is excluded to avoid picking up backups, chat data, and internal
+    indexes as spurious file changes."""
+    _config_dirname = get_app_config_dirname()
     snapshot: Dict[str, Tuple[float, int]] = {}
     try:
         for entry in cwd.rglob("*"):
             try:
                 if entry.is_file():
+                    if any(p.name == _config_dirname for p in entry.parents):
+                        continue
                     stat = entry.stat()
                     snapshot[str(entry)] = (stat.st_mtime, stat.st_size)
             except OSError:
