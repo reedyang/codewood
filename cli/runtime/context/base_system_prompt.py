@@ -42,19 +42,38 @@ def build_base_system_prompt(small_model: bool = False) -> str:
 
 
 class BaseSystemPromptPart(ModelContextPart):
-    """The agent's base system prompt, built from the prompt template on demand."""
+    """The agent's base system prompt, built from the prompt template on demand.
+
+    Static placeholders (``{{APP_NAME}}`` etc.) are resolved once and cached.
+    Dynamic placeholders (``{{COLLABORATION_MODE}}``, temp dir) are resolved
+    on every render so mode switches take effect immediately.
+    """
 
     name = "base_system_prompt"
     order = 10
 
     def render(self, agent: Any, include_tools: bool) -> str:
         cached = getattr(agent, "_base_system_prompt", None)
-        if cached:
-            return str(cached)
-        small_model = bool(getattr(agent, "_small_model", False))
-        rendered = build_base_system_prompt(small_model=small_model)
-        try:
-            agent._base_system_prompt = rendered
-        except Exception:
-            pass
-        return rendered
+        if not cached:
+            small_model = bool(getattr(agent, "_small_model", False))
+            rendered = build_base_system_prompt(small_model=small_model)
+            try:
+                agent._base_system_prompt = rendered
+            except Exception:
+                pass
+            cached = rendered
+
+        result = str(cached)
+        result = result.replace(
+            "{{COLLABORATION_MODE}}",
+            "Plan" if bool(getattr(agent, "_plan_mode_sticky", False)) else "Agent",
+        )
+        temp_dir = getattr(agent, "ai_workspace_temp_dir", None)
+        if temp_dir:
+            result = result.replace(
+                "{{AI_WORKSPACE_TEMP_DIR_SECTION}}",
+                f"\n- Use `apply_patch` to write plan documents or temporary scripts to: `{temp_dir}`.",
+            )
+        else:
+            result = result.replace("{{AI_WORKSPACE_TEMP_DIR_SECTION}}", "")
+        return result

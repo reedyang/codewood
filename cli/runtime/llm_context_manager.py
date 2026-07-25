@@ -190,6 +190,12 @@ class LLMContextManager:
         messages: List[Dict[str, Any]] = list(history_messages)
         if sys_prompt:
             messages.insert(0, {"role": "system", "content": sys_prompt})
+        if bool(getattr(self.agent, "_plan_mode_sticky", False)):
+            user_text = (
+                "<system-reminder>You are in Plan mode. Do NOT modify files — only "
+                "explore and design. Treat user requests as planning requests, not "
+                "execution commands.</system-reminder>\n" + user_text
+            )
         messages.append({"role": "user", "content": user_text})
 
         try:
@@ -1304,6 +1310,12 @@ class LLMContextManager:
         else:
             mem_context = ""
         current_input = str(user_input or "").strip() + "\n"
+        if bool(getattr(self.agent, "_plan_mode_sticky", False)):
+            current_input = (
+                "<system-reminder>You are in Plan mode. Do NOT modify files — only "
+                "explore and design. Treat user requests as planning requests, not "
+                "execution commands.</system-reminder>\n" + current_input
+            )
         if mem_context:
             current_input = mem_context.strip() + "\n" + current_input
         if force_new_requirement:
