@@ -32,7 +32,12 @@ type MenuEntry =
   | { label: string; shortcut?: string; checked?: boolean; onSelect: () => void };
 
 export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onTogglePanel: () => void }) {
-  const { t, pickAndOpenFolder, newChat, openSettings, openAbout, showBrowserTab, hideBrowserTab, showConsole, hideConsole, consoleOpen, browserOpen, closeSettings, settingsOpen } = useApp();
+  const { t, pickAndOpenFolder, newChat, openSettings, openAbout, showBrowserTab, hideBrowserTab, showConsole, hideConsole, consoleOpen, browserOpen, closeSettings, settingsOpen, zoomLevel, setZoomLevel } = useApp();
+
+  const ZOOM_LEVELS = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+  const zoomIn = () => { const next = ZOOM_LEVELS.findIndex((z) => z > zoomLevel); if (next >= 0) setZoomLevel(ZOOM_LEVELS[next]); };
+  const zoomOut = () => { for (let i = ZOOM_LEVELS.length - 1; i >= 0; i--) { if (ZOOM_LEVELS[i] < zoomLevel) { setZoomLevel(ZOOM_LEVELS[i]); break; } } };
+  const zoomReset = () => setZoomLevel(1);
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
@@ -125,6 +130,10 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
       entries: [
         { label: t("menu.view.browser"), checked: browserOpen, onSelect: () => browserOpen ? hideBrowserTab() : showBrowserTab() },
         { label: t("menu.view.console"), checked: consoleOpen, onSelect: () => consoleOpen ? hideConsole() : showConsole() },
+        "separator",
+        { label: t("menu.view.zoomIn"), shortcut: "Ctrl++", onSelect: zoomIn },
+        { label: t("menu.view.zoomOut"), shortcut: "Ctrl+-", onSelect: zoomOut },
+        { label: t("menu.view.actualSize"), shortcut: "Ctrl+0", onSelect: zoomReset },
       ],
     },
     {

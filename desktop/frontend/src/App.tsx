@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { AppProvider, useApp } from "./state/AppContext";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
@@ -60,6 +60,8 @@ function Shell() {
     newChat,
     planOpen,
     pickAndOpenFolder,
+    zoomLevel,
+    setZoomLevel,
   } = useApp();
   // The backend serves a state even when no usable model is configured (e.g.
   // first launch where only the placeholder template config exists). The
@@ -72,6 +74,8 @@ function Shell() {
   const [resizing, setResizing] = useState(false);
   const [rightPanelWidth, setRightPanelWidth] = useState(loadRightPanelWidth);
   const [resizingRight, setResizingRight] = useState(false);
+  const zoomLevelRef = useRef(zoomLevel);
+  zoomLevelRef.current = zoomLevel;
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
@@ -130,12 +134,23 @@ function Shell() {
 
   // JS-accessible shortcuts (the native menu shows the same accelerators).
   useEffect(() => {
+    const ZOOM_LEVELS = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) {
         return;
       }
       const key = e.key.toLowerCase();
-      if (key === "n") {
+      if (key === "=" || key === "+") {
+        e.preventDefault();
+        const next = ZOOM_LEVELS.findIndex((z) => z > zoomLevelRef.current);
+        if (next >= 0) setZoomLevel(ZOOM_LEVELS[next]);
+      } else if (key === "-") {
+        e.preventDefault();
+        for (let i = ZOOM_LEVELS.length - 1; i >= 0; i--) { if (ZOOM_LEVELS[i] < zoomLevelRef.current) { setZoomLevel(ZOOM_LEVELS[i]); break; } }
+      } else if (key === "0") {
+        e.preventDefault();
+        setZoomLevel(1);
+      } else if (key === "n") {
         e.preventDefault();
         void newChat();
       } else if (key === "o") {
@@ -151,10 +166,10 @@ function Shell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [newChat, openSettings, pickAndOpenFolder]);
+  }, [newChat, openSettings, pickAndOpenFolder, setZoomLevel]);
 
   return (
-    <div className="window-root">
+    <div className="window-root" style={{ transform: `scale(${zoomLevel})`, transformOrigin: "top left", width: `${100 / zoomLevel}vw`, height: `${100 / zoomLevel}vh` }}>
       <TitleBar collapsed={collapsed} onTogglePanel={() => setCollapsed((v) => !v)} />
       {settingsOpen ? (
         <div className="app-shell">
