@@ -161,6 +161,8 @@ interface AppContextValue {
   aboutOpen: boolean;
   planOpen: boolean;
   togglePlan: () => void;
+  zoomLevel: number;
+  setZoomLevel: (level: number) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
   setTheme: (theme: Theme) => void;
   setGuiLanguage: (language: string) => Promise<void>;
@@ -479,6 +481,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialPage, setSettingsInitialPage] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState<number>(() => {
+    try { const v = Number(window.localStorage.getItem("codewood.zoomLevel")); return v > 0 ? v : 1; } catch { return 1; }
+  });
   const [planOpen, setPlanOpen] = useState(false);
   const [consoleOpen, setConsoleOpen] = useState<boolean>(() => {
     try {
@@ -3249,6 +3254,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const openAbout = useCallback(() => setAboutOpen(true), []);
   const closeAbout = useCallback(() => setAboutOpen(false), []);
 
+  const persistZoomLevel = useCallback((level: number) => {
+    setZoomLevel(level);
+    try {
+      window.localStorage.setItem("codewood.zoomLevel", String(level));
+    } catch {
+      // localStorage may be unavailable; zoom won't persist across restarts.
+    }
+  }, []);
+
   const pickFolder = useCallback(async (): Promise<string> => {
     const api = (window as unknown as { pywebview?: { api?: HostApiBridge } })
       .pywebview?.api;
@@ -3441,6 +3455,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     settingsOpen,
     settingsInitialPage,
     aboutOpen,
+    zoomLevel,
+    setZoomLevel: persistZoomLevel,
     planOpen,
     togglePlan: () => setPlanOpen((v) => !v),
     t,
