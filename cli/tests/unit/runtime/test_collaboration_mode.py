@@ -27,27 +27,9 @@ class CollaborationModeLoaderTests(unittest.TestCase):
         self.assertIn("Agent", names)
         self.assertIn("Plan", names)
 
-    def test_render_substitutes_known_mode_names_variable(self):
-        rendered = cm.render_mode_prompt(cm.MODE_AGENT)
-        self.assertTrue(rendered)
-        self.assertNotIn("{{KNOWN_MODE_NAMES}}", rendered)
-        self.assertIn(cm.known_mode_names(), rendered)
-
-    def test_render_substitutes_app_name_variable_when_present(self):
-        # plan.md / agent.md may or may not use {{APP_NAME}}, but the
-        # substitution must never leave the raw placeholder behind.
-        for mode in (cm.MODE_AGENT, cm.MODE_PLAN):
-            self.assertNotIn("{{APP_NAME}}", cm.render_mode_prompt(mode))
-
     def test_unknown_mode_falls_back_to_agent(self):
         self.assertEqual(cm.normalize_mode("nonsense"), cm.MODE_AGENT)
         self.assertEqual(cm.normalize_mode(""), cm.MODE_AGENT)
-
-    def test_section_wraps_in_collaboration_mode_tags(self):
-        section = cm.render_collaboration_mode_section(_agent(plan_mode=True))
-        self.assertTrue(section.startswith("<collaboration_mode>"))
-        self.assertTrue(section.rstrip().endswith("</collaboration_mode>"))
-        self.assertIn("Plan Mode", section)
 
     def test_active_mode_tracks_sticky_flag(self):
         self.assertEqual(cm.active_mode_for_agent(_agent(True)), cm.MODE_PLAN)
@@ -55,7 +37,7 @@ class CollaborationModeLoaderTests(unittest.TestCase):
 
 
 class CollaborationModeGatingTests(unittest.TestCase):
-    def test_request_user_input_only_in_plan_mode(self):
+    def test_request_user_input_visible_in_both_modes(self):
         plan_names = {
             s["function"]["name"] for s in iter_specs(_agent(plan_mode=True))
         }
@@ -63,21 +45,21 @@ class CollaborationModeGatingTests(unittest.TestCase):
             s["function"]["name"] for s in iter_specs(_agent(plan_mode=False))
         }
         self.assertIn("request_user_input", plan_names)
-        self.assertNotIn("request_user_input", agent_names)
+        self.assertIn("request_user_input", agent_names)
 
-    def test_update_plan_hidden_in_plan_mode(self):
+    def test_update_plan_visible_in_both_modes(self):
         plan_names = {
             s["function"]["name"] for s in iter_specs(_agent(plan_mode=True))
         }
         agent_names = {
             s["function"]["name"] for s in iter_specs(_agent(plan_mode=False))
         }
-        self.assertNotIn("update_plan", plan_names)
+        self.assertIn("update_plan", plan_names)
         self.assertIn("update_plan", agent_names)
 
-    def test_gating_sets_are_consistent(self):
-        self.assertEqual(PLAN_MODE_ONLY_TOOLS, frozenset({"request_user_input"}))
-        self.assertEqual(PLAN_MODE_EXCLUDED_TOOLS, frozenset({"update_plan"}))
+    def test_gating_sets_are_empty(self):
+        self.assertEqual(PLAN_MODE_ONLY_TOOLS, frozenset())
+        self.assertEqual(PLAN_MODE_EXCLUDED_TOOLS, frozenset())
 
     def test_update_plan_execute_rejected_in_plan_mode(self):
         result = UpdatePlanTool().execute(

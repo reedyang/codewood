@@ -555,7 +555,7 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
 }
 
 // Plan-mode wraps its finished plan in `<proposed_plan>...</proposed_plan>`
-// (see cli/prompts/collaboration-mode/plan.md). Mirror the Python helper
+// (see cli/prompts/system_prompt.md). Mirror the Python helper
 // cli/core/proposed_plan.py: render the block as a dedicated card instead of
 // leaking the literal tags into the bubble.
 const PROPOSED_PLAN_RE = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/gi;

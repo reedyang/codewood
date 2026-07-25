@@ -43,9 +43,8 @@ class UpdatePlanTool(BaseTool):
     name = "update_plan"
     # ``update_plan`` is a TODO/checklist/progress tool; it is not how Plan mode
     # produces a plan (Plan mode emits a ``<proposed_plan>`` block instead).
-    # Mirror Codex by hiding it from the spec while Plan mode is active and
-    # rejecting any call that slips through (see ``execute``).
-    excluded_in_plan_mode = True
+    # It remains visible in both modes so the tool list stays static (cache-friendly),
+    # but calls in Plan mode are rejected at runtime (see ``execute``).
     description = "Maintain a step-by-step plan (pending/in_progress/completed) for the current task. At most one step in_progress at a time."
     parameters: Dict[str, Any] = {
         "type": "object",
