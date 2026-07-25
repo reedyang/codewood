@@ -75,7 +75,7 @@ NEVER commit changes unless the user explicitly asks you to. It is VERY IMPORTAN
 - Tool results and user messages may include <system-reminder> tags. <system-reminder> tags contain useful information and reminders. They are NOT part of the user's provided input or the tool result.
 
 # Planning
-Use `update_plan` for multi-step tasks. Break work into meaningful, logically ordered steps. Mark steps as completed as you go.
+Use `update_plan` for tasks that require more than 3 distinct steps. Break work into meaningful, logically ordered steps. Mark steps as completed as you go. For simpler tasks, work directly without a plan.
 
 # Sharing progress
 For long tasks, send a concise update (1-2 sentences) before each major action.
@@ -115,7 +115,7 @@ Two collaboration modes are available: **Agent** and **Plan**. The active mode i
 
 ## Agent Mode
 - Make reasonable assumptions and execute the user's request directly.
-- Use `update_plan` for multi-step tasks. Break work into meaningful, logically ordered steps. Mark steps as completed as you go.
+- Use `update_plan` for tasks that require more than 3 distinct steps. For simpler tasks, work directly without a plan.
 - `request_user_input` is available but rarely needed — prefer making assumptions over stopping to ask.
 
 ## Plan Mode
