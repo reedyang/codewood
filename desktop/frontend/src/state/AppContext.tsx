@@ -1745,7 +1745,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
             // Apply state update as normal (idle is terminal or from a
             // different chat). Consume pending focus if applicable.
             if (next && idleForFocused) {
-              setState(next);
+              // When the idle event is NOT from the focused chat AND a
+              // workspace switch is NOT pending (a background chat finished
+              // in the same workspace), only merge chat list & plan updates
+              // — a full state replacement would override activeChatId and
+              // reload the wrong chat's history, blanking the focused chat's
+              // transcript. When a workspace switch IS pending, the full
+              // replacement is required to complete the switch.
+              const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
+              const isPendingSwitch = eventWsId === pendingWs;
+              if (chatId && eventKey && eventKey !== focusedKey && !isPendingSwitch) {
+                setState((prev) => {
+                  if (!prev) return prev;
+                  const merged: any = { ...prev };
+                  if (next.chats) {
+                    const nextChats = Array.isArray(next.chats) ? next.chats : [];
+                    merged.chats = prev.chats.map((c) => {
+                      const updated = nextChats.find((nc: any) => String(nc.id) === String(c.id));
+                      return updated ? { ...c, ...updated } : c;
+                    });
+                  }
+                  if (next.plan) {
+                    merged.plan = next.plan;
+                  }
+                  return merged;
+                });
+              } else {
+                setState(next);
+              }
               if (eventWsId === pendingFocusWsIdRef.current) {
                 pendingFocusWsIdRef.current = "";
               }
