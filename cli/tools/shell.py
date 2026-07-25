@@ -1563,6 +1563,7 @@ def action_shell_command(
                                     content_before=_content,
                                     backup_path=_backup_name,
                                 )
+                                _tracker.cancel_create_for_deleted_file(_path_str)
                 except Exception:
                     pass
 
@@ -1713,6 +1714,7 @@ def action_shell_command(
                             content_before="",
                             backup_path=None,
                         )
+                        _tracker2.cancel_create_for_deleted_file(_path_str)
             except Exception:
                 _shell_diff_entries = []
             if _shell_diff_entries:

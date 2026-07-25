@@ -201,6 +201,30 @@ class FileChangeTracker:
             "files": list(files.values()),
         }
 
+    def cancel_create_for_deleted_file(self, file_path: str) -> bool:
+        """If the file's first recorded change is *create* and its last is
+        *delete*, the file went from non-existent back to non-existent — a
+        net-zero change.  Remove all records for that file in this case.
+
+        If the file already existed before the task (first change is not
+        *create*), the deletion is a real change that must be shown even when
+        intermediate create/delete pairs appear.  Returns True when records
+        were removed."""
+        normalized = self._normalize_path(file_path)
+        records = [
+            c for c in self._changes
+            if self._normalize_path(c.file_path) == normalized
+        ]
+        if not records:
+            return False
+        if records[0].change_type == "create" and records[-1].change_type == "delete":
+            self._changes = [
+                c for c in self._changes
+                if self._normalize_path(c.file_path) != normalized
+            ]
+            return True
+        return False
+
     def clear(self) -> None:
         """Clear all recorded changes."""
         self._changes.clear()
