@@ -172,9 +172,8 @@ def _normalize_apply_patch_text(raw_patch: str, file_path: str) -> tuple[str, Li
     return normalized, warnings
 
 
-def _hunk_matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> bool:
-    if start_idx < 0 or start_idx > len(old_lines):
-        return False
+def _matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> bool:
+    """Strict exact matching of hunk context / deletion lines against old_lines."""
     cur = start_idx
     for hl in hunk_lines:
         if hl.startswith("*** "):
@@ -196,12 +195,131 @@ def _hunk_matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]
     return True
 
 
+def _hunk_matches_at(
+    old_lines: List[str], start_idx: int, hunk_lines: List[str], fuzz: int = 0
+) -> bool:
+    """Check if hunk matches at *start_idx*, allowing *fuzz* gaps between
+    context blocks (replicating ``git apply --fuzz=N`` semantics).
+
+    The "core" of the hunk — everything on the old side from the first ``-``
+    through the last ``-`` (inclusive) — must match exactly at the expected
+    offset relative to *start_idx*.  Up to *fuzz* extra lines may appear in
+    *old_lines* between the leading context and the core, or between the core
+    and the trailing context.  This handles AI-generated patches that miss (or
+    add) blank lines or comment lines between code blocks.
+
+    When the hunk contains only context / additions (no deletions) the match
+    is always exact regardless of *fuzz*.
+    """
+    if start_idx < 0 or start_idx > len(old_lines):
+        return False
+
+    # Exact match first — this is always the cheapest and most desirable path.
+    if _matches_at(old_lines, start_idx, hunk_lines):
+        return True
+
+    if fuzz <= 0:
+        return False
+
+    # Build the old-side-only view: just context/deletion lines from the hunk.
+    old_side: List[str] = []
+    for hl in hunk_lines:
+        if hl.startswith("*** ") or hl.startswith("\\ No newline"):
+            continue
+        if not hl:
+            return False
+        if hl[0] in (" ", "-"):
+            old_side.append(hl)
+        elif hl[0] != "+":
+            return False
+
+    if not old_side:
+        return True
+
+    # Locate the core range [first_del … last_del] in old_side.
+    first_del = next((j for j, hl in enumerate(old_side) if hl.startswith("-")), None)
+    last_del = next((j for j, hl in reversed(list(enumerate(old_side))) if hl.startswith("-")), None)
+
+    if first_del is None:
+        # No deletion lines → try position offsets only.
+        for offset in range(-fuzz, fuzz + 1):
+            test_start = start_idx + offset
+            if test_start < 0:
+                continue
+            if _matches_at(old_lines, test_start, hunk_lines):
+                return True
+        return False
+
+    # Leading context (strict — must match without gaps).
+    leading_ctx = old_side[:first_del]
+    # Core lines (strict — must match without gaps).
+    core = old_side[first_del : last_del + 1]
+    # Trailing context (strict — must match without gaps).
+    trailing_ctx = old_side[last_del + 1 :]
+
+    for start_offset in range(-fuzz, fuzz + 1):
+        adjusted_start = start_idx + start_offset
+        if adjusted_start < 0:
+            continue
+
+        for leading_gap in range(fuzz + 1):
+            # 1) Match leading context (strict).
+            cur = adjusted_start
+            ok = True
+            for hl in leading_ctx:
+                text = hl[1:]
+                if cur >= len(old_lines) or old_lines[cur] != text:
+                    ok = False
+                    break
+                cur += 1
+            if not ok:
+                continue
+
+            # 2) Allow up to leading_gap extra lines in old_lines before the core.
+            core_start = cur + leading_gap
+
+            # 3) Match core (strict).
+            cur = core_start
+            for hl in core:
+                if hl.startswith(("-", " ")):
+                    text = hl[1:]
+                    if cur >= len(old_lines) or old_lines[cur] != text:
+                        ok = False
+                        break
+                    cur += 1
+            if not ok:
+                continue
+            core_end = cur
+
+            # 4) Allow remaining fuzz gap before trailing context.
+            remaining_fuzz = fuzz - leading_gap
+            for trailing_gap in range(remaining_fuzz + 1):
+                cur = core_end + trailing_gap
+                ok = True
+                for hl in trailing_ctx:
+                    text = hl[1:]
+                    if cur >= len(old_lines) or old_lines[cur] != text:
+                        ok = False
+                        break
+                    cur += 1
+                if ok:
+                    return True
+
+    return False
+
+
 def _locate_hunk_start(
-    old_lines: List[str], src_idx: int, target_idx: int, hunk_lines: List[str]
+    old_lines: List[str],
+    src_idx: int,
+    target_idx: int,
+    hunk_lines: List[str],
+    fuzz: int = 0,
 ) -> Optional[int]:
-    if _hunk_matches_at(old_lines, target_idx, hunk_lines):
+    # Always try exact match at target_idx first — cheapest path.
+    if _hunk_matches_at(old_lines, target_idx, hunk_lines, fuzz=0):
         return target_idx
 
+    # Anchor search is always exact (the first context / deletion line).
     anchor: Optional[str] = None
     for hl in hunk_lines:
         if hl and hl[0] in (" ", "-"):
@@ -219,12 +337,14 @@ def _locate_hunk_start(
 
     candidates.sort(key=lambda idx: abs(idx - target_idx))
     for probe in candidates:
-        if _hunk_matches_at(old_lines, probe, hunk_lines):
+        if _hunk_matches_at(old_lines, probe, hunk_lines, fuzz=fuzz):
             return probe
     return None
 
 
-def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed: bool = False) -> Dict[str, Any]:
+def action_apply_unified_patch(
+    agent: Any, file_path: str, patch: str, confirmed: bool = False, fuzz: int = 2
+) -> Dict[str, Any]:
     try:
         policy = agent._get_path_policy()
         abs_path = agent._resolve_user_path(str(file_path))
@@ -349,7 +469,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 target_idx = 0 if old_start_no <= 0 else old_start_no - 1
             if target_idx < src_idx or target_idx > len(old_lines):
                 return {"success": False, "error": f"Hunk start line out of range: {old_start}"}
-            located_idx = _locate_hunk_start(old_lines, src_idx, target_idx, hunk["lines"])
+            located_idx = _locate_hunk_start(old_lines, src_idx, target_idx, hunk["lines"], fuzz=fuzz)
             if located_idx is None:
                 if old_start is None:
                     return {"success": False, "error": "Patch anchor not found; unable to locate hunk"}
