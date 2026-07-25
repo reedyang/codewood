@@ -417,7 +417,11 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
     def test_shell_command_execution_calls_startup_initial_reset(self):
         agent = _DummyAgent()
 
-        with patch("subprocess.Popen", return_value=_FakePopenResult("ok\n")):
+        with patch("subprocess.Popen", return_value=_FakePopenResult("ok\n")), patch(
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+        ):
             result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
@@ -428,7 +432,11 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent.work_directory = Path.cwd() / "tests"
         agent.workspace_root = Path.cwd()
 
-        with patch("subprocess.Popen", return_value=_FakePopenResult("ok\n")) as popen_mock:
+        with patch("subprocess.Popen", return_value=_FakePopenResult("ok\n")) as popen_mock, patch(
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+        ):
             result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
@@ -453,7 +461,12 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent.allowlist_hit = True
         agent.prompt_result = True
 
-        result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
+        with patch(
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+        ):
+            result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(len(agent.prompt_calls), 0)
@@ -543,6 +556,10 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         ), patch(
             "cli.tools.shell._safe_console_write",
             side_effect=_capture_write,
+        ), patch(
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
 
@@ -570,7 +587,9 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             "cli.tools.shell._safe_console_write",
             side_effect=_capture_write,
         ), patch(
-            "cli.tools.shell._git_repo_root", return_value=None
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
@@ -587,9 +606,11 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         command = 'python -c "print(1)"'
 
         with patch("subprocess.Popen", return_value=_FakePopenResult("line1\nline2\n")) as popen_mock, patch(
-            "cli.tools.shell._dynamic_tail_line_limit", return_value=5
+            "cli.tools.shell._git_repo_root", return_value=None,
         ), patch(
-            "cli.tools.shell._git_repo_root", return_value=None
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+        ), patch(
+            "cli.tools.shell._dynamic_tail_line_limit", return_value=5
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
@@ -604,6 +625,10 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent._print_conversation_interrupted_banner = lambda: 2
 
         with patch("subprocess.Popen", return_value=_FakePopenResult("line1\n", return_code=130)), patch(
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+        ), patch(
             "cli.tools.shell._dynamic_tail_line_limit", return_value=5
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
@@ -626,7 +651,9 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             "cli.tools.shell._safe_console_write",
             side_effect=_capture_write,
         ), patch(
-            "cli.tools.shell._git_repo_root", return_value=None
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
@@ -638,4 +665,5 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
