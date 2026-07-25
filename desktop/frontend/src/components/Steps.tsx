@@ -431,12 +431,8 @@ export function StepsView({
   // auto-collapses once another tool/output block follows it (the "collapse the
   // previously-expanded diff when the next tool runs" behavior) while the most
   // recent diff stays expanded.
-  let lastContentIdx = -1;
   let lastPromptIdx = -1;
   segments.forEach((seg, i) => {
-    if (trimBlankEdges(seg.text)) {
-      lastContentIdx = i;
-    }
     if (seg.kind === "prompt") {
       lastPromptIdx = i;
     }
@@ -516,7 +512,7 @@ export function StepsView({
         }
         if (seg.kind === "diff") {
           return (
-            <DiffStep key={index} payload={value} defaultExpanded={index === lastContentIdx} />
+            <DiffStep key={index} payload={value} defaultExpanded={false} />
           );
         }
         if (seg.kind === "cmd") {
