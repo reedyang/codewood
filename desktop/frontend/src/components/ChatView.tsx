@@ -2880,8 +2880,9 @@ function TurnView({
   const liveGroups = groupLiveRounds(turn.rounds);
   const lastRound = turn.rounds[turn.rounds.length - 1];
   const hasPendingContinuation = hasPendingInvisibleRound(turn);
-  const showPendingWorking = shouldShowPendingWorking(turn, liveGroups.length > 0);
-  const pendingWorkingElapsed = lastRound
+  const isRunning = turn.endedAt === null;
+  const showWorking = isRunning && liveGroups.length === 0;
+  const workingElapsed = lastRound
     ? formatElapsed(now - lastRound.waitStartedAt)
     : formatElapsed(now - turn.startedAt);
   
@@ -2896,15 +2897,6 @@ function TurnView({
           index={negIndex}
           handlers={handlers}
         />
-      )}
-      {turn.rounds.length === 0 && turn.endedAt === null && (
-        <div className="activity">
-          <div className="activity-header running">
-            <span className="activity-text marquee">
-              {t("activity.working")} ({formatElapsed(now - turn.startedAt)})
-            </span>
-          </div>
-        </div>
       )}
       {liveGroups.map((group, index) => {
         if (group.kind === "tool") {
@@ -2931,11 +2923,11 @@ function TurnView({
           />
         );
       })}
-      {showPendingWorking && (
+      {showWorking && (
         <div className="activity">
           <div className="activity-header running">
             <span className="activity-text marquee">
-              {t("activity.working")} ({pendingWorkingElapsed})
+              {t("activity.working")} ({workingElapsed})
             </span>
           </div>
         </div>
