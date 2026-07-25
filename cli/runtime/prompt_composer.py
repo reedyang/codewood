@@ -12,8 +12,6 @@ from ..core.config.skills_loader import _list_bundled_script_paths
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
     MEMORY_TOOLS,
-    PLAN_MODE_EXCLUDED_TOOLS,
-    PLAN_MODE_ONLY_TOOLS,
     SMALL_MODEL_EXCLUDED_TOOLS,
 )
 
@@ -526,7 +524,6 @@ def build_tools_prompt_append(agent: Any) -> str:
             template = (template + "\n\n" + memory_side).strip()
 
     multimodal_enabled = _model_supports_multimodal(agent)
-    plan_mode_active = bool(getattr(agent, "_plan_mode_sticky", False))
     small_model = _is_small_model_context(agent)
 
     lines: List[str] = [
@@ -555,10 +552,6 @@ def build_tools_prompt_append(agent: Any) -> str:
         if name in MEMORY_TOOLS and not memory_enabled:
             continue
         if name in IMAGE_INPUT_TOOLS and not multimodal_enabled:
-            continue
-        if name in PLAN_MODE_ONLY_TOOLS and not plan_mode_active:
-            continue
-        if name in PLAN_MODE_EXCLUDED_TOOLS and plan_mode_active:
             continue
         if name == "project_context_search" and not agent._project_context_tool_allowed():
             continue

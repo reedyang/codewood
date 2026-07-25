@@ -9,10 +9,9 @@ from .base import BaseTool
 
 class RequestUserInputTool(BaseTool):
     name = "request_user_input"
-    # Structured multiple-choice questions are a Plan-mode affordance (mirrors
-    # Codex gating ``request_user_input`` to Plan only); in Agent mode the model
-    # should make reasonable assumptions or ask in plain text instead.
-    requires_plan_mode = True
+    # Visible in both modes so the tool list stays static (cache-friendly).
+    # In Agent mode the model should make reasonable assumptions or ask in
+    # plain text instead; the system prompt instructs accordingly.
     description = "Ask the user a question and pause auto-continuation until they respond. Supports single-choice and multiple-choice."
     parameters: Dict[str, Any] = {
         "type": "object",

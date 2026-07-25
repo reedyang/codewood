@@ -40,8 +40,6 @@ from ..commands import is_command, run_command
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
     MEMORY_TOOLS,
-    PLAN_MODE_EXCLUDED_TOOLS,
-    PLAN_MODE_ONLY_TOOLS,
     SMALL_MODEL_EXCLUDED_TOOLS,
 )
 from ..tools.plan import (
@@ -4188,22 +4186,6 @@ def run_agent_loop(agent: Any):
                                 ((item or {}).get("function", {}) or {}).get("name", "")
                             ).strip()
                             not in IMAGE_INPUT_TOOLS
-                        ]
-                    # Collaboration-mode gating: in Plan mode hide mutating /
-                    # checklist tools (update_plan) and expose the Plan-only
-                    # ``request_user_input``; in Agent mode do the inverse.
-                    plan_mode_active = bool(getattr(self, "_plan_mode_sticky", False))
-                    drop_tools = (
-                        PLAN_MODE_EXCLUDED_TOOLS if plan_mode_active else PLAN_MODE_ONLY_TOOLS
-                    )
-                    if drop_tools:
-                        standard_tool_schemas = [
-                            item
-                            for item in standard_tool_schemas
-                            if str(
-                                ((item or {}).get("function", {}) or {}).get("name", "")
-                            ).strip()
-                            not in drop_tools
                         ]
                     # Open this round's wait timer for the GUI just before the
                     # model request goes out.

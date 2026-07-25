@@ -2,7 +2,7 @@
 
 In Plan mode the model presents its finished plan wrapped in a
 ``<proposed_plan>...</proposed_plan>`` block (see
-``cli/prompts/collaboration-mode/plan.md``). The block is:
+``cli/prompts/system_prompt.md``). The block is:
 
 * extracted so the host can cache the plan markdown (for the execute chooser and
   the optional clear-context implementation path), and

@@ -186,7 +186,7 @@ export function stripPlanModePrefix(text: string): string {
 
 /** True when assistant text contains a complete ``<proposed_plan>`` block.
  *  Plan mode emits its finished plan wrapped in these tags (see
- *  cli/prompts/collaboration-mode/plan.md); the GUI uses this to know when to
+ *  cli/prompts/system_prompt.md); the GUI uses this to know when to
  *  surface the "Implement this plan?" chooser. */
 export function hasProposedPlan(text: string): boolean {
   const s = String(text ?? "");

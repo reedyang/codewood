@@ -44,9 +44,9 @@ def build_base_system_prompt(small_model: bool = False) -> str:
 class BaseSystemPromptPart(ModelContextPart):
     """The agent's base system prompt, built from the prompt template on demand.
 
-    Static placeholders (``{{APP_NAME}}`` etc.) are resolved once and cached.
-    Dynamic placeholders (``{{COLLABORATION_MODE}}``, temp dir) are resolved
-    on every render so mode switches take effect immediately.
+    The base prompt is fully static (no mode-specific placeholders) so it can
+    be cached once and reused across mode switches without invalidating the
+    model's prefix cache.
     """
 
     name = "base_system_prompt"
@@ -62,18 +62,4 @@ class BaseSystemPromptPart(ModelContextPart):
             except Exception:
                 pass
             cached = rendered
-
-        result = str(cached)
-        result = result.replace(
-            "{{COLLABORATION_MODE}}",
-            "Plan" if bool(getattr(agent, "_plan_mode_sticky", False)) else "Agent",
-        )
-        temp_dir = getattr(agent, "ai_workspace_temp_dir", None)
-        if temp_dir:
-            result = result.replace(
-                "{{AI_WORKSPACE_TEMP_DIR_SECTION}}",
-                f"\n- Use `apply_patch` to write plan documents or temporary scripts to: `{temp_dir}`.",
-            )
-        else:
-            result = result.replace("{{AI_WORKSPACE_TEMP_DIR_SECTION}}", "")
-        return result
+        return str(cached)
