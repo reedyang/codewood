@@ -308,6 +308,29 @@ def _hunk_matches_at(
     return False
 
 
+def _validate_hunk_lines(hunk_lines: List[str]) -> Optional[str]:
+    """Return a human-readable error when any hunk body line has an invalid
+    unified-diff prefix, or ``None`` when every line is well-formed."""
+    for i, hl in enumerate(hunk_lines, start=1):
+        if hl.startswith("*** ") or hl.startswith("\\ No newline at end of file"):
+            continue
+        if not hl:
+            return (
+                f"Hunk line {i} is empty — every hunk body line must start with "
+                f"' ' (context), '-' (deletion), or '+' (addition)"
+            )
+        prefix = hl[0]
+        if prefix not in (" ", "-", "+"):
+            snippet = hl[:40]
+            return (
+                f"Invalid unified-diff prefix on hunk line {i}: got "
+                f"'{prefix}' (line: {snippet!r}). "
+                f"Every hunk body line must start with a space (' '), "
+                f"'-' (deletion), or '+' (addition)."
+            )
+    return None
+
+
 def _locate_hunk_start(
     old_lines: List[str],
     src_idx: int,
@@ -468,14 +491,55 @@ def action_apply_unified_patch(
                 old_start_no = int(old_start)
                 target_idx = 0 if old_start_no <= 0 else old_start_no - 1
             if target_idx < src_idx or target_idx > len(old_lines):
-                return {"success": False, "error": f"Hunk start line out of range: {old_start}"}
-            located_idx = _locate_hunk_start(old_lines, src_idx, target_idx, hunk["lines"], fuzz=fuzz)
-            if located_idx is None:
-                if old_start is None:
-                    return {"success": False, "error": "Patch anchor not found; unable to locate hunk"}
                 return {
                     "success": False,
-                    "error": f"Patch context mismatch (line {target_idx + 1})",
+                    "error": (
+                        f"Hunk start line {old_start} is outside file "
+                        f"(file has {len(old_lines)} lines). Check "
+                        f"@@ line numbers."
+                    ),
+                }
+            located_idx = _locate_hunk_start(old_lines, src_idx, target_idx, hunk["lines"], fuzz=fuzz)
+            if located_idx is None:
+                format_err = _validate_hunk_lines(hunk["lines"])
+                if format_err:
+                    return {"success": False, "error": format_err}
+                if old_start is None:
+                    return {
+                        "success": False,
+                        "error": (
+                            "Patch anchor not found — the first context "
+                            "or deletion line of the hunk does not appear "
+                            "anywhere in the file. Verify the patch content "
+                            "matches the current file state."
+                        ),
+                    }
+                # Differentiate: anchor found but full context mismatch
+                # vs. anchor line truly not present in the file.
+                _first_ctx = next(
+                    (hl[1:] for hl in hunk["lines"] if hl and hl[0] in (" ", "-")),
+                    None,
+                )
+                if _first_ctx is not None and _first_ctx in old_lines:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"The patch anchor line was found in the "
+                            f"file, but the surrounding context does not "
+                            f"match. Check line numbers, blank lines, "
+                            f"and indentation. Target: line "
+                            f"{target_idx + 1}."
+                        ),
+                    }
+                return {
+                    "success": False,
+                    "error": (
+                        f"The patch's first context line "
+                        f"{repr(_first_ctx) if _first_ctx else '[none]'} "
+                        f"was not found in the file near line "
+                        f"{target_idx + 1}. File content: "
+                        f"{old_lines[max(0, target_idx - 1):target_idx + 3]!r}"
+                    ),
                 }
             target_idx = located_idx
             result_lines.extend(old_lines[src_idx:target_idx])
@@ -495,14 +559,32 @@ def action_apply_unified_patch(
                 text = hl[1:]
                 if prefix == " ":
                     if cur >= len(old_lines) or old_lines[cur] != text:
-                        return {"success": False, "error": f"Patch context mismatch (line {cur + 1})"}
+                        expected = repr(text)
+                        actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Hunk context line expects {expected} but "
+                                f"file line {cur + 1} is {actual} — "
+                                f"check line numbers and indentation."
+                            ),
+                        }
                     result_lines.append(old_lines[cur])
                     hunk_old_fragment.append(old_lines[cur])
                     hunk_new_fragment.append(old_lines[cur])
                     cur += 1
                 elif prefix == "-":
                     if cur >= len(old_lines) or old_lines[cur] != text:
-                        return {"success": False, "error": f"Patch deletion mismatch (line {cur + 1})"}
+                        expected = repr(text)
+                        actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Hunk deletion expects to remove {expected} but "
+                                f"file line {cur + 1} is {actual} — "
+                                f"check line numbers and indentation."
+                            ),
+                        }
                     hunk_old_fragment.append(old_lines[cur])
                     has_change = True
                     cur += 1
