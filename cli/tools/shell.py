@@ -2802,7 +2802,7 @@ def _snapshot_workspace_file_list(cwd: Path) -> Dict[str, Tuple[float, int]]:
     The app config directory and common build/scm directories are excluded
     to avoid picking up irrelevant data as spurious file changes."""
     _config_dirname = get_app_config_dirname()
-    _skip_dirs = {_config_dirname, ".git", "node_modules", "__pycache__", ".vite"}
+    _skip_dirs = {_config_dirname, ".git", "node_modules", "__pycache__", ".pytest_cache", ".vite"}
     snapshot: Dict[str, Tuple[float, int]] = {}
     try:
         for entry in cwd.rglob("*"):
