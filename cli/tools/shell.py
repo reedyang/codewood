@@ -21,7 +21,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..actions.command_execution_buffer import CommandExecutionBuffer
 from ..config.app_info import get_app_config_dirname, get_app_runtime_attr_name
@@ -1577,6 +1577,14 @@ def action_shell_command(
                 _new, _modified, _ws_deleted = _diff_workspace_snapshots(
                     _before_file_list, _after_file_list,
                 )
+                # Only report modifications and side-effect deletions for files
+                # that the command explicitly references.  This prevents false
+                # attribution of user edits that happen during command execution.
+                # When the command references no files at all (e.g. "timeout 10"),
+                # the set is empty and both lists are naturally cleared.
+                _cmd_paths = _extract_command_file_paths(command, execution_cwd)
+                _modified = [p for p in _modified if p in _cmd_paths]
+                _ws_deleted = [p for p in _ws_deleted if p in _cmd_paths]
                 _tracker2 = getattr(agent, "file_change_tracker", None)
                 for _path_str in _new:
                     try:
@@ -2819,6 +2827,69 @@ def _snapshot_workspace_file_list(cwd: Path) -> Dict[str, Tuple[float, int]]:
     except (OSError, PermissionError):
         pass
     return snapshot
+
+
+def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
+    """Extract absolute file paths that are referenced in a shell command.
+
+    Only returns paths that actually exist as files or directories in the
+    workspace.  Directory paths are expanded to all files beneath them so
+    that commands like ``rm -rf src/`` are scoped correctly.
+
+    This is intentionally conservative — many indirect side-effects are
+    missed — so that modification/deletion detection only fires for files
+    the command *explicitly* names, avoiding false attribution of changes
+    made by the user during execution."""
+    paths: Set[str] = set()
+    try:
+        import shlex
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+
+    redirect_ops = {">", ">>", "<", "<<", "2>", "2>>", "1>", "1>>", "&>"}
+
+    def _resolve(token: str) -> Optional[Path]:
+        """Resolve *token* to an absolute path inside *cwd*."""
+        p = Path(token)
+        if not p.is_absolute():
+            p = cwd / p
+        try:
+            p = p.resolve()
+        except (OSError, ValueError):
+            return None
+        if p.exists():
+            return p
+        return None
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in redirect_ops:
+            i += 1
+            if i < len(tokens):
+                resolved = _resolve(tokens[i])
+                if resolved is not None:
+                    paths.add(str(resolved))
+            i += 1
+            continue
+
+        if tok and not tok.startswith("-"):
+            resolved = _resolve(tok)
+            if resolved is not None:
+                if resolved.is_dir():
+                    try:
+                        for f in resolved.rglob("*"):
+                            if f.is_file():
+                                paths.add(str(f))
+                    except (OSError, PermissionError):
+                        pass
+                elif resolved.is_file():
+                    paths.add(str(resolved))
+
+        i += 1
+
+    return paths
 
 
 def _diff_workspace_snapshots(
