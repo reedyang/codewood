@@ -2852,7 +2852,7 @@ export function LiveRoundView({
           <MarkdownText text={answer} />
         </div>
       )}
-      {!hasTools && !hasAnswer && running && (
+      {!hasTools && !hasAnswer && !Boolean(round.thinkingText) && running && (
         <div className="activity">
           <div className="activity-header running">
             <span className="activity-text marquee">
