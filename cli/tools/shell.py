@@ -1577,12 +1577,14 @@ def action_shell_command(
                 _new, _modified, _ws_deleted = _diff_workspace_snapshots(
                     _before_file_list, _after_file_list,
                 )
-                # Only report modifications and side-effect deletions for files
-                # that the command explicitly references.  This prevents false
-                # attribution of user edits that happen during command execution.
-                # When the command references no files at all (e.g. "timeout 10"),
-                # the set is empty and both lists are naturally cleared.
+                # Only report file changes (creates, modifications, deletions)
+                # for paths that the command explicitly references.  This prevents
+                # false attribution of user edits and editor backup files that
+                # happen during command execution.  When the command references
+                # no files at all (e.g. "timeout 10"), the set is empty and all
+                # three lists are naturally cleared.
                 _cmd_paths = _extract_command_file_paths(command, execution_cwd)
+                _new = [p for p in _new if p in _cmd_paths]
                 _modified = [p for p in _modified if p in _cmd_paths]
                 _ws_deleted = [p for p in _ws_deleted if p in _cmd_paths]
                 _tracker2 = getattr(agent, "file_change_tracker", None)
@@ -2840,6 +2842,26 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
     missed — so that modification/deletion detection only fires for files
     the command *explicitly* names, avoiding false attribution of changes
     made by the user during execution."""
+
+    # Shell builtins and common utility commands that don't operate on files
+    # (or only read the filesystem).  Their arguments should not be treated
+    # as file-operand paths.
+    _skip_tokens = {
+        "cd", "chdir", "pushd", "popd",
+        "export", "set", "unset", "env",
+        "echo", "printf", "type", "which", "where",
+        "&&", "||", "|", ";",
+        "cmd", "powershell",
+        "exit",
+    }
+    # Commands whose arguments are arguments, not file operand paths.
+    _skip_cmd_keywords = {
+        "timeout", "sleep",
+    }
+    # Windows: DIR, TYPE, CD etc. are case-insensitive.
+    _skip_tokens = _skip_tokens | {t.upper() for t in _skip_tokens}
+    _skip_cmd_keywords = _skip_cmd_keywords | {t.upper() for t in _skip_cmd_keywords}
+
     paths: Set[str] = set()
     try:
         import shlex
@@ -2875,6 +2897,22 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
             continue
 
         if tok and not tok.startswith("-"):
+            tok_lower = tok.lower()
+            if tok_lower in _skip_tokens:
+                # Skip the entire token (e.g. "cd"), and also skip its NEXT
+                # argument (e.g. the directory path after "cd").
+                if tok_lower in {"cd", "chdir", "pushd"}:
+                    i += 1  # skip the argument too
+                i += 1
+                continue
+            if tok_lower in _skip_cmd_keywords:
+                # These commands take non-file arguments → skip the command
+                # and its next argument entirely.
+                i += 1  # skip the first argument
+                while i < len(tokens) and tokens[i].startswith("-"):
+                    i += 1  # skip flag arguments
+                i += 1
+                continue
             resolved = _resolve(tok)
             if resolved is not None:
                 if resolved.is_dir():
