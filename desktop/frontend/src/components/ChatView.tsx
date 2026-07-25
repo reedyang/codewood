@@ -1163,6 +1163,7 @@ export function ChatView() {
         return;
       }
       setSegments([]);
+      stickToBottomRef.current = true;
       await answerAskMoreInfo(answer);
       return;
     }
@@ -1186,6 +1187,7 @@ export function ChatView() {
     const key = draftKey;
     setSegments([]);
     setImageAttachmentsByChat((prev) => ({ ...prev, [key]: [] }));
+    stickToBottomRef.current = true;
     await sendInput(message);
   };
 
@@ -1201,6 +1203,7 @@ export function ChatView() {
     // it from the chat bubble; the agent still receives the inner text as
     // part of the message body and can respond as if the user said it.
     const prompt = t("composer.executePlanPrompt");
+    stickToBottomRef.current = true;
     await sendInput(encodeHiddenInstruction(prompt));
   };
 
