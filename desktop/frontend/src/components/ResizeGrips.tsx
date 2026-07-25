@@ -10,6 +10,7 @@ const MIN_HEIGHT = 640;
 interface HostGeometryApi {
   set_window_geometry?: (x: number, y: number, width: number, height: number) => void;
   start_window_resize?: (direction: Dir) => boolean | Promise<boolean>;
+  toggle_vertical_maximize?: () => boolean;
 }
 
 function hostApi(): HostGeometryApi | undefined {
@@ -137,10 +138,21 @@ export function ResizeGrips() {
     window.addEventListener("mouseup", onUp);
   };
 
+  const handleVerticalToggle = (dir: Dir) => (_e: React.MouseEvent) => {
+    if (dir !== "n" && dir !== "s") return;
+    const api = hostApi();
+    api?.toggle_vertical_maximize?.();
+  };
+
   return (
     <div className="resize-grips" aria-hidden="true">
       {DIRS.map((dir) => (
-        <div key={dir} className={`resize-grip resize-${dir}`} onMouseDown={startResize(dir)} />
+        <div
+          key={dir}
+          className={`resize-grip resize-${dir}`}
+          onMouseDown={startResize(dir)}
+          onDoubleClick={handleVerticalToggle(dir)}
+        />
       ))}
     </div>
   );

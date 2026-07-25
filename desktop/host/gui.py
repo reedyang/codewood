@@ -206,6 +206,80 @@ def _save_file_dialog() -> str:
     return result[0] if isinstance(result, (list, tuple)) else str(result)
 
 
+def _get_window_geometry(window) -> tuple[int, int, int, int]:
+    """Return (x, y, width, height) of a pywebview window."""
+    try:
+        x = int(window.x)
+        y = int(window.y)
+        w = int(window.width)
+        h = int(window.height)
+        return x, y, w, h
+    except Exception:
+        return 0, 0, 960, 640
+
+
+def _get_screen_work_area_win32(window) -> tuple[int, int, int, int]:
+    """Return (left, top, right, bottom) of the monitor work area for *window* on Windows."""
+    import ctypes
+    from ctypes import wintypes
+
+    hwnd = _pywebview_window_hwnd(window)
+    if hwnd is None:
+        return 0, 0, 1920, 1040  # sensible fallback
+
+    user32 = ctypes.windll.user32
+    MONITOR_DEFAULTTONEAREST = 2
+    hmonitor = user32.MonitorFromWindow(wintypes.HWND(hwnd), MONITOR_DEFAULTTONEAREST)
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                    ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
+
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if user32.GetMonitorInfoW(hmonitor, ctypes.byref(mi)):
+        return (mi.rcWork.left, mi.rcWork.top,
+                mi.rcWork.right, mi.rcWork.bottom)
+
+    return 0, 0, 1920, 1040
+
+
+def _get_vertical_max_geometry_win32(window) -> tuple[int, int, int, int, int, int]:
+    """Return (x, y, w, h, new_y, new_h) for vertical-max on Windows."""
+    cur_x, cur_y, cur_w, cur_h = _get_window_geometry(window)
+    left, top, right, bottom = _get_screen_work_area_win32(window)
+    wa_height = bottom - top
+    return cur_x, cur_y, cur_w, cur_h, top, wa_height
+
+
+def _get_vertical_max_geometry_fallback(window) -> tuple[int, int, int, int, int, int]:
+    """Return (x, y, w, h, new_y, new_h) for vertical-max on non-Windows."""
+    cur_x, cur_y, cur_w, cur_h = _get_window_geometry(window)
+    try:
+        wa_top = 0
+        wa_height = window.tk.winfo_screenheight()
+    except Exception:
+        wa_top = 0
+        wa_height = 1080
+    return cur_x, cur_y, cur_w, cur_h, wa_top, wa_height
+
+
+def _pywebview_window_hwnd(window) -> int | None:
+    """Extract the Win32 HWND from a pywebview window, or None."""
+    try:
+        native = getattr(window, "native", None)
+        if native is None:
+            return None
+        handle = native.Handle
+        return int(handle.ToInt64() if hasattr(handle, "ToInt64") else handle)
+    except Exception:
+        return None
+
+
 class HostApi:
     """Bridge exposed to the frontend as ``window.pywebview.api``.
 
@@ -215,6 +289,8 @@ class HostApi:
 
     def __init__(self) -> None:
         self._maximized = False
+        self._vertically_maximized = False
+        self._pre_vertical_max_geometry: tuple[int, int, int, int] | None = None
         # Set by ``main()`` once the overlay browser window exists. ``None``
         # until then (and stays a disabled instance when overlay mode is off),
         # so every overlay method is safe to call regardless.
@@ -395,6 +471,62 @@ class HostApi:
         except Exception:
             pass
         return self._maximized
+
+    def toggle_vertical_maximize(self) -> bool:
+        """Toggle vertical maximize: snap the window to screen top and fill
+        screen work-area height, or restore the previous position/size.
+        Double-click on the top or bottom resize border triggers this."""
+        window = webview.active_window()
+        if window is None:
+            return self._vertically_maximized
+        if self._vertically_maximized:
+            self._restore_vertical(window)
+        else:
+            self._vertical_maximize(window)
+        return self._vertically_maximized
+
+    def _vertical_maximize(self, window) -> None:
+        prev_x, prev_y, prev_w, prev_h = _get_window_geometry(window)
+        self._pre_vertical_max_geometry = (prev_x, prev_y, prev_w, prev_h)
+        if sys.platform == "win32":
+            cur_x, cur_y, cur_w, cur_h, wa_top, wa_height = _get_vertical_max_geometry_win32(window)
+        else:
+            cur_x, cur_y, cur_w, cur_h, wa_top, wa_height = _get_vertical_max_geometry_fallback(window)
+        try:
+            window.resize(cur_w, wa_height)
+        except Exception:
+            pass
+        try:
+            window.move(cur_x, wa_top)
+        except Exception:
+            pass
+        if self._overlay is not None:
+            try:
+                self._overlay.resync()
+            except Exception:
+                pass
+        self._vertically_maximized = True
+
+    def _restore_vertical(self, window) -> None:
+        prev = self._pre_vertical_max_geometry
+        if prev is None:
+            return
+        x, y, w, h = prev
+        try:
+            window.resize(w, h)
+        except Exception:
+            pass
+        try:
+            window.move(x, y)
+        except Exception:
+            pass
+        if self._overlay is not None:
+            try:
+                self._overlay.resync()
+            except Exception:
+                pass
+        self._pre_vertical_max_geometry = None
+        self._vertically_maximized = False
 
     def _toggle_maximize_gtk(self, gtk_window) -> bool:
         """Toggle maximize on the native GtkWindow; sync ``_maximized``.
