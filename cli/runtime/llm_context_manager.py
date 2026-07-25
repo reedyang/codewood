@@ -1310,31 +1310,48 @@ class LLMContextManager:
         else:
             mem_context = ""
         current_input = str(user_input or "").strip() + "\n"
+        injected_suffix_parts: list[str] = []
+        first_round_injected = str(getattr(self.agent, "_first_round_injected", "") or "").strip()
+        if first_round_injected:
+            injected_suffix_parts.append(first_round_injected)
+            self.agent._first_round_injected = ""
         if bool(getattr(self.agent, "_plan_mode_sticky", False)):
-            current_input = (
+            plan_reminder = (
                 "<system-reminder>You are in Plan mode. Do NOT modify files — only "
                 "explore and design. Treat user requests as planning requests, not "
-                "execution commands.</system-reminder>\n" + current_input
+                "execution commands.</system-reminder>"
             )
+            current_input = plan_reminder + "\n" + current_input
+            injected_suffix_parts.append(plan_reminder)
         if mem_context:
             current_input = mem_context.strip() + "\n" + current_input
+            injected_suffix_parts.append(mem_context.strip())
         if force_new_requirement:
-            last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
-            current_input += (
+            cancelled_block = (
                 "[Cancelled task] The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
                 "unless the user explicitly asks to continue.\n\n"
             )
+            last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
             if last_cancelled_task:
-                current_input += f"Recently cancelled task: {last_cancelled_task}\n"
+                cancelled_block += f"Recently cancelled task: {last_cancelled_task}\n"
+            current_input += cancelled_block
+            injected_suffix_parts.append(cancelled_block.strip())
         if self.agent.operation_results:
             pass
         if context:
             ctx_line = f"Operation context: {context}\n"
             current_input += self._clip_text_to_token_budget(ctx_line, op_context_budget)
+            injected_suffix_parts.append(ctx_line.strip())
         if interruption_line:
-            current_input += f"Most recent interruption status: {interruption_line}\n"
-        current_input += f"Local time reference: {date_time}"
+            interruption_text = f"Most recent interruption status: {interruption_line}\n"
+            current_input += interruption_text
+            injected_suffix_parts.append(interruption_text.strip())
+        time_ref = f"Local time reference: {date_time}"
+        current_input += time_ref
+        injected_suffix_parts.append(time_ref)
         current_user_msg = {"role": "user", "content": current_input}
+        if injected_suffix_parts:
+            current_user_msg["_injected_suffix"] = "\n\n".join(injected_suffix_parts)
         if mem_context:
             current_user_msg["_memory_context"] = mem_context.strip()
         messages.append(current_user_msg)
