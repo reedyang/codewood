@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from cli.tools.apply_patch import action_apply_unified_patch
 from cli.core.change_preview_formatter import ChangePreviewFormatter
@@ -710,6 +710,163 @@ class ChangePreviewHighlightTests(unittest.TestCase):
         # A changed-line fragment carries the del/add bg composed with a fg style.
         self.assertTrue(any(F.PT_BG_DEL in style for style, _ in frags))
         self.assertTrue(any(F.PT_BG_ADD in style for style, _ in frags))
+
+
+class _PlanModeDummyAgent:
+    def __init__(self, work_directory: Path, plan_mode: bool = False,
+                 temp_dir: Optional[Path] = None) -> None:
+        self.work_directory = work_directory
+        self.workspace_root = work_directory
+        self.workspace_config_dir = work_directory
+        self.execution_policy = "confirmation"
+        self._plan_mode_sticky = plan_mode
+        self._ai_created_path_keys = set()
+        self.prompt_calls = 0
+        self.ai_workspace_temp_dir = temp_dir
+
+    def _get_path_policy(self) -> _DummyPolicy:
+        return _DummyPolicy()
+
+    def _resolve_user_path(self, user_path: str) -> Path:
+        p = Path(user_path)
+        if not p.is_absolute():
+            p = self.work_directory / p
+        return p.resolve()
+
+    def _is_path_under(self, _path: Path, _root: Path) -> bool:
+        try:
+            Path(_path).resolve().relative_to(Path(_root).resolve())
+            return True
+        except Exception:
+            return False
+
+    def _format_side_by_side_change_preview_segments(
+        self,
+        segments: List[Dict[str, Any]],
+        file_path: Any = None,
+    ) -> List[str]:
+        from cli.core.change_preview_formatter import ChangePreviewFormatter
+        code_language = ChangePreviewFormatter.language_from_path(file_path)
+        return ChangePreviewFormatter.format_side_by_side_segments(
+            segments, code_language=code_language
+        )
+
+    def _prompt_confirm_yes_no_maybe_always(self, _message: str, offer_always: bool = False, kind: str = "", **_kwargs: object) -> bool:
+        self.prompt_calls += 1
+        return True
+
+    def _ephemeral_path_key(self, resolved: Path) -> str:
+        return str(resolved)
+
+    def _reload_skills_if_workspace_skill_changed(self, _paths: List[Path]) -> None:
+        return None
+
+
+class ApplyPatchPlanModeGuardTests(unittest.TestCase):
+    def test_plan_mode_blocks_workspace_file_modification(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "existing.py"
+            target.write_text("x = 1\n", encoding="utf-8")
+            agent = _PlanModeDummyAgent(root, plan_mode=True)
+
+            patch = "@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertFalse(result.get("success"))
+            self.assertIn("Plan mode", result.get("error", ""))
+            self.assertIn("under the workspace root", result.get("error", ""))
+
+    def test_plan_mode_blocks_new_file_under_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "new_file.py"
+            agent = _PlanModeDummyAgent(root, plan_mode=True)
+
+            patch = (
+                "*** Begin Patch\n"
+                "*** Add File: new_file.py\n"
+                "+x = 1\n"
+                "*** End Patch\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertFalse(result.get("success"))
+            self.assertIn("Plan mode", result.get("error", ""))
+
+    def test_plan_mode_allows_file_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            outside_dir = Path(tempfile.mkdtemp())
+            try:
+                target = outside_dir / "plan_notes.md"
+                agent = _PlanModeDummyAgent(root, plan_mode=True)
+
+                patch = (
+                    "*** Begin Patch\n"
+                    "*** Add File: plan_notes.md\n"
+                    "+# Plan Notes\n"
+                    "+## Phase 1\n"
+                    "*** End Patch\n"
+                )
+                result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+                self.assertTrue(result.get("success"), result.get("error"))
+                self.assertTrue(target.exists())
+            finally:
+                import shutil
+                shutil.rmtree(str(outside_dir), ignore_errors=True)
+
+    def test_non_plan_mode_allows_workspace_file_modification(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "existing.py"
+            target.write_text("x = 1\n", encoding="utf-8")
+            agent = _PlanModeDummyAgent(root, plan_mode=False)
+
+            patch = "@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(target.read_text(encoding="utf-8"), "x = 2\n")
+
+    def test_plan_mode_allows_temp_dir_writes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            temp_dir = root / "temp"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            target = temp_dir / "plan_notes.md"
+            agent = _PlanModeDummyAgent(root, plan_mode=True, temp_dir=temp_dir)
+
+            patch = (
+                "*** Begin Patch\n"
+                "*** Add File: plan_notes.md\n"
+                "+# Plan Notes\n"
+                "+## Implementation Plan\n"
+                "*** End Patch\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertTrue(target.exists())
+
+    def test_plan_mode_blocks_file_nearby_but_not_under_temp_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            temp_dir = root / "temp"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            # File is at root level, not under temp_dir
+            target = root / "src" / "main.py"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("print('hello')\n", encoding="utf-8")
+            agent = _PlanModeDummyAgent(root, plan_mode=True, temp_dir=temp_dir)
+
+            patch = "@@ -1 +1 @@\n-print('hello')\n+print('world')\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertFalse(result.get("success"))
+            self.assertIn("Plan mode", result.get("error", ""))
+            self.assertIn(str(temp_dir), result.get("error", ""))
 
 
 if __name__ == "__main__":

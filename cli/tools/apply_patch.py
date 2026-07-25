@@ -244,6 +244,38 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 )
             except Exception:
                 in_workspace_root = False
+        # Plan mode guard: block apply_patch on workspace files outside the
+        # designated AI temp directory.  Plan documents and temporary scripts
+        # written under ai_workspace_temp_dir are allowed in Plan mode.
+        if in_workspace_root and bool(getattr(agent, "_plan_mode_sticky", False)):
+            ai_temp_dir = getattr(agent, "ai_workspace_temp_dir", None)
+            in_temp = False
+            if ai_temp_dir is not None:
+                try:
+                    in_temp = bool(
+                        agent._is_path_under(abs_path, Path(str(ai_temp_dir)))
+                    )
+                except Exception:
+                    in_temp = False
+            if not in_temp:
+                temp_path_hint = ""
+                if ai_temp_dir is not None:
+                    temp_path_hint = (
+                        f" Write plan documents or temporary scripts to "
+                        f"'{ai_temp_dir}' using apply_patch instead."
+                    )
+                return {
+                    "success": False,
+                    "error": (
+                        "apply_patch blocked in Plan mode: the target file "
+                        f"'{file_path}' is under the workspace root. Plan mode "
+                        "rules forbid editing, writing, or patching repo-tracked "
+                        f"files.{temp_path_hint} To implement changes to "
+                        "repo-tracked files, ask the user to switch out of "
+                        "Plan mode."
+                    ),
+                }
+
         skip_preview_and_confirm = (
             execution_policy in ("moderate", "unlimited") and in_workspace_root
         )
