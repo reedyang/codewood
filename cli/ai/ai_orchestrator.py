@@ -154,13 +154,15 @@ class AIOrchestrator:
                 # ``_api_content`` = exact text sent in the API payload (for cache
                 #                    prefix matching during history replay).
                 _api_content = ""
+                _injected_suffix = ""
                 for _m in reversed(messages):
                     if isinstance(_m, dict) and str(_m.get("role", "")).strip().lower() == "user":
                         _api_content = str(_m.get("content", ""))
+                        _injected_suffix = str(_m.get("_injected_suffix", ""))
                         break
                 if call_ctx.history_skip_user:
-                    if _api_content:
-                        self.context.history_writer("user", _api_content, _internal=True, context_suffix=_api_content)
+                    if _injected_suffix:
+                        self.context.history_writer("user", _api_content, _internal=True, context_suffix=_injected_suffix)
                 else:
                     _clean = (
                         call_ctx.history_user_input

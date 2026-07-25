@@ -4108,6 +4108,14 @@ def run_agent_loop(agent: Any):
                 f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}"
                 f"{(chr(10) + chr(10) + first_round_evidence) if first_round_evidence else ''}"
             )
+            _first_round_extra_parts: list[str] = []
+            if forced_mcp_prefix:
+                _first_round_extra_parts.append(forced_mcp_prefix.strip())
+            if forced_skill_prefix:
+                _first_round_extra_parts.append(forced_skill_prefix.strip())
+            if first_round_evidence:
+                _first_round_extra_parts.append(first_round_evidence.strip())
+            self._first_round_injected = "\n\n".join(_first_round_extra_parts) if _first_round_extra_parts else ""
             ready_to_send_elapsed_ms = int((time.perf_counter() - turn_send_started_at) * 1000)
             _emit_flow_log(f"First-round request preparation complete; sending actual request: elapsed_ms={ready_to_send_elapsed_ms}")
             self._memory_injected_this_task = False
