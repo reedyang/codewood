@@ -34,6 +34,9 @@ _AUTO_ACCEPT_ELICITATION_ENV = get_app_env_var("AUTO_ACCEPT_ELICITATION")
 def _has_pytest() -> bool:
     return importlib.util.find_spec("pytest") is not None
 
+def _has_xdist() -> bool:
+    return importlib.util.find_spec("xdist") is not None
+
 
 def _iter_test_cases(suite: unittest.TestSuite) -> Iterable[unittest.TestCase]:
     for item in suite:
@@ -183,6 +186,8 @@ def run_pytest(args: argparse.Namespace, project_root: Path, excluded_rel: set[s
         cmd.extend(targets)
     else:
         cmd.append(args.start_dir)
+    if args.parallel:
+        cmd.append(f"-n{args.parallel}")
 
     for rel in sorted(excluded_rel):
         cmd.extend(["--ignore", rel])
@@ -249,6 +254,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only discover/list tests, do not execute.",
     )
+    parser.add_argument(
+        "-n", "--parallel",
+        default=None,
+        help="Number of parallel workers (pytest-xdist). Use 'auto' for CPU count. "
+             "Example: --parallel 4 or -n auto. Requires pytest-xdist.",
+    )
     return parser.parse_args()
 
 
@@ -271,10 +282,19 @@ def main() -> int:
     if framework == "pytest":
         if not _has_pytest():
             print("pytest is not installed. Fallback to unittest.")
-            return run_unittest(args, project_root, excluded_rel)
-        return run_pytest(args, project_root, excluded_rel)
+            exit_code = run_unittest(args, project_root, excluded_rel)
+        else:
+            exit_code = run_pytest(args, project_root, excluded_rel)
+    else:
+        exit_code = run_unittest(args, project_root, excluded_rel)
 
-    return run_unittest(args, project_root, excluded_rel)
+    if not args.parallel and not args.list_only:
+        if _has_xdist():
+            print("\nTip: add `-n auto` for parallel execution (~3x faster)")
+        else:
+            print("\nTip: install pytest-xdist (`pip install pytest-xdist`) "
+                  "then add `-n auto` for parallel execution (~3x faster)")
+    return exit_code
 
 
 if __name__ == "__main__":
