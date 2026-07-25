@@ -1944,8 +1944,9 @@ function TranscriptMinimap({
       const containerRect = container.getBoundingClientRect();
       const chatViewRect = chatView.getBoundingClientRect();
       const h = containerRect.height;
-      const nextTop = (containerRect.top - chatViewRect.top) + (h - Math.min(h, userCount * lineStep)) / 2;
-      setMinimapHeight(h);
+      const contentHeight = Math.min(h, userCount * lineStep);
+      const nextTop = (containerRect.top - chatViewRect.top) + (h - contentHeight) / 2;
+      setMinimapHeight(contentHeight);
       setMinimapTop(nextTop);
     }
   };
