@@ -4886,13 +4886,6 @@ def run_agent_loop(agent: Any):
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
                         print(t("runtime.apply_patch_failed", error=err))
-                        print(t("🔎 apply_patch diagnostic hints:", "🔎 apply_patch 诊断提示："))
-                        for hint in _build_apply_patch_failure_hints(
-                            err,
-                            args if isinstance(args, dict) else {},
-                            t,
-                        ):
-                            print(f"  - {hint}")
                     if self._result_indicates_user_cancelled(result):
                         if explore_ticker is not None:
                             explore_ticker.stop()
