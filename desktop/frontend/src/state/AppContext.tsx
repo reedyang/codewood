@@ -367,6 +367,8 @@ const CONSOLE_OPEN_KEY = "codewood.consoleOpen";
 // Stable empty reference so the exposed `turns` doesn't change identity when a
 // chat has no live turns (avoids needless re-renders / effect churn).
 const EMPTY_TURNS: Turn[] = [];
+const CMD_PROMPT_BEGIN = "\uE004";
+const CMD_PROMPT_END = "\uE005";
 
 function loadInitialTheme(): Theme {
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -1432,6 +1434,56 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const repaintLastToolPrompt = useCallback((text: string, chatId: string) => {
+    if (!text || !chatId) {
+      return;
+    }
+    setTurnsByChat((prev) => {
+      const existing = prev[chatId];
+      if (!existing || existing.length === 0) {
+        return prev;
+      }
+      const next = [...existing];
+      const turn = next[next.length - 1];
+      if (!turn) {
+        return prev;
+      }
+      const rounds = [...turn.rounds];
+      const round = rounds[rounds.length - 1];
+      if (!round) {
+        return prev;
+      }
+      const segments = [...round.segments];
+      let replaced = false;
+      for (let i = segments.length - 1; i >= 0; i -= 1) {
+        const seg = segments[i];
+        if (!seg || seg.kind !== "step") {
+          continue;
+        }
+        const end = seg.text.lastIndexOf(CMD_PROMPT_END);
+        if (end < 0) {
+          continue;
+        }
+        const begin = seg.text.lastIndexOf(CMD_PROMPT_BEGIN, end);
+        if (begin < 0) {
+          continue;
+        }
+        segments[i] = {
+          ...seg,
+          text: `${seg.text.slice(0, begin)}${text}${seg.text.slice(end + CMD_PROMPT_END.length)}`,
+        };
+        replaced = true;
+        break;
+      }
+      if (!replaced) {
+        return prev;
+      }
+      rounds[rounds.length - 1] = { ...round, segments };
+      next[next.length - 1] = { ...turn, rounds };
+      return { ...prev, [chatId]: next };
+    });
+  }, []);
+
   const appendThinking = useCallback((text: string, chatId: string) => {
     if (!text || !chatId) {
       return;
@@ -1940,6 +1992,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "output": {
           const stepText = String(data.text ?? "");
           appendSegment("step", stepText, eventKey);
+          break;
+        }
+        case "tool_feedback_repaint": {
+          const stepText = String(data.text ?? "");
+          repaintLastToolPrompt(stepText, eventKey);
           break;
         }
         case "assistant": {

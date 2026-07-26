@@ -257,6 +257,7 @@ export type ServerEvent =
   | { event: "turn_start"; data: { text: string } }
   | { event: "round_start"; data: { chatId?: string } }
   | { event: "round_end"; data: { chatId?: string } }
+  | { event: "tool_feedback_repaint"; data: { text: string; chatId?: string; workspaceId?: string } }
   | { event: "compact_notice"; data: { title?: string; body?: string; text: string; stage?: string; mode?: string; chatId?: string; workspaceId?: string } }
   | { event: "output"; data: { text: string } }
   | { event: "assistant"; data: { text: string } }

@@ -401,6 +401,52 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("applies a failed tool prompt repaint while the turn is still running", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Run read", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: {
+          text: "\uE004\x1b[38;2;19;161;14m•\x1b[0m Read helloworld2.py\uE005",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+      apiMock.emit({
+        event: "tool_feedback_repaint",
+        data: {
+          text: "\uE004\x1b[38;2;197;15;31m•\x1b[0m Read helloworld2.py\uE005",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(1);
+      expect(turns[0].rounds[0].segments).toHaveLength(1);
+      expect(turns[0].rounds[0].segments[0]?.text).toContain("\x1b[38;2;197;15;31m");
+      expect(turns[0].rounds[0].segments[0]?.text).not.toContain("\x1b[38;2;19;161;14m");
+    });
+  });
+
   it("exposes an optimistic active workspace/chat without mutating the raw backend state", async () => {
     render(
       <AppProvider>

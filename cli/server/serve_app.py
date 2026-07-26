@@ -5349,6 +5349,10 @@ class ServeApp:
         self.agent._gui_subagent_event = lambda event_name, data: self.broadcaster.publish(  # type: ignore[attr-defined]
             event_name, self._route(**data)
         )
+        self.agent._gui_tool_feedback_repaint = lambda text: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "tool_feedback_repaint",
+            self._route(text=str(text or "")),
+        )
         # Hook for file change events: emits a summary of all file changes
         # at the end of a task.  Each summary is stored in file_changes.json
         # keyed by a random hashcode, and a [FILE_CHANGE_REF:<hashcode>]
