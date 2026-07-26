@@ -3385,6 +3385,8 @@ class Agent:
             content = str(r.get("content") or "")
             if not content:
                 content = str(r.get("output") or "")
+            if not content:
+                content = str(r.get("error") or "")
             return content
         if t == "project_context_search" or t == "call_graph":
             # The search/call-graph result carries no ``output``/``content``
