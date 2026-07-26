@@ -3396,6 +3396,8 @@ class Agent:
             out = str(r.get("content") or "")
         if not out:
             out = str(r.get("message") or "")
+        if not out:
+            out = str(r.get("error") or "")
         return out
 
     @staticmethod
@@ -3620,9 +3622,11 @@ class Agent:
         else:
             round_output = self._extract_tool_result_output(t, r)
         # Suppress the generic "Successfully applied patch to '...'"
-        # message for apply_patch — the diff block renders the same
-        # information as a structured, syntax-highlighted preview.
-        if t == "apply_patch":
+        # message for successful apply_patch calls — the diff block
+        # renders the same information as a structured preview.
+        # For failed patches, keep the error output so it is visible
+        # in the GUI transcript and persisted in _tool_rounds_raw.
+        if t == "apply_patch" and success:
             round_output = ""
         if round_output:
             tool_round = (
