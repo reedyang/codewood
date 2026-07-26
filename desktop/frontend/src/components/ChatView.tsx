@@ -817,7 +817,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
               isLive &&
               !session.output &&
               (rounds.length === 0 ||
-                (lastRound && !lastRound.text && !lastRound.thinking));
+                (lastRound && !lastRound.text && !lastRound.thinking && !lastRound.tools));
             if (!showWorking) return null;
             return (
               <div className="activity">
@@ -2274,14 +2274,15 @@ function ThinkingPanel({
   running: boolean;
   timerText?: string;
 }) {
-  const [expanded, setExpanded] = useState(running);
+  const [expanded, setExpanded] = useState(false);
   const { t } = useApp();
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-expand when thinking starts, auto-collapse when thinking ends
-  // (model moves on to visible text or tool calls).
   useEffect(() => {
-    setExpanded(running);
-  }, [running]);
+    if (expanded && running && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [thinkingText, expanded, running]);
 
   if (!thinkingText.trim()) {
     return null;
@@ -2303,7 +2304,7 @@ function ThinkingPanel({
         </button>
         {expanded && (
           <>
-            <div className="thinking-scroll">
+            <div className="thinking-scroll" ref={scrollRef}>
               <div className="thinking-content">
                 <MarkdownText text={thinkingText} />
               </div>

@@ -4658,7 +4658,7 @@ html[data-has-bg] .select {
   opacity: 1;
 }
 .thinking-scroll {
-  max-height: 100px;
+  max-height: 210px;
   overflow-y: auto;
   padding: 8px 12px;
   background: var(--surface, rgba(127, 127, 127, 0.06));
