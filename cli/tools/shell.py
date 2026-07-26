@@ -3064,19 +3064,56 @@ def _git_stash_apply(cwd: Path, stash_hash: str) -> None:
         pass
 
 
-def _git_stash_restore(cwd: Path, stash_hash: str) -> None:
-    """Drop the temporary stash now that its before-content has been used
-    for diffs."""
+def _git_stash_ref_for_hash(cwd: Path, stash_hash: str) -> Optional[str]:
+    """Return the current stash ref (for example ``stash@{0}``) that points
+    at *stash_hash*, or ``None`` when no matching stash entry exists."""
     try:
         result = _subprocess_mod.run(
-            ["git", "-C", str(cwd), "stash", "drop", stash_hash],
+            ["git", "-C", str(cwd), "stash", "list", "--format=%H %gd"],
             capture_output=True, text=True,
             timeout=10,
         )
         if result.returncode != 0:
             _log.info(
-                "stash drop failed: stash=%s rc=%d stdout=%s stderr=%s",
+                "stash list for ref lookup failed: rc=%d stdout=%s stderr=%s",
+                result.returncode,
+                (result.stdout or "").strip()[:200],
+                (result.stderr or "").strip()[:200],
+            )
+            return None
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                current_hash, current_ref = line.split(None, 1)
+            except ValueError:
+                continue
+            if current_hash == stash_hash:
+                return current_ref.strip()
+    except Exception as e:
+        _log.info("stash ref lookup error: %s", e)
+    return None
+
+
+def _git_stash_restore(cwd: Path, stash_hash: str) -> None:
+    """Drop the temporary stash now that its before-content has been used
+    for diffs."""
+    try:
+        stash_ref = _git_stash_ref_for_hash(cwd, stash_hash)
+        if not stash_ref:
+            _log.info("stash drop skipped; hash not found in stash list: %s", stash_hash)
+            return
+        result = _subprocess_mod.run(
+            ["git", "-C", str(cwd), "stash", "drop", stash_ref],
+            capture_output=True, text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            _log.info(
+                "stash drop failed: stash=%s ref=%s rc=%d stdout=%s stderr=%s",
                 stash_hash,
+                stash_ref,
                 result.returncode,
                 (result.stdout or "").strip()[:200],
                 (result.stderr or "").strip()[:200],
