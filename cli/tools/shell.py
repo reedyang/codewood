@@ -841,6 +841,36 @@ def action_shell_command(
     if not decision.get("allowed", False):
         return {"success": False, "error": decision.get("error", "")}
     agent._load_confirm_allowlist()
+
+    # Determine which files this command targets for deletion *before* the
+    # confirmation prompt so we can auto-skip approval when the model is
+    # merely cleaning up files it created during the current task.
+    execution_cwd = _resolve_shell_execution_cwd(agent)
+    _delete_snapshots: Dict[str, str] = {}
+    _all_delete_targets_self_created = False
+    try:
+        if _is_potential_delete_command(command):
+            _delete_targets_pre = _extract_delete_file_paths(command, execution_cwd)
+            if _delete_targets_pre:
+                _delete_target_strs = {str(t) for t in _delete_targets_pre}
+                _tracker_pre = getattr(agent, "file_change_tracker", None)
+                if _tracker_pre is not None:
+                    _tracker_changes = _tracker_pre.get_changes()
+                    _created_paths = {
+                        os.path.normcase(c.file_path) for c in _tracker_changes
+                        if c.change_type == "create"
+                    }
+                    _all_delete_targets_self_created = (
+                        bool(_delete_target_strs)
+                        and all(
+                            os.path.normcase(t) in _created_paths
+                            for t in _delete_target_strs
+                        )
+                    )
+                _delete_snapshots = _snapshot_files_content(_delete_targets_pre)
+    except Exception:
+        pass
+
     execution_policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
     in_allowlist = agent._shell_command_in_allowlist(command)
     force_manual_confirm_by_policy = (
@@ -857,6 +887,10 @@ def action_shell_command(
         force_manual_confirm_by_policy
         or ((not confirmed) and (not in_allowlist))
     )
+    # Auto-skip approval when the command only deletes files that the model
+    # itself created during the current task.
+    if should_prompt_confirm and _all_delete_targets_self_created:
+        should_prompt_confirm = False
     if should_prompt_confirm:
         # The selection/inline confirmation UI renders the command on its own
         # styled line, so use a command-less question and pass the command
@@ -890,18 +924,6 @@ def action_shell_command(
     import subprocess
 
     merge_path: Optional[str] = None
-    execution_cwd = _resolve_shell_execution_cwd(agent)
-
-    # Snapshot files that may be deleted by this command so we can backup
-    # their content and record a delete change if the command removes them.
-    _delete_snapshots: Dict[str, str] = {}
-    try:
-        if _is_potential_delete_command(command):
-            _delete_targets = _extract_delete_file_paths(command, execution_cwd)
-            if _delete_targets:
-                _delete_snapshots = _snapshot_files_content(_delete_targets)
-    except Exception:
-        pass
 
     # Snapshot the entire workspace file listing (metadata only) so we can
     # detect file creations and modifications after the command runs.
