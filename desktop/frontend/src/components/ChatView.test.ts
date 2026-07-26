@@ -14,6 +14,19 @@ describe("countToolCalls", () => {
     const text = `${prompt}\n${prompt}\n`;
     expect(countToolCalls(text)).toBe(2);
   });
+
+  it("collapses a repainted failed tool prompt into one row", () => {
+    const greenPrompt = "\uE004\x1b[38;2;19;161;14m•\x1b[0m Read hello.py\uE005";
+    const redPrompt = "\uE004\x1b[38;2;197;15;31m•\x1b[0m Read hello.py\uE005";
+    const text = [
+      greenPrompt,
+      "\uE000hello output\uE001",
+      `\x1b7\x1b[2A\r\x1b[2K${redPrompt}\x1b8`,
+    ].join("\n");
+
+    expect(countToolCalls(text)).toBe(1);
+    expect(getLastToolPromptBody(text)).toBe("Read hello.py");
+  });
 });
 
 describe("getLastToolPromptBody", () => {

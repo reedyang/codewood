@@ -30,6 +30,33 @@ function handleBackspace(text: string): string {
   return cur;
 }
 
+/** Normalize the backend's saved-cursor repaint sequence into the final
+ *  visible line before we process simpler \\r / \\b overwrites. This is what
+ *  lets a live tool prompt flip from green to red as soon as the tool fails,
+ *  instead of waiting for end-of-turn history reconstruction. */
+function applyCursorRepaints(text: string): string {
+  const repaintRe = /\x1b7\x1b\[(\d*)A\r\x1b\[2K([\s\S]*?)\x1b8/;
+  let next = text;
+  let guard = 0;
+  while (guard < 1000) {
+    const match = repaintRe.exec(next);
+    if (!match) {
+      break;
+    }
+    const before = next.slice(0, match.index);
+    const after = next.slice(match.index + match[0].length);
+    const up = Math.max(1, parseInt(match[1] || "1", 10) || 1);
+    const replacement = match[2] || "";
+    const lines = before.split("\n");
+    const currentRow = Math.max(0, lines.length - 1);
+    const targetRow = Math.max(0, currentRow - up);
+    lines[targetRow] = replacement;
+    next = `${lines.join("\n")}${after}`;
+    guard += 1;
+  }
+  return next;
+}
+
 /** Process \\r (carriage return) with terminal-like overwrite:
  *  each line is split on \\r; the last non-empty segment wins.
  *  For lines that end with \\n (completed lines), a trailing empty
@@ -38,6 +65,7 @@ function handleBackspace(text: string): string {
  *  \\b is also handled inside each segment.
  *  ANSI CSI sequences are preserved for AnsiText. */
 function handleControlChars(text: string): string {
+  text = applyCursorRepaints(text);
   const hasBS = text.includes("\b");
   const hasCR = text.includes("\r");
   if (!hasBS && !hasCR) return text;
@@ -133,6 +161,7 @@ type SegKind = "text" | "cmd" | "prompt" | "diff" | "subagent_session";
 type Segment = { kind: SegKind; text: string };
 
 function splitSteps(text: string): Segment[] {
+  text = applyCursorRepaints(text);
   const segments: Segment[] = [];
   let buf = "";
   let mode: SegKind = "text";
