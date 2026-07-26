@@ -3004,7 +3004,20 @@ def _git_stash_push(cwd: Path) -> Optional[str]:
     Uses ``--keep-index`` so staged changes stay in the index and working
     tree; unstaged and untracked changes go into the stash.
     """
+    def _top_stash_hash() -> Optional[str]:
+        try:
+            result = _subprocess_mod.run(
+                ["git", "-C", str(cwd), "rev-parse", "--verify", "refs/stash"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception as e:
+            _log.info("stash top hash lookup error: %s", e)
+        return None
+
     try:
+        before_hash = _top_stash_hash()
         result = _subprocess_mod.run(
             ["git", "-C", str(cwd), "stash", "push", "--keep-index",
              "--include-untracked", "-m", "codewood_shell_pre"],
@@ -3016,14 +3029,22 @@ def _git_stash_push(cwd: Path) -> Optional[str]:
             _log.info("stash push failed: rc=%d stdout=%s stderr=%s",
                       result.returncode, result.stdout.strip()[:200], result.stderr.strip()[:200])
             return None
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if "No local changes to save" in stdout or "No local changes to save" in stderr:
+            return None
         # Resolve the stash hash so we reference the exact stash entry,
         # not stash@{0} which could shift if the shell creates its own.
-        hash_result = _subprocess_mod.run(
-            ["git", "-C", str(cwd), "rev-parse", "stash@{0}"],
-            capture_output=True, text=True, timeout=10,
+        after_hash = _top_stash_hash()
+        if after_hash and after_hash != before_hash:
+            return after_hash
+        _log.info(
+            "stash push produced no new entry: before=%s after=%s stdout=%s stderr=%s",
+            before_hash,
+            after_hash,
+            stdout[:200],
+            stderr[:200],
         )
-        if hash_result.returncode == 0:
-            return hash_result.stdout.strip()
         return None
     except Exception as e:
         _log.info("stash push error: %s", e)
@@ -3047,11 +3068,19 @@ def _git_stash_restore(cwd: Path, stash_hash: str) -> None:
     """Drop the temporary stash now that its before-content has been used
     for diffs."""
     try:
-        _subprocess_mod.run(
+        result = _subprocess_mod.run(
             ["git", "-C", str(cwd), "stash", "drop", stash_hash],
             capture_output=True, text=True,
             timeout=10,
         )
+        if result.returncode != 0:
+            _log.info(
+                "stash drop failed: stash=%s rc=%d stdout=%s stderr=%s",
+                stash_hash,
+                result.returncode,
+                (result.stdout or "").strip()[:200],
+                (result.stderr or "").strip()[:200],
+            )
     except Exception:
         pass
 
