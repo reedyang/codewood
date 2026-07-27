@@ -1311,10 +1311,6 @@ class LLMContextManager:
             mem_context = ""
         current_input = str(user_input or "").strip() + "\n"
         injected_suffix_parts: list[str] = []
-        first_round_injected = str(getattr(self.agent, "_first_round_injected", "") or "").strip()
-        if first_round_injected:
-            injected_suffix_parts.append(first_round_injected)
-            self.agent._first_round_injected = ""
         if bool(getattr(self.agent, "_plan_mode_sticky", False)):
             plan_reminder = (
                 "<system-reminder>You are in Plan mode. Do NOT modify files — only "

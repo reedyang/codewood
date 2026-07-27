@@ -161,7 +161,6 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.execution_policy = "confirmation"
     agent.memory_enabled = True
     agent.memory_fallback_expansion_enabled = True
-    agent.project_context_first_round_evidence_enabled = True
     agent.auto_compact_trigger_percent = DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
     agent.display_language = DEFAULT_DISPLAY_LANGUAGE
     # None means unlimited auto-execution rounds for a single task.
@@ -210,13 +209,6 @@ def setup_runtime_preferences(agent: Any) -> None:
                 _me
                 if isinstance(_me, bool)
                 else str(_me).strip().lower() in ("1", "true", "yes", "on")
-            )
-
-            _pcfr = cfg_data.get("project_context_first_round_evidence", True)
-            agent.project_context_first_round_evidence_enabled = (
-                _pcfr
-                if isinstance(_pcfr, bool)
-                else str(_pcfr).strip().lower() in ("1", "true", "yes", "on")
             )
 
             _compact_pct = cfg_data.get("auto_compact_trigger_percent", DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT)
