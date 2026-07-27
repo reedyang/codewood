@@ -161,6 +161,7 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.execution_policy = "confirmation"
     agent.memory_enabled = True
     agent.memory_fallback_expansion_enabled = True
+    agent.project_context_search_enabled = True
     agent.auto_compact_trigger_percent = DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
     agent.display_language = DEFAULT_DISPLAY_LANGUAGE
     # None means unlimited auto-execution rounds for a single task.
@@ -234,6 +235,13 @@ def setup_runtime_preferences(agent: Any) -> None:
                     parsed_rounds = None
                 # Keep backward compatibility for explicit positive values.
                 agent.max_tool_rounds = parsed_rounds if parsed_rounds and parsed_rounds > 0 else None
+
+            _pcs = cfg_data.get("project_context_search_enabled", True)
+            agent.project_context_search_enabled = (
+                _pcs
+                if isinstance(_pcs, bool)
+                else str(_pcs).strip().lower() in ("1", "true", "yes", "on")
+            )
     except Exception as e:
         print(
             translate(

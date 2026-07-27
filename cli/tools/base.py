@@ -45,6 +45,9 @@ class BaseTool:
     #: WebView is available to service the request, e.g. the embedded browser).
     requires_gui: bool = False
 
+    #: Only expose this tool when project_context_search is enabled via config.
+    requires_project_context_search: bool = False
+
     @classmethod
     def schema(cls) -> Dict[str, Any]:
         """Return the OpenAI-style function spec for this tool."""
@@ -65,6 +68,7 @@ class BaseTool:
         has_subagents: bool,
         plan_mode: bool = False,
         gui_enabled: bool = False,
+        project_context_search_enabled: bool = True,
     ) -> bool:
         """Whether this tool should appear in the model-visible spec."""
         if cls.requires_multimodal and not multimodal_enabled:
@@ -76,6 +80,8 @@ class BaseTool:
         if cls.excluded_in_plan_mode and plan_mode:
             return False
         if cls.requires_gui and not gui_enabled:
+            return False
+        if cls.requires_project_context_search and not project_context_search_enabled:
             return False
         return True
 

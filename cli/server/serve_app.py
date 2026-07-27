@@ -3424,6 +3424,7 @@ class ServeApp:
             ),
             "max_tool_rounds": getattr(agent, "max_tool_rounds", None),
             "memory_enabled": bool(getattr(agent, "memory_enabled", False)),
+            "project_context_search_enabled": bool(getattr(agent, "project_context_search_enabled", True)),
         }
         try:
             from ..core.config.config_jsonc import (
@@ -3453,6 +3454,8 @@ class ServeApp:
                                 pass
                     if "memory_enabled" in cfg:
                         out["memory_enabled"] = bool(cfg.get("memory_enabled"))
+                    if "project_context_search_enabled" in cfg:
+                        out["project_context_search_enabled"] = bool(cfg.get("project_context_search_enabled"))
         except Exception:
             pass
         return out
@@ -3490,6 +3493,8 @@ class ServeApp:
                     normalized["max_tool_rounds"] = rounds
         if "memory_enabled" in payload:
             normalized["memory_enabled"] = bool(payload.get("memory_enabled"))
+        if "project_context_search_enabled" in payload:
+            normalized["project_context_search_enabled"] = bool(payload.get("project_context_search_enabled"))
         if not normalized:
             return False
         agent = self.agent
@@ -3523,6 +3528,12 @@ class ServeApp:
         # Drop the resolved-config cache so downstream consumers re-read fresh.
         try:
             agent._resolved_config_data = {}
+        except Exception:
+            pass
+        # Reload tool specs so gating changes (e.g. project_context_search_enabled)
+        # take effect without a restart.
+        try:
+            agent.tool_specs = agent._load_tools_spec_from_jsonc()
         except Exception:
             pass
         # Push a fresh state snapshot to refresh any open settings page.

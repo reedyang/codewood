@@ -9,6 +9,7 @@ from .base import BaseTool
 
 class ProjectContextSearchTool(BaseTool):
     name = "project_context_search"
+    requires_project_context_search = True
     description = "Fast code-context retrieval using BM25 + embeddings. Supports text search and call-graph queries (callers/callees)."
     parameters: Dict[str, Any] = {
         "type": "object",

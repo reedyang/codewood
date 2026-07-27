@@ -152,12 +152,14 @@ def _gating_flags(agent: Any) -> Dict[str, bool]:
     small_model = is_small_model_context_window(
         (getattr(agent, "params", None) or {}).get("context_window")
     )
+    pcs_enabled = bool(getattr(agent, "project_context_search_enabled", True))
     return {
         "multimodal_enabled": multimodal_enabled,
         "has_subagents": has_subagents,
         "plan_mode": plan_mode,
         "gui_enabled": gui_enabled,
         "small_model": small_model,
+        "project_context_search_enabled": pcs_enabled,
     }
 
 

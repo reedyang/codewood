@@ -70,6 +70,7 @@ export interface GeneralConfig {
   /** ``null`` means unlimited tool rounds. */
   max_tool_rounds: number | null;
   memory_enabled: boolean;
+  project_context_search_enabled: boolean;
 }
 
 /** Per-server summary on the MCP settings page. */

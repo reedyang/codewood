@@ -62,7 +62,11 @@ When making changes to files, first understand the file's code conventions. Mimi
 # Doing tasks
 The user will primarily request you perform software engineering tasks. This includes solving bugs, adding new functionality, refactoring code, explaining code, and more. For these tasks the following steps are recommended:
 - Use the available search tools to understand the codebase and the user's query. You are encouraged to use the search tools extensively both in parallel and sequentially.
+[[if $project_context_search_enabled="true"]]
 - When you need to locate a keyword in text files and read nearby content, use `project_context_search` to find candidate files, then `read` to inspect them. For precise text/pattern matching, use `rg` (via `shell`) then `read` with `offset`/`limit`.
+[[else]]
+- When you need to locate a keyword in text files and read nearby content, use `rg` (via `shell`) to find candidate files, then `read` to inspect them.
+[[endif]]
 - Implement the solution using all tools available to you
 - Always use the `apply_patch` tool to write files. This applies to **every** file mutation, including creating brand-new text files.
 [[if $os="Windows"]]

@@ -275,6 +275,8 @@ export const zhCN: Dict = {
   "general.memoryEnabledHint": "允许 Agent 读写当前工作区的会话记忆。",
   "general.mcpToolsEnabled": "启用 MCP 工具",
   "general.mcpToolsEnabledHint": "把已配置的 MCP Server 作为附加工具暴露给 Agent。",
+  "general.projectContextSearchEnabled": "启用项目上下文搜索",
+  "general.projectContextSearchEnabledHint": "允许 Agent 调用 project_context_search 工具快速搜索代码库。",
   "general.errAutoCompactRange": "自动压缩阈值必须在 0 到 100 之间。",
   "general.errMaxRoundsInt": "最大工具轮数必须是非负整数。",
   "general.errSave": "保存通用设置失败。",

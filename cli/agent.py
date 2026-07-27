@@ -540,8 +540,11 @@ class Agent:
         )
 
     def _project_context_tool_allowed(self) -> bool:
-        # Tool visibility/execution follows the same hard policy.
-        return not self._is_default_workspace()
+        # Hard policy: not available in Default workspace.
+        if self._is_default_workspace():
+            return False
+        # Soft switch: user can disable via config.
+        return bool(getattr(self, "project_context_search_enabled", True))
 
     def _bind_project_index_workspace(self) -> None:
         try:
