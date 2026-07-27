@@ -2792,9 +2792,18 @@ class Agent:
                 if len(vv) > 120:
                     vv = vv[:120] + "..."
                 return f"({k}={vv})"
+        # Fallback: show key=value pairs instead of bare key names,
+        # matching the MCP tool detail format (lines 2748-2764).
         if a:
-            keys = ",".join(sorted([str(k) for k in a.keys()])[:5])
-            return f"(args: {keys})"
+            items = []
+            for k in sorted(a.keys())[:5]:
+                v = a[k]
+                if v is None:
+                    items.append(f"{k}=null")
+                else:
+                    s = str(v)
+                    items.append(f"{k}={s[:57] + '...' if len(s) > 60 else s}")
+            return f"({', '.join(items)})"
         return ""
 
     def _explore_topic_label(self, args: Dict[str, Any], max_chars: int = 80) -> str:
@@ -3412,6 +3421,13 @@ class Agent:
         """
         t = str(tool_name or "").strip().lower()
         r = result if isinstance(result, dict) else {}
+        if t in ("user_preferences_read", "user_preferences_patch"):
+            body = str(r.get("body") or "")
+            if body:
+                return body
+            err = str(r.get("error") or "")
+            if err:
+                return err
         if t == "read":
             content = str(r.get("content") or "")
             if not content:
