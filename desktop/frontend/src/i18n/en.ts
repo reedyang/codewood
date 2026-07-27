@@ -416,4 +416,12 @@ export const en: Dict = {
   "skills.sourceGlobal": "~/.codewood/skills",
   "skills.sourceWorkspace": "Workspace",
   "skills.errToggle": "Failed to toggle skill.",
+  "dashboard.input": "INPUT",
+  "dashboard.output": "OUTPUT",
+  "dashboard.outputTokens": "Output tokens",
+  "dashboard.reasoningTokens": "Reasoning tokens",
+  "dashboard.inputTokens": "Input tokens",
+  "dashboard.cacheHits": "Cache hits",
+  "dashboard.cacheMisses": "Cache misses",
+  "dashboard.hitRate": "Hit rate",
 };
