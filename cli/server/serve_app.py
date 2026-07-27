@@ -5228,6 +5228,398 @@ class ServeApp:
             return _read_workspace_chat_index(storage)
         return None
 
+    # ----- file change undo / reapply -----------------------------------
+
+    @staticmethod
+    def _read_file_for_patch(file_path: str) -> tuple:
+        """Read file using the same encoding detection as apply_patch.
+
+        Returns ``(lines, codec, bom_bytes)`` where *lines* is the BOM-free
+        split content (ready for line-by-line comparison against DiffRow[]),
+        *codec* is the detected encoding name, and *bom_bytes* is the BOM
+        prefix (empty bytes if none).  Callers MUST use ``_write_patched_file``
+        to preserve the encoding + BOM when writing back.
+        """
+        from ..tools.apply_patch import _read_text_preserving_encoding
+        from pathlib import Path as _Path
+        content, codec, bom = _read_text_preserving_encoding(_Path(file_path))
+        # content already has BOM stripped, splitlines() for DiffRow comparison
+        lines = content.splitlines()
+        return lines, codec, bom
+
+    @staticmethod
+    def _write_patched_file(
+        file_path: str, result_lines: List[str], codec: str, bom_bytes: bytes,
+    ) -> Dict[str, Any]:
+        """Write patched result back, preserving the original encoding and BOM."""
+        from pathlib import Path as _Path
+        try:
+            data = "\n".join(result_lines) + "\n"
+            raw = bom_bytes + data.encode(codec, errors="replace")
+            _Path(file_path).write_bytes(raw)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": f"write failed: {exc}"}
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": f"write failed: {exc}"}
+
+    @staticmethod
+    def _apply_reverse_patch(file_path: str, diff_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Reverse-apply DiffRow[] to *file_path*, returning {success, error?}.
+
+        Walks the current file line-by-line guided by ``newNo`` in each DiffRow,
+        verifying every line affected by the patch matches the expected post-change
+        content. Returns ``{"success": True}`` on success, or
+        ``{"success": False, "error": "Conflict at line N"}`` on failure.
+        """
+        try:
+            current, codec, bom = ServeApp._read_file_for_patch(file_path)
+        except Exception:
+            return {"success": False, "error": "cannot read file"}
+        rows = [
+            r for r in diff_rows
+            if isinstance(r, dict) and r.get("type") not in ("omitted",)
+        ]
+        result: List[str] = []
+        file_pos = 0  # 0-based index into *current*
+
+        for row in rows:
+            nn = row.get("newNo")
+            row_type = row.get("type", "")
+            if nn is not None and isinstance(nn, int) and nn >= 1:
+                while file_pos < nn - 1:
+                    if file_pos >= len(current):
+                        return {"success": False, "error": "file shorter than expected"}
+                    result.append(current[file_pos])
+                    file_pos += 1
+                if row_type == "context":
+                    if file_pos >= len(current):
+                        return {"success": False, "error": f"unexpected eof at line {nn}"}
+                    expected = str(row.get("newText", ""))
+                    actual = current[file_pos]
+                    if expected and actual != expected:
+                        return {"success": False, "error": f"conflict at line {nn}"}
+                    result.append(actual)
+                    file_pos += 1
+                elif row_type == "add":
+                    if file_pos >= len(current):
+                        return {"success": False, "error": f"unexpected eof at line {nn}"}
+                    expected = str(row.get("newText", ""))
+                    actual = current[file_pos]
+                    if expected and actual != expected:
+                        return {"success": False, "error": f"conflict at line {nn}"}
+                    file_pos += 1
+                elif row_type == "change":
+                    if file_pos >= len(current):
+                        return {"success": False, "error": f"unexpected eof at line {nn}"}
+                    expected = str(row.get("newText", ""))
+                    actual = current[file_pos]
+                    if expected and actual != expected:
+                        return {"success": False, "error": f"conflict at line {nn}"}
+                    result.append(str(row.get("oldText", "")))
+                    file_pos += 1
+                elif row_type == "del":
+                    result.append(current[file_pos])
+                    file_pos += 1
+                else:
+                    result.append(current[file_pos])
+                    file_pos += 1
+            else:
+                if row_type == "del":
+                    result.append(str(row.get("oldText", "")))
+
+        while file_pos < len(current):
+            result.append(current[file_pos])
+            file_pos += 1
+
+        return ServeApp._write_patched_file(file_path, result, codec, bom)
+
+    @staticmethod
+    def _apply_forward_patch(file_path: str, diff_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Forward-apply DiffRow[] to *file_path*, returning {success, error?}.
+
+        Walks the current file (assumed to be in the pre-change / undone state)
+        guided by ``oldNo``.  Verification uses ``oldText``; conflict = abort.
+        """
+        try:
+            current, codec, bom = ServeApp._read_file_for_patch(file_path)
+        except Exception:
+            return {"success": False, "error": "cannot read file"}
+        rows = [
+            r for r in diff_rows
+            if isinstance(r, dict) and r.get("type") not in ("omitted",)
+        ]
+        result: List[str] = []
+        file_pos = 0
+
+        for row in rows:
+            on = row.get("oldNo")
+            row_type = row.get("type", "")
+            if on is not None and isinstance(on, int) and on >= 1:
+                while file_pos < on - 1:
+                    if file_pos >= len(current):
+                        return {"success": False, "error": "file shorter than expected"}
+                    result.append(current[file_pos])
+                    file_pos += 1
+                if row_type == "context":
+                    if file_pos >= len(current):
+                        return {"success": False, "error": f"unexpected eof at line {on}"}
+                    expected = str(row.get("oldText", ""))
+                    actual = current[file_pos]
+                    if expected and actual != expected:
+                        return {"success": False, "error": f"conflict at line {on}"}
+                    result.append(actual)
+                    file_pos += 1
+                elif row_type == "del":
+                    if file_pos >= len(current):
+                        return {"success": False, "error": f"unexpected eof at line {on}"}
+                    expected = str(row.get("oldText", ""))
+                    actual = current[file_pos]
+                    if expected and actual != expected:
+                        return {"success": False, "error": f"conflict at line {on}"}
+                    file_pos += 1
+                elif row_type == "change":
+                    if file_pos >= len(current):
+                        return {"success": False, "error": f"unexpected eof at line {on}"}
+                    expected = str(row.get("oldText", ""))
+                    actual = current[file_pos]
+                    if expected and actual != expected:
+                        return {"success": False, "error": f"conflict at line {on}"}
+                    result.append(str(row.get("newText", "")))
+                    file_pos += 1
+                elif row_type == "add":
+                    result.append(current[file_pos])
+                    file_pos += 1
+                else:
+                    result.append(current[file_pos])
+                    file_pos += 1
+            else:
+                if row_type == "add":
+                    result.append(str(row.get("newText", "")))
+
+        while file_pos < len(current):
+            result.append(current[file_pos])
+            file_pos += 1
+
+        return ServeApp._write_patched_file(file_path, result, codec, bom)
+
+    @staticmethod
+    def _reconstruct_expected_from_diffrows(
+        diff_rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Reconstruct the *new* content that a forward patch produces applied to
+        an empty file. Used for conflict detection on ``create`` type changes."""
+        rows = [
+            r for r in diff_rows
+            if isinstance(r, dict) and r.get("type") not in ("omitted",)
+        ]
+        result: List[str] = []
+        for row in rows:
+            t = row.get("type", "")
+            if t in ("context", "add", "change"):
+                result.append(str(row.get("newText", "")))
+            # del: not present in new content
+        return result
+
+    def _lookup_file_change(
+        self, chat_id: str, ref: str, file_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Find a single file change record by chat, ref, and file path."""
+        _fc_by_chat: Dict[str, Any] = dict(
+            getattr(self.agent, "_file_changes_by_chat", {}) or {}
+        )
+        store = _fc_by_chat.get(str(chat_id or ""), {})
+        if not isinstance(store, dict):
+            return None
+        summary = store.get(str(ref or ""))
+        if not isinstance(summary, dict):
+            # Try loading from disk too.
+            mgr = getattr(self.agent, "_chat_state_manager", None)
+            if mgr is not None:
+                try:
+                    on_disk = mgr.load_file_changes(str(chat_id or ""))
+                    if isinstance(on_disk, list):
+                        for item in on_disk:
+                            if isinstance(item, dict) and item.get("ref") == ref:
+                                summary = item
+                                break
+                    elif isinstance(on_disk, dict):
+                        summary = on_disk.get(str(ref or ""))
+                except Exception:
+                    pass
+        if not isinstance(summary, dict):
+            return None
+        files = summary.get("files")
+        if not isinstance(files, list):
+            return None
+        norm = os.path.normcase(os.path.normpath(str(file_path or "")))
+        for fc in files:
+            if not isinstance(fc, dict):
+                continue
+            if os.path.normcase(os.path.normpath(str(fc.get("filePath", "")))) == norm:
+                return fc
+        return None
+
+    def _resolve_backup_full_path(
+        self, chat_id: str, backup_name: str,
+    ) -> Optional[Path]:
+        """Convert a relative backup filename to an absolute path under the chat's
+        backups directory."""
+        mgr = getattr(self.agent, "_chat_state_manager", None)
+        if mgr is None:
+            return None
+        backups_dir = getattr(mgr, "chat_backups_dir_for_chat", None)
+        if not callable(backups_dir):
+            return None
+        bd = backups_dir(str(chat_id or ""))
+        if bd is None:
+            return None
+        return bd / str(backup_name)
+
+    def undo_file_changes(
+        self, chat_id: str, ref: str, files: List[str],
+    ) -> Dict[str, Any]:
+        """Undo a list of files.  Returns {results: {filePath: {success, error?}}}."""
+        outcome: Dict[str, Dict[str, Any]] = {}
+        for fpath in files:
+            fc = self._lookup_file_change(chat_id, ref, fpath)
+            if fc is None:
+                outcome[fpath] = {"success": False, "error": "change record not found"}
+                continue
+            ct = str(fc.get("changeType", ""))
+            diff = fc.get("patch")
+            if isinstance(diff, list) and len(diff) > 0 and all(
+                isinstance(r, dict) for r in diff
+            ):
+                pass
+            else:
+                diff = None
+
+            if ct == "modify" and diff is not None:
+                # Text-file modify: reverse-apply DiffRow[].
+                outcome[fpath] = self._apply_reverse_patch(fpath, diff)
+            elif ct == "create":
+                # For create, verify file content still matches.
+                expected_new = self._reconstruct_expected_from_diffrows(diff or [])
+                try:
+                    actual, _, _ = self._read_file_for_patch(fpath)
+                except FileNotFoundError:
+                    outcome[fpath] = {"success": True}
+                    continue
+                except Exception:
+                    outcome[fpath] = {"success": False, "error": "cannot read file"}
+                    continue
+                if actual != expected_new:
+                    outcome[fpath] = {"success": False, "error": "file modified since creation"}
+                    continue
+                try:
+                    Path(fpath).unlink()
+                    outcome[fpath] = {"success": True}
+                except Exception as exc:
+                    outcome[fpath] = {"success": False, "error": f"delete failed: {exc}"}
+            elif ct == "delete":
+                bp = str(fc.get("backupPath", ""))
+                if not bp:
+                    outcome[fpath] = {"success": False, "error": "no backup available"}
+                    continue
+                backup_full = self._resolve_backup_full_path(chat_id, bp)
+                if backup_full is None or not backup_full.exists():
+                    outcome[fpath] = {"success": False, "error": "backup file missing"}
+                    continue
+                target = Path(fpath)
+                if target.exists():
+                    outcome[fpath] = {"success": False, "error": "target file already exists"}
+                    continue
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(backup_full.read_bytes())
+                    outcome[fpath] = {"success": True}
+                except Exception as exc:
+                    outcome[fpath] = {"success": False, "error": f"restore failed: {exc}"}
+            elif ct == "modify" and diff is None:
+                bp = str(fc.get("backupPath", ""))
+                if not bp:
+                    outcome[fpath] = {"success": False, "error": "no backup available"}
+                    continue
+                backup_full = self._resolve_backup_full_path(chat_id, bp)
+                if backup_full is None or not backup_full.exists():
+                    outcome[fpath] = {"success": False, "error": "backup file missing"}
+                    continue
+                try:
+                    Path(fpath).parent.mkdir(parents=True, exist_ok=True)
+                    Path(fpath).write_bytes(backup_full.read_bytes())
+                    outcome[fpath] = {"success": True}
+                except Exception as exc:
+                    outcome[fpath] = {"success": False, "error": f"restore failed: {exc}"}
+            else:
+                outcome[fpath] = {"success": False, "error": f"unsupported change type: {ct}"}
+        return {"results": outcome}
+
+    def reapply_file_changes(
+        self, chat_id: str, ref: str, files: List[str],
+    ) -> Dict[str, Any]:
+        """Reapply a list of files.  Returns {results: {filePath: {success, error?}}}."""
+        outcome: Dict[str, Dict[str, Any]] = {}
+        for fpath in files:
+            fc = self._lookup_file_change(chat_id, ref, fpath)
+            if fc is None:
+                outcome[fpath] = {"success": False, "error": "change record not found"}
+                continue
+            ct = str(fc.get("changeType", ""))
+            diff = fc.get("patch")
+            if isinstance(diff, list) and len(diff) > 0 and all(
+                isinstance(r, dict) for r in diff
+            ):
+                pass
+            else:
+                diff = None
+
+            if ct == "modify" and diff is not None:
+                outcome[fpath] = self._apply_forward_patch(fpath, diff)
+            elif ct == "create":
+                target = Path(fpath)
+                if target.exists():
+                    outcome[fpath] = {"success": False, "error": "file already exists"}
+                    continue
+                reconstructed = self._reconstruct_expected_from_diffrows(diff or [])
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        "\n".join(reconstructed) + "\n", encoding="utf-8",
+                    )
+                    outcome[fpath] = {"success": True}
+                except Exception as exc:
+                    outcome[fpath] = {"success": False, "error": f"create failed: {exc}"}
+            elif ct == "delete":
+                bp = str(fc.get("backupPath", ""))
+                if not bp:
+                    outcome[fpath] = {"success": False, "error": "no backup available"}
+                    continue
+                backup_full = self._resolve_backup_full_path(chat_id, bp)
+                if backup_full is None or not backup_full.exists():
+                    outcome[fpath] = {"success": False, "error": "backup file missing"}
+                    continue
+                target = Path(fpath)
+                if not target.exists():
+                    outcome[fpath] = {"success": False, "error": "file does not exist"}
+                    continue
+                try:
+                    expected = backup_full.read_bytes()
+                    actual = target.read_bytes()
+                    if expected != actual:
+                        outcome[fpath] = {"success": False, "error": "file content modified"}
+                        continue
+                    target.unlink()
+                    outcome[fpath] = {"success": True}
+                except Exception as exc:
+                    outcome[fpath] = {"success": False, "error": f"reapply delete failed: {exc}"}
+            elif ct == "modify" and diff is None:
+                outcome[fpath] = {"success": False, "error": "binary reapply not supported"}
+            else:
+                outcome[fpath] = {"success": False, "error": f"unsupported change type: {ct}"}
+        return {"results": outcome}
+
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
         # Tear down all PTY sessions so no orphan shells survive the server.
@@ -6194,6 +6586,26 @@ def _make_handler(app: ServeApp):
                 self._send_json(
                     200 if result.get("ok") else 400, result
                 )
+                return
+            if path == "/undo-file-changes":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ref = str(body.get("ref") or "")[:256]
+                file_list = body.get("files")
+                if not isinstance(file_list, list):
+                    file_list = []
+                file_list = [str(f) for f in file_list if str(f).strip()]
+                result = app.undo_file_changes(chat_id, ref, file_list)
+                self._send_json(200, result)
+                return
+            if path == "/reapply-file-changes":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ref = str(body.get("ref") or "")[:256]
+                file_list = body.get("files")
+                if not isinstance(file_list, list):
+                    file_list = []
+                file_list = [str(f) for f in file_list if str(f).strip()]
+                result = app.reapply_file_changes(chat_id, ref, file_list)
+                self._send_json(200, result)
                 return
             if path == "/shutdown":
                 self._send_json(200, {"ok": True})
