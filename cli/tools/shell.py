@@ -28,6 +28,137 @@ from ..config.app_info import get_app_config_dirname, get_app_runtime_attr_name
 from ..core.logging.app_logging import get_logger
 
 _log = get_logger("codewood.shell_diff")
+
+# ---------------------------------------------------------------------------
+# Read-only command whitelist — commands that are known to never create,
+# modify, or delete files.  For these we skip the git-stash / workspace-
+# snapshot overhead entirely.
+# ---------------------------------------------------------------------------
+# Each pattern is tested case-insensitively against the full (normalized)
+# command string.  The command must also pass a redirect check: ">", ">>",
+# and pipe "|" disqualify it because the right-hand side could write.
+_READ_ONLY_COMMAND_PATTERNS: List[re.Pattern] = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        # --- navigation / system info -----------------------------------
+        r"^(cd|chdir|pushd|popd)(\s|$)",
+        r"^(pwd|whoami|hostname|uname|date|time|ver|set|env)(\s|$)",
+        # --- directory listing ------------------------------------------
+        r"^(dir|ls|ll|la|tree)(\.exe)?(\s|/[^ ]*)*$",
+        r"^(gci|get-childitem)(\.exe)?(\s|$)",
+        # --- PowerShell get-location ------------------------------------
+        r"^(gl|pwd|get-location)(\.exe)?(\s|$)",
+        # --- file reading -----------------------------------------------
+        r"^(type|cat|head|tail|more|less)(\.exe)?\s",
+        r"^(gc|get-content)(\.exe)?\s",
+        # --- search -----------------------------------------------------
+        r"^(find|findstr|grep|rg|ag|ack)(\.exe)?(\s|$)",
+        r"^(sls|select-string)(\.exe)?(\s|$)",
+        r"^git\s+grep\s",
+        # --- text processing / comparison --------------------------------
+        r"^(wc|sort|uniq|cut|tr|diff|fc|comp|comm)(\s|$)",
+        r"^diff\s",
+        r"^(echo|printf)(\s|$)",  # only safe without redirects
+        # --- path / command lookup --------------------------------------
+        r"^(which|where|whereis)(\s|$)",
+        r"^type\s+\S+\s*$",  # cmd.exe "type" as "which" — single arg
+        # --- help -------------------------------------------------------
+        r"^(help|man|info)(\s|$)",
+        r"^--?(help|h|\?)(\s|$)",
+        # --- read-only git subcommands ----------------------------------
+        r"^git\s+status(\s|$)",
+        r"^git\s+log\s",
+        r"^git\s+diff\s",
+        r"^git\s+show\s",
+        r"^git\s+branch(\s|$)",
+        r"^git\s+tag(\s|$)",
+        r"^git\s+remote(\s|$)",
+        r"^git\s+stash\s+list(\s|$)",
+        r"^git\s+rev-parse\s",
+        r"^git\s+config\s",
+        r"^git\s+describe(\s|$)",
+        r"^git\s+ls-files(\s|$)",
+        r"^git\s+ls-tree\s",
+        r"^git\s+blame\s",
+        r"^git\s+shortlog(\s|$)",
+        r"^git\s+--version(\s|$)",
+        # --- network diagnostics / system info --------------------------
+        r"^(ping|pathping|tracert|traceroute|netstat|nslookup|dig)(\.exe)?(\s|$)",
+        r"^(ipconfig|ifconfig|arp|nbtstat|getmac|systeminfo|tasklist)(\.exe)?(\s|$)",
+        r"^route\s+print(\s|$)",
+        # --- version queries --------------------------------------------
+        r"^(python|python3|node|npm|go|rustc|java|javac|gcc|g\+\+|clang)\s+--version(\s|$)",
+        r"^(pip|pip3|gem)\s+(--version|-V)(\s|$)",
+    ]
+]
+
+# Commands that look like they might modify files but are safe when used
+# standalone (no arguments).
+_READ_ONLY_COMMAND_EXACT: Set[str] = {c.lower() for c in [
+    "pwd", "whoami", "hostname", "uname", "date", "time", "ver", "dir",
+]}
+
+
+_CURL_WRITE_FLAGS: Set[str] = {
+    # Flags that make curl write response body to a local file.
+    "-o", "--output", "-O", "--remote-name",
+    # These require a filename argument; skip the entire curl cmd
+    # when any of them appear.
+}
+
+
+def _is_read_only_command(command: str) -> bool:
+    """Return True when *command* is a known read-only operation that
+    cannot create, modify, or delete workspace files.
+
+    Two conditions must both be true:
+    1. No redirect operators (``>``, ``>>``) or pipes (``|``) — a
+       redirect or pipeline right-hand side could write to disk.
+    2. The command matches at least one pattern in the read-only whitelist
+       OR the first token is an exact match for a known-safe builtin.
+
+    ``curl`` receives extra scrutiny: commands that include ``-o`` / ``-O``
+    / ``--output`` / ``--remote-name`` are NOT considered read-only because
+    they explicitly write to disk.
+    """
+    stripped = command.strip()
+    if not stripped:
+        return True  # empty command produces no file changes
+    if any(op in stripped for op in (">", ">>", "|")):
+        return False
+    for pat in _READ_ONLY_COMMAND_PATTERNS:
+        if pat.search(stripped):
+            return True
+    # The command may have been rewritten by enforce_workspace_rg_for_shell_command
+    # (e.g. "rg pattern" → "D:\path\rg.exe pattern").  Extract the basename of
+    # the first token and try matching against that as well.
+    first_token = stripped.split(None, 1)[0] if stripped else ""
+    exe_base = Path(first_token).name.lower()
+    if exe_base and exe_base != first_token.lower():
+        # Re-run patterns against the shorter basename form
+        for pat in _READ_ONLY_COMMAND_PATTERNS:
+            if pat.search(exe_base):
+                return True
+    if first_token in _READ_ONLY_COMMAND_EXACT:
+        return True
+    # ---- curl special-case: allow GET/HEAD/verbatim requests that don't
+    #      write to local files via -o / -O / --output / --remote-name ----
+    if exe_base in ("curl", "curl.exe"):
+        tokens = shlex_split_safe(stripped)
+        for tok in tokens:
+            if tok in _CURL_WRITE_FLAGS:
+                return False
+        return True
+    return False
+
+
+def shlex_split_safe(text: str) -> List[str]:
+    """Split *text* with shlex, falling back to str.split on error."""
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
 from ..core.console_utils import (
     GUI_CMD_OUTPUT_END,
     GUI_DIFF_BEGIN,
@@ -925,11 +1056,18 @@ def action_shell_command(
 
     merge_path: Optional[str] = None
 
+    # Skip expensive file-change monitoring for commands that are known to
+    # be read-only (dir, ls, cat, grep, git status, etc.).  This avoids
+    # unnecessary git dirty/stash/workspace-snapshot overhead.
+    _skip_file_monitoring = _is_read_only_command(command)
+
     # Snapshot the entire workspace file listing (metadata only) so we can
     # detect file creations and modifications after the command runs.
-    _before_file_list = _snapshot_workspace_file_list(execution_cwd)
+    _before_file_list: Dict[str, Tuple[float, int]] = {}
+    if not _skip_file_monitoring:
+        _before_file_list = _snapshot_workspace_file_list(execution_cwd)
 
-    _repo_root = _git_repo_root(execution_cwd)
+    _repo_root = _git_repo_root(execution_cwd) if not _skip_file_monitoring else None
     # Snapshot untracked file content before stash so we have a fallback
     # source for before-content comparison.
     _untracked_snapshot: Dict[str, str] = {}
@@ -956,9 +1094,11 @@ def action_shell_command(
             _log.info("ls-files error: %s", e)
     # Push a temporary git stash to capture the pre-execution state.
     # Immediately apply it back so files stay on disk for the shell command.
-    _stash_hash: Optional[str] = _git_stash_push(execution_cwd) if _repo_root else None
+    _stash_hash: Optional[str] = None
+    if not _skip_file_monitoring and _repo_root is not None:
+        _stash_hash = _git_stash_push(execution_cwd)
     if _repo_root:
-        _log.info("repo_root=%s stash_hash=%s", _repo_root, _stash_hash)
+        _log.info("repo_root=%s stash_hash=%s skip_monitor=%s", _repo_root, _stash_hash, _skip_file_monitoring)
     if _stash_hash:
         _git_stash_apply(execution_cwd, _stash_hash)
 
@@ -1564,7 +1704,7 @@ def action_shell_command(
             # Check for file deletions: compare snapshotted files against
             # current filesystem state, backup deleted content, and record
             # a delete change via the file_change_tracker.
-            if _delete_snapshots:
+            if not _skip_file_monitoring and _delete_snapshots:
                 try:
                     _chat_mgr2 = getattr(agent, "_chat_state_manager", None)
                     _chat_id2 = str(getattr(agent, "active_chat_id", "") or "")
@@ -1595,7 +1735,7 @@ def action_shell_command(
             # preview data for GUI rendering.
             _shell_diff_entries: List[Dict[str, Any]] = []
             try:
-                _after_file_list = _snapshot_workspace_file_list(execution_cwd)
+                _after_file_list = _snapshot_workspace_file_list(execution_cwd) if not _skip_file_monitoring else {}
                 _new, _modified, _ws_deleted = _diff_workspace_snapshots(
                     _before_file_list, _after_file_list,
                 )
@@ -1764,7 +1904,7 @@ def action_shell_command(
 
             # Restore the pre-execution stash so the working tree returns
             # to its original state (unstaged changes come back).
-            if _stash_hash:
+            if _stash_hash and not _skip_file_monitoring:
                 _git_stash_restore(execution_cwd, _stash_hash)
         finally:
             _stop_status_ticker()
