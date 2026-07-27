@@ -161,6 +161,8 @@ interface AppContextValue {
   aboutOpen: boolean;
   planOpen: boolean;
   togglePlan: () => void;
+  todoDockVisible: boolean;
+  setTodoDockVisible: (v: boolean) => void;
   zoomLevel: number;
   setZoomLevel: (level: number) => void;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -487,6 +489,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try { const v = Number(window.localStorage.getItem("codewood.zoomLevel")); return v > 0 ? v : 1; } catch { return 1; }
   });
   const [planOpen, setPlanOpen] = useState(false);
+  const [todoDockVisible, setTodoDockVisible] = useState(false);
   const [consoleOpen, setConsoleOpen] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem(CONSOLE_OPEN_KEY) === "1";
@@ -660,7 +663,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeChatId, activeChatWsId]);
 
-  // Auto-open the plan panel when the active chat has a plan and either
+  // Auto-show the todo dock when the active chat has a plan and either
   // (a) the plan just went from empty to non-empty (new plan), or
   // (b) we switched to a chat that already has a saved plan.
   const planAutoOpenRef = useRef<{ chatId: string; planLen: number }>({
@@ -673,7 +676,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const chatChanged = prev.chatId !== activeChatId;
     const grewFromEmpty = !chatChanged && prev.planLen === 0 && activePlanLen > 0;
     if (activePlanLen > 0 && (chatChanged || grewFromEmpty)) {
-      setPlanOpen(true);
+      setTodoDockVisible(true);
     }
     planAutoOpenRef.current = { chatId: activeChatId, planLen: activePlanLen };
   }, [activeChatId, activePlanLen]);
@@ -2468,6 +2471,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return next;
         });
       }
+      setTodoDockVisible(false);
       await client.sendInput(next, true, chatId);
     },
     [client, persistPendingInputs],
@@ -3516,6 +3520,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setZoomLevel: persistZoomLevel,
     planOpen,
     togglePlan: () => setPlanOpen((v) => !v),
+    todoDockVisible,
+    setTodoDockVisible,
     t,
     setTheme,
     setGuiLanguage,
