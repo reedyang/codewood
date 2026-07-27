@@ -138,6 +138,12 @@ def setup_workspace_and_history(
         active_workspace = agent._default_workspace_entry()
         agent._workspaces_state["active"] = default_workspace_id
     agent._apply_workspace_entry(active_workspace, startup_work_directory)
+    try:
+        cleanup = getattr(agent, "_cleanup_workspace_shell_stashes_if_needed", None)
+        if callable(cleanup):
+            cleanup()
+    except Exception:
+        pass
 
     agent.history_manager = HistoryManager(str(agent.workspace_config_dir), language=getattr(agent, "display_language", "en") or "en")
     agent._load_chat_state()
