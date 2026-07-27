@@ -69,6 +69,7 @@ export function GeneralSettings({ onDirtyChange }: GeneralSettingsProps) {
       auto_compact_trigger_percent: Math.floor(pct),
       max_tool_rounds: mtr,
       memory_enabled: next.memory_enabled,
+      project_context_search_enabled: next.project_context_search_enabled,
     };
     void saveGeneralConfig(payload).then((ok) => {
       if (!ok) setError(t("general.errSave"));
@@ -191,6 +192,25 @@ export function GeneralSettings({ onDirtyChange }: GeneralSettingsProps) {
             />
           </div>
           <p className="setting-hint">{t("general.memoryEnabledHint")}</p>
+        </div>
+      </div>
+
+      <div className="setting-row">
+        <label htmlFor="general-project-context-search">{t("general.projectContextSearchEnabled")}</label>
+        <div className="setting-control">
+          <div className="setting-input-row">
+            <input
+              id="general-project-context-search"
+              type="checkbox"
+              checked={draft.project_context_search_enabled}
+              onChange={(e) => {
+                const next = { ...draft, project_context_search_enabled: e.target.checked };
+                setDraft(next);
+                persist(next, maxRoundsText);
+              }}
+            />
+          </div>
+          <p className="setting-hint">{t("general.projectContextSearchEnabledHint")}</p>
         </div>
       </div>
 

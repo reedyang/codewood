@@ -277,6 +277,8 @@ export const en: Dict = {
   "general.memoryEnabledHint": "Allow the agent to read and write the workspace's session memory.",
   "general.mcpToolsEnabled": "MCP tools enabled",
   "general.mcpToolsEnabledHint": "Expose configured MCP servers as additional tools.",
+  "general.projectContextSearchEnabled": "Project context search",
+  "general.projectContextSearchEnabledHint": "Allow the agent to use project_context_search to quickly search the codebase.",
   "general.errAutoCompactRange": "Auto-compact trigger must be between 0 and 100.",
   "general.errMaxRoundsInt": "Max tool rounds must be a non-negative integer.",
   "general.errSave": "Failed to save General settings.",

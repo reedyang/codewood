@@ -21,11 +21,14 @@ def _prompts_root() -> Path:
     return Path(__file__).resolve().parents[2] / "prompts"
 
 
-def build_base_system_prompt(small_model: bool = False) -> str:
+def build_base_system_prompt(small_model: bool = False, variables: dict = None) -> str:
     """Read and render the base system prompt template from disk.
 
     When *small_model* is True, loads ``prompts/small/system_prompt.md``
     instead of the default.
+
+    *variables* provides additional ``[[if $var="val"]]`` substitution
+    variables beyond the built-in ones (``os``).
     """
     if small_model:
         prompt_path = _prompts_root() / "small" / "system_prompt.md"
@@ -33,7 +36,10 @@ def build_base_system_prompt(small_model: bool = False) -> str:
         prompt_path = _prompts_root() / "system_prompt.md"
     with open(prompt_path, "r", encoding="utf-8") as f:
         raw = f.read()
-    raw = preprocess_prompt(raw, {"os": platform.system()})
+    merged_vars = {"os": platform.system()}
+    if isinstance(variables, dict):
+        merged_vars.update(variables)
+    raw = preprocess_prompt(raw, merged_vars)
     return (
         raw
         .replace("{{APP_NAME}}", get_app_prompt_name())
@@ -53,13 +59,9 @@ class BaseSystemPromptPart(ModelContextPart):
     order = 10
 
     def render(self, agent: Any, include_tools: bool) -> str:
-        cached = getattr(agent, "_base_system_prompt", None)
-        if not cached:
-            small_model = bool(getattr(agent, "_small_model", False))
-            rendered = build_base_system_prompt(small_model=small_model)
-            try:
-                agent._base_system_prompt = rendered
-            except Exception:
-                pass
-            cached = rendered
-        return str(cached)
+        small_model = bool(getattr(agent, "_small_model", False))
+        pcs_enabled = str(getattr(agent, "project_context_search_enabled", True)).lower()
+        return build_base_system_prompt(
+            small_model=small_model,
+            variables={"project_context_search_enabled": pcs_enabled},
+        )
