@@ -41,7 +41,6 @@ class MainStartupConfigTests(unittest.TestCase):
                 }
             ],
             "execution_policy": "moderate",
-            "project_context_first_round_evidence": True,
             "max_tool_rounds": None,
             "memory_enabled": False,
         }

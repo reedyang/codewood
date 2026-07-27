@@ -316,7 +316,6 @@ Create `.codewood/config.jsonc` in your user directory:
     }
   ],
   "execution_policy": "moderate",
-  "project_context_first_round_evidence": true,
   "auto_compact_trigger_percent": 60,
   "max_tool_rounds": 30,
   "memory_enabled": false

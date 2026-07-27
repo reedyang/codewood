@@ -539,12 +539,6 @@ class Agent:
             or str(getattr(self, "workspace_kind", "")).strip().lower() == "default"
         )
 
-    def _project_context_feature_enabled(self) -> bool:
-        # Hard policy: default workspace is tool-calling only, no project-management aids.
-        if self._is_default_workspace():
-            return False
-        return bool(getattr(self, "project_context_first_round_evidence_enabled", True))
-
     def _project_context_tool_allowed(self) -> bool:
         # Tool visibility/execution follows the same hard policy.
         return not self._is_default_workspace()
@@ -7429,32 +7423,7 @@ class Agent:
         """
         return tools_shell.action_project_context_search(self, params=params)
 
-    def _render_evidence_block_from_project_context_result(self, res: Dict[str, Any]) -> str:
-        if not isinstance(res, dict) or not res.get("success", False):
-            return ""
-        cands = res.get("candidates") if isinstance(res.get("candidates"), list) else []
-        if not cands:
-            return ""
-        lines: List[str] = [
-            "[First-turn Evidence Block (auto-injected)]",
-            "The following candidate files come from project_context_search. Prioritize shell search/reads based on this evidence to avoid blind global scanning:",
-        ]
-        for i, c in enumerate(cands[:8], start=1):
-            if not isinstance(c, dict):
-                continue
-            p = str(c.get("path") or "").strip()
-            score = c.get("score")
-            reasons = c.get("reasons") if isinstance(c.get("reasons"), list) else []
-            syms = c.get("symbols") if isinstance(c.get("symbols"), list) else []
-            if not p:
-                continue
-            lines.append(
-                f"{i}. `{p}` (score={score}; reasons={', '.join(str(x) for x in reasons[:3]) or '-'})"
-            )
-            if syms:
-                lines.append(f"   symbols: {', '.join(str(x) for x in syms[:4])}")
-        lines.append("")
-        return "\n".join(lines)
+
 
     def _strip_tool_json_blocks_for_display(self, text: str) -> str:
         return strip_tool_json_blocks_for_display(text)
