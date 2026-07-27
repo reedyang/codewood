@@ -1,7 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { FileChangeSummary, FileChangeRecord, DiffRow } from "../api/types";
 import { FileChangeDetails } from "./FileChangeDetails";
 import { Icon } from "./Icon";
+import { useApp } from "../state/AppContext";
 
 function computeStats(patch?: DiffRow[]): { added: number; deleted: number } {
   let added = 0;
@@ -22,8 +23,26 @@ interface FileChangeListProps {
   workspaceRoot?: string;
 }
 
+function isUndoable(file: FileChangeRecord): boolean {
+  if (file.changeType === "modify" && (file.patch?.length || file.backupPath)) return true;
+  if (file.changeType === "create" && file.patch?.length) return true;
+  if (file.changeType === "delete" && file.backupPath) return true;
+  return false;
+}
+
 export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProps) {
+  const { client, activeChatId } = useApp();
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
+  const [undoneFiles, setUndoneFiles] = useState<Set<string>>(new Set());
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [failDialog, setFailDialog] = useState<{ title: string; files: Array<{ path: string; error: string }> } | null>(null);
+
+  const undoableFiles = useMemo(
+    () => summary.files.filter(isUndoable),
+    [summary.files],
+  );
+  const allUndone = undoableFiles.length > 0 && undoneFiles.size >= undoableFiles.length;
+  const showButton = undoableFiles.length > 0 && !!summary.ref;
 
   const toggleFile = (filePath: string) => {
     setExpandedFiles((prev) => {
@@ -36,6 +55,58 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
       return next;
     });
   };
+
+  const handleUndo = useCallback(async () => {
+    const filesToUndo = undoableFiles
+      .filter((f) => !undoneFiles.has(f.filePath))
+      .map((f) => f.filePath);
+    if (filesToUndo.length === 0) return;
+    setIsProcessing(true);
+    try {
+      const result = await client.undoFileChanges(activeChatId, summary.ref!, filesToUndo);
+      const newUndone = new Set(undoneFiles);
+      const failures: Array<{ path: string; error: string }> = [];
+      for (const [path, res] of Object.entries(result.results)) {
+        if (res.success) {
+          newUndone.add(path);
+        } else {
+          failures.push({ path, error: res.error || "unknown error" });
+        }
+      }
+      setUndoneFiles(newUndone);
+      if (failures.length > 0) {
+        setFailDialog({ title: t("fileChange.undoFail"), files: failures });
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [undoableFiles, undoneFiles, client, activeChatId, summary.ref, t]);
+
+  const handleReapply = useCallback(async () => {
+    const filesToReapply = undoableFiles
+      .filter((f) => undoneFiles.has(f.filePath))
+      .map((f) => f.filePath);
+    if (filesToReapply.length === 0) return;
+    setIsProcessing(true);
+    try {
+      const result = await client.reapplyFileChanges(activeChatId, summary.ref!, filesToReapply);
+      const newUndone = new Set(undoneFiles);
+      const failures: Array<{ path: string; error: string }> = [];
+      for (const [path, res] of Object.entries(result.results)) {
+        if (res.success) {
+          newUndone.delete(path);
+        } else {
+          failures.push({ path, error: res.error || "unknown error" });
+        }
+      }
+      setUndoneFiles(newUndone);
+      if (failures.length > 0) {
+        setFailDialog({ title: t("fileChange.reapplyFail"), files: failures });
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [undoableFiles, undoneFiles, client, activeChatId, summary.ref, t]);
 
   if (!summary || summary.totalFiles === 0) {
     return null;
@@ -56,6 +127,8 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
     return { added, deleted };
   }, [summary.files]);
 
+  const btnLabel = allUndone ? t("fileChange.reapply") : t("fileChange.undo");
+
   return (
     <div className="file-change-list">
       <div className="file-change-header">
@@ -66,6 +139,15 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
           <span className="file-change-added">+{totals.added}</span>
           <span className="file-change-deleted">-{totals.deleted}</span>
         </span>
+        {showButton && (
+          <button
+            className="btn btn-small file-change-undo-btn"
+            disabled={isProcessing}
+            onClick={allUndone ? handleReapply : handleUndo}
+          >
+            {btnLabel}
+          </button>
+        )}
       </div>
       <div className="file-change-items">
         {summary.files.map((file) => (
@@ -73,12 +155,33 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
             key={file.filePath}
             file={file}
             isExpanded={expandedFiles.has(file.filePath)}
+            isUndone={undoneFiles.has(file.filePath)}
             onToggle={() => toggleFile(file.filePath)}
             t={t}
             workspaceRoot={workspaceRoot}
           />
         ))}
       </div>
+      {failDialog && (
+        <div className="modal-backdrop" onClick={() => setFailDialog(null)}>
+          <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-title">{failDialog.title}</h3>
+            <div className="modal-body">
+              {failDialog.files.map((f) => (
+                <div key={f.path} className="file-change-fail-item">
+                  <span className="file-change-fail-path">{f.path}</span>
+                  {f.error && <span className="file-change-fail-error">{f.error}</span>}
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-primary" onClick={() => setFailDialog(null)}>
+                {t("common.ok")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -86,12 +189,13 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
 interface FileChangeItemProps {
   file: FileChangeRecord;
   isExpanded: boolean;
+  isUndone: boolean;
   onToggle: () => void;
   t: (key: string, params?: Record<string, string | number>) => string;
   workspaceRoot?: string;
 }
 
-function FileChangeItem({ file, isExpanded, onToggle, t, workspaceRoot }: FileChangeItemProps) {
+function FileChangeItem({ file, isExpanded, isUndone, onToggle, t, workspaceRoot }: FileChangeItemProps) {
   const fileName = useMemo(() => {
     const parts = file.filePath.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1];
@@ -124,13 +228,16 @@ function FileChangeItem({ file, isExpanded, onToggle, t, workspaceRoot }: FileCh
   }, [file.filePath, workspaceRoot]);
 
   return (
-    <div className={`file-change-item ${isDelete ? "deleted" : ""} ${isBinary ? "binary" : ""} ${isExpanded ? "expanded" : ""}`}>
+    <div
+      className={`file-change-item ${isDelete ? "deleted" : ""} ${isBinary ? "binary" : ""} ${isExpanded ? "expanded" : ""} ${isUndone ? "undone" : ""}`}
+    >
       <div
         className="file-change-item-header"
         onClick={isDelete || isBinary ? undefined : onToggle}
         title={relativePath}
       >
         <span className={`file-change-item-name ${isDelete ? "strikethrough" : ""}`}>{fileName}</span>
+        {isUndone && <span className="file-change-undone-badge">{t("fileChange.undone")}</span>}
         <span className="file-change-item-stats">
           {isBinary ? (
             <span className="file-change-binary">Binary</span>

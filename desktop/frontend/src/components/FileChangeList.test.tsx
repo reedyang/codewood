@@ -1,8 +1,19 @@
 import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { FileChangeList } from "./FileChangeList";
-import { FileChangeDetails } from "./FileChangeDetails";
 import type { FileChangeSummary, DiffRow } from "../api/types";
 import { translate } from "../i18n";
+
+vi.mock("../state/AppContext", () => ({
+  useApp: () => ({
+    client: {
+      undoFileChanges: vi.fn(),
+      reapplyFileChanges: vi.fn(),
+    },
+    activeChatId: "test-chat",
+    t: (key: string, params?: Record<string, string | number>) => translate("en", key, params),
+  }),
+}));
 
 const t = (key: string, params?: Record<string, string | number>) => translate("en", key, params);
 

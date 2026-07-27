@@ -6379,6 +6379,59 @@ body.resizing-y .console-term {
   background: transparent;
 }
 
+/* File Change Undo / Reapply */
+.file-change-undo-btn {
+  margin-left: auto;
+  padding: 4px 12px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.file-change-item.undone .file-change-item-header {
+  opacity: 0.45;
+}
+
+.file-change-item.undone .file-change-item-name {
+  text-decoration: line-through;
+}
+
+.file-change-undone-badge {
+  font-size: 11px;
+  color: var(--warning-color, #f59e0b);
+  background: color-mix(in srgb, var(--warning-color, #f59e0b) 15%, transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.file-change-fail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  user-select: text;
+}
+
+.file-change-fail-item:last-child {
+  border-bottom: none;
+}
+
+.file-change-fail-path {
+  font-size: 13px;
+  font-family: monospace;
+  color: var(--text);
+  word-break: break-all;
+  user-select: text;
+}
+
+.file-change-fail-error {
+  font-size: 12px;
+  color: var(--danger-color, #ef4444);
+  user-select: text;
+}
+
 /* File Change Details */
 .file-change-details {
   background: var(--bg);

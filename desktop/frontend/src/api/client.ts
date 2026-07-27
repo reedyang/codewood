@@ -12,6 +12,7 @@ import type {
   SubAgentConfig,
   SubAgentSession,
   SubAgentsOverview,
+  UndoReapplyResult,
   WorkspaceChatSummary,
 } from "./types";
 
@@ -367,6 +368,42 @@ export class ApiClient {
       });
     } catch {
       // The tool call will time out on the backend if this never arrives.
+    }
+  }
+
+  /** Undo file changes for the given files. */
+  async undoFileChanges(
+    chatId: string,
+    ref: string,
+    files: string[],
+  ): Promise<UndoReapplyResult> {
+    const res = await fetch(`${this.base}/undo-file-changes`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ chatId, ref, files }),
+    });
+    try {
+      return (await res.json()) as UndoReapplyResult;
+    } catch {
+      return { results: {} };
+    }
+  }
+
+  /** Reapply file changes for the given files. */
+  async reapplyFileChanges(
+    chatId: string,
+    ref: string,
+    files: string[],
+  ): Promise<UndoReapplyResult> {
+    const res = await fetch(`${this.base}/reapply-file-changes`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ chatId, ref, files }),
+    });
+    try {
+      return (await res.json()) as UndoReapplyResult;
+    } catch {
+      return { results: {} };
     }
   }
 

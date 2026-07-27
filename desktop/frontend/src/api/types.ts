@@ -455,4 +455,11 @@ export interface FileChangeSummary {
   files: FileChangeRecord[];
   /** Turn index (0-based) for per-turn association. */
   turnIndex?: number;
+  /** Backend hashcode identifying this change set (used by undo/reapply). */
+  ref?: string;
+}
+
+/** Result from undo/reapply file changes API. */
+export interface UndoReapplyResult {
+  results: Record<string, { success: boolean; error?: string }>;
 }
