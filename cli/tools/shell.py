@@ -2766,6 +2766,84 @@ def enforce_workspace_rg_for_shell_command(agent: Any, command: str) -> str:
     )
 
 
+_CD_AND_DELIMITERS: list[tuple[str, int]] = [
+    (pattern, len(pattern))
+    for pattern in (
+        "cd /d ",
+        "cd /D ",
+        "cd ",
+        "pushd ",
+    )
+]
+_CD_AND_DELIMITERS.sort(key=lambda x: -x[1])  # longest match first
+
+
+def strip_redundant_cd_prefix(agent: Any, command: str) -> str:
+    """Strip a leading ``cd <path> &&`` when <path> matches the shell cwd.
+
+    The shell tool already sets the working directory to the workspace root.
+    A ``cd /d workspace-root && actual-command`` prefix is therefore redundant
+    and only adds visual noise in the GUI / TUI command summary.  Stripping it
+    also lets ``_classify_no_match_exit`` recognise the trailing search tool
+    when the model writes ``cd … && rg …``.
+    """
+    s = str(command or "")
+    for cd_token, _cd_len in _CD_AND_DELIMITERS:
+        if not s.startswith(cd_token):
+            continue
+        rest = s[len(cd_token):]
+        # Find the path: everything up to the next ``&&`` (outside quotes).
+        path_str, after_path = _split_cd_prefix_path_and_tail(rest)
+        if path_str is None or after_path is None:
+            continue
+        if not after_path.lstrip().startswith("&&"):
+            continue
+        # Normalise both paths for comparison.
+        try:
+            target = Path(str(path_str).strip().strip('"').strip("'"))
+            cwd = _resolve_shell_execution_cwd(agent)
+            if not target.is_absolute():
+                # Relative cd — resolve against the shell cwd.
+                target = (cwd / target).resolve()
+            else:
+                target = target.resolve()
+            cwd = cwd.resolve()
+        except Exception:
+            return command
+        if _paths_equal(target, cwd):
+            return after_path.lstrip()[2:].lstrip()  # skip ``&&``
+        return command
+    return command
+
+
+def _split_cd_prefix_path_and_tail(s: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract the path from a ``cd <path> && ...`` prefix, respecting quotes."""
+    s = str(s or "")
+    in_quote = ""
+    for i, ch in enumerate(s):
+        if ch == "\\" and i + 1 < len(s):
+            # skip next char
+            continue
+        if ch in ('"', "'"):
+            if in_quote == ch:
+                in_quote = ""
+            elif not in_quote:
+                in_quote = ch
+            continue
+        if not in_quote and ch == "&" and i + 1 < len(s) and s[i + 1] == "&":
+            return s[:i], s[i:]
+    return None, None
+
+
+def _paths_equal(a: Path, b: Path) -> bool:
+    if os.name == "nt":
+        try:
+            return a.resolve().as_posix().casefold() == b.resolve().as_posix().casefold()
+        except Exception:
+            pass
+    return a.resolve() == b.resolve()
+
+
 def normalize_shell_command_for_summary(command: str) -> str:
     """Normalize command string for concise tool-call summary display."""
     return _rewrite_shell_command_head_executable(
@@ -3602,7 +3680,14 @@ class ShellTool(BaseTool):
         if not shell_cmd:
             return {"success": False, "error": "missing command"}
 
-        lowered_shell = str(shell_cmd).lower()
+        # Strip redundant ``cd <workspace-root> &&`` prefixes so the
+        # GUI/TUI summary is clean and the classifier can recognise
+        # trailing search tools.  Do NOT mutate params — the caller may
+        # hold a reference to the original model-provided arguments.
+        shell_cmd = str(shell_cmd)
+        shell_cmd = strip_redundant_cd_prefix(agent, shell_cmd)
+
+        lowered_shell = shell_cmd.lower()
         if agent._mcp_pending_user_input:
             promptish = (
                 ("token" in lowered_shell)
