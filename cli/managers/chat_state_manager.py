@@ -5,6 +5,7 @@ import re
 import secrets
 import shutil
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -439,6 +440,7 @@ class ChatStateManager:
             "messages": [],
             "pending_inputs": [],
             "archived": False,
+            "first_user_message_at": "",
         }
 
     def _normalize_message(
@@ -557,6 +559,7 @@ class ChatStateManager:
             "mode": _read_chat_mode(raw),
             "messages": messages,
             "archived": bool(raw.get("archived", False)),
+            "first_user_message_at": str(raw.get("first_user_message_at") or "").strip(),
         }
         # Preserve cross-process clarifying-prompt state. Another codewood
         # process (typically the TUI) writes ``pending_request_user_input`` onto
@@ -752,29 +755,75 @@ class ChatStateManager:
                     if str(record_payload.get("id") or "").strip() != cid:
                         logger.error(
                             "save_chat_state: refusing to write %s — record id=%r != chat_id=%r. "
-                            "Cross-contamination prevented; index entry preserved from memory.",
+                            "Cross-contamination prevented; index entry preserved from memory. "
+                            "chat=%s workspace=%s ws_root=%s records_dir=%s "
+                            "active_chat_id=%s payload_msg_count=%d payload_name=%r\n%s",
                             record_path.name,
                             str(record_payload.get("id") or "").strip(),
                             cid,
+                            getattr(self._agent, "workspace_id", "?"),
+                            getattr(self._agent, "workspace_root", "?"),
+                            self.chat_records_dir(),
+                            getattr(self._agent, "active_chat_id", "?"),
+                            len(record_payload.get("messages") or []),
+                            str(record_payload.get("name") or ""),
+                            "".join(traceback.format_stack()),
                         )
                     else:
-                        # Compare with on-disk content; skip the write if unchanged.
-                        # Avoids needless I/O and prevents rewriting identical records.
-                        new_text = json.dumps(record_payload, ensure_ascii=False, indent=2) + "\n"
-                        skip_write = False
-                        if record_path.exists():
-                            try:
-                                existing = record_path.read_text(encoding="utf-8")
-                                if existing == new_text:
-                                    skip_write = True
-                            except Exception:
-                                pass
-                        if not skip_write:
-                            tmp_path = record_path.with_name(record_path.name + ".tmp")
-                            with open(tmp_path, "w", encoding="utf-8") as f:
-                                f.write(new_text)
-                            _safe_replace(tmp_path, record_path)
-                            index_dirty = True
+                        # Guard: detect cross-workspace message contamination even
+                        # when chat ids coincidentally match. The first user
+                        # message's ``created_at`` is anchored on the chat entry
+                        # as ``first_user_message_at``. If the messages being
+                        # written carry a different first-user timestamp, they
+                        # were loaded from another workspace's same-id chat.
+                        write_allowed = True
+                        anchored = str(chat.get("first_user_message_at") or "").strip()
+                        if anchored:
+                            msgs_for_check = record_payload.get("messages")
+                            if isinstance(msgs_for_check, list):
+                                first_user_at = ""
+                                for m in msgs_for_check:
+                                    if isinstance(m, dict) and str(m.get("role") or "").strip().lower() == "user":
+                                        first_user_at = str(m.get("created_at") or "").strip()
+                                        break
+                                if first_user_at and first_user_at != anchored:
+                                    logger.error(
+                                        "save_chat_state: refusing to write %s — "
+                                        "first user msg timestamp (%s) != "
+                                        "chat.first_user_message_at (%s). "
+                                        "Cross-workspace contamination prevented. "
+                                        "chat=%s active_chat_id=%s "
+                                        "workspace=%s ws_root=%s records_dir=%s "
+                                        "payload_msg_count=%d payload_name=%r\n%s",
+                                        record_path.name, first_user_at, anchored,
+                                        cid,
+                                        getattr(self._agent, "active_chat_id", "?"),
+                                        getattr(self._agent, "workspace_id", "?"),
+                                        getattr(self._agent, "workspace_root", "?"),
+                                        self.chat_records_dir(),
+                                        len(msgs_for_check),
+                                        str(record_payload.get("name") or ""),
+                                        "".join(traceback.format_stack()),
+                                    )
+                                    write_allowed = False
+                        if write_allowed:
+                            # Compare with on-disk content; skip the write if unchanged.
+                            # Avoids needless I/O and prevents rewriting identical records.
+                            new_text = json.dumps(record_payload, ensure_ascii=False, indent=2) + "\n"
+                            skip_write = False
+                            if record_path.exists():
+                                try:
+                                    existing = record_path.read_text(encoding="utf-8")
+                                    if existing == new_text:
+                                        skip_write = True
+                                except Exception:
+                                    pass
+                            if not skip_write:
+                                tmp_path = record_path.with_name(record_path.name + ".tmp")
+                                with open(tmp_path, "w", encoding="utf-8") as f:
+                                    f.write(new_text)
+                                _safe_replace(tmp_path, record_path)
+                                index_dirty = True
                 index_chats.append(
                     {
                         "id": cid,
@@ -786,6 +835,7 @@ class ChatStateManager:
                         "model_name": str(chat.get("model_name") or ""),
                         "record_file": record_file,
                         "archived": bool(chat.get("archived", False)),
+                        "first_user_message_at": str(chat.get("first_user_message_at") or ""),
                     }
                 )
 
@@ -980,6 +1030,9 @@ class ChatStateManager:
                 archived = index_entry.get("archived")
                 if isinstance(archived, bool):
                     chat["archived"] = archived
+                first_user_msg_at = str(index_entry.get("first_user_message_at") or "").strip()
+                if first_user_msg_at:
+                    chat["first_user_message_at"] = first_user_msg_at
                 chats.append(chat)
             if not chats:
                 # Empty chat list is valid (new workspace with no chats).
@@ -1103,6 +1156,9 @@ class ChatStateManager:
                 archived = index_entry.get("archived")
                 if isinstance(archived, bool):
                     chat["archived"] = archived
+                first_user_msg_at = str(index_entry.get("first_user_message_at") or "").strip()
+                if first_user_msg_at:
+                    chat["first_user_message_at"] = first_user_msg_at
                 chats.append(chat)
             active = str(loaded.get("active") or "").strip()
             if chats and (
@@ -1280,7 +1336,31 @@ class ChatStateManager:
             if not chat:
                 return
             prev_messages = list(chat.get("messages") or [])
+            prev_count = len(prev_messages)
+            new_count = len(msgs)
+            # Detect message count anomalies that suggest cross-workspace
+            # contamination: if the new message count is significantly larger
+            # than the previous count in a single sync (not incremental growth
+            # from a running turn), log a warning for diagnosis.
+            if prev_count > 0 and new_count > prev_count + 50 and new_count > prev_count * 3:
+                logger.warning(
+                    "sync_active_chat_messages: suspicious message count jump "
+                    "chat=%s prev=%d new=%d dir=%s",
+                    getattr(self._agent, "active_chat_id", "?"),
+                    prev_count, new_count,
+                    self.chat_records_dir(),
+                )
             chat["messages"] = msgs
+            # Keep the first user message timestamp anchored on the chat entry
+            # so the save-time guard can detect cross-workspace contamination
+            # even when two chats share the same id. Updated on every sync so
+            # edits to the first message are reflected.
+            for m in msgs:
+                if isinstance(m, dict) and str(m.get("role") or "").strip().lower() == "user":
+                    chat["first_user_message_at"] = str(m.get("created_at") or "").strip()
+                    break
+            else:
+                chat.pop("first_user_message_at", None)
             if prev_messages == msgs:
                 return
             if msgs:
@@ -1319,6 +1399,7 @@ class ChatStateManager:
             if not chat:
                 return False
             chat["messages"] = []
+            chat.pop("first_user_message_at", None)
             chat["updated_at"] = self._now_text()
             if cid == str(getattr(self._agent, "active_chat_id", "") or "").strip():
                 self._agent._active_chat_plan = None

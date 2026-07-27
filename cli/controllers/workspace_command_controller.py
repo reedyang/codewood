@@ -1,11 +1,12 @@
 ﻿from __future__ import annotations
 
+import logging
 import re
 import shlex
 import shutil
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..config.app_info import get_app_config_dirname, get_app_name
+from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_name
 
 
 def _t(agent: Any, key: str, **kwargs: Any) -> str:
@@ -229,6 +230,15 @@ def workspace_switch_command(agent: Any, selector: str) -> str:
         return _t(agent, "workspace.not_found_error", selector=selector)
     if str(entry.get("id")) == getattr(agent, "workspace_id", default_workspace_id):
         return _t(agent, "workspace.switch.already_in_workspace", workspace_name=agent.workspace_name)
+    logger = logging.getLogger(f"{get_app_logger_root()}.workspace_switch")
+    prev_ws = str(getattr(agent, "workspace_id", "") or "")
+    prev_root = str(getattr(agent, "workspace_root", "") or "")
+    target_ws = str(entry.get("id") or "")
+    target_root = str(entry.get("root") or "")
+    logger.info(
+        "workspace_switch start: prev_ws=%s prev_root=%s -> target_ws=%s target_root=%s",
+        prev_ws, prev_root, target_ws, target_root,
+    )
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
     agent._refresh_workspace_runtime()
@@ -238,6 +248,10 @@ def workspace_switch_command(agent: Any, selector: str) -> str:
     # messages would duplicate the previous chat's history into a same-id chat
     # of the target workspace.
     agent._save_current_workspace_position(sync_messages=False)
+    logger.info(
+        "workspace_switch done: target_ws=%s target_root=%s",
+        target_ws, target_root,
+    )
     return (
         _t(agent, "workspace.switch.success", workspace_name=agent.workspace_name, work_directory=agent.work_directory)
     )
