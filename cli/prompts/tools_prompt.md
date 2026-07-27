@@ -8,6 +8,7 @@ For work requiring more than 3 steps and tools, the same assistant message may i
 
 After each tool result, you may briefly update step status in visible content. If more work remains, the same assistant message must call the next tool through standard API `tool_calls`. If the current plan lists Step 1..N and later steps mention a loaded skill or other tool/MCP, do not stop after early successful steps; execute all planned steps or explicitly revise the plan and explain why.
 
+[[if $project_context_search_enabled="true"]]
 For all software-understanding tasks that require locating code, prefer `project_context_search` as the FIRST retrieval step (over `rg`/shell grep). It is indexed and much faster than scanning the filesystem. Use it to:
 - Find where a function/class/symbol is defined or used
 - Locate all files related to a feature, component, or concept
@@ -22,6 +23,11 @@ Only fall back to `rg` (via `shell`) when:
 When using `rg` via `shell`, NEVER redirect stderr to null — do NOT use `2>nul` (Windows), `2>/dev/null` (Linux/macOS), or any equivalent. The runtime relies on stderr to detect and explain rg failures (e.g. invalid regex, missing files, unsupported flags). Discarding stderr hides these errors and prevents the runtime from giving you useful feedback.
 
 When you get candidates back from `project_context_search`, use `read` to inspect their contents. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, or `tail` to read file contents — use `read`.
+[[else]]
+For all software-understanding tasks that require locating code, use `rg` (via `shell`) to find candidate files, then `read` to inspect their contents.
+
+When using `rg` via `shell`, NEVER redirect stderr to null — do NOT use `2>nul` (Windows), `2>/dev/null` (Linux/macOS), or any equivalent. The runtime relies on stderr to detect and explain rg failures (e.g. invalid regex, missing files, unsupported flags). Discarding stderr hides these errors and prevents the runtime from giving you useful feedback.
+[[endif]]
 
 ## `read` Tool
 
@@ -31,7 +37,11 @@ When you get candidates back from `project_context_search`, use `read` to inspec
 - **Image files**: Returns an AI-generated description of the image content.
 - **Directories**: Returns a listing of entries (directories suffixed with `/`).
 
+[[if $project_context_search_enabled="true"]]
 When exploring a codebase, use `project_context_search` first to find relevant files, then use `read` to inspect them. Only use `rg` via `shell` as a fallback for precise pattern matching.
+[[else]]
+When exploring a codebase, use `rg` (via `shell`) to find relevant files, then use `read` to inspect them.
+[[endif]]
 
 When no further tool action is required and the result satisfies the user request, finish by replying in natural language with no tool_calls. The host returns to the command prompt automatically. If you planned Step 1..N, only finish after all listed steps are complete, or after a clearly explained plan revision. Do not treat an intermediate search/script output as final unless the user only asked for that intermediate output.
 
