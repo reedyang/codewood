@@ -29,7 +29,7 @@ export function StatusBar() {
 
   const rgStatus = status?.rg_status ?? "";
   const rgMessage = status?.rg_message ?? "";
-  const isRgActive = rgStatus === "downloading" || rgStatus === "extracting";
+  const isRgActive = rgStatus === "downloading" || rgStatus === "extracting" || rgStatus === "success";
   const isRgFailed = rgStatus === "failed";
 
   if (status?.hidden && !isRgActive && !isRgFailed) return null;
