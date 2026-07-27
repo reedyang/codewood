@@ -73,7 +73,10 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
             return {"success": False, "error": f"'{path}' is not a text file (binary content)"}
 
         lines = content.split("\n")
-        start = max(0, offset)
+        if offset < 0:
+            start = max(0, len(lines) + offset)
+        else:
+            start = offset
         if limit and limit > 0:
             end = start + limit
             sliced = lines[start:end]
@@ -93,7 +96,7 @@ class ReadTool(BaseTool):
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "The absolute path to the file or directory to read"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default 0)"},
+            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default 0). Negative values read from the end (e.g. -10 starts from the 10th last line)"},
             "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000)"},
             "prompt": {"type": "string", "description": "When reading an image, what aspect or detail to focus on (optional)"},
         },
