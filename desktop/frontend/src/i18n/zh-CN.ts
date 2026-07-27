@@ -409,4 +409,12 @@ export const zhCN: Dict = {
   "skills.sourceGlobal": "~/.codewood/skills",
   "skills.sourceWorkspace": "工作区",
   "skills.errToggle": "切换技能状态失败。",
+  "dashboard.input": "输入",
+  "dashboard.output": "输出",
+  "dashboard.outputTokens": "输出 tokens",
+  "dashboard.reasoningTokens": "推理 tokens",
+  "dashboard.inputTokens": "输入 tokens",
+  "dashboard.cacheHits": "缓存命中",
+  "dashboard.cacheMisses": "缓存未命中",
+  "dashboard.hitRate": "命中率",
 };

@@ -927,6 +927,65 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
     return result
 
 
+def _compute_chat_token_stats(agent: Any) -> Dict[str, Any]:
+    """Aggregate output/reasoning token stats for the active chat's current model.
+
+    Scans messages for ``_output_tokens`` and ``_reasoning_tokens`` fields,
+    summing them per model. When ``_token_count_includes_reasoning`` is True
+    (e.g. DeepSeek), the effective output tokens = ``_output_tokens`` -
+    ``_reasoning_tokens``. Falls back to the persisted chat record when
+    conversation_history is empty.
+    """
+    provider = str(getattr(agent, "provider", "") or "").strip()
+    model_name = str(getattr(agent, "model_name", "") or "").strip()
+    agent_key = f"{provider}/{model_name}" if provider and model_name else ""
+    result: Dict[str, Any] = {
+        "outputTokens": 0,
+        "reasoningTokens": 0,
+        "hasOutputTokens": False,
+        "hasReasoningTokens": False,
+        "includesReasoning": False,
+    }
+    if not model_name:
+        return result
+    hist = list(getattr(agent, "conversation_history", None) or [])
+    if not hist:
+        cid = _primary_active_chat_id(agent)
+        chat = agent._find_chat_by_id(cid) if cid else None
+        if isinstance(chat, dict):
+            hist = list(chat.get("messages") or [])
+
+    total_output = 0
+    total_reasoning = 0
+    has_output = False
+    has_reasoning = False
+    includes_reasoning = False
+
+    for msg in hist:
+        if not isinstance(msg, dict):
+            continue
+        msg_model = str(msg.get("_model") or "").strip()
+        if msg_model != agent_key:
+            continue
+        ot = msg.get("_output_tokens")
+        if isinstance(ot, int) and ot > 0:
+            total_output += ot
+            has_output = True
+        rt = msg.get("_reasoning_tokens")
+        if isinstance(rt, int) and rt > 0:
+            total_reasoning += rt
+            has_reasoning = True
+        if msg.get("_token_count_includes_reasoning") is True:
+            includes_reasoning = True
+
+    result["outputTokens"] = total_output
+    result["reasoningTokens"] = total_reasoning
+    result["hasOutputTokens"] = has_output
+    result["hasReasoningTokens"] = has_reasoning
+    result["includesReasoning"] = includes_reasoning
+    return result
+
+
 def _compute_context_usage_fresh_from_messages(agent: Any, chat_record: Dict[str, Any]) -> "tuple[int, int, int]":
     """Last-resort context usage when the in-memory snapshot is unavailable.
 
@@ -1420,6 +1479,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
             "window": active_context_window,
         },
         "cacheStats": _compute_chat_cache_stats(agent),
+        "tokenStats": _compute_chat_token_stats(agent),
         "language": language,
         "theme": theme,
         "uiPrefs": ui_prefs,

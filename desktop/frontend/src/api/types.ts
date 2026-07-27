@@ -19,6 +19,16 @@ export interface CacheStats {
   hasBreakdown: boolean;
 }
 
+/** Per-chat output/reasoning token stats from the backend. */
+export interface TokenStats {
+  outputTokens: number;
+  reasoningTokens: number;
+  hasOutputTokens: boolean;
+  hasReasoningTokens: boolean;
+  /** When true, outputTokens already includes reasoningTokens (e.g. DeepSeek). */
+  includesReasoning: boolean;
+}
+
 export interface IndexStatus {
   hidden: boolean;
   files_total: number;
@@ -150,6 +160,8 @@ export interface AppState {
   };
   /** Cumulative cache-hit/miss statistics for the active chat's current model. */
   cacheStats?: CacheStats;
+  /** Per-chat output/reasoning token statistics. */
+  tokenStats?: TokenStats;
   language: string;
   theme?: string;
   uiPrefs?: {
