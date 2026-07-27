@@ -663,22 +663,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeChatId, activeChatWsId]);
 
-  // Auto-show the todo dock only when a new plan arrives in the current
-  // chat (grew from empty) — NOT when switching to a chat that already has a
-  // saved plan from a previous round.
-  const planAutoOpenRef = useRef<{ chatId: string; planLen: number }>({
+  // Auto-show the todo dock only when the plan content actually changes
+  // (a new plan was generated) within the same chat.  Comparing a hash of
+  // the plan array avoids a false trigger when the plan is temporarily
+  // cleared and restored during a round transition without a real
+  // update_plan call.
+  const planAutoOpenRef = useRef<{ chatId: string; hash: string }>({
     chatId: "",
-    planLen: 0,
+    hash: "",
   });
+  const planHash = useMemo(
+    () => JSON.stringify(state?.plan?.plan ?? []),
+    [state?.plan?.plan],
+  );
   const activePlanLen = state?.plan?.plan?.length ?? 0;
   useEffect(() => {
     const prev = planAutoOpenRef.current;
-    const grewFromEmpty = prev.planLen === 0 && activePlanLen > 0 && prev.chatId === activeChatId;
-    if (grewFromEmpty) {
+    const sameChat = prev.chatId === activeChatId;
+    const planChanged = prev.hash !== planHash;
+    const hasPlan = activePlanLen > 0;
+    if (sameChat && planChanged && hasPlan) {
       setTodoDockVisible(true);
     }
-    planAutoOpenRef.current = { chatId: activeChatId, planLen: activePlanLen };
-  }, [activeChatId, activePlanLen]);
+    planAutoOpenRef.current = { chatId: activeChatId, hash: planHash };
+  }, [activeChatId, activePlanLen, planHash]);
   useEffect(() => {
     activeWorkspaceIdRef.current = state?.workspace.id ?? "";
   }, [state?.workspace.id]);
