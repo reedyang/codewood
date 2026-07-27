@@ -171,39 +171,34 @@ function Shell() {
   return (
     <div className="window-root" style={{ transform: `scale(${zoomLevel})`, transformOrigin: "top left", width: `${100 / zoomLevel}vw`, height: `${100 / zoomLevel}vh` }}>
       <TitleBar collapsed={collapsed} onTogglePanel={() => setCollapsed((v) => !v)} />
-      {settingsOpen ? (
-        <div className="app-shell">
-          <SettingsView />
-        </div>
-      ) : (
+      <div
+        className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}
+        style={{ display: settingsOpen ? "none" : undefined, "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      >
+        <Sidebar collapsed={collapsed} onOpenSettings={openSettings} />
         <div
-          className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}
-          style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
-        >
-          <Sidebar collapsed={collapsed} onOpenSettings={openSettings} />
-          <div
-            className={`sidebar-resizer ${resizing ? "resizing" : ""} ${collapsed ? "collapsed" : ""}`}
-            role="separator"
-            aria-orientation="vertical"
-            onMouseDown={startResize}
-          />
-          <div className="main-shadow-wrap">
-            <main
-              className="main"
-              style={{ "--right-panel-width": `${rightPanelWidth}px` } as CSSProperties}
-            >
-              <ChatView />
-              <div
-                className={`right-panel-resizer ${resizingRight ? "resizing" : ""} ${planOpen ? "" : "collapsed"}`}
-                role="separator"
-                aria-orientation="vertical"
-                onMouseDown={startResizeRight}
-              />
-              <RightPanel />
-            </main>
-          </div>
+          className={`sidebar-resizer ${resizing ? "resizing" : ""} ${collapsed ? "collapsed" : ""}`}
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={startResize}
+        />
+        <div className="main-shadow-wrap">
+          <main
+            className="main"
+            style={{ "--right-panel-width": `${rightPanelWidth}px` } as CSSProperties}
+          >
+            <ChatView />
+            <div
+              className={`right-panel-resizer ${resizingRight ? "resizing" : ""} ${planOpen ? "" : "collapsed"}`}
+              role="separator"
+              aria-orientation="vertical"
+              onMouseDown={startResizeRight}
+            />
+            <RightPanel />
+          </main>
         </div>
-      )}
+      </div>
+      <div className="app-shell" style={{ display: settingsOpen ? undefined : "none" }}><SettingsView /></div>
 
       <StatusBar />
 
