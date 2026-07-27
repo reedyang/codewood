@@ -43,6 +43,8 @@ _READ_ONLY_COMMAND_PATTERNS: List[re.Pattern] = [
         # --- navigation / system info -----------------------------------
         r"^(cd|chdir|pushd|popd)(\s|$)",
         r"^(pwd|whoami|hostname|uname|date|time|ver|set|env)(\s|$)",
+        r"^timeout(\s+/t\s+\d+|\s+\d+)(\s+(/nobreak|-n))?(\s*$|$)",
+        r"^sleep(\s+\d+)(\s*$|$)",
         # --- directory listing ------------------------------------------
         r"^(dir|ls|ll|la|tree)(\.exe)?(\s|/[^ ]*)*$",
         r"^(gci|get-childitem)(\.exe)?(\s|$)",
