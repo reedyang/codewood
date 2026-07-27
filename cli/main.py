@@ -32,6 +32,7 @@ from cli.core.config.config_jsonc import (
 )
 from cli.config.app_info import (
     append_windows_git_tools_to_path,
+    get_app_bundled_bin_dir,
     get_app_config_dirname,
     get_app_global_config_dir,
     get_app_name,
@@ -962,6 +963,10 @@ def main(argv: list[str] | None = None):
     # is visible everywhere, including inside pipelines and compound
     # commands where the per-command rg head-rewrite cannot reach.
     prepend_bundled_bin_to_path()
+    # Ensure ripgrep (rg) binary is present; if not, start a background
+    # download from GitHub releases for the current platform.
+    from cli.config.rg_downloader import ensure_rg_async
+    ensure_rg_async(get_app_bundled_bin_dir())
     # On Windows, also append the Git-for-Windows tool directories so
     # the model can reach GNU userland (bash, grep, sed, awk, curl,
     # ssh, …) when they're installed but the launching shell didn't

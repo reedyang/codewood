@@ -28,6 +28,8 @@ export interface IndexStatus {
   refresh_progress_total: number;
   refresh_progress_done: number;
   refresh_progress_percent: number;
+  rg_status?: string;
+  rg_message?: string;
 }
 
 export interface ChatSummary {

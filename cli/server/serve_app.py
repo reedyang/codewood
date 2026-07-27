@@ -2154,11 +2154,30 @@ class ServeApp:
     def index_status(self) -> Dict[str, Any]:
         agent = self.agent
         try:
+            from ..config.rg_downloader import (
+                RG_STATUS_IDLE,
+                RG_STATUS_SUCCESS,
+                get_rg_status,
+                get_rg_status_message,
+            )
+
+            rg_status = get_rg_status()
+            rg_data: Dict[str, Any] = {"rg_status": rg_status}
+
+            if rg_status == RG_STATUS_IDLE:
+                rg_data["rg_message"] = ""
+            elif rg_status == RG_STATUS_SUCCESS:
+                rg_data["rg_message"] = ""
+            else:
+                rg_data["rg_message"] = get_rg_status_message()
+
             idx = getattr(agent, "_project_context_index", None)
             if idx is None:
-                return {"hidden": True}
+                result = {"hidden": True}
+                result.update(rg_data)
+                return result
             st = idx.status()
-            return {
+            result = {
                 "hidden": False,
                 "files_total": int(st.get("files_total", 0)),
                 "workspace_name": str(getattr(agent, "workspace_name", "") or ""),
@@ -2168,8 +2187,10 @@ class ServeApp:
                 "refresh_progress_done": int(st.get("refresh_progress_done", 0)),
                 "refresh_progress_percent": int(st.get("refresh_progress_percent", 0)),
             }
+            result.update(rg_data)
+            return result
         except Exception:
-            return {"hidden": True}
+            return {"hidden": True, "rg_status": "", "rg_message": ""}
 
     def _resolve_workspace_root(self, ws_id: str) -> Optional[str]:
         """Map a workspace id to its on-disk root using agent state only.
