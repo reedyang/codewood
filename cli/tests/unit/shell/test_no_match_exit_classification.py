@@ -75,6 +75,13 @@ class NoMatchExitClassificationTests(unittest.TestCase):
             self._classifies(r'"D:\SourceCode\opensource\codewood\bin\rg.exe" -n foo .')
         )
 
+    def test_cd_and_rg_chain_is_classified_as_no_match(self):
+        # ``cd /d dir && rg ...`` is a common Windows pattern where
+        # the ``&&`` prefix is just a directory change — the trailing
+        # search tool's exit code is the final exit code.
+        self.assertTrue(self._classifies("cd /d D:/some/dir && rg -n foo"))
+        self.assertTrue(self._classifies("cd D:/some/dir && rg -n foo"))
+
     # --- negative cases -----------------------------------------------
 
     def test_zero_exit_code_is_not_reclassified(self):

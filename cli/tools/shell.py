@@ -280,7 +280,9 @@ if _WINPTY_PTYPROCESS is not None:
                     else:
                         data = self._pty.read(4096)
                         if not data:
-                            return b""
+                            # Process closed: flush any pending buffered
+                            # character before signalling EOF.
+                            return self._flush_pending()
                     if self._activity_tracker is not None:
                         try:
                             self._activity_tracker()
@@ -354,11 +356,17 @@ if _WINPTY_PTYPROCESS is not None:
                         self._pending_cha = None
                     return stripped.encode("utf-8", errors="replace")
             except EOFError:
-                return b""
+                return self._flush_pending()
+        def _flush_pending(self) -> bytes:
+            if self._pending_cha is not None:
+                ch = self._pending_cha
+                self._pending_cha = None
+                return ch.encode("utf-8", errors="replace")
+            return b""
         def read1(self, n=1024):
             return self.read(n)
         def close(self):
-            pass
+            self._flush_pending()
 
     class _WinPtyWriter:
         """Wrap winpty write() to accept bytes (like subprocess.PIPE)."""
@@ -1494,10 +1502,19 @@ def action_shell_command(
                     _is_ps_command = bool(
                         re.match(r"(?i)^powershell(?:\.exe)?\s", command.strip())
                     )
+                    # pywinpty spawn() passes argv through subprocess.list2cmdline
+                    # which escapes internal double-quotes with backslashes (Unix
+                    # convention).  cmd.exe does not recognise that convention, so
+                    # commands that contain their own double quotes would receive
+                    # mangled arguments.  Skip the winpty path for those commands
+                    # and let them fall through to the regular pipe-based Popen
+                    # which uses shell=True and preserves quoting correctly.
+                    _command_has_quotes = '"' in command
                     if (
                         _WINPTY_PTYPROCESS is not None
                         and subprocess.Popen is _ORIG_SUBPROCESS_POPEN
                         and not _is_ps_command
+                        and not _command_has_quotes
                     ):
                         try:
                             _comspec = run_env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
@@ -2349,6 +2366,79 @@ def _shell_command_has_compound_operator(command: str) -> bool:
     return False
 
 
+def _extract_last_and_segment(command: str) -> Optional[str]:
+    """Extract the rightmost ``&&``-separated segment of a shell command.
+
+    Returns ``None`` when the command contains compound operators other
+    than ``&&`` (pipe, ``||``, ``;``, standalone ``&``), since those can
+    change the exit code in ways that make the per-tool classification
+    unreliable.  For a plain ``&&`` chain like ``cd /d dir && rg ...``,
+    the trailing segment's exit code IS the final exit code.
+    """
+    s = str(command or "").strip()
+    if not s:
+        return None
+    # Bail out if any non-&& compound operator is present.
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if not (in_single or in_double):
+            if ch in ("|", ";"):
+                return None
+            if ch == "&":
+                # Two && in a row is ok (the operator we split on).
+                if i + 1 < n and s[i + 1] == "&":
+                    i += 2
+                    continue
+                # Standalone & is not ok.
+                return None
+        i += 1
+    # Split on && tokens (outside quotes) and return the last segment.
+    segments: list[str] = []
+    in_single = False
+    in_double = False
+    start = 0
+    i = 0
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if not (in_single or in_double) and ch == "&" and i + 1 < n and s[i + 1] == "&":
+            segments.append(s[start:i].strip())
+            start = i + 2
+            i += 2
+            continue
+        i += 1
+    segments.append(s[start:].strip())
+    segments = [seg for seg in segments if seg]
+    if not segments:
+        return None
+    return segments[-1]
+
+
 def _classify_no_match_exit(
     command: str,
     return_code: int,
@@ -2367,9 +2457,16 @@ def _classify_no_match_exit(
     inner = _unwrap_shell_command_layers(command)
     if not inner.strip():
         return None
+    # If the command chains with ``&&`` (e.g. ``cd /d dir && rg ...``),
+    # extract the trailing segment so the classification still applies
+    # when the chain is just a directory change prefix.
     if _shell_command_has_compound_operator(inner):
-        return None
-    parts = _split_shell_like(inner)
+        segment = _extract_last_and_segment(inner)
+        if not segment:
+            return None
+    else:
+        segment = inner
+    parts = _split_shell_like(segment)
     if not parts:
         return None
     base = _token_exe_base(_strip_wrapping_quotes(parts[0]))

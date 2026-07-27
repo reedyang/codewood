@@ -4192,12 +4192,12 @@ def run_agent_loop(agent: Any):
                                 "错误：模型反复将工具调用写成助手文本，而不是标准 tool_calls。本轮自动执行已停止。",
                             )
                         )
-                    _warn_loop_ended_with_pending_plan(
-                        self,
-                        plan_finalize_nudged=plan_finalize_nudged,
-                        turn_used_request_user_input=turn_used_request_user_input,
-                    )
-                    break
+                        _warn_loop_ended_with_pending_plan(
+                            self,
+                            plan_finalize_nudged=plan_finalize_nudged,
+                            turn_used_request_user_input=turn_used_request_user_input,
+                        )
+                        break
 
                     pseudo_retry_attempts += 1
                     next_input = _build_pseudo_tool_call_retry_prompt(
