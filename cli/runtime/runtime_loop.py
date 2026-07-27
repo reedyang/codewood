@@ -4665,7 +4665,7 @@ def run_agent_loop(agent: Any):
                     if not bool(getattr(self, "_gui_plain_stream", False)):
                         print("")
                     is_first_round = False
-                    if tool_name == "apply_patch" and (not bool(result.get("success", False))):
+                    if tool_name == "apply_patch" and (not bool(result.get("success", False))) and (not bool(getattr(self, "_gui_plain_stream", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
                         print(t("runtime.apply_patch_failed", error=err))
                     if self._result_indicates_user_cancelled(result):
