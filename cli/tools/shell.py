@@ -3236,6 +3236,69 @@ def _git_stash_ref_for_hash(cwd: Path, stash_hash: str) -> Optional[str]:
     return None
 
 
+def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
+    """Delete stale ``codewood_shell_pre`` stashes for the git repo at *cwd*.
+
+    Returns a small result dictionary so callers can log or test behavior
+    without parsing command output.
+    """
+    repo_root = _git_repo_root(cwd)
+    if repo_root is None:
+        return {"checked": False, "repo_root": None, "removed": 0, "failed": []}
+    try:
+        result = _subprocess_mod.run(
+            ["git", "-C", str(repo_root), "stash", "list", "--format=%H%x09%gs%x09%gd"],
+            capture_output=True, text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            _log.info(
+                "stash cleanup list failed: repo=%s rc=%d stdout=%s stderr=%s",
+                repo_root,
+                result.returncode,
+                (result.stdout or "").strip()[:200],
+                (result.stderr or "").strip()[:200],
+            )
+            return {"checked": True, "repo_root": str(repo_root), "removed": 0, "failed": ["stash-list"]}
+        refs_to_drop: List[str] = []
+        for raw_line in (result.stdout or "").splitlines():
+            parts = raw_line.split("\t")
+            if len(parts) != 3:
+                continue
+            _stash_hash, message, stash_ref = parts
+            if str(message).strip() == "On master: codewood_shell_pre" or str(message).strip().endswith(": codewood_shell_pre"):
+                refs_to_drop.append(str(stash_ref).strip())
+        removed = 0
+        failed: List[str] = []
+        for stash_ref in refs_to_drop:
+            drop_result = _subprocess_mod.run(
+                ["git", "-C", str(repo_root), "stash", "drop", stash_ref],
+                capture_output=True, text=True,
+                timeout=10,
+            )
+            if drop_result.returncode == 0:
+                removed += 1
+            else:
+                failed.append(stash_ref)
+                _log.info(
+                    "stash cleanup drop failed: repo=%s ref=%s rc=%d stdout=%s stderr=%s",
+                    repo_root,
+                    stash_ref,
+                    drop_result.returncode,
+                    (drop_result.stdout or "").strip()[:200],
+                    (drop_result.stderr or "").strip()[:200],
+                )
+        return {
+            "checked": True,
+            "repo_root": str(repo_root),
+            "removed": removed,
+            "failed": failed,
+        }
+    except Exception as e:
+        _log.info("stash cleanup error: repo=%s err=%s", repo_root, e)
+        return {"checked": True, "repo_root": str(repo_root), "removed": 0, "failed": ["exception"]}
+
+
 def _git_stash_restore(cwd: Path, stash_hash: str) -> None:
     """Drop the temporary stash now that its before-content has been used
     for diffs."""

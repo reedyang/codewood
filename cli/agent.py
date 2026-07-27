@@ -124,6 +124,7 @@ from .completion.slash_dynamic_completions import (
     build_slash_dynamic_rules,
     build_workspace_action_commands,
 )
+from .tools.shell import cleanup_codewood_shell_pre_stashes
 from .tools import apply_patch as tools_apply_patch
 from .tools import read as tools_read
 from .tools import shell as tools_shell
@@ -658,6 +659,39 @@ class Agent:
         if root.exists() and root.is_dir():
             return root
         return self.work_directory
+
+    def _cleanup_workspace_shell_stashes_if_needed(self) -> None:
+        """Silently clean stale ``codewood_shell_pre`` stashes for the active workspace repo."""
+        target = None
+        try:
+            root = self._resolve_path_lenient(Path(self.workspace_root))
+            if root.exists() and root.is_dir():
+                target = root
+        except Exception:
+            target = None
+        if target is None:
+            try:
+                wd = self._resolve_path_lenient(Path(self.work_directory))
+                if wd.exists() and wd.is_dir():
+                    target = wd
+            except Exception:
+                target = None
+        if target is None:
+            return
+        try:
+            result = cleanup_codewood_shell_pre_stashes(target)
+            removed = int(result.get("removed", 0) or 0)
+            failed = list(result.get("failed") or [])
+            if removed or failed:
+                get_logger("codewood.workspace").info(
+                    "workspace stash cleanup: workspace=%s repo=%s removed=%d failed=%s",
+                    getattr(self, "workspace_id", ""),
+                    result.get("repo_root"),
+                    removed,
+                    failed,
+                )
+        except Exception:
+            pass
 
     def _reset_work_directory_to_startup_initial(self) -> None:
         """Restore current directory to startup initial directory and persist state."""
@@ -6333,6 +6367,7 @@ class Agent:
 
     def _refresh_workspace_runtime(self, create_default_chat: bool = True) -> None:
         self._shutdown_workspace_services(wait=True)
+        self._cleanup_workspace_shell_stashes_if_needed()
         self._ensure_workspace_dirs()
         self.history_manager = HistoryManager(str(self.workspace_config_dir), language=getattr(self, "display_language", "en") or "en")
         self._load_chat_state(create_default_chat=create_default_chat)
