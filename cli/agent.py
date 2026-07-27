@@ -7455,6 +7455,7 @@ class Agent:
             return f"apply_patch (path={p}, {patch_info})"
         if str(tool_name).strip().lower() == "shell":
             cmd = str(a.get("command") or "").strip()
+            cmd = tools_shell.strip_redundant_cd_prefix(self, cmd)
             m = re.match(
                 r"(?is)^(?:powershell(?:\.exe)?)\s+-ExecutionPolicy\s+Bypass\s+-Command\s+(?P<payload>.+)$",
                 cmd,
