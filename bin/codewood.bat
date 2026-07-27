@@ -11,7 +11,6 @@ set "REQ_FILE=%ROOT_DIR%\requirements.txt"
 :: ---- Check if environment or dependencies are missing ----
 set "INSTALL_NEEDED="
 if not exist "%VENV_DIR%\Scripts\activate.bat" set "INSTALL_NEEDED=1"
-if not exist "%SCRIPT_DIR%rg.exe" set "INSTALL_NEEDED=1"
 
 if defined INSTALL_NEEDED (
     echo Environment or dependencies missing. Installing...
@@ -56,7 +55,7 @@ exit /b 0
 "%VENV_PYTHON%" "%ENTRY%" --executable-name "%~nx0" %*
 exit /b %ERRORLEVEL%
 
-:: ---- Inlined former install.bat: create venv, install deps, copy rg.exe ----
+:: ---- Inlined former install.bat: create venv, install deps ----
 :install
 set "PY_BOOTSTRAP="
 where python >nul 2>nul
@@ -91,13 +90,6 @@ echo Installing dependencies from "%REQ_FILE%"...
 "%VENV_PYTHON%" -m pip install -r "%REQ_FILE%"
 if errorlevel 1 (
     echo Failed to install dependencies.
-    exit /b 1
-)
-
-echo Copying rg.exe to bin directory...
-copy /Y "%ROOT_DIR%\vendors\rg.exe" "%SCRIPT_DIR%"
-if errorlevel 1 (
-    echo Failed to copy rg.exe.
     exit /b 1
 )
 

@@ -5,6 +5,7 @@ from typing import Any, Optional
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
 from ..config.app_info import (
     append_windows_git_tools_to_path,
+    get_app_bundled_bin_dir,
     get_app_global_config_dir,
     prepend_bundled_bin_to_path,
 )
@@ -39,6 +40,10 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     # when the directory is missing, so safe to call from every Agent
     # construction path (main entry, tests, ad-hoc embeddings).
     prepend_bundled_bin_to_path()
+    # Ensure ripgrep (rg) binary is present; if not, start a background
+    # download from GitHub releases for the current platform.
+    from ..config.rg_downloader import ensure_rg_async
+    ensure_rg_async(get_app_bundled_bin_dir())
     # On Windows, also append Git-for-Windows tool directories so the
     # GNU userland is reachable to subprocesses that copy os.environ.
     # No-op on non-Windows or when Git for Windows is not installed.

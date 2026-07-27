@@ -88,10 +88,9 @@ class PrependBundledBinToPathTests(unittest.TestCase):
         self.assertEqual(os.environ["PATH"], "C:\\foo")
 
     def test_prepend_returns_actual_bin_dir_when_real_repo_layout_is_present(self):
-        # The repo this test runs from ships ``bin/rg.exe`` (or
-        # equivalent on Linux). When the helper resolves successfully,
-        # the returned path must point inside the actual project
-        # ``bin/`` directory.
+        # The repo this test runs from has a ``bin/`` directory.
+        # When the helper resolves successfully, the returned path
+        # must point inside the actual project ``bin/`` directory.
         bundled = app_info.get_app_bundled_bin_dir()
         if not bundled.is_dir():
             self.skipTest("Bundled bin/ directory missing in this checkout")

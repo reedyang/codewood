@@ -55,8 +55,8 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 
 # Source paths are relative to --specpath (build/codewood), matching pack.bat.
 # Unix uses ':' as the --add-data separator instead of ';'.
-# Note: ripgrep (rg) is NOT bundled on non-Windows; it is expected to be
-# installed system-wide (e.g. via the package manager) and found on PATH.
+# Note: ripgrep (rg) is NOT bundled; it is downloaded at runtime on first
+# launch from GitHub releases if not already present in bin/.
 #
 # One-dir is used (instead of one-file) so each process runs directly without
 # an extra self-extracting bootloader process: the GUI then uses two processes

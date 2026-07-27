@@ -48,8 +48,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem Include required resources: rg.exe, skills, cli resources, and the
+rem Include required resources: skills, cli resources, and the
 rem desktop GUI (frontend bundle + pywebview host modules).
+rem Note: ripgrep (rg) is downloaded at runtime on first launch if not
+rem already present in bin/; it is no longer bundled at build time.
 rem Using multiple --add-data flags (Windows uses ';' as separator)
 rem Include virtual environment packages from .venv-windows
 rem PyInstaller will search this path for modules
