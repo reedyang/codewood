@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
-import type { HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from "../api/types";
+import type { HistoryRound, HistoryTurn, PlanStep, SubAgentMessage, Turn, TurnRound } from "../api/types";
 import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
@@ -855,6 +855,119 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
+function statusIcon(status: string): { name: IconName; className: string } {
+  if (status === "completed") {
+    return { name: "check-circle", className: "plan-step-icon completed" };
+  }
+  if (status === "in_progress") {
+    return { name: "circle-square", className: "plan-step-icon in-progress" };
+  }
+  return { name: "circle", className: "plan-step-icon pending" };
+}
+
+
+function TodoDock({
+  steps,
+  visible,
+}: {
+  steps: PlanStep[];
+  visible: boolean;
+}) {
+  const { t } = useApp();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(true);
+  const [bodyHeight, setBodyHeight] = useState<string>("auto");
+
+  const total = steps.length;
+  const completed = steps.filter((s) => s.status === "completed").length;
+
+  // Auto-expand when the dock becomes visible (new plan arrived).
+  useEffect(() => {
+    if (visible && total > 0) {
+      setExpanded(true);
+    }
+  }, [visible, total]);
+
+  // Measure and animate body height when expanded state changes.
+  useEffect(() => {
+    if (expanded) {
+      setBodyHeight("auto");
+    } else {
+      // Measure current height before collapsing.
+      if (bodyRef.current) {
+        setBodyHeight(`${bodyRef.current.scrollHeight}px`);
+      }
+    }
+  }, [expanded]);
+
+  // After setting a fixed height for collapse, trigger the 0 in next frame.
+  useLayoutEffect(() => {
+    if (!expanded && bodyRef.current) {
+      const el = bodyRef.current;
+      // Force a layout so the browser picks up the fixed height before animating.
+      el.offsetHeight;
+      requestAnimationFrame(() => setBodyHeight("0px"));
+    }
+  }, [bodyHeight, expanded]);
+
+  // Re-measure when expanded and content changes.
+  useEffect(() => {
+    if (expanded && bodyRef.current) {
+      const observer = new ResizeObserver(() => {
+        if (expanded && bodyRef.current) {
+          setBodyHeight(`${bodyRef.current.scrollHeight}px`);
+        }
+      });
+      observer.observe(bodyRef.current);
+      return () => observer.disconnect();
+    }
+  }, [expanded]);
+
+  if (total === 0 || !visible) {
+    return null;
+  }
+
+  return (
+    <div className="todo-dock">
+      <div className="todo-dock-header">
+        <button
+          className="todo-dock-toggle"
+          onClick={() => setExpanded((v) => !v)}
+          title={expanded ? t("todo.collapse") : t("todo.expand")}
+        >
+          <Icon name="chevron" size={12} className={`chevron ${expanded ? "down" : "right"}`} />
+          <span className="todo-dock-title">{t("plan.title")}</span>
+          <span className="todo-dock-count">{completed}/{total}</span>
+        </button>
+      </div>
+      <div
+        ref={bodyRef}
+        className={`todo-dock-body${expanded ? " expanded" : ""}`}
+        style={{ maxHeight: bodyHeight }}
+      >
+        <div
+          className="todo-dock-steps"
+          ref={scrollRef}
+        >
+          {steps.map((step, idx) => {
+            const { name, className } = statusIcon(step.status);
+            return (
+              <div
+                key={idx}
+                className={`todo-dock-step ${step.status === "completed" ? "completed" : ""}`}
+              >
+                <Icon name={name} size={14} className={className} />
+                <span className="todo-dock-step-text">{step.step}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ChatView() {
   const {
     state,
@@ -894,6 +1007,8 @@ export function ChatView() {
     pendingAutoSend,
     startPendingInputs,
     cancelPendingInput,
+    todoDockVisible,
+    setTodoDockVisible,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -1188,6 +1303,11 @@ export function ChatView() {
     setSegments([]);
     setImageAttachmentsByChat((prev) => ({ ...prev, [key]: [] }));
     stickToBottomRef.current = true;
+    // Only dismiss the todos list when the message is actually being sent
+    // (model is idle), not when it's being queued as a pending task.
+    if (!busy) {
+      setTodoDockVisible(false);
+    }
     await sendInput(message);
   };
 
@@ -1204,6 +1324,7 @@ export function ChatView() {
     // part of the message body and can respond as if the user said it.
     const prompt = t("composer.executePlanPrompt");
     stickToBottomRef.current = true;
+    setTodoDockVisible(false);
     await sendInput(encodeHiddenInstruction(prompt));
   };
 
@@ -1620,6 +1741,10 @@ export function ChatView() {
           </div>
           <div className="composer-dock">
             <div className="composer-dock-inner">
+              <TodoDock
+                steps={state?.plan?.plan ?? []}
+                visible={todoDockVisible}
+              />
               {pendingList}
               {composer}
             </div>
