@@ -35,6 +35,7 @@ export function ChatTitleBar() {
     client,
     activeSubAgentSession,
     exitSubAgentSession,
+    draftMode,
   } = useApp();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -43,8 +44,22 @@ export function ChatTitleBar() {
 
   const wsId = activeWorkspaceId;
   const activeChat = activeChats.find((c) => c.id === activeChatId);
-  if (!activeChat) {
-    return null;
+  if (!activeChat || draftMode) {
+    return (
+      <div className="chat-titlebar">
+        <span style={{ flex: 1 }} />
+        <button
+          className={`chat-titlebar-console ${consoleOpen ? "active" : ""}`}
+          aria-label={consoleOpen ? t("console.hide") : t("console.show")}
+          aria-pressed={consoleOpen}
+          title={consoleOpen ? t("console.hide") : t("console.show")}
+          onClick={() => { consoleOpen ? hideConsole() : showConsole(); }}
+        >
+          <Icon name="panel-bottom" size={18} />
+        </button>
+        {!planOpen && <button className="chat-titlebar-plan" aria-label={t("rightpanel.toggle")} aria-pressed={false} title={t("rightpanel.toggle")} onClick={togglePlan}><Icon name="panel-right" size={18} /></button>}
+      </div>
+    );
   }
 
   const key = chatKey(wsId, activeChat.id);
