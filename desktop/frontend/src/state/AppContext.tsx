@@ -663,9 +663,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeChatId, activeChatWsId]);
 
-  // Auto-show the todo dock when the active chat has a plan and either
-  // (a) the plan just went from empty to non-empty (new plan), or
-  // (b) we switched to a chat that already has a saved plan.
+  // Auto-show the todo dock only when a new plan arrives in the current
+  // chat (grew from empty) — NOT when switching to a chat that already has a
+  // saved plan from a previous round.
   const planAutoOpenRef = useRef<{ chatId: string; planLen: number }>({
     chatId: "",
     planLen: 0,
@@ -673,9 +673,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activePlanLen = state?.plan?.plan?.length ?? 0;
   useEffect(() => {
     const prev = planAutoOpenRef.current;
-    const chatChanged = prev.chatId !== activeChatId;
-    const grewFromEmpty = !chatChanged && prev.planLen === 0 && activePlanLen > 0;
-    if (activePlanLen > 0 && (chatChanged || grewFromEmpty)) {
+    const grewFromEmpty = prev.planLen === 0 && activePlanLen > 0 && prev.chatId === activeChatId;
+    if (grewFromEmpty) {
       setTodoDockVisible(true);
     }
     planAutoOpenRef.current = { chatId: activeChatId, planLen: activePlanLen };
