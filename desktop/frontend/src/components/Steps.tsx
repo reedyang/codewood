@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { AnsiText } from "./Ansi";
 import { hostApi } from "../utils/hostApi";
 import { DiffPreview, langFromPath } from "./DiffPreview";
+import { HoverTooltip } from "./HoverTooltip";
 import { SyntaxOutput, resolveToolOutputLang } from "./SyntaxOutput";
 import { Icon } from "./Icon";
 import { useApp } from "../state/AppContext";
@@ -626,15 +627,17 @@ function PromptWithAttachment({
         <span className="cmd-prompt-bullet">
           <AnsiText text={bullet} />
         </span>
-        <span className="cmd-prompt-body">
-          <AnsiText text={body} onPathPreview={onPathPreview} />
-          {running && <SpinnerChar />}
-          {trailingStatusText && (
-            <span className="tool-inline-working">
-              <span className="activity-text marquee">{trailingStatusText}</span>
-            </span>
-          )}
-        </span>
+        <HoverTooltip content={<span style={{ fontFamily: "inherit", whiteSpace: "pre-wrap" }}>{stripAnsi(body)}</span>}>
+          <span className="cmd-prompt-body">
+            <AnsiText text={body} onPathPreview={onPathPreview} />
+            {running && <SpinnerChar />}
+            {trailingStatusText && (
+              <span className="tool-inline-working">
+                <span className="activity-text marquee">{trailingStatusText}</span>
+              </span>
+            )}
+          </span>
+        </HoverTooltip>
       </div>
     );
   }
@@ -657,18 +660,20 @@ function PromptWithAttachment({
         <span className="cmd-prompt-bullet">
           <AnsiText text={bullet} />
         </span>
-        <span className="cmd-prompt-body">
-          <AnsiText text={body} onPathPreview={onPathPreview} />
-          {running && <SpinnerChar />}
-          <span className="cmd-prompt-diff-toggle subagent-view-btn">
-            <Icon name="chevron" size={14} className="chevron" />
-          </span>
-          {trailingStatusText && (
-            <span className="tool-inline-working">
-              <span className="activity-text marquee">{trailingStatusText}</span>
+        <HoverTooltip content={<span style={{ fontFamily: "inherit", whiteSpace: "pre-wrap" }}>{stripAnsi(body)}</span>}>
+          <span className="cmd-prompt-body">
+            <AnsiText text={body} onPathPreview={onPathPreview} />
+            {running && <SpinnerChar />}
+            <span className="cmd-prompt-diff-toggle subagent-view-btn">
+              <Icon name="chevron" size={14} className="chevron" />
             </span>
-          )}
-        </span>
+            {trailingStatusText && (
+              <span className="tool-inline-working">
+                <span className="activity-text marquee">{trailingStatusText}</span>
+              </span>
+            )}
+          </span>
+        </HoverTooltip>
       </div>
     );
   }
@@ -696,18 +701,20 @@ function PromptWithAttachment({
         <span className="cmd-prompt-bullet">
           <AnsiText text={bullet} />
         </span>
-        <span className="cmd-prompt-body">
-          <AnsiText text={body} onPathPreview={onPathPreview} />
-          {running && <SpinnerChar />}
-          {isSubAgent && (
-            <span className="cmd-prompt-diff-toggle subagent-view-btn">
-              <Icon name="chevron" size={14} className="chevron" />
+        <HoverTooltip content={<span style={{ fontFamily: "inherit", whiteSpace: "pre-wrap" }}>{stripAnsi(body)}</span>}>
+          <span className="cmd-prompt-body">
+            <AnsiText text={body} onPathPreview={onPathPreview} />
+            {running && <SpinnerChar />}
+            {isSubAgent && (
+              <span className="cmd-prompt-diff-toggle subagent-view-btn">
+                <Icon name="chevron" size={14} className="chevron" />
+              </span>
+            )}
+            <span className="cmd-prompt-diff-toggle">
+              <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
             </span>
-          )}
-          <span className="cmd-prompt-diff-toggle">
-            <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>
-        </span>
+        </HoverTooltip>
       </div>
       {!isSubAgent && expanded && hasCmd && syntaxNode}
       {!isSubAgent && expanded && hasCmd && !syntaxNode && (() => {

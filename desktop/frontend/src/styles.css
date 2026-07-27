@@ -4559,8 +4559,15 @@ html[data-has-bg] .select {
 .activity-steps .cmd-prompt-body {
   flex: 1 1 auto;
   min-width: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-steps .cmd-prompt .hover-tooltip-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
 }
 
 .activity-steps .tool-inline-working {
