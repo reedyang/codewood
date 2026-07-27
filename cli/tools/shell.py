@@ -1720,6 +1720,37 @@ def action_shell_command(
             if _shell_was_truncated:
                 base_out["full_output_path"] = str(_shell_output_path)
 
+            # ---- inline-code diagnostic: on Windows, cmd.exe does *not*
+            #      understand \" as an escaped quote.  A python -c "...\""...\" "
+            #      gets truncated at the first unescaped \" — the remaining
+            #      code is silently discarded (exit 0, no output) or runs a
+            #      truncated snippet that produces SyntaxErrors/Warnings.
+            #      Log a warning so the model can see that something went wrong.
+            if (
+                return_code == 0
+                and _is_inline_code_command(command)
+                and os.name == "nt"
+                and ("\\\"" in command or '\\"' in command)
+                and (
+                    not _shell_rendered.strip()
+                    or "SyntaxWarning" in _shell_rendered
+                    or "SyntaxError" in _shell_rendered
+                )
+            ):
+                _warning = (
+                    "\n\n⚠️  Command exited 0 but produced no normal output "
+                    "(or only a SyntaxWarning/SyntaxError).  The sequence ``\\\"`` "
+                    "is not an escape on Windows; cmd.exe treats the ``\"`` as "
+                    "ending the quoted argument, which may have silently truncated "
+                    "your script.  Remedy: use single quotes for Python string "
+                    "literals inside a double-quoted -c argument "
+                    "(e.g. ``'__main__'`` instead of ``\\\"__main__\\\"``), or "
+                    "write the script to a temporary file and execute that "
+                    "instead of using -c."
+                )
+                _shell_rendered = _shell_rendered + _warning
+                base_out["output"] = _shell_rendered
+
             # Check for file deletions: compare snapshotted files against
             # current filesystem state, backup deleted content, and record
             # a delete change via the file_change_tracker.
@@ -3271,24 +3302,10 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
 
         i += 1
 
-    # ---- inline-code interpreters: when "python -c '…'" or "node -e '…'"
-    #      embeds file paths inside the code string, scan those strings for
-    #      path-like literals that resolve inside the workspace -------------
-    _INLINE_CODE_INTERPRETERS: Dict[str, Set[str]] = {
-        "python": {"-c"},
-        "python3": {"-c"},
-        "node": {"-e", "--eval"},
-        "ruby": {"-e"},
-        "perl": {"-e"},
-        "php": {"-r"},
-        "bash": {"-c"},
-        "sh": {"-c"},
-        "pwsh": {"-command", "-c"},
-        "powershell": {"-command", "-c"},
-    }
+    # ---- inline-code interpreters: scan code-string arguments for path-
+    #      like string literals that resolve inside the workspace -----------
     if tokens:
         _first = tokens[0].lower()
-        # Normalize to basename in case the command is a full path
         _first_base = Path(_first).name
         _flag_set = _INLINE_CODE_INTERPRETERS.get(_first_base)
         if _flag_set is not None:
@@ -3302,10 +3319,14 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
 
 
 # Patterns to extract quoted path-like strings from inline script code.
-_INLINE_PATH_PATTERN = re.compile(
-    r"""(['\"])((?:[^\\\1]|\\.)*?)\1""",
-    re.DOTALL,
-)
+# The negative lookahead skips strings that are clearly dict keys / enum
+# members (followed by ":" or "=" or ")" immediately), but accepts
+# strings followed by "," or " " — those are common in function arguments
+# like open('path', 'mode').
+_INLINE_PATH_PATTERNS = [
+    re.compile(r"'((?:[^'\\]|\\.)*)'(?!\s*[;:=(})\]])", re.DOTALL),
+    re.compile(r'"((?:[^"\\]|\\.)*)"(?!\s*[;:=(})\]])', re.DOTALL),
+]
 
 
 def _add_paths_from_inline_code(
@@ -3314,43 +3335,80 @@ def _add_paths_from_inline_code(
     paths: Set[str],
 ) -> None:
     """Scan *code* (a ``-c``/``-e`` inline-script argument) for quoted
-    string literals that look like file paths and add those that resolve
-    inside *cwd* to *paths*."""
-    for m in _INLINE_PATH_PATTERN.finditer(code):
-        lit = m.group(2)
-        # Heuristic: skip strings that are obviously not file paths.
-        if not lit or len(lit) > 500:
-            continue
-        if lit.startswith("#") or lit.startswith("\\"):
-            continue
-        if "\n" in lit or "\r" in lit:
-            continue
-        # Pure numbers, short single words, and format strings are unlikely
-        # to be file paths.
-        if len(lit) < 2 or lit.isdigit():
-            continue
-        # Normalise escape sequences (most of them).
-        try:
-            decoded = lit.encode("latin1", errors="replace").decode("unicode_escape")
-        except (UnicodeDecodeError, UnicodeEncodeError):
-            decoded = lit
-        p = Path(decoded)
-        if not p.is_absolute():
-            p = cwd / p
-        try:
-            p = p.resolve()
-        except (OSError, ValueError):
-            continue
-        if p.exists():
-            if p.is_dir():
-                try:
-                    for f in p.rglob("*"):
-                        if f.is_file():
-                            paths.add(str(f))
-                except (OSError, PermissionError):
-                    pass
-            elif p.is_file():
-                paths.add(str(p))
+    string literals that look like file paths and add those that plausibly
+    resolve inside (or relative to) *cwd*."""
+    for pat in _INLINE_PATH_PATTERNS:
+        for m in pat.finditer(code):
+            lit = m.group(1)
+            if not lit or len(lit) > 500 or len(lit) < 2:
+                continue
+            if lit.isdigit():
+                continue
+            if "\n" in lit or "\r" in lit:
+                continue
+            # Normalise common escape sequences.
+            try:
+                decoded = lit.encode("latin1", errors="replace").decode("unicode_escape")
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                decoded = lit
+            p = Path(decoded)
+            if not p.is_absolute():
+                p = cwd / p
+            try:
+                p = p.resolve()
+            except (OSError, ValueError):
+                continue
+            # For inline-code paths we accept both existing paths AND paths
+            # whose parent directory exists (the file may be about to be
+            # created by the command).
+            if p.exists():
+                if p.is_dir():
+                    try:
+                        for f in p.rglob("*"):
+                            if f.is_file():
+                                paths.add(str(f))
+                    except (OSError, PermissionError):
+                        pass
+                elif p.is_file():
+                    paths.add(str(p))
+            else:
+                parent = p.parent
+                if parent.exists() and parent.is_dir():
+                    paths.add(str(p))
+
+
+# ---- inline-code interpreter helpers shared by the diagnostic and path
+#      extraction code ----------------------------------------------------
+_INLINE_CODE_INTERPRETERS: Dict[str, Set[str]] = {
+    "python": {"-c"},
+    "python3": {"-c"},
+    "node": {"-e", "--eval"},
+    "ruby": {"-e"},
+    "perl": {"-e"},
+    "php": {"-r"},
+    "bash": {"-c"},
+    "sh": {"-c"},
+    "pwsh": {"-command", "-c"},
+    "powershell": {"-command", "-c"},
+}
+
+
+def _is_inline_code_command(command: str) -> bool:
+    """Return True when *command* runs an inline-code interpreter and
+    embeds its file-operand knowledge inside a code-string argument."""
+    stripped = command.strip()
+    if not stripped:
+        return False
+    first_token = stripped.split(None, 1)[0].lower()
+    first_base = Path(first_token).name
+    flag_set = _INLINE_CODE_INTERPRETERS.get(first_base)
+    if flag_set is None:
+        return False
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = stripped.split()
+    return any(tok in flag_set for tok in tokens[1:])
 
 
 def _diff_workspace_snapshots(
