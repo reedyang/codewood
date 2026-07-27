@@ -18,12 +18,14 @@ _GITHUB_API_RELEASES_URL = "https://api.github.com/repos/BurntSushi/ripgrep/rele
 _GITHUB_LATEST_REDIRECT_URL = "https://github.com/BurntSushi/ripgrep/releases/latest"
 
 _RG_BINARY_NAME = "rg.exe" if os.name == "nt" else "rg"
+_VERSION_FILENAME = "rg-version.txt"
 
 _download_lock = threading.Lock()
 _download_in_progress = False
 _download_complete = False
 
 RG_STATUS_IDLE = "idle"
+RG_STATUS_CHECKING = "checking"
 RG_STATUS_DOWNLOADING = "downloading"
 RG_STATUS_EXTRACTING = "extracting"
 RG_STATUS_FAILED = "failed"
@@ -39,12 +41,6 @@ def get_rg_status() -> str:
 
 def get_rg_status_message() -> str:
     return _rg_status_message
-
-
-def _reset_status() -> None:
-    global _rg_status, _rg_status_message
-    _rg_status = RG_STATUS_IDLE
-    _rg_status_message = ""
 
 
 def _detect_platform_target() -> str | None:
@@ -74,7 +70,32 @@ def _archive_extension() -> str:
     return ".zip" if os.name == "nt" else ".tar.gz"
 
 
-def _try_api_latest() -> tuple[str | None, str | None]:
+def _read_local_version(bin_dir: Path) -> str | None:
+    version_file = bin_dir / _VERSION_FILENAME
+    try:
+        if version_file.is_file():
+            return version_file.read_text(encoding="utf-8").strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def _write_local_version(bin_dir: Path, version: str) -> None:
+    version_file = bin_dir / _VERSION_FILENAME
+    try:
+        version_file.write_text(str(version).strip(), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _resolve_latest_version() -> str | None:
+    version, _url = _try_api_latest_with_url()
+    if version:
+        return version
+    return _try_redirect_version()
+
+
+def _try_api_latest_with_url() -> tuple[str | None, str | None]:
     try:
         req = Request(
             _GITHUB_API_RELEASES_URL,
@@ -132,7 +153,7 @@ def _build_download_url(version: str) -> str | None:
 
 
 def _resolve_download_info() -> tuple[str | None, str | None]:
-    version, url = _try_api_latest()
+    version, url = _try_api_latest_with_url()
     if url:
         return version, url
 
@@ -177,7 +198,7 @@ def _extract_rg_from_tar(archive_path: Path, bin_dir: Path) -> bool:
     return False
 
 
-def _download_and_extract_rg(bin_dir: Path) -> bool:
+def _download_and_extract_rg(bin_dir: Path, *, is_update: bool = False) -> bool:
     global _rg_status, _rg_status_message
 
     try:
@@ -191,7 +212,10 @@ def _download_and_extract_rg(bin_dir: Path) -> bool:
             return False
 
         _rg_status = RG_STATUS_DOWNLOADING
-        _rg_status_message = "Downloading ripgrep..."
+        if is_update:
+            _rg_status_message = "Updating rg..."
+        else:
+            _rg_status_message = "Downloading rg..."
         _logger.info("Downloading ripgrep %s from: %s", version or "latest", download_url)
 
         ext = _archive_extension()
@@ -204,7 +228,10 @@ def _download_and_extract_rg(bin_dir: Path) -> bool:
                     shutil.copyfileobj(response, f)
 
             _rg_status = RG_STATUS_EXTRACTING
-            _rg_status_message = "Installing ripgrep..."
+            if is_update:
+                _rg_status_message = "Updating rg..."
+            else:
+                _rg_status_message = "Installing rg..."
             _logger.info("Extracting rg binary")
 
             bin_dir.mkdir(parents=True, exist_ok=True)
@@ -215,13 +242,19 @@ def _download_and_extract_rg(bin_dir: Path) -> bool:
                 ok = _extract_rg_from_tar(tmp_path, bin_dir)
 
             if ok:
+                if version:
+                    _write_local_version(bin_dir, version)
                 _rg_status = RG_STATUS_SUCCESS
-                _rg_status_message = "ripgrep installed"
-                _logger.info("rg installed to %s", bin_dir / _RG_BINARY_NAME)
+                if is_update:
+                    _rg_status_message = "rg updated"
+                else:
+                    _rg_status_message = "rg installed"
+                _logger.info("rg %s installed to %s", version or "latest", bin_dir / _RG_BINARY_NAME)
+                _schedule_success_reset()
                 return True
             else:
                 _rg_status = RG_STATUS_FAILED
-                _rg_status_message = "ripgrep download failed"
+                _rg_status_message = "rg update failed" if is_update else "rg download failed"
                 _logger.error("Failed to extract rg from archive")
                 return False
         finally:
@@ -231,9 +264,20 @@ def _download_and_extract_rg(bin_dir: Path) -> bool:
                 pass
     except Exception as e:
         _rg_status = RG_STATUS_FAILED
-        _rg_status_message = "ripgrep download failed"
+        _rg_status_message = "rg update failed" if is_update else "rg download failed"
         _logger.error("Failed to download rg: %s", e)
         return False
+
+
+def _schedule_success_reset() -> None:
+    def _reset():
+        global _rg_status, _rg_status_message
+        _rg_status = RG_STATUS_IDLE
+        _rg_status_message = ""
+
+    timer = threading.Timer(3.0, _reset)
+    timer.daemon = True
+    timer.start()
 
 
 def is_rg_available(bin_dir: Path) -> bool:
@@ -242,12 +286,7 @@ def is_rg_available(bin_dir: Path) -> bool:
 
 
 def ensure_rg_async(bin_dir: Path) -> None:
-    global _download_in_progress, _download_complete, _rg_status
-
-    if _download_complete or is_rg_available(bin_dir):
-        _download_complete = True
-        _rg_status = RG_STATUS_IDLE
-        return
+    global _download_in_progress, _download_complete, _rg_status, _rg_status_message
 
     with _download_lock:
         if _download_in_progress:
@@ -255,13 +294,34 @@ def ensure_rg_async(bin_dir: Path) -> None:
         _download_in_progress = True
 
     def _download_thread():
-        global _download_complete
+        global _download_complete, _rg_status, _rg_status_message
         try:
-            _download_and_extract_rg(bin_dir)
-            _download_complete = True
+            if is_rg_available(bin_dir):
+                local_version = _read_local_version(bin_dir)
+                if local_version:
+                    _logger.info("Checking for ripgrep update (local: %s)", local_version)
+
+                    latest_version = _resolve_latest_version()
+                    if latest_version and latest_version != local_version:
+                        _logger.info(
+                            "ripgrep update available: %s -> %s", local_version, latest_version
+                        )
+                        _download_and_extract_rg(bin_dir, is_update=True)
+                    else:
+                        _rg_status = RG_STATUS_IDLE
+                        _rg_status_message = ""
+                        _logger.info("ripgrep is up to date (%s)", local_version)
+                else:
+                    _logger.info("No version file found; downloading latest ripgrep")
+                    _download_and_extract_rg(bin_dir, is_update=False)
+            else:
+                _logger.info("rg not found; downloading ripgrep")
+                _download_and_extract_rg(bin_dir, is_update=False)
         except Exception:
             _rg_status = RG_STATUS_FAILED
             _rg_status_message = "ripgrep download failed"
+        finally:
+            _download_complete = True
 
     thread = threading.Thread(target=_download_thread, daemon=True, name="rg-downloader")
     thread.start()

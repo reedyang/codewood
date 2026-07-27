@@ -2156,7 +2156,6 @@ class ServeApp:
         try:
             from ..config.rg_downloader import (
                 RG_STATUS_IDLE,
-                RG_STATUS_SUCCESS,
                 get_rg_status,
                 get_rg_status_message,
             )
@@ -2165,8 +2164,6 @@ class ServeApp:
             rg_data: Dict[str, Any] = {"rg_status": rg_status}
 
             if rg_status == RG_STATUS_IDLE:
-                rg_data["rg_message"] = ""
-            elif rg_status == RG_STATUS_SUCCESS:
                 rg_data["rg_message"] = ""
             else:
                 rg_data["rg_message"] = get_rg_status_message()
