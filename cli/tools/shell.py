@@ -3271,7 +3271,86 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
 
         i += 1
 
+    # ---- inline-code interpreters: when "python -c '…'" or "node -e '…'"
+    #      embeds file paths inside the code string, scan those strings for
+    #      path-like literals that resolve inside the workspace -------------
+    _INLINE_CODE_INTERPRETERS: Dict[str, Set[str]] = {
+        "python": {"-c"},
+        "python3": {"-c"},
+        "node": {"-e", "--eval"},
+        "ruby": {"-e"},
+        "perl": {"-e"},
+        "php": {"-r"},
+        "bash": {"-c"},
+        "sh": {"-c"},
+        "pwsh": {"-command", "-c"},
+        "powershell": {"-command", "-c"},
+    }
+    if tokens:
+        _first = tokens[0].lower()
+        # Normalize to basename in case the command is a full path
+        _first_base = Path(_first).name
+        _flag_set = _INLINE_CODE_INTERPRETERS.get(_first_base)
+        if _flag_set is not None:
+            for j in range(1, len(tokens) - 1):
+                if tokens[j] in _flag_set:
+                    code_str = tokens[j + 1]
+                    _add_paths_from_inline_code(code_str, cwd, paths)
+                    break
+
     return paths
+
+
+# Patterns to extract quoted path-like strings from inline script code.
+_INLINE_PATH_PATTERN = re.compile(
+    r"""(['\"])((?:[^\\\1]|\\.)*?)\1""",
+    re.DOTALL,
+)
+
+
+def _add_paths_from_inline_code(
+    code: str,
+    cwd: Path,
+    paths: Set[str],
+) -> None:
+    """Scan *code* (a ``-c``/``-e`` inline-script argument) for quoted
+    string literals that look like file paths and add those that resolve
+    inside *cwd* to *paths*."""
+    for m in _INLINE_PATH_PATTERN.finditer(code):
+        lit = m.group(2)
+        # Heuristic: skip strings that are obviously not file paths.
+        if not lit or len(lit) > 500:
+            continue
+        if lit.startswith("#") or lit.startswith("\\"):
+            continue
+        if "\n" in lit or "\r" in lit:
+            continue
+        # Pure numbers, short single words, and format strings are unlikely
+        # to be file paths.
+        if len(lit) < 2 or lit.isdigit():
+            continue
+        # Normalise escape sequences (most of them).
+        try:
+            decoded = lit.encode("latin1", errors="replace").decode("unicode_escape")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            decoded = lit
+        p = Path(decoded)
+        if not p.is_absolute():
+            p = cwd / p
+        try:
+            p = p.resolve()
+        except (OSError, ValueError):
+            continue
+        if p.exists():
+            if p.is_dir():
+                try:
+                    for f in p.rglob("*"):
+                        if f.is_file():
+                            paths.add(str(f))
+                except (OSError, PermissionError):
+                    pass
+            elif p.is_file():
+                paths.add(str(p))
 
 
 def _diff_workspace_snapshots(
