@@ -951,9 +951,12 @@ def _compute_chat_token_stats(agent: Any) -> Dict[str, Any]:
     hist = list(getattr(agent, "conversation_history", None) or [])
     if not hist:
         cid = _primary_active_chat_id(agent)
-        chat = agent._find_chat_by_id(cid) if cid else None
-        if isinstance(chat, dict):
-            hist = list(chat.get("messages") or [])
+        try:
+            chat = agent._find_chat_by_id(cid) if cid else None
+            if isinstance(chat, dict):
+                hist = list(chat.get("messages") or [])
+        except Exception:
+            pass
 
     total_output = 0
     total_reasoning = 0
