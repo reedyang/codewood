@@ -97,7 +97,7 @@ class ReadTool(BaseTool):
         "properties": {
             "path": {"type": "string", "description": "The absolute path to the file or directory to read"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default 0). Negative values read from the end (e.g. -10 starts from the 10th last line)"},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000)"},
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default 100)"},
             "prompt": {"type": "string", "description": "When reading an image, what aspect or detail to focus on (optional)"},
         },
         "required": ["path"],
@@ -109,6 +109,6 @@ class ReadTool(BaseTool):
         if not file_path:
             return {"success": False, "error": "missing path"}
         offset = int(params.get("offset", 0) or 0)
-        limit = int(params.get("limit", 2000) or 2000)
+        limit = int(params.get("limit", 100) or 100)
         prompt = str(params.get("prompt", "") or "")
         return action_read(agent, file_path, offset=offset, limit=limit, prompt=prompt)
