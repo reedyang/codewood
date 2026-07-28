@@ -350,6 +350,12 @@ interface AppContextValue {
   fileChangesByChat: Record<string, FileChangeSummary[]>;
 }
 
+interface OptimisticModelState {
+  current: string;
+  reasoningEffort?: string;
+  reasoningEfforts?: string[];
+}
+
 interface HostApiBridge {
   pick_folder?: () => string | Promise<string>;
   pick_files?: (directory?: string) => string[] | Promise<string[]>;
@@ -615,6 +621,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     chatId: string;
     wsId: string;
   } | null>(null);
+  const [optimisticModelByChat, setOptimisticModelByChat] = useState<
+    Record<string, OptimisticModelState>
+  >({});
+  const optimisticModelByChatRef = useRef<Record<string, OptimisticModelState>>({});
+  useEffect(() => {
+    optimisticModelByChatRef.current = optimisticModelByChat;
+  }, [optimisticModelByChat]);
   const [optimisticChatFocus, setOptimisticChatFocus] =
     useState<OptimisticChatFocus | null>(null);
   const [compactNoticeState, setCompactNoticeState] = useState<{
@@ -704,6 +717,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // / legacy behavior unchanged).
   const activeWorkspaceId = selectedWorkspaceId;
   const activeKey = chatKey(activeWorkspaceId, activeChatId);
+  const optimisticModel = activeKey ? optimisticModelByChat[activeKey] : undefined;
+  const displayState = useMemo(() => {
+    if (draftMode || !state || !optimisticModel || !activeChatId) {
+      return state;
+    }
+    return {
+      ...state,
+      model: {
+        ...state.model,
+        current: optimisticModel.current,
+        ...(optimisticModel.reasoningEffort !== undefined
+          ? { reasoningEffort: optimisticModel.reasoningEffort }
+          : {}),
+        ...(optimisticModel.reasoningEfforts
+          ? { reasoningEfforts: optimisticModel.reasoningEfforts }
+          : {}),
+      },
+      chats: state.chats.map((chat) =>
+        chat.id === activeChatId
+          ? { ...chat, model: optimisticModel.current }
+          : chat,
+      ),
+    };
+  }, [state, optimisticModel, activeChatId, draftMode]);
   const compactNotice =
     activeKey && compactNoticeState.chatKey === activeKey
       ? compactNoticeState.notice
@@ -737,6 +774,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (key: string, params?: Record<string, string | number>) =>
       translate(lang, key, params),
     [lang],
+  );
+  const applyOptimisticModelOverride = useCallback((next: AppState | null | undefined) => {
+    if (!next) {
+      return next ?? null;
+    }
+    const key = chatKey(next.workspace?.id ?? "", next.activeChatId ?? "");
+    const optimistic = key ? optimisticModelByChatRef.current[key] : undefined;
+    if (!optimistic) {
+      return next;
+    }
+    return {
+      ...next,
+      model: {
+        ...next.model,
+        current: optimistic.current,
+        ...(optimistic.reasoningEffort !== undefined
+          ? { reasoningEffort: optimistic.reasoningEffort }
+          : {}),
+        ...(optimistic.reasoningEfforts
+          ? { reasoningEfforts: optimistic.reasoningEfforts }
+          : {}),
+      },
+      chats: Array.isArray(next.chats)
+        ? next.chats.map((chat) =>
+            chat.id === next.activeChatId
+              ? { ...chat, model: optimistic.current }
+              : chat,
+          )
+        : next.chats,
+    };
+  }, []);
+  const clearOptimisticModelOverrideIfAcknowledged = useCallback(
+    (next: AppState | null | undefined) => {
+      if (!next) {
+        return;
+      }
+      const key = chatKey(next.workspace?.id ?? "", next.activeChatId ?? "");
+      const optimistic = key ? optimisticModelByChatRef.current[key] : undefined;
+      if (!optimistic) {
+        return;
+      }
+      const nextReasoning = String(next.model.reasoningEffort ?? "");
+      const optimisticReasoning = String(optimistic.reasoningEffort ?? "");
+      if (
+        next.model.current === optimistic.current &&
+        nextReasoning === optimisticReasoning
+      ) {
+        setOptimisticModelByChat((prev) => {
+          if (!(key in prev)) {
+            return prev;
+          }
+          const updated = { ...prev };
+          delete updated[key];
+          return updated;
+        });
+      }
+    },
+    [],
   );
   const selectedChats = useMemo(() => {
     if (!state || !selectedWorkspaceId) {
@@ -1789,7 +1884,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const pendingWs = pendingFocusWsIdRef.current;
       switch (event.event) {
         case "idle": {
-          const next = data.state;
+          const rawNext = data.state;
+          clearOptimisticModelOverrideIfAcknowledged(rawNext);
+          const next = applyOptimisticModelOverride(rawNext);
           const idleForFocused =
             !eventWsId || !activeWsId ||
             (pendingWs
@@ -1914,7 +2011,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // focused workspace AND the streaming chat is not currently
           // accumulating turn content (to avoid React re-render side
           // effects that can disrupt segment accumulation).
-          const next = data.state;
+          const rawNext = data.state;
+          clearOptimisticModelOverrideIfAcknowledged(rawNext);
+          const next = applyOptimisticModelOverride(rawNext);
           const isStreamingChat = !!streamingKeyRef.current &&
             eventKey === streamingKeyRef.current;
           const stateForFocused =
@@ -3257,6 +3356,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
         return;
       }
+      const targetKey = chatKey(
+        selectedWorkspaceId || stateRef.current?.workspace.id || activeWorkspaceIdRef.current,
+        selectedChatId || stateRef.current?.activeChatId || activeChatIdRef.current,
+      );
+      if (targetKey) {
+        const patch = buildModelChangePatch(value, stateRef.current?.model);
+        setOptimisticModelByChat((prev) => ({
+          ...prev,
+          [targetKey]: {
+            current: value,
+            reasoningEffort: patch
+              ? patch.reasoningEffort
+              : stateRef.current?.model.reasoningEffort ?? "",
+            reasoningEfforts: patch
+              ? patch.reasoningEfforts
+              : stateRef.current?.model.reasoningEfforts,
+          },
+        }));
+      }
       setState((prev) => {
         if (!prev) return prev;
         const patch = buildModelChangePatch(value, prev.model);
@@ -3278,7 +3396,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         `/model ${value}`, false, activeChatIdRef.current,
       );
     },
-    [client],
+    [client, selectedWorkspaceId, selectedChatId],
   );
 
   const setReasoning = useCallback(
@@ -3298,6 +3416,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
         return;
       }
+      const targetKey = chatKey(
+        selectedWorkspaceId || stateRef.current?.workspace.id || activeWorkspaceIdRef.current,
+        selectedChatId || stateRef.current?.activeChatId || activeChatIdRef.current,
+      );
+      if (targetKey) {
+        setOptimisticModelByChat((prev) => ({
+          ...prev,
+          [targetKey]: {
+            current: prev[targetKey]?.current ?? stateRef.current?.model.current ?? "",
+            reasoningEffort: value,
+            reasoningEfforts:
+              prev[targetKey]?.reasoningEfforts ?? stateRef.current?.model.reasoningEfforts,
+          },
+        }));
+      }
       // Optimistically update local state so the dropdown reflects the change
       // immediately, even during active task execution. The backend applies the
       // change right away (_set_reasoning_effort is called directly), but SSE
@@ -3314,7 +3447,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         activeChatIdRef.current,
       );
     },
-    [client],
+    [client, selectedWorkspaceId, selectedChatId],
   );
 
   const setExecutionPolicy = useCallback(
@@ -3537,7 +3670,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value: AppContextValue = {
     client,
-    state,
+    state: displayState,
     activeWorkspaceId: selectedWorkspaceId,
     activeChatId: selectedChatId,
     activeChats: selectedChats,
