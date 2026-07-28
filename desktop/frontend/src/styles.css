@@ -6531,6 +6531,8 @@ body.resizing-y .console-term {
   border: none;
   border-radius: 0;
   margin-top: 0;
+  max-height: none;
+  overflow-y: visible;
 }
 
 .file-change-details .diff-preview:first-child {
