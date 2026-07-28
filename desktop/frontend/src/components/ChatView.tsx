@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -652,15 +651,6 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     return result;
   }, [session.messages, lang]);
 
-  { console.log("[sa-merge] mergedMessages", session.messages.map((m, i) => ({
-    i,
-    role: m.role,
-    tc: (m as any).tool_calls?.map((tc: any) => tc.name ?? tc.function?.name),
-    trLen: Array.isArray((m as any).tool_rounds) ? (m as any).tool_rounds.length : 0,
-    thinkingLen: String((m as any)._thinking || "").length,
-    textLen: ((m as any)._clean_content ?? m.content ?? "").length,
-  }))); }
-
   // Build HistoryRound-compatible objects from merged assistant messages.
   const { rounds, workedForSeconds } = useMemo(() => {
     const out: HistoryRound[] = [];
@@ -682,23 +672,41 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     return { rounds: out, workedForSeconds: totalWait };
   }, [mergedMessages, lang]);
 
-  { console.log("[sa-rounds] built", {
-    roundCount: rounds.length,
-    workedForSeconds,
-    rounds: rounds.map((r, i) => ({
-      i,
-      thinkingLen: r.thinking?.length ?? 0,
-      toolsLen: r.tools.length,
-      textLen: r.text.length,
-      waitSeconds: r.waitSeconds,
-      toolsPreview: r.tools ? r.tools.substring(0, 120) : "",
-    })),
-    finalAnswerText: session.output ? session.output.substring(0, 80) : "",
-  }); }
-
   const userPrompt = session.messages.find((m) => m.role === "user");
   const startedAt = session.startedAt ? new Date(session.startedAt).getTime() : 0;
   const finalAnswerText = session.output || "";
+  const liveStartedAt = startedAt || now;
+  const liveTurnRounds = useMemo<TurnRound[]>(() => {
+    return rounds.map((round, index) => {
+      const isLast = index === rounds.length - 1;
+      const roundStartedAt = liveStartedAt;
+      const backendElapsedMs = Math.max(0, Number(round.waitSeconds || 0) * 1000);
+      const settledAt = roundStartedAt + backendElapsedMs;
+      const waitEndedAt = isLive && isLast ? null : settledAt;
+      const thinkingText = String(round.thinking || "");
+      const hasThinking = thinkingText.trim().length > 0;
+      const hasTools = round.tools.trim().length > 0;
+      const hasAnswer = round.text.trim().length > 0;
+      const thinkingStillRunning = Boolean(isLive && isLast && hasThinking && !hasTools && !hasAnswer);
+      const segments: TurnRound["segments"] = [];
+      if (hasTools) {
+        segments.push({ id: index * 2 + 1, kind: "step", text: round.tools });
+      }
+      if (hasAnswer) {
+        segments.push({ id: index * 2 + 2, kind: "answer", text: round.text });
+      }
+      return {
+        id: index + 1,
+        waitStartedAt: roundStartedAt,
+        waitEndedAt,
+        segments,
+        thinkingText: hasThinking ? thinkingText : undefined,
+        thinkingStartedAt: hasThinking ? roundStartedAt : undefined,
+        thinkingEndedAt: hasThinking && !thinkingStillRunning ? settledAt : undefined,
+        backendElapsedMs: backendElapsedMs > 0 ? backendElapsedMs : undefined,
+      };
+    });
+  }, [rounds, isLive, liveStartedAt, now]);
 
   const messageHandlers: MessageHandlers = {
     onCopy: (text: string) => {
@@ -795,6 +803,18 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
   }
 
   // ── Live mode (session is still streaming) ───────────────────────
+  const liveGroups = groupLiveRounds(liveTurnRounds);
+  const liveTurn = {
+    startedAt: liveStartedAt,
+    endedAt: null,
+    rounds: liveTurnRounds,
+  };
+  const { lastRound, hasPendingContinuation, showWorking } =
+    getLiveTurnDisplayState(liveTurn, liveGroups);
+  const workingElapsed = lastRound
+    ? formatElapsed(now - lastRound.waitStartedAt)
+    : formatElapsed(now - liveStartedAt);
+
   return (
     <div className="transcript" ref={scrollRef}>
       <div className="transcript-inner">
@@ -807,51 +827,29 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
               handlers={messageHandlers}
             />
           )}
-          {rounds.map((round, index) => {
-            const isLast = index === rounds.length - 1;
-            const hasContent = round.text.length > 0;
-            const hasTools = round.tools.length > 0;
-            const toolOutputReceived = hasTools && toolTextHasVisibleOutput(round.tools);
-            const toolRunning = isLive && isLast && hasTools && !toolOutputReceived;
-            const toolWaitingText =
-              isLive && isLast && hasTools && toolOutputReceived && !round.thinking
-                ? `${t("activity.working")} (${formatElapsed(now - startedAt)})`
-                : undefined;
-            const thinkingRunning =
-              !!round.thinking && isLive && isLast && !hasContent && !hasTools;
-
+          {liveGroups.map((group, index) => {
+            if (group.kind === "tool") {
+              return (
+                <LiveToolGroupView
+                  key={`subagent-tool-${group.rounds[0]?.id ?? index}`}
+                  rounds={group.rounds}
+                  now={now}
+                  waitingForContinuation={index === liveGroups.length - 1 && hasPendingContinuation}
+                  continuationElapsedMs={
+                    index === liveGroups.length - 1 && lastRound
+                      ? Math.max(0, now - lastRound.waitStartedAt)
+                      : 0
+                  }
+                />
+              );
+            }
             return (
-              <Fragment key={index}>
-                {round.thinking && (
-                  <ThinkingPanel
-                    thinkingText={round.thinking}
-                    running={thinkingRunning}
-                    timerText={
-                      thinkingRunning
-                        ? `${t("activity.thinking")} (${formatElapsed(now - startedAt)})`
-                        : round.waitSeconds > 0
-                          ? `${t("activity.thoughtFor")} ${formatElapsed(round.waitSeconds * 1000)}`
-                          : `${t("activity.thoughtFor")}`
-                    }
-                  />
-                )}
-                {hasTools && (
-                  <div className="turn-round">
-                    <div className="activity">
-                      <StepsView
-                        text={round.tools}
-                        running={toolRunning}
-                        trailingStatusText={toolWaitingText}
-                      />
-                    </div>
-                  </div>
-                )}
-                {hasContent && (
-                  <div className="answer">
-                    <MarkdownText text={round.text} />
-                  </div>
-                )}
-              </Fragment>
+              <LiveRoundView
+                key={`subagent-round-${group.round.id}`}
+                round={group.round}
+                now={now}
+                forceSettled={index < liveGroups.length - 1}
+              />
             );
           })}
           {session.output && (
@@ -859,38 +857,15 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
               <MarkdownText text={session.output} />
             </div>
           )}
-          {(() => {
-            const lastRound = rounds[rounds.length - 1];
-            const hasActiveThinking = rounds.some(
-              (round) => Boolean(round.thinking) && isLive && round === lastRound && !round.tools && !round.text,
-            );
-            const hasRunningToolRound = Boolean(
-              isLive &&
-              lastRound &&
-              lastRound.tools &&
-              !toolTextHasVisibleOutput(lastRound.tools),
-            );
-            const hasVisibleToolRound = rounds.some((round) => Boolean(round.tools));
-            const hasVisibleAnswerRound = rounds.some((round) => Boolean(round.text));
-            const showWorking =
-              isLive &&
-              !hasActiveThinking &&
-              !hasRunningToolRound &&
-              (rounds.length === 0 ||
-                Boolean(session.output) ||
-                Boolean(hasVisibleAnswerRound) ||
-                (lastRound && !hasVisibleToolRound && !lastRound.tools && !lastRound.thinking));
-            if (!showWorking) return null;
-            return (
-              <div className="activity">
-                <div className="activity-header running">
-                  <span className="activity-text marquee">
-                    {t("activity.working")} ({formatElapsed(now - startedAt)})
-                  </span>
-                </div>
+          {showWorking && (
+            <div className="activity">
+              <div className="activity-header running">
+                <span className="activity-text marquee">
+                  {t("activity.working")} ({workingElapsed})
+                </span>
               </div>
-            );
-          })()}
+            </div>
+          )}
           {session.maxRoundsReached && (
             <div
               style={{
@@ -2648,6 +2623,46 @@ export function shouldShowPendingWorking(
   return hasPendingInvisibleRound(turn) && !hasVisibleLiveGroups;
 }
 
+export function getLiveTurnDisplayState(
+  turn: Pick<Turn, "startedAt" | "endedAt" | "rounds">,
+  liveGroups: LiveRoundGroup[] = groupLiveRounds(turn.rounds),
+) {
+  const lastRound = turn.rounds[turn.rounds.length - 1];
+  const hasPendingContinuation = hasPendingInvisibleRound(turn);
+  const isRunning = turn.endedAt === null;
+  const lastVisibleGroup = liveGroups[liveGroups.length - 1];
+  const hasActiveThinking = turn.rounds.some(
+    (round) => Boolean(round.thinkingText?.trim()) && round.waitEndedAt === null,
+  );
+  const hasRunningToolRound = Boolean(
+    lastRound &&
+    lastRound.waitEndedAt === null &&
+    roundHasToolSteps(lastRound) &&
+    !roundHasVisibleToolOutput(lastRound),
+  );
+  const hasToolGroupWorking =
+    liveGroupShowsOwnWorking(lastVisibleGroup, hasPendingContinuation);
+  const hasInvisibleRunningRound = hasPendingInvisibleRound(turn);
+  const showWorking =
+    isRunning &&
+    !hasActiveThinking &&
+    !hasRunningToolRound &&
+    !hasToolGroupWorking &&
+    (
+      turn.rounds.length === 0 ||
+      Boolean(lastRound && lastRound.waitEndedAt !== null) ||
+      liveGroups.length === 0 ||
+      hasInvisibleRunningRound ||
+      shouldShowStreamingWorkingForRound(lastRound)
+    );
+
+  return {
+    lastRound,
+    hasPendingContinuation,
+    showWorking,
+  };
+}
+
 function LiveToolGroupView({
   rounds,
   now,
@@ -3148,34 +3163,8 @@ function TurnView({
 }) {
   const { t, state } = useApp();
   const liveGroups = groupLiveRounds(turn.rounds);
-  const lastRound = turn.rounds[turn.rounds.length - 1];
-  const hasPendingContinuation = hasPendingInvisibleRound(turn);
-  const isRunning = turn.endedAt === null;
-  const lastVisibleGroup = liveGroups[liveGroups.length - 1];
-  const hasActiveThinking = turn.rounds.some(
-    (round) => Boolean(round.thinkingText?.trim()) && round.waitEndedAt === null,
-  );
-  const hasRunningToolRound = Boolean(
-    lastRound &&
-    lastRound.waitEndedAt === null &&
-    roundHasToolSteps(lastRound) &&
-    !roundHasVisibleToolOutput(lastRound),
-  );
-  const hasToolGroupWorking =
-    liveGroupShowsOwnWorking(lastVisibleGroup, hasPendingContinuation);
-  const hasInvisibleRunningRound = hasPendingInvisibleRound(turn);
-  const showWorking =
-    isRunning &&
-    !hasActiveThinking &&
-    !hasRunningToolRound &&
-    !hasToolGroupWorking &&
-    (
-      turn.rounds.length === 0 ||
-      Boolean(lastRound && lastRound.waitEndedAt !== null) ||
-      liveGroups.length === 0 ||
-      hasInvisibleRunningRound ||
-      shouldShowStreamingWorkingForRound(lastRound)
-    );
+  const { lastRound, hasPendingContinuation, showWorking } =
+    getLiveTurnDisplayState(turn, liveGroups);
   const workingElapsed = lastRound
     ? formatElapsed(now - lastRound.waitStartedAt)
     : formatElapsed(now - turn.startedAt);

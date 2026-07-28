@@ -3,6 +3,7 @@ import { countToolCalls, getLastToolPromptBody } from "./Steps";
 import {
   groupModelsByProvider,
   groupLiveRounds,
+  getLiveTurnDisplayState,
   hasPendingInvisibleRound,
   shouldShowPendingWorking,
   shouldShowStreamingWorkingForRound,
@@ -370,5 +371,76 @@ describe("shouldShowStreamingWorkingForRound", () => {
     } as Parameters<typeof shouldShowStreamingWorkingForRound>[0];
 
     expect(shouldShowStreamingWorkingForRound(round)).toBe(false);
+  });
+});
+
+describe("getLiveTurnDisplayState", () => {
+  it("hides Working while Thinking is active", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          thinkingText: "hidden reasoning",
+          segments: [],
+        },
+      ],
+    } as Parameters<typeof getLiveTurnDisplayState>[0];
+
+    expect(getLiveTurnDisplayState(turn).showWorking).toBe(false);
+  });
+
+  it("hides Working while a tool prompt is still waiting for output", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          segments: [{ id: 1, kind: "step", text: "\uE004• Edit x.py\uE005" }],
+        },
+      ],
+    } as Parameters<typeof getLiveTurnDisplayState>[0];
+
+    expect(getLiveTurnDisplayState(turn).showWorking).toBe(false);
+  });
+
+  it("shows Working for an empty running round", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          segments: [],
+        },
+      ],
+    } as Parameters<typeof getLiveTurnDisplayState>[0];
+
+    expect(getLiveTurnDisplayState(turn).showWorking).toBe(true);
+  });
+
+  it("keeps global Working hidden when tool output is visible because the tool row owns it", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          segments: [{ id: 1, kind: "step", text: "\uE004• Edit x.py\uE005\uE006{}\uE007" }],
+        },
+      ],
+    } as Parameters<typeof getLiveTurnDisplayState>[0];
+
+    expect(getLiveTurnDisplayState(turn).showWorking).toBe(false);
   });
 });

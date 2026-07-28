@@ -2315,40 +2315,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const d = event.data as { sessionId: string; text: string };
           const sessionId = String(d.sessionId || "");
           const current = activeSubAgentSessionRef.current;
-          console.debug("[subagent-debug] sub_agent_thinking", { sessionId, currentId: current?.id, len: String(d.text || "").length, msgCount: current?.messages.length });
-            if (current && current.id === sessionId) {
-              const msgs = [...current.messages];
-              const text = String(d.text || "");
-              const lastMsg = msgs[msgs.length - 1] as SubAgentMessage | undefined;
-              const lastIsTextAssistant =
-                !!lastMsg &&
-                lastMsg.role === "assistant" &&
-                !(lastMsg.tool_calls && lastMsg.tool_calls.length > 0);
-              const hadThinking = lastIsTextAssistant && !!((lastMsg as unknown as { _thinking?: string })._thinking);
-              if (lastIsTextAssistant) {
-                msgs[msgs.length - 1] = {
-                  ...lastMsg,
-                  _thinking: ((lastMsg as unknown as { _thinking?: string })._thinking || "") + text,
-                };
+          if (current && current.id === sessionId) {
+            const msgs = [...current.messages];
+            const text = String(d.text || "");
+            const lastMsg = msgs[msgs.length - 1] as SubAgentMessage | undefined;
+            const lastIsTextAssistant =
+              !!lastMsg &&
+              lastMsg.role === "assistant" &&
+              !(lastMsg.tool_calls && lastMsg.tool_calls.length > 0);
+            const hadThinking = lastIsTextAssistant && !!((lastMsg as unknown as { _thinking?: string })._thinking);
+            if (lastIsTextAssistant) {
+              msgs[msgs.length - 1] = {
+                ...lastMsg,
+                _thinking: ((lastMsg as unknown as { _thinking?: string })._thinking || "") + text,
+              };
+            } else {
+              const newMsg: SubAgentMessage = { role: "assistant", content: "", _thinking: text };
+              // If the previous message is a tool-call placeholder (created by
+              // sub_agent_tool_call before thinking arrived), insert the thinking
+              // message BEFORE it so the display order is: thought → tool calls.
+              if (lastMsg?.role === "assistant" && lastMsg.tool_calls?.length) {
+                msgs.splice(msgs.length - 1, 0, newMsg);
               } else {
-                const newMsg: SubAgentMessage = { role: "assistant", content: "", _thinking: text };
-                // If the previous message is a tool-call placeholder (created by
-                // sub_agent_tool_call before thinking arrived), insert the thinking
-                // message BEFORE it so the display order is: thought → tool calls.
-                if (lastMsg?.role === "assistant" && lastMsg.tool_calls?.length) {
-                  msgs.splice(msgs.length - 1, 0, newMsg);
-                } else {
-                  msgs.push(newMsg);
-                }
+                msgs.push(newMsg);
               }
-              if (!hadThinking && !subAgentThinkingStartRef.current[sessionId]) {
-                subAgentThinkingStartRef.current[sessionId] = Date.now();
-              }
-              const updated: SubAgentSession = { ...current, messages: msgs };
-              applySubAgentSession(updated);
             }
-            break;
+            if (!hadThinking && !subAgentThinkingStartRef.current[sessionId]) {
+              subAgentThinkingStartRef.current[sessionId] = Date.now();
+            }
+            const updated: SubAgentSession = { ...current, messages: msgs };
+            applySubAgentSession(updated);
           }
+          break;
+        }
         case "sub_agent_thinking_end": {
           const d = event.data as { sessionId: string; thinkingElapsedSeconds: number };
           const sessionId = String(d.sessionId || "");
@@ -2387,12 +2386,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             }
             delete subAgentThinkingStartRef.current[sessionId];
-            const newMsgIdx = msgs.length;
-            console.log("[sa-tc] push tool_call", {
-              sessionId,
-              idx: newMsgIdx,
-              toolName: String(d.toolName || ""),
-            });
             msgs.push({
               role: "assistant",
               content: "",
@@ -2413,7 +2406,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (current && current.id === sessionId) {
             const msgs = [...current.messages];
             const outputToolName = String(d.toolName || "");
-            const scanResult: Array<{ idx: number; tcCount: number; trCount: number; nextName: string }> = [];
             // Walk backwards to find the assistant message whose next
             // pending tool call name matches this output's toolName.
             let matchedIdx = -1;
@@ -2427,24 +2419,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 ? msg.tool_calls[existing.length]
                 : undefined;
               const callName = String(nextCall?.function?.name || nextCall?.name || "");
-              scanResult.push({
-                idx: i,
-                tcCount: Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0,
-                trCount: existing.length,
-                nextName: callName,
-              });
               if (callName && callName === outputToolName) {
                 matchedIdx = i;
                 break;
               }
             }
-            console.log("[sa-output] matching", {
-              sessionId,
-              toolName: outputToolName,
-              hasToolRound: typeof d.toolRound === "string" ? (d.toolRound?.length ?? 0) : "nil",
-              scan: scanResult,
-              matchedIdx,
-            });
             if (matchedIdx >= 0) {
               const msg = msgs[matchedIdx];
               const existing = msg.tool_rounds || [];
