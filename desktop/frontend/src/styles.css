@@ -1254,6 +1254,7 @@ body.resizing-x .browser-frame {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
+  user-select: text;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
