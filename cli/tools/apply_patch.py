@@ -359,9 +359,34 @@ def _locate_hunk_start(
         return None
 
     candidates.sort(key=lambda idx: abs(idx - target_idx))
-    for probe in candidates:
+    # The anchor was found but context may not match at a candidate's
+    # position.  Try a wider ±window — the real context may be offset
+    # by more than *fuzz* lines (common with AI-generated patches that
+    # have inaccurate line numbers).  Use up to 3× the fuzz or at
+    # least ±5 lines.  Only widen from the closest few candidates to
+    # limit the search cost.
+    wider = max(fuzz * 3, 5)
+    tested_extra: set[int] = set()
+    for i, probe in enumerate(candidates):
         if _hunk_matches_at(old_lines, probe, hunk_lines, fuzz=fuzz):
             return probe
+        if i >= 3:
+            continue
+        for offset in range(-wider, wider + 1):
+            test_pos = probe + offset
+            if test_pos < 0 or test_pos > len(old_lines) or test_pos == probe:
+                continue
+            if test_pos in tested_extra:
+                continue
+            tested_extra.add(test_pos)
+            # Guard: only consider positions where the anchor line
+            # matches directly; otherwise the subsequent hunk
+            # application (which does exact line-by-line comparison)
+            # will fail.
+            if old_lines[test_pos] != anchor:
+                continue
+            if _hunk_matches_at(old_lines, test_pos, hunk_lines, fuzz=fuzz):
+                return test_pos
     return None
 
 
