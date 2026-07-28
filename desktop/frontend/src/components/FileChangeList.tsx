@@ -1,21 +1,8 @@
 import { useState, useMemo, useCallback } from "react";
-import { FileChangeSummary, FileChangeRecord, DiffRow } from "../api/types";
+import { FileChangeSummary, FileChangeRecord } from "../api/types";
 import { FileChangeDetails } from "./FileChangeDetails";
 import { Icon } from "./Icon";
 import { useApp } from "../state/AppContext";
-
-function computeStats(patch?: DiffRow[]): { added: number; deleted: number } {
-  let added = 0;
-  let deleted = 0;
-  if (patch) {
-    for (const row of patch) {
-      if (row.type === "add") added++;
-      else if (row.type === "del") deleted++;
-      else if (row.type === "change") { added++; deleted++; }
-    }
-  }
-  return { added, deleted };
-}
 
 interface FileChangeListProps {
   summary: FileChangeSummary;
@@ -112,20 +99,13 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
     return null;
   }
 
-  const totals = useMemo(() => {
-    let added = 0;
-    let deleted = 0;
-    for (const file of summary.files) {
-      if (file.changeType === "delete") {
-        deleted += file.deletedLines;
-      } else {
-        const s = computeStats(file.patch);
-        added += s.added;
-        deleted += s.deleted;
-      }
-    }
-    return { added, deleted };
-  }, [summary.files]);
+  const totals = useMemo(
+    () => ({
+      added: summary.files.reduce((sum, file) => sum + file.addedLines, 0),
+      deleted: summary.files.reduce((sum, file) => sum + file.deletedLines, 0),
+    }),
+    [summary.files],
+  );
 
   const btnLabel = allUndone ? t("fileChange.reapply") : t("fileChange.undo");
 
@@ -203,15 +183,13 @@ function FileChangeItem({ file, isExpanded, isUndone, onToggle, t, workspaceRoot
 
   const isDelete = file.changeType === "delete";
   const isBinary = file.changeType === "modify" && file.addedLines === 0 && file.deletedLines === 0 && (!file.patch || file.patch.length === 0);
-  const stats = useMemo(() => {
-    if (isDelete) {
-      return { added: 0, deleted: file.deletedLines };
-    }
-    if (isBinary) {
-      return { added: 0, deleted: 0 };
-    }
-    return computeStats(file.patch);
-  }, [file.patch, file.deletedLines, isDelete, isBinary]);
+  const stats = useMemo(
+    () => ({
+      added: isBinary ? 0 : file.addedLines,
+      deleted: isBinary ? 0 : file.deletedLines,
+    }),
+    [file.addedLines, file.deletedLines, isBinary],
+  );
 
   const relativePath = useMemo(() => {
     const normalized = file.filePath.replace(/\\/g, "/");

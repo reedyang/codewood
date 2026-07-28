@@ -15,7 +15,7 @@ export function FileChangeDetails({ file, t }: FileChangeDetailsProps) {
   const [wide, setWide] = useState(true);
   const [visibleUnmodified, setVisibleUnmodified] = useState<Record<number, number>>({});
 
-  const patch = file.patch || [];
+  const patch = useMemo(() => normalizeDiffRows(file.patch || []), [file.patch]);
   const lang = useMemo(() => langFromPath(file.filePath), [file.filePath]);
 
   useEffect(() => {
@@ -349,4 +349,34 @@ export function FileChangeDetails({ file, t }: FileChangeDetailsProps) {
       })}
     </div>
   );
+}
+
+export function normalizeDiffRows(rows: DiffRow[]): DiffRow[] {
+  return rows.map((row) => {
+    if (row.type !== "change") {
+      return row;
+    }
+    const hasOldText = Boolean(row.oldText);
+    const hasNewText = Boolean(row.newText);
+    const hasOldNo = row.oldNo !== null && row.oldNo !== undefined;
+    const hasNewNo = row.newNo !== null && row.newNo !== undefined;
+
+    if ((!hasOldText && hasNewText) || (!hasOldNo && hasNewNo)) {
+      return {
+        ...row,
+        type: "add",
+        oldNo: null,
+        oldText: "",
+      };
+    }
+    if ((hasOldText && !hasNewText) || (hasOldNo && !hasNewNo)) {
+      return {
+        ...row,
+        type: "del",
+        newNo: null,
+        newText: "",
+      };
+    }
+    return row;
+  });
 }
