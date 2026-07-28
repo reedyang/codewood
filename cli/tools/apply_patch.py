@@ -28,6 +28,20 @@ _BOM_SIGNATURES: List[Tuple[bytes, str]] = [
 _TEXT_DECODE_CANDIDATES: List[str] = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
 
 
+def _format_apply_patch_error(error_text: str) -> str:
+    """Make common patch failures easier to read in the GUI transcript."""
+    text = str(error_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    text = text.replace(" File content: ", "\nFile content:\n")
+    text = text.replace(" Verify the patch content ", "\nVerify the patch content ")
+    text = text.replace(" Check @@ line numbers.", "\nCheck @@ line numbers.")
+    text = text.replace(" Check line numbers, blank lines, and indentation.", "\nCheck line numbers, blank lines, and indentation.")
+    text = text.replace(" Target: line ", "\nTarget: line ")
+    text = text.replace(" check line numbers and indentation.", "\nCheck line numbers and indentation.")
+    return text
+
+
 def _gui_mode_active(agent: Any) -> bool:
     """True when running under the desktop GUI (structured confirm provider)."""
     return callable(getattr(agent, "_confirm_choice_provider", None))
@@ -532,7 +546,7 @@ def action_apply_unified_patch(
                 if old_start is None:
                     return {
                         "success": False,
-                        "error": (
+                        "error": _format_apply_patch_error(
                             "Patch anchor not found — the first context "
                             "or deletion line of the hunk does not appear "
                             "anywhere in the file. Verify the patch content "
@@ -548,7 +562,7 @@ def action_apply_unified_patch(
                 if _first_ctx is not None and _first_ctx in old_lines:
                     return {
                         "success": False,
-                        "error": (
+                        "error": _format_apply_patch_error(
                             f"The patch anchor line was found in the "
                             f"file, but the surrounding context does not "
                             f"match. Check line numbers, blank lines, "
@@ -558,7 +572,7 @@ def action_apply_unified_patch(
                     }
                 return {
                     "success": False,
-                    "error": (
+                    "error": _format_apply_patch_error(
                         f"The patch's first context line "
                         f"{repr(_first_ctx) if _first_ctx else '[none]'} "
                         f"was not found in the file near line "
@@ -588,7 +602,7 @@ def action_apply_unified_patch(
                         actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
                         return {
                             "success": False,
-                            "error": (
+                            "error": _format_apply_patch_error(
                                 f"Hunk context line expects {expected} but "
                                 f"file line {cur + 1} is {actual} — "
                                 f"check line numbers and indentation."
@@ -604,7 +618,7 @@ def action_apply_unified_patch(
                         actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
                         return {
                             "success": False,
-                            "error": (
+                            "error": _format_apply_patch_error(
                                 f"Hunk deletion expects to remove {expected} but "
                                 f"file line {cur + 1} is {actual} — "
                                 f"check line numbers and indentation."
@@ -749,7 +763,7 @@ def action_apply_unified_patch(
             "message": f"Successfully applied patch to '{resolved.name}'",
         }
     except Exception as e:
-        return {"success": False, "error": f"apply_patch failed: {str(e)}"}
+        return {"success": False, "error": _format_apply_patch_error(f"apply_patch failed: {str(e)}")}
 
 
 from .base import BaseTool  # noqa: E402
@@ -775,10 +789,8 @@ class ApplyPatchTool(BaseTool):
         file_path = params.get("path")
         patch = params.get("patch")
         if file_path and patch is not None:
-            patch_cmd = {"action": "apply_patch", "params": {"path": file_path}}
-            confirmed = agent._freedom_auto_confirm(patch_cmd)
             return action_apply_unified_patch(
-                agent, file_path=file_path, patch=str(patch), confirmed=confirmed
+                agent, file_path=file_path, patch=str(patch), confirmed=False
             )
         missing = []
         if not file_path:

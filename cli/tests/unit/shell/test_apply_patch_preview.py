@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from cli.tools.apply_patch import action_apply_unified_patch
+from cli.core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
+from cli.tools.apply_patch import ApplyPatchTool, action_apply_unified_patch
 from cli.core.change_preview_formatter import ChangePreviewFormatter
 
 
@@ -66,6 +67,31 @@ def _strip_ansi(text: str) -> str:
 
 
 class ApplyPatchPreviewTests(unittest.TestCase):
+    def test_apply_patch_tool_execute_does_not_preflight_auto_confirm(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "hello.py"
+            target.write_text("print('old')\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+            agent.execution_policy = "moderate"
+
+            patch = (
+                "--- a/hello.py\n"
+                "+++ b/hello.py\n"
+                "@@ -1,1 +1,1 @@\n"
+                "-print('old')\n"
+                "+print('new')\n"
+            )
+
+            result = ApplyPatchTool().execute(
+                agent,
+                {"path": str(target), "patch": patch},
+            )
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(target.read_text(encoding="utf-8"), "print('new')\n")
+            self.assertFalse(hasattr(agent, "_freedom_auto_confirm"))
+
     def test_apply_patch_accepts_legacy_begin_add_file_format(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -294,6 +320,20 @@ class ApplyPatchPreviewTests(unittest.TestCase):
 
             self.assertTrue(result.get("success"), result.get("error"))
             self.assertEqual(target.read_text(encoding="utf-8"), "a1\na2_changed\na3\n")
+
+    def test_apply_patch_failure_message_preserves_multiline_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "demo.txt"
+            target.write_text("a1\na2\na3\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = "@@ -1,1 +1,1 @@\n-missing\n+changed\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertFalse(result.get("success"))
+            error_text = str(result.get("error") or "")
+            self.assertIn("\nFile content:\n", error_text)
 
     def test_apply_patch_with_lf_patch_preserves_crlf_file_newlines(self):
         with tempfile.TemporaryDirectory() as td:
@@ -555,6 +595,95 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
             )
             store = agent._load_apply_patch_preview_store()
             self.assertEqual(set(store.keys()), {"2026-06-24 10:00:00", "2026-06-24 10:00:05"})
+
+    def test_record_history_apply_patch_attaches_raw_immediately(self):
+        from cli.agent import Agent
+
+        class _Stub(_DummyAgent):
+            def __init__(self, work_directory: Path) -> None:
+                super().__init__(work_directory)
+                self.active_chat_id = "chat-1"
+                self._chat_state_manager = _FakePreviewChatStateManager(work_directory)
+                self.conversation_history = [
+                    {
+                        "role": "assistant",
+                        "content": "{\"tool_calls\":[]}",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "apply_patch", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                ]
+                self._accumulated_tool_rounds = []
+                self._accumulated_tool_rounds_raw = []
+                self._last_tool_issuing_assistant = self.conversation_history[0]
+                self.sync_calls = 0
+                self.synced_raw_lengths: List[int] = []
+
+            def _sync_active_chat_messages(self):
+                self.sync_calls += 1
+                issuing = self.conversation_history[0]
+                raw = issuing.get("_tool_rounds_raw")
+                self.synced_raw_lengths.append(len(raw) if isinstance(raw, list) else 0)
+
+            def _format_tool_call_feedback_line(
+                self,
+                tool_name: str,
+                args: Dict[str, Any],
+                failed: bool = False,
+                is_add_file: Optional[bool] = None,
+            ) -> str:
+                return f"tool={tool_name} failed={failed} path={args.get('path', '')}"
+
+            def _ui_language(self) -> str:
+                return "en"
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            agent = _Stub(root)
+            target = root / "demo.txt"
+            target.write_text("hello\n", encoding="utf-8")
+            patch = "@@ -1,1 +1,1 @@\n-hello\n+hello_mod\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+            self.assertTrue(result.get("success"), result.get("error"))
+
+            for name in (
+                "_apply_patch_preview_path",
+                "_load_apply_patch_preview_store",
+                "_persist_apply_patch_preview_sidecar",
+                "_append_tool_preview_blocks",
+                "_attach_accumulated_tool_rounds",
+                "_next_tool_call_id",
+                "_record_model_tool_execution_history",
+            ):
+                setattr(agent, name, getattr(Agent, name).__get__(agent, _Stub))
+            agent._extract_live_tool_round_suffix = Agent._extract_live_tool_round_suffix
+            agent._extract_tool_result_output = Agent._extract_tool_result_output
+            agent._is_apply_patch_add_file = Agent._is_apply_patch_add_file.__get__(agent, _Stub)
+
+            agent._record_model_tool_execution_history(
+                "apply_patch",
+                {"path": str(target), "patch": patch},
+                result,
+                is_add_file=False,
+            )
+
+            issuing = agent.conversation_history[0]
+            raw = issuing.get("_tool_rounds_raw")
+            self.assertIsInstance(raw, list)
+            self.assertEqual(len(raw), 1)
+            self.assertEqual(raw[0].get("tool"), "apply_patch")
+            self.assertTrue(raw[0].get("previewRef"))
+            self.assertEqual(len(agent._accumulated_tool_rounds_raw), 1)
+            self.assertEqual(len(agent._accumulated_tool_rounds), 1)
+            self.assertIn(GUI_DIFF_BEGIN, agent._accumulated_tool_rounds[0])
+            self.assertIn(GUI_DIFF_END, agent._accumulated_tool_rounds[0])
+            self.assertGreaterEqual(agent.sync_calls, 1)
+            self.assertTrue(agent.synced_raw_lengths)
+            self.assertEqual(agent.synced_raw_lengths[0], 1)
 
 
 class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
@@ -871,4 +1000,3 @@ class ApplyPatchPlanModeGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

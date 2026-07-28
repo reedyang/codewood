@@ -29,6 +29,7 @@ from cli.runtime.runtime_loop import (
     _try_record_user_task_message,
     _build_apply_patch_failure_hints,
     _build_apply_patch_retry_prompt,
+    _extract_gui_tool_stream_suffix,
     _tool_calls_have_invalid_arguments,
     _parse_tool_plans_from_model_message,
     _parse_tool_plan_from_model_message,
@@ -42,6 +43,7 @@ from cli.runtime.runtime_loop import (
     _PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON,
     _build_plan_finalize_nudge_prompt,
     _recover_latest_history_tool_plans,
+    _recover_new_history_tool_plans,
     _should_fire_plan_finalize_nudge,
     _take_pending_stream_history_reload_request,
     _update_latest_assistant_clean_content,
@@ -158,6 +160,17 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertIn("Do not stop", prompt)
         self.assertIn("re-read the target file", prompt)
         self.assertIn("文件内容可能已漂移", prompt)
+
+    def test_extract_gui_tool_stream_suffix_prefers_output_then_diff(self):
+        self.assertEqual(
+            _extract_gui_tool_stream_suffix("prefix\ue000output\ue001"),
+            "\ue000output\ue001",
+        )
+        self.assertEqual(
+            _extract_gui_tool_stream_suffix("prefix\ue006diff\ue007"),
+            "\ue006diff\ue007",
+        )
+        self.assertEqual(_extract_gui_tool_stream_suffix("prefix only"), "")
 
     def test_tool_calls_have_invalid_arguments_detects_malformed_json(self):
         tool_calls = [
@@ -1508,6 +1521,63 @@ class RuntimeLoopTests(unittest.TestCase):
             _extract_nonstandard_tool_plans(_Agent(), "", ""),
             [("run_subagent", {"subagent": "image-analyzer"})],
         )
+
+    def test_extract_nonstandard_tool_plans_recovers_new_history_even_with_visible_text(self):
+        class _Agent:
+            conversation_history = [
+                {"role": "user", "content": "edit file"},
+                {
+                    "role": "assistant",
+                    "content": "{\"tool_calls\":[...]}",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "apply_patch",
+                                "arguments": "{\"path\":\"hello.py\",\"patch\":\"@@ -1,1 +1,1 @@\\n-old\\n+new\"}",
+                            },
+                        }
+                    ],
+                },
+            ]
+
+        self.assertEqual(
+            _extract_nonstandard_tool_plans(
+                _Agent(),
+                "visible plan text",
+                "visible plan text",
+                history_start_index=1,
+            ),
+            [
+                (
+                    "apply_patch",
+                    {
+                        "path": "hello.py",
+                        "patch": "@@ -1,1 +1,1 @@\n-old\n+new",
+                    },
+                )
+            ],
+        )
+
+    def test_recover_new_history_tool_plans_ignores_older_tool_calls(self):
+        class _Agent:
+            conversation_history = [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "shell",
+                                "arguments": "{\"command\":\"old\"}",
+                            },
+                        }
+                    ],
+                },
+                {"role": "assistant", "content": "no tools"},
+            ]
+
+        self.assertEqual(_recover_new_history_tool_plans(_Agent(), 1), [])
 
     def test_parse_tool_plans_from_model_message_ignores_non_suffix_pseudo_tool_calls(self):
         message = {

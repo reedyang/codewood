@@ -7,6 +7,7 @@ import {
   shouldShowPendingWorking,
   shouldShowStreamingWorkingForRound,
   splitCompletedTurn,
+  toolTextHasVisibleOutput,
 } from "./ChatView";
 
 describe("countToolCalls", () => {
@@ -27,6 +28,22 @@ describe("countToolCalls", () => {
 
     expect(countToolCalls(text)).toBe(1);
     expect(getLastToolPromptBody(text)).toBe("Read hello.py");
+  });
+});
+
+describe("toolTextHasVisibleOutput", () => {
+  it("treats command output and diff previews as visible tool output", () => {
+    expect(toolTextHasVisibleOutput("\uE004• Read x.py\uE005")).toBe(false);
+    expect(toolTextHasVisibleOutput("\uE004• Read x.py\uE005\uE000body\uE001")).toBe(true);
+    expect(toolTextHasVisibleOutput("\uE004• Edit x.py\uE005\uE006{\"file\":\"x.py\",\"diffRows\":[]}\uE007")).toBe(true);
+  });
+
+  it("lets running tool rounds stop spinning without looking idle", () => {
+    const hasVisibleOutput = toolTextHasVisibleOutput(
+      "\uE004• Edit x.py\uE005\uE006{\"file\":\"x.py\",\"diffRows\":[{\"type\":\"add\"}]}\uE007",
+    );
+
+    expect(hasVisibleOutput).toBe(true);
   });
 });
 
@@ -103,6 +120,37 @@ describe("groupLiveRounds", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0]?.kind).toBe("other");
     expect(groups[1]?.kind).toBe("tool");
+    if (groups[1]?.kind === "tool") {
+      expect(groups[1].rounds).toHaveLength(1);
+      expect(groups[1].rounds[0]?.id).toBe(2);
+    }
+  });
+
+  it("splits a running tool-only round from earlier settled tool rounds", () => {
+    const rounds = [
+      {
+        id: 1,
+        waitStartedAt: 10,
+        waitEndedAt: 20,
+        segments: [{ id: 1, kind: "step", text: "\uE004• Read hello.py\uE005\uE000body\uE001" }],
+      },
+      {
+        id: 2,
+        waitStartedAt: 21,
+        waitEndedAt: null,
+        segments: [{ id: 2, kind: "step", text: "\uE004• Read world.py\uE005" }],
+      },
+    ] as Parameters<typeof groupLiveRounds>[0];
+
+    const groups = groupLiveRounds(rounds);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.kind).toBe("tool");
+    expect(groups[1]?.kind).toBe("tool");
+    if (groups[0]?.kind === "tool") {
+      expect(groups[0].rounds).toHaveLength(1);
+      expect(groups[0].rounds[0]?.id).toBe(1);
+    }
     if (groups[1]?.kind === "tool") {
       expect(groups[1].rounds).toHaveLength(1);
       expect(groups[1].rounds[0]?.id).toBe(2);
@@ -277,6 +325,29 @@ describe("shouldShowPendingWorking", () => {
     } as Parameters<typeof shouldShowPendingWorking>[0];
 
     expect(shouldShowPendingWorking(turn, true)).toBe(false);
+  });
+
+  it("still shows Working when only a settled tool group is visible and the newest round is empty", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: 30,
+          segments: [{ id: 1, kind: "step", text: "\uE004• Edit x.py\uE005\uE000error\uE001" }],
+        },
+        {
+          id: 2,
+          waitStartedAt: 31,
+          waitEndedAt: null,
+          segments: [],
+        },
+      ],
+    } as Parameters<typeof shouldShowPendingWorking>[0];
+
+    expect(shouldShowPendingWorking(turn)).toBe(true);
   });
 });
 

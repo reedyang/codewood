@@ -1869,6 +1869,40 @@ class Agent:
                     elif has_result:
                         failed = not bool(result.get("success", True))
                         self._print_tool_call_feedback(model_tool, model_args, failed=failed)
+                        if (
+                            bool(getattr(self, "_gui_plain_stream", False))
+                            and model_tool == "apply_patch"
+                        ):
+                            try:
+                                rows = result.get("change_preview_rows")
+                                if isinstance(rows, list) and rows:
+                                    payload = json.dumps(
+                                        {
+                                            "file": str(result.get("file") or model_args.get("path") or ""),
+                                            "diffRows": rows,
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                    print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
+                                else:
+                                    # GUI-only settle marker: this replay path
+                                    # is entered after the tool has already
+                                    # completed, so never leave a prompt-only
+                                    # apply_patch row looking like it is still
+                                    # running.
+                                    print(f"{GUI_DIFF_BEGIN}{{}}{GUI_DIFF_END}")
+                                if failed:
+                                    output = self._extract_tool_result_output(
+                                        model_tool,
+                                        result if isinstance(result, dict) else {},
+                                    )
+                                    if output:
+                                        print(
+                                            f"{GUI_CMD_OUTPUT_BEGIN}"
+                                            f"{output}{GUI_CMD_OUTPUT_END}"
+                                        )
+                            except Exception:
+                                pass
                         last_plan_emitted_feedback = True
                     else:
                         self._print_tool_call_feedback(model_tool, model_args, failed=False)
@@ -3614,14 +3648,17 @@ class Agent:
         # Store as a role:tool message in conversation_history with a
         # matching tool_call_id from the preceding assistant message.
         tool_call_id = self._next_tool_call_id()
-        self.conversation_history.append({
+        tool_message = {
             "role": "tool",
             "name": str(tool_name or "").strip(),
             "content": tool_content,
             "tool_call_id": tool_call_id,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        })
-        self._sync_active_chat_messages()
+        }
+        self.conversation_history.append(tool_message)
+        sync_after_raw_attach = t == "apply_patch"
+        if not sync_after_raw_attach:
+            self._sync_active_chat_messages()
 
         # Render the display text and accumulate for the assistant message.
         # Include the guiSessionMarker in the tool round so the frontend can
@@ -3643,6 +3680,15 @@ class Agent:
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             tool_round = tool_round + "\n" + gui_marker
+        if t in ("apply_patch", "shell") and _preview_ref:
+            try:
+                tool_round = self._append_tool_preview_blocks(
+                    tool_round,
+                    _preview_ref,
+                    tui_mode=False,
+                )
+            except Exception:
+                pass
         # Surface the tool's output (file/dir/image content for ``read``,
         # command output for ``shell``, project_context_search candidates, MCP
         # tool results, etc.) as a collapsible block in the GUI transcript by
@@ -3685,6 +3731,16 @@ class Agent:
         pending = list(getattr(self, "_accumulated_tool_rounds", None) or [])
         pending.append(tool_round)
         self._accumulated_tool_rounds = pending
+        live_suffix = self._extract_live_tool_round_suffix(tool_round)
+        if live_suffix:
+            emit_live = getattr(self, "_gui_tool_output_emit", None)
+            if callable(emit_live):
+                try:
+                    emit_live(live_suffix)
+                    if isinstance(r, dict):
+                        r["_gui_live_suffix_emitted"] = True
+                except Exception:
+                    pass
         # Store raw data for later re-rendering on language change. Every tool
         # call records a generic ``output`` field (not just ``read``) so history
         # reload can expand the tool output regardless of tool type.
@@ -3726,6 +3782,13 @@ class Agent:
             raw_entry["marker"] = gui_marker
         pending_raw.append(raw_entry)
         self._accumulated_tool_rounds_raw = pending_raw
+        if t == "apply_patch":
+            self._attach_accumulated_tool_rounds(clear=False)
+        if sync_after_raw_attach:
+            try:
+                self._sync_active_chat_messages()
+            except Exception:
+                pass
 
     def _next_tool_call_id(self) -> str:
         """Return the next tool_call_id for a tool result.
@@ -3794,14 +3857,17 @@ class Agent:
             return f"call_{idx}"
         return "call_0"
 
-    def _flush_tool_rounds(self) -> None:
-        """Attach accumulated tool_rounds raw data to the assistant message that
-        issued the current tool batch (``_last_tool_issuing_assistant`` when
-        available, otherwise the last assistant message with ``tool_calls``),
-        then clear the accumulator."""
+    def _attach_accumulated_tool_rounds(self, clear: bool = False) -> bool:
+        """Attach accumulated ``_tool_rounds_raw`` to the issuing assistant.
+
+        When ``clear`` is False, the raw rounds remain queued so later tools in
+        the same batch can still be flushed together. This is used by
+        ``apply_patch`` to persist its result immediately, even if the runtime
+        auto-continues into another model round after a retryable failure.
+        """
         raw_rounds = list(getattr(self, "_accumulated_tool_rounds_raw", None) or [])
         if not raw_rounds:
-            return
+            return False
         target = None
         issuing = getattr(self, "_last_tool_issuing_assistant", None)
         if isinstance(issuing, dict) and str(issuing.get("role") or "").strip().lower() == "assistant":
@@ -3818,8 +3884,19 @@ class Agent:
                 break
         if target is not None:
             target["_tool_rounds_raw"] = raw_rounds
-        self._accumulated_tool_rounds = []
-        self._accumulated_tool_rounds_raw = []
+            try:
+                self._sync_active_chat_messages()
+            except Exception:
+                pass
+        if clear:
+            self._accumulated_tool_rounds = []
+            self._accumulated_tool_rounds_raw = []
+        return target is not None
+
+    def _flush_tool_rounds(self) -> None:
+        """Attach accumulated tool_rounds raw data to the issuing assistant,
+        then clear the accumulator."""
+        self._attach_accumulated_tool_rounds(clear=True)
 
     def _skill_prompt_recovery_needed(self, sid: str) -> bool:
         """Return True when the model context since the last compaction no longer
@@ -3895,23 +3972,11 @@ class Agent:
                 preview_ref = item.get("previewRef")
                 if preview_ref:
                     try:
-                        store = self._load_apply_patch_preview_store()
-                        refs = str(preview_ref).split("|")
-                        for _ref in refs:
-                            preview = store.get(_ref)
-                            if isinstance(preview, dict) and preview.get("diffRows"):
-                                if tui_mode:
-                                    preview_lines = preview.get("previewLines")
-                                    if isinstance(preview_lines, list) and preview_lines:
-                                        for ln in preview_lines:
-                                            tool_round = f"{tool_round}\n{ln}"
-                                    else:
-                                        for ln in self._render_diff_rows_as_text(preview["diffRows"]):
-                                            tool_round = f"{tool_round}\n{ln}"
-                                else:
-                                    import json as _json
-                                    payload = _json.dumps(preview, ensure_ascii=False)
-                                    tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
+                        tool_round = self._append_tool_preview_blocks(
+                            tool_round,
+                            preview_ref,
+                            tui_mode=tui_mode,
+                        )
                     except Exception:
                         pass
             # Expand the tool output (generic ``output`` field) as a collapsible
@@ -3946,6 +4011,46 @@ class Agent:
                 tool_round = f"{tool_round}\n{marker}"
             result.append(tool_round)
         return result
+
+    @staticmethod
+    def _extract_live_tool_round_suffix(tool_round: Any) -> str:
+        text = str(tool_round or "")
+        output_start = text.find(GUI_CMD_OUTPUT_BEGIN)
+        if output_start >= 0:
+            return text[output_start:]
+        diff_start = text.find(GUI_DIFF_BEGIN)
+        if diff_start >= 0:
+            return text[diff_start:]
+        return ""
+
+    def _append_tool_preview_blocks(
+        self,
+        tool_round: str,
+        preview_ref: Any,
+        tui_mode: bool = False,
+    ) -> str:
+        """Append persisted diff preview blocks to a rendered tool round."""
+        if not preview_ref:
+            return tool_round
+        store = self._load_apply_patch_preview_store()
+        refs = str(preview_ref).split("|")
+        for _ref in refs:
+            preview = store.get(_ref)
+            if not (isinstance(preview, dict) and preview.get("diffRows")):
+                continue
+            if tui_mode:
+                preview_lines = preview.get("previewLines")
+                if isinstance(preview_lines, list) and preview_lines:
+                    for ln in preview_lines:
+                        tool_round = f"{tool_round}\n{ln}"
+                else:
+                    for ln in self._render_diff_rows_as_text(preview["diffRows"]):
+                        tool_round = f"{tool_round}\n{ln}"
+            else:
+                import json as _json
+                payload = _json.dumps(preview, ensure_ascii=False)
+                tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
+        return tool_round
 
     def _render_diff_rows_as_text(self, diff_rows: List[Dict[str, Any]]) -> List[str]:
         """Render diffRows (structured diff rows) as simple ANSI-colored text.

@@ -6112,6 +6112,10 @@ class ServeApp:
             "tool_feedback_repaint",
             self._route(text=str(text or "")),
         )
+        self.agent._gui_tool_output_emit = lambda text: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "output",
+            self._route(text=str(text or "")),
+        )
         # Hook for file change events: emits a summary of all file changes
         # at the end of a task.  Each summary is stored in file_changes.json
         # keyed by a random hashcode, and a [FILE_CHANGE_REF:<hashcode>]
