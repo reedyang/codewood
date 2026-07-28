@@ -19,6 +19,7 @@ launching host can read it; it is never written to logs.
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime
 import io
 import json
@@ -1018,6 +1019,23 @@ def _compute_context_usage_fresh_from_messages(agent: Any, chat_record: Dict[str
     return window, total, pct
 
 
+def _safe_context_usage(agent: Any, chat_id: str, chat_record: Dict[str, Any]) -> "tuple[int, int, int]":
+    """Read/recompute context usage from the active chat's own session."""
+    cid = str(chat_id or "").strip()
+    if not cid:
+        return 0, 0, 0
+    try:
+        with agent._session_scope(cid):
+            total = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
+            window = int(getattr(agent, "_last_context_window", 0) or 0)
+            pct = int(getattr(agent, "_last_context_usage_percent", 0) or 0)
+            if total <= 0 and pct <= 0:
+                return _compute_context_usage_fresh_from_messages(agent, chat_record)
+            return window, total, pct
+    except Exception:
+        return _compute_context_usage_fresh_from_messages(agent, chat_record)
+
+
 def _safe_reasoning_effort(agent: Any) -> str:
     # Reasoning effort is session-scoped; bind to the active chat so HTTP
     # handler threads read the focused chat's saved selection (restored from
@@ -1199,20 +1217,11 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                 # message history on every activate/refresh. Read it directly,
                 # and fall back to a fresh history-based recompute only when the
                 # snapshot is not yet available.
-                try:
-                    active_context_percent = int(getattr(agent, "_last_context_usage_percent", 0) or 0)
-                except Exception:
-                    active_context_percent = 0
-                try:
-                    active_context_tokens = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
-                except Exception:
-                    active_context_tokens = 0
-                try:
-                    active_context_window = int(getattr(agent, "_last_context_window", 0) or 0)
-                except Exception:
-                    active_context_window = 0
-                if active_context_tokens <= 0 and active_context_percent <= 0:
-                    active_context_window, active_context_tokens, active_context_percent = _compute_context_usage_fresh_from_messages(agent, c)
+                active_context_window, active_context_tokens, active_context_percent = _safe_context_usage(
+                    agent,
+                    cid,
+                    c,
+                )
             chats.append(
                 {
                     "index": i,
@@ -2029,8 +2038,42 @@ class ServeApp:
     def token(self) -> str:
         return self._token
 
+    def _apply_immediate_chat_config(
+        self,
+        chat_id: str,
+        apply_fn: "callable[[], None]",
+    ) -> str:
+        """Apply a GUI model/reasoning change against the target chat session.
+
+        HTTP handler threads are not bound to a chat loop session by default, so
+        mutating model globals here would otherwise pin the change onto the
+        handler thread's anonymous session instead of the target chat's runtime
+        session. Bind to ``chat_id`` first, restore that chat's saved model into
+        the shared globals, then apply the update so future turns in that chat
+        use the new selection.
+        """
+        agent = self.agent
+        cid = str(chat_id or "").strip() or _primary_active_chat_id(agent)
+        with agent._session_scope(cid):
+            try:
+                agent.active_chat_id = cid
+            except Exception:
+                pass
+            try:
+                finder = getattr(agent, "_find_chat_by_id", None)
+                restore = getattr(agent, "_apply_chat_model_from_entry", None)
+                if callable(finder) and callable(restore):
+                    chat = finder(cid)
+                    if chat:
+                        restore(chat, persist_if_missing=True)
+            except Exception:
+                pass
+            apply_fn()
+        return cid
+
     def submit_input(self, text: str, chat_id: str = "", as_prompt: bool = False) -> None:
         line = str(text or "")
+        cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
         # Composer input is forced to a model prompt: prefix a sentinel the
         # runtime loop strips so "/foo" / "!bar" never run as command/shell.
         if as_prompt and line:
@@ -2060,22 +2103,28 @@ class ServeApp:
             if stripped.startswith("/reasoning ") or stripped == "/reasoning":
                 level = stripped[len("/reasoning"):].strip() if stripped.startswith("/reasoning ") else ""
                 try:
-                    self.agent._set_reasoning_effort(level)
+                    cid = self._apply_immediate_chat_config(
+                        cid,
+                        lambda: self.agent._set_reasoning_effort(level),
+                    )
                 except Exception:
                     pass
                 self.broadcaster.publish(
-                    "state", self._route(state=_build_state(self.agent))
+                    "state", self._route(chat_id=cid, state=_build_state(self.agent))
                 )
                 return
             # Apply model switch immediately so the new model is used on the
             # next call, even while a task is executing.
             if stripped.startswith("/model ") or stripped == "/model":
                 try:
-                    self.agent._handle_model_builtin_command(stripped)
+                    cid = self._apply_immediate_chat_config(
+                        cid,
+                        lambda: self.agent._handle_model_builtin_command(stripped),
+                    )
                 except Exception:
                     pass
                 self.broadcaster.publish(
-                    "state", self._route(state=_build_state(self.agent))
+                    "state", self._route(chat_id=cid, state=_build_state(self.agent))
                 )
                 return
             # All other slash commands: mark them so the runtime loop runs it
@@ -2094,7 +2143,6 @@ class ServeApp:
                 except Exception:
                     pass
                 self.interrupt()
-        cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
         rt = self._get_or_spawn_runtime(cid)
         rt.input_queue.put(line)
 
@@ -2147,6 +2195,142 @@ class ServeApp:
         if reply is None:
             return False
         reply.put(str(answer or ""))
+        return True
+
+    @contextlib.contextmanager
+    def _session_scope_for_chat(self, chat_id: str, workspace_id: str = ""):
+        """Temporarily bind the HTTP thread to a specific chat session key."""
+        agent = self.agent
+        wsid = str(workspace_id or "").strip()
+        tls = agent.__dict__.get("_session_tls")
+        prev_chat = str(getattr(tls, "chat_id", "") or "") if tls is not None else ""
+        prev_session = getattr(tls, "session", None) if tls is not None else None
+        agent._bind_session(chat_id, wsid if wsid else None)
+        try:
+            yield
+        finally:
+            tls2 = agent.__dict__.get("_session_tls")
+            if tls2 is not None:
+                tls2.chat_id = prev_chat
+                tls2.session = prev_session
+
+    def set_chat_model(self, chat_id: str, model: str, workspace_id: str = "") -> bool:
+        """Persist and apply a model selection for one GUI chat directly."""
+        agent = self.agent
+        cid = str(chat_id or "").strip()
+        selector = str(model or "").strip()
+        wsid = str(workspace_id or "").strip()
+        if not cid or not selector:
+            return False
+        original_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+        switched = False
+        try:
+            if wsid and wsid != original_wsid:
+                from ..controllers.workspace_command_controller import (
+                    workspace_switch_command,
+                )
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    workspace_switch_command(agent, wsid)
+                switched = True
+        except Exception:
+            if switched:
+                try:
+                    from ..controllers.workspace_command_controller import (
+                        workspace_switch_command,
+                    )
+
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        workspace_switch_command(agent, original_wsid)
+                except Exception:
+                    pass
+            return False
+        try:
+            with self._session_scope_for_chat(cid, wsid or str(getattr(agent, "workspace_id", "") or "")):
+                agent.active_chat_id = cid
+                refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
+                if callable(refresh):
+                    refresh(cid)
+                target = agent._find_chat_by_id(cid)
+                if not target:
+                    return False
+                choice = agent._find_configured_model_choice(selector)
+                if not choice:
+                    return False
+                agent._apply_chat_model_from_entry(target, persist_if_missing=True)
+                agent._switch_model_by_selector(selector)
+                try:
+                    agent._save_chat_state()
+                except Exception:
+                    pass
+        except Exception:
+            return False
+        finally:
+            if switched:
+                try:
+                    from ..controllers.workspace_command_controller import (
+                        workspace_switch_command,
+                    )
+
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        workspace_switch_command(agent, original_wsid)
+                except Exception:
+                    pass
+        self.broadcaster.publish(
+            "state",
+            self._route(chat_id=cid, state=_build_state(agent)),
+        )
+        return True
+
+    def set_chat_reasoning(self, chat_id: str, reasoning: str, workspace_id: str = "") -> bool:
+        """Persist and apply a reasoning-effort selection for one GUI chat."""
+        agent = self.agent
+        cid = str(chat_id or "").strip()
+        wsid = str(workspace_id or "").strip()
+        if not cid:
+            return False
+        original_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+        switched = False
+        try:
+            if wsid and wsid != original_wsid:
+                from ..controllers.workspace_command_controller import (
+                    workspace_switch_command,
+                )
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    workspace_switch_command(agent, wsid)
+                switched = True
+            with self._session_scope_for_chat(cid, wsid or str(getattr(agent, "workspace_id", "") or "")):
+                agent.active_chat_id = cid
+                refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
+                if callable(refresh):
+                    refresh(cid)
+                target = agent._find_chat_by_id(cid)
+                if not target:
+                    return False
+                agent._apply_chat_model_from_entry(target, persist_if_missing=True)
+                agent._set_reasoning_effort(str(reasoning or "").strip())
+                try:
+                    agent._save_chat_state()
+                except Exception:
+                    pass
+        except Exception:
+            return False
+        finally:
+            if switched:
+                try:
+                    from ..controllers.workspace_command_controller import (
+                        workspace_switch_command,
+                    )
+
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        workspace_switch_command(agent, original_wsid)
+                except Exception:
+                    pass
+        self.broadcaster.publish(
+            "state",
+            self._route(chat_id=cid, state=_build_state(agent)),
+        )
         return True
 
     def interrupt(self) -> None:
@@ -6297,6 +6481,20 @@ def _make_handler(app: ServeApp):
                     text, chat_id=chat_id, as_prompt=bool(body.get("asPrompt"))
                 )
                 self._send_json(200, {"ok": True})
+                return
+            if path == "/set-chat-model":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                model = str(body.get("model") or "")[:256]
+                ok = app.set_chat_model(chat_id, model, ws_id)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-chat-reasoning":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                reasoning = str(body.get("reasoning") or "")[:256]
+                ok = app.set_chat_reasoning(chat_id, reasoning, ws_id)
+                self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/save-pending-inputs":
                 chat_id = str(body.get("chatId") or "")[:256]
