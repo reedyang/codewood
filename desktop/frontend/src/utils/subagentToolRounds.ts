@@ -111,7 +111,7 @@ export function buildFallbackToolRound(
   args: Record<string, unknown> = {},
   output = "",
   marker = "",
-  options?: { failed?: boolean; lang?: Lang },
+  options?: { failed?: boolean; lang?: Lang; errText?: string },
 ): string {
   const name = String(toolName || "").trim() || "tool";
   const lang = options?.lang ?? "en";
@@ -122,6 +122,8 @@ export function buildFallbackToolRound(
   let round = `${CMD_PROMPT_BEGIN}${bullet} ${label}${detail ? ` ${detail}` : ""}${CMD_PROMPT_END}`;
   if (output) {
     round += `\n${CMD_OUTPUT_BEGIN}${output}${CMD_OUTPUT_END}`;
+  } else if (options?.errText) {
+    round += `\n${CMD_OUTPUT_BEGIN}${options.errText}${CMD_OUTPUT_END}`;
   }
   if (marker) {
     round += `\n${marker}`;
@@ -152,7 +154,7 @@ export function buildFallbackToolRoundsFromRaw(
         toRecord(item?.args),
         String(item?.output || ""),
         String(item?.marker || ""),
-        { failed: Boolean(item?.failed), lang: options?.lang },
+        { failed: Boolean(item?.failed), lang: options?.lang, errText: String(item?.error || "") },
       ),
     )
     .filter(Boolean);

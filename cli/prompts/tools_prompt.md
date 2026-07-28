@@ -20,13 +20,9 @@ Only fall back to `rg` (via `shell`) when:
 - You need precise regex/string matching not captured by semantic search
 - You are in a Default workspace where the index is unavailable
 
-When using `rg` via `shell`, NEVER redirect stderr to null — do NOT use `2>nul` (Windows), `2>/dev/null` (Linux/macOS), or any equivalent. The runtime relies on stderr to detect and explain rg failures (e.g. invalid regex, missing files, unsupported flags). Discarding stderr hides these errors and prevents the runtime from giving you useful feedback.
-
 When you get candidates back from `project_context_search`, use `read` to inspect their contents. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, or `tail` to read file contents — use `read`.
 [[else]]
 For all software-understanding tasks that require locating code, use `rg` (via `shell`) to find candidate files, then `read` to inspect their contents.
-
-When using `rg` via `shell`, NEVER redirect stderr to null — do NOT use `2>nul` (Windows), `2>/dev/null` (Linux/macOS), or any equivalent. The runtime relies on stderr to detect and explain rg failures (e.g. invalid regex, missing files, unsupported flags). Discarding stderr hides these errors and prevents the runtime from giving you useful feedback.
 [[endif]]
 
 ## `shell` Tool

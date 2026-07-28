@@ -401,6 +401,7 @@ export interface SubAgentToolRoundRaw {
   failed?: boolean;
   elapsed?: number | null;
   output?: string;
+  error?: string;
   marker?: string;
 }
 

@@ -1594,6 +1594,10 @@ def action_shell_command(
                         pass
             _stop_status_ticker()
 
+            rg_error: Optional[str] = _rg_stderr_retry(
+                command, out, return_code, execution_cwd, run_env,
+            ) or None
+
             out = append_shell_merge_output_path(out, return_code, merge_path)
             out_tail_limit = _dynamic_tail_line_limit(sys.stdout)
             displayed_out = _build_tail_output_for_display(
@@ -2007,7 +2011,7 @@ def action_shell_command(
             }
         return {
             "success": False,
-            "error": f"Command execution failed, exit code: {return_code}",
+            "error": rg_error or f"Command execution failed, exit code: {return_code}",
             **base_out,
         }
 
@@ -2800,6 +2804,69 @@ def enforce_workspace_rg_for_shell_command(agent: Any, command: str) -> str:
         target_exe_bases={"rg"},
         replacement=str(rg_path),
     )
+
+
+_RG_STDERR_SUPPRESS_RE = re.compile(r"\s*2>\s*(?:nul|/dev/null)\s*", re.IGNORECASE)
+
+
+def _is_rg_command(command: str) -> bool:
+    parts = str(command or "").strip().split(None, 1)
+    if not parts:
+        return False
+    first_token = parts[0].strip('"').strip("'")
+    exe_name = Path(first_token).name.lower()
+    return exe_name in ("rg", "rg.exe")
+
+
+def _rg_stderr_retry(
+    command: str,
+    out: str,
+    return_code: int,
+    execution_cwd: Path,
+    run_env,
+) -> Optional[str]:
+    if not _is_rg_command(command):
+        return None
+    if not _RG_STDERR_SUPPRESS_RE.search(command):
+        return None
+    is_failure = return_code != 0 or not str(out or "").strip()
+    if not is_failure:
+        _rg_stderr_retry._cache[command] = None
+        return None
+    cache_key = command
+    cached = _rg_stderr_retry._cache.get(cache_key)
+    if cached is not None:
+        return cached if cached else None
+    stripped = _RG_STDERR_SUPPRESS_RE.sub(" ", command).strip()
+    if not stripped or stripped == command:
+        _rg_stderr_retry._cache[cache_key] = None
+        return None
+    try:
+        import subprocess as _rg_retry_subprocess
+        proc = _rg_retry_subprocess.run(
+            stripped,
+            shell=True,
+            cwd=str(execution_cwd.resolve()),
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        err = str(proc.stderr or "").strip()
+        if err:
+            _rg_stderr_retry._cache[cache_key] = err
+            return err
+        out2 = str(proc.stdout or "").strip()
+        if out2:
+            _rg_stderr_retry._cache[cache_key] = out2
+            return out2
+    except Exception:
+        pass
+    _rg_stderr_retry._cache[cache_key] = None
+    return None
+
+
+_rg_stderr_retry._cache: Dict[str, Optional[str]] = {}
 
 
 _CD_AND_DELIMITERS: list[tuple[str, int]] = [
