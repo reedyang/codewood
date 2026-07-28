@@ -210,6 +210,33 @@ function BusySwitchProbe() {
   );
 }
 
+function ImmediateSwitchProbe() {
+  const {
+    activeWorkspaceId,
+    activeChatId,
+    activeChats,
+    historyTurns,
+    historyLoading,
+    switchToChat,
+  } = useApp();
+  return (
+    <>
+      <button onClick={() => { void switchToChat("chat-2", "ws-1"); }}>
+        switch immediately
+      </button>
+      <pre data-testid="immediate-switch-view">
+        {JSON.stringify({
+          activeWorkspaceId,
+          activeChatId,
+          activeChats,
+          historyTurns,
+          historyLoading,
+        })}
+      </pre>
+    </>
+  );
+}
+
 describe("AppContext thinking rounds", () => {
   beforeEach(() => {
     apiMock.reset();
@@ -780,6 +807,98 @@ describe("AppContext thinking rounds", () => {
       expect(view.activeChatId).toBe("chat-1");
       expect(view.turns).toHaveLength(1);
       expect(view.turns[0]?.endedAt).toBeNull();
+    });
+  });
+
+  it("switches to the target chat immediately and clears transcript before history resolves", async () => {
+    let resolveSelectChat: ((value: boolean) => void) | null = null;
+    apiMock.selectChat.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveSelectChat = resolve;
+        }),
+    );
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          {
+            index: 0,
+            id: "chat-1",
+            name: "Chat 1",
+            messageCount: 1,
+            active: true,
+            running: false,
+            archived: false,
+            planMode: false,
+            model: "provider/model",
+          },
+          {
+            index: 1,
+            id: "chat-2",
+            name: "Chat 2",
+            messageCount: 2,
+            active: false,
+            running: false,
+            archived: false,
+            planMode: false,
+            model: "provider/model",
+          },
+        ],
+      }),
+    );
+    apiMock.getChatHistory.mockResolvedValue({
+      turns: [
+        {
+          userText: "hello",
+          rounds: [],
+          startedAt: 1,
+          endedAt: 2,
+        },
+      ],
+      start: 0,
+      total: 1,
+    });
+
+    render(
+      <AppProvider>
+        <ImmediateSwitchProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "switch immediately" }));
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("immediate-switch-view").textContent || "{}") as {
+        activeWorkspaceId: string;
+        activeChatId: string;
+        activeChats: AppState["chats"];
+        historyTurns: unknown[];
+        historyLoading: boolean;
+      };
+      const activeChat = view.activeChats.find((chat) => chat.id === "chat-2");
+      expect(view.activeWorkspaceId).toBe("ws-1");
+      expect(view.activeChatId).toBe("chat-2");
+      expect(activeChat?.active).toBe(true);
+      expect(activeChat?.name).toBe("Chat 2");
+      expect(view.historyTurns).toEqual([]);
+      expect(view.historyLoading).toBe(true);
+    });
+
+    await act(async () => {
+      resolveSelectChat?.(true);
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("immediate-switch-view").textContent || "{}") as {
+        historyTurns: Array<{ userText?: string }>;
+        historyLoading: boolean;
+      };
+      expect(view.historyLoading).toBe(false);
+      expect(view.historyTurns[0]?.userText).toBe("hello");
     });
   });
 });

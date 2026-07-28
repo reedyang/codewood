@@ -4957,6 +4957,87 @@ h6.md-h {
   box-shadow: var(--shadow);
 }
 
+.chat-loading-splash {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.chat-loading-splash-orb {
+  position: relative;
+  width: min(34vw, 228px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  box-shadow: none;
+  isolation: isolate;
+}
+
+.chat-loading-splash-icon {
+  position: relative;
+  z-index: 2;
+  width: 46%;
+  max-width: 104px;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.08));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.chat-loading-splash-ripple {
+  position: absolute;
+  inset: -28%;
+  z-index: 3;
+  border-radius: 999px;
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0) 0%,
+    rgba(255,255,255,0) 26%,
+    rgba(255,255,255,0.12) 38%,
+    rgba(255,255,255,0.72) 50%,
+    rgba(255,255,255,0.12) 62%,
+    rgba(255,255,255,0) 74%,
+    rgba(255,255,255,0) 100%
+  );
+  filter: blur(10px);
+  transform: translate3d(-22%, -22%, 0) scale(0.96);
+  opacity: 0;
+  mix-blend-mode: screen;
+  animation: chat-loading-ripple 2.3s ease-in-out infinite;
+}
+
+@keyframes chat-loading-ripple {
+  0% {
+    transform: translate3d(-22%, -22%, 0) scale(0.96);
+    opacity: 0;
+  }
+  22% {
+    opacity: 0.98;
+  }
+  50% {
+    transform: translate3d(0%, 0%, 0) scale(1);
+    opacity: 0.68;
+  }
+  100% {
+    transform: translate3d(42%, 42%, 0) scale(1.08);
+    opacity: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .chat-loading-splash-orb {
+    width: min(54vw, 208px);
+  }
+
+  .chat-loading-splash-ripple {
+    inset: -34%;
+  }
+}
+
 /* Workspace selector dropdown */
 .ws-selector {
   position: relative;

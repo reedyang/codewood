@@ -481,6 +481,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [workspaceChats, setWorkspaceChats] = useState<
     Record<string, WorkspaceChatSummary[]>
   >({});
+  const workspaceChatsRef = useRef<Record<string, WorkspaceChatSummary[]>>({});
+  useEffect(() => {
+    workspaceChatsRef.current = workspaceChats;
+  }, [workspaceChats]);
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialPage, setSettingsInitialPage] = useState<string | null>(null);
@@ -2922,6 +2926,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const prevKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
       const targetWsId = workspaceId || activeWorkspaceIdRef.current;
+      const targetChatName = (() => {
+        const activeWsId = stateRef.current?.workspace.id ?? "";
+        const activeList = stateRef.current?.chats ?? [];
+        const otherList = workspaceChatsRef.current[targetWsId] ?? [];
+        const source = targetWsId === activeWsId ? activeList : otherList;
+        const hit = source.find((chat) => chat.id === chatId);
+        return hit?.name || t("chat.new");
+      })();
       setFocusOverride(null);
       setOptimisticChatFocus(null);
       setCompactNoticeState((state) =>
@@ -2929,6 +2941,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ? { chatKey: "", notice: null, version: state.version + 1 }
           : state,
       );
+      setDraftMode(false);
+      setDraftWorkspaceId("");
+      historyChatRef.current = chatKey(targetWsId, chatId);
+      activeWorkspaceIdRef.current = targetWsId;
+      activeChatIdRef.current = chatId;
+      setFocusOverride({ chatId, wsId: targetWsId });
+      setOptimisticChatFocus({
+        chatId,
+        wsId: targetWsId,
+        name: targetChatName,
+      });
+      setHistoryTurns([]);
+      setHistoryStart(0);
+      setHistoryTotal(0);
+      setHistoryLoading(true);
       // When switching to a different workspace, record the target so the
       // subsequent idle/state SSE event from that workspace can bypass the
       // background-event guard (stateRef still has the old workspace ID).
@@ -2937,6 +2964,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const ok = await client.selectChat(chatId, workspaceId);
       if (!ok) {
+        setHistoryLoading(false);
+        setFocusOverride(null);
+        setOptimisticChatFocus(null);
         return;
       }
       // Preserve any still-running turn in the chat we just left so its
@@ -2948,13 +2978,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // that we intentionally ignore to protect segment accumulation, so carry
       // an optimistic focus override until the backend's terminal idle snapshot
       // catches up.
-      setFocusOverride({ chatId, wsId: targetWsId });
-      setDraftMode(false);
-      setDraftWorkspaceId("");
-      historyChatRef.current = chatKey(targetWsId, chatId);
       await loadChatHistory({ chatId, wsId: targetWsId });
     },
-    [client, dropSettledLiveTurns, loadChatHistory],
+    [client, dropSettledLiveTurns, loadChatHistory, t],
   );
 
   const selectWorkspace = useCallback(
