@@ -1000,6 +1000,82 @@ class RgStderrRetryTests(unittest.TestCase):
         mock_run.assert_called_once()
 
 
+class FileReadShellCommandTests(unittest.TestCase):
+    def test_is_file_read_for_cat(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("cat file.txt"))
+
+    def test_is_file_read_for_type(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("type file.txt"))
+
+    def test_is_file_read_for_head(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("head -n 10 file.txt"))
+
+    def test_is_file_read_for_tail(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("tail -f log.txt"))
+
+    def test_is_file_read_for_more(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("more file.txt"))
+
+    def test_is_file_read_for_less(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("less file.txt"))
+
+    def test_is_file_read_for_get_content(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("get-content file.txt"))
+
+    def test_is_file_read_for_gc(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("gc file.txt"))
+
+    def test_is_file_read_for_powershell_cat(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command(
+            "powershell -ExecutionPolicy Bypass -Command \"cat file.txt\""
+        ))
+
+    def test_is_file_read_for_cmd_type(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command(
+            "cmd /c type file.txt"
+        ))
+
+    def test_is_file_read_for_bash_cat(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command(
+            "bash -c \"cat file.txt\""
+        ))
+
+    def test_is_file_read_for_cat_exe(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertTrue(is_file_read_shell_command("cat.exe file.txt"))
+
+    def test_is_file_read_false_for_rg(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertFalse(is_file_read_shell_command("rg pattern file.txt"))
+
+    def test_is_file_read_false_for_ls(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertFalse(is_file_read_shell_command("ls -la"))
+
+    def test_is_file_read_false_for_echo(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertFalse(is_file_read_shell_command("echo hello"))
+
+    def test_is_file_read_false_for_empty(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertFalse(is_file_read_shell_command(""))
+
+    def test_is_file_read_false_for_grep(self):
+        from cli.tools.shell import is_file_read_shell_command
+        self.assertFalse(is_file_read_shell_command("grep pattern file.txt"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
