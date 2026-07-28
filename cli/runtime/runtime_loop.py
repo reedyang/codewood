@@ -25,7 +25,7 @@ from ..config.startup_tips import (
     get_random_startup_tip_entry,
 )
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
-from ..core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END, GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
+from ..core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END, GUI_DIFF_BEGIN, GUI_DIFF_END, GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
 
 from ..core.text_output_renderer import (
     format_assistant_display_response,
@@ -410,10 +410,32 @@ def _recover_latest_history_tool_plans(agent: Any) -> List[Tuple[str, Dict[str, 
     return []
 
 
+def _recover_new_history_tool_plans(
+    agent: Any,
+    history_start_index: int,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """Recover tool plans from assistant messages appended by the current call."""
+    history = list(getattr(agent, "conversation_history", None) or [])
+    try:
+        start = max(0, int(history_start_index or 0))
+    except Exception:
+        start = 0
+    for item in reversed(history[start:]):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "").strip().lower() != "assistant":
+            continue
+        plans = _parse_tool_plans_from_tool_calls_node(item.get("tool_calls"))
+        if plans:
+            return plans
+    return []
+
+
 def _extract_nonstandard_tool_plans(
     agent: Any,
     ai_result: Any,
     ai_response: Any,
+    history_start_index: Optional[int] = None,
 ) -> List[Tuple[str, Dict[str, Any]]]:
     """Extract executable tool plans for non-standard-tool rounds.
 
@@ -432,6 +454,10 @@ def _extract_nonstandard_tool_plans(
         direct_plans = _parse_tool_plans_from_tool_calls_node(message.get("tool_calls"))
         if direct_plans:
             return direct_plans
+    if history_start_index is not None:
+        history_plans = _recover_new_history_tool_plans(agent, history_start_index)
+        if history_plans:
+            return history_plans
     if ai_response:
         return []
     return _recover_latest_history_tool_plans(agent)
@@ -2162,6 +2188,18 @@ def _build_apply_patch_retry_prompt(
         f"Hints:\n{hint_block}"
     ).strip()
  
+
+def _extract_gui_tool_stream_suffix(tool_round_text: Any) -> str:
+    """Return the live GUI-only tail of a rendered tool round, if any."""
+    text = str(tool_round_text or "")
+    output_start = text.find(GUI_CMD_OUTPUT_BEGIN)
+    if output_start >= 0:
+        return text[output_start:]
+    diff_start = text.find(GUI_DIFF_BEGIN)
+    if diff_start >= 0:
+        return text[diff_start:]
+    return ""
+
 
 def _looks_like_ephemeral_api_error_summary(text: str) -> bool:
     low = str(text or "").strip().lower()
@@ -4040,6 +4078,9 @@ def run_agent_loop(agent: Any):
                             _brief_ctx = f"Latest tool: {_tool_ctx}, success=False"
                             if _err_ctx:
                                 _brief_ctx += f", error: {_err_ctx[:120]}"
+                    _history_len_before_model_call = len(
+                        list(getattr(self, "conversation_history", None) or [])
+                    )
                     ai_result = self.call_ai(
                         model_input,
                         context=_brief_ctx,
@@ -4092,6 +4133,7 @@ def run_agent_loop(agent: Any):
                                 self,
                                 ai_result,
                                 ai_response,
+                                _history_len_before_model_call,
                             )
                     else:
                         ai_response, streamed_assistant_output = _consume_streaming_ai_response(
@@ -4121,6 +4163,7 @@ def run_agent_loop(agent: Any):
                                 self,
                                 ai_result,
                                 ai_response,
+                                _history_len_before_model_call,
                             )
                         # Ensure thinking content from the stream result is stored in
                         # the latest assistant message in conversation history.
@@ -4128,6 +4171,11 @@ def run_agent_loop(agent: Any):
                         _thinking_from_content = getattr(ai_result, "_thinking_from_content", False)
                         if _thinking:
                             _ensure_thinking_in_latest_assistant_message(self, _thinking, _thinking_from_content)
+                    if not message_tool_plans:
+                        message_tool_plans = _recover_new_history_tool_plans(
+                            self,
+                            _history_len_before_model_call,
+                        )
                 finally:
                     self._active_status_ticker_stopper = None
                 # The model has fully responded for this round; freeze its wait
@@ -4663,6 +4711,18 @@ def run_agent_loop(agent: Any):
                                 _gui_repaint(_red_line)
                             except Exception:
                                 pass
+                    if _gui_stream and tool_name == "apply_patch":
+                        _gui_emit = getattr(self, "_gui_tool_output_emit", None)
+                        if callable(_gui_emit):
+                            try:
+                                # The full diff/error payload is emitted by
+                                # _record_model_tool_execution_history below.
+                                # This zero-row diff is a GUI-only settle
+                                # marker so the prompt spinner stops as soon
+                                # as the local patch tool returns.
+                                _gui_emit(f"{GUI_DIFF_BEGIN}{{}}{GUI_DIFF_END}")
+                            except Exception:
+                                pass
                     try:
                         self._tool_call_feedback_interstitial_lines = 0
                     except Exception:
@@ -4696,9 +4756,16 @@ def run_agent_loop(agent: Any):
                                     # Sub-agent calls keep a separate transcript.
                                     pass
                                 else:
-                                    _output_start = _last_round.find(GUI_CMD_OUTPUT_BEGIN)
-                                    if _output_start >= 0:
-                                        print(_last_round[_output_start:])
+                                    _live_suffix = _extract_gui_tool_stream_suffix(_last_round)
+                                    if _live_suffix and not bool(
+                                        isinstance(result, dict)
+                                        and result.get("_gui_live_suffix_emitted")
+                                    ):
+                                        _gui_emit = getattr(self, "_gui_tool_output_emit", None)
+                                        if callable(_gui_emit):
+                                            _gui_emit(_live_suffix)
+                                        else:
+                                            print(_live_suffix)
                             except Exception:
                                 pass
                     # Real-time context tracking: after each tool result is
@@ -4861,6 +4928,9 @@ def run_agent_loop(agent: Any):
                         _flush()
                     break
                 if continue_after_batch:
+                    _flush = getattr(self, "_flush_tool_rounds", None)
+                    if callable(_flush):
+                        _flush()
                     continue
                 if not executed_batch_results:
                     print(t("runtime.no_executable_tool_call"))

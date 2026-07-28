@@ -313,6 +313,34 @@ function fileExt(path: string): string {
 }
 
 const DIFF_BEGIN = "\uE006";
+const CMD_OUTPUT_BEGIN = "\uE000";
+
+export function toolTextHasVisibleOutput(toolText: string): boolean {
+  return toolText.includes(CMD_OUTPUT_BEGIN) || toolText.includes(DIFF_BEGIN);
+}
+
+function roundHasToolSteps(
+  round: Pick<TurnRound, "segments"> | undefined,
+): boolean {
+  return Boolean(
+    round?.segments.some(
+      (segment) => segment.kind === "step" && segment.text.trim().length > 0,
+    ),
+  );
+}
+
+function roundHasVisibleToolOutput(
+  round: Pick<TurnRound, "segments"> | undefined,
+): boolean {
+  if (!round) {
+    return false;
+  }
+  const toolText = round.segments
+    .filter((segment) => segment.kind === "step")
+    .map((segment) => segment.text)
+    .join("");
+  return toolTextHasVisibleOutput(toolText);
+}
 const DIFF_END = "\uE007";
 
 function extractFilesFromToolText(toolText: string): string[] {
@@ -783,13 +811,12 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
             const isLast = index === rounds.length - 1;
             const hasContent = round.text.length > 0;
             const hasTools = round.tools.length > 0;
-            // A tool round is still running only while it has no output yet
-            // (the tool_round text only carries the prompt sentinel, not the
-            // CMD_OUTPUT_BEGIN sentinel). Once output arrives or the next
-            // round starts, the spin stops — matching the main conversation's
-            // ``waitEndedAt``-driven tool-state logic.
-            const toolOutputReceived = hasTools && round.tools.includes("\uE000");
-            const toolRunning = isLive && isLast && !hasContent && !toolOutputReceived;
+            const toolOutputReceived = hasTools && toolTextHasVisibleOutput(round.tools);
+            const toolRunning = isLive && isLast && hasTools && !toolOutputReceived;
+            const toolWaitingText =
+              isLive && isLast && hasTools && toolOutputReceived && !round.thinking
+                ? `${t("activity.working")} (${formatElapsed(now - startedAt)})`
+                : undefined;
             const thinkingRunning =
               !!round.thinking && isLive && isLast && !hasContent && !hasTools;
 
@@ -811,7 +838,11 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
                 {hasTools && (
                   <div className="turn-round">
                     <div className="activity">
-                      <StepsView text={round.tools} running={toolRunning} />
+                      <StepsView
+                        text={round.tools}
+                        running={toolRunning}
+                        trailingStatusText={toolWaitingText}
+                      />
                     </div>
                   </div>
                 )}
@@ -830,10 +861,21 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           )}
           {(() => {
             const lastRound = rounds[rounds.length - 1];
+            const hasActiveThinking = rounds.some(
+              (round) => Boolean(round.thinking) && isLive && round === lastRound && !round.tools && !round.text,
+            );
+            const hasRunningToolRound = Boolean(
+              isLive &&
+              lastRound &&
+              lastRound.tools &&
+              !toolTextHasVisibleOutput(lastRound.tools),
+            );
             const hasVisibleToolRound = rounds.some((round) => Boolean(round.tools));
             const hasVisibleAnswerRound = rounds.some((round) => Boolean(round.text));
             const showWorking =
               isLive &&
+              !hasActiveThinking &&
+              !hasRunningToolRound &&
               (rounds.length === 0 ||
                 Boolean(session.output) ||
                 Boolean(hasVisibleAnswerRound) ||
@@ -2513,6 +2555,17 @@ export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
       continue;
     }
     if (isLiveToolRound(round)) {
+      const previousToolRound = toolRounds[toolRounds.length - 1];
+      const roundIsRunning = round.waitEndedAt === null;
+      const previousSettled = Boolean(
+        previousToolRound && previousToolRound.waitEndedAt !== null,
+      );
+      // Keep the currently-running tool round separate from earlier settled
+      // tool batches so its spinner / Working state is computed only from the
+      // current round, not polluted by visible output from previous rounds.
+      if (roundIsRunning && previousSettled) {
+        flushTools();
+      }
       toolRounds.push(round);
       continue;
     }
@@ -2537,7 +2590,11 @@ function liveGroupShowsOwnWorking(
   group: LiveRoundGroup | undefined,
   waitingForContinuation: boolean,
 ): boolean {
-  return Boolean(group && group.kind === "tool" && waitingForContinuation);
+  if (!(group && group.kind === "tool" && waitingForContinuation)) {
+    return false;
+  }
+  const lastRound = group.rounds[group.rounds.length - 1];
+  return Boolean(lastRound && lastRound.waitEndedAt === null);
 }
 
 export function shouldShowStreamingWorkingForRound(
@@ -2639,6 +2696,10 @@ function LiveToolGroupView({
   const toolCount = countToolCalls(toolText);
   const lastRound = rounds[rounds.length - 1];
   const lastRunning = lastRound?.waitEndedAt === null;
+  const toolRunning =
+    Boolean(lastRunning) &&
+    toolText.trim().length > 0 &&
+    !toolTextHasVisibleOutput(toolText);
   const elapsedMs = rounds.reduce(
     (sum, round) => sum + Math.max(0, (round.waitEndedAt ?? now) - round.waitStartedAt),
     0,
@@ -2665,9 +2726,14 @@ function LiveToolGroupView({
       <div className="turn-round">
         <div className="activity live-tool-activity">
           <StepsView
+            key={`tool-group-${rounds[0]?.id ?? "none"}-${lastRound?.id ?? "none"}-${lastRunning ? "running" : "settled"}-${lastRound?.waitEndedAt ?? "live"}-${toolText.length}`}
             text={toolText}
-            running={lastRunning}
-            trailingStatusText={waitingForContinuation ? waitingText : undefined}
+            running={toolRunning}
+            trailingStatusText={
+              lastRunning
+                ? (!toolRunning && thinkingNodes.length === 0 ? waitingText : undefined)
+                : undefined
+            }
           />
         </div>
       </div>
@@ -3002,6 +3068,11 @@ export function LiveRoundView({
     .join("");
   const hasAnswer = answer.trim().length > 0;
   const hasTools = toolText.trim().length > 0;
+  const toolRunning = running && hasTools && !toolTextHasVisibleOutput(toolText);
+  const toolWaitingText =
+    running && hasTools && !toolRunning && !Boolean(round.thinkingText)
+      ? `${t("activity.working")} (${elapsed})`
+      : undefined;
   const thinkingRunning = running && Boolean(round.thinkingText) && !round.thinkingEndedAt;
   if (!running) {
     return (
@@ -3037,7 +3108,12 @@ export function LiveRoundView({
       {hasTools && (
         <div className="turn-round">
           <div className="activity">
-            <StepsView text={toolText} running={running} />
+            <StepsView
+              key={`live-round-${round.id}-${running ? "running" : "settled"}-${round.waitEndedAt ?? "live"}-${toolText.length}`}
+              text={toolText}
+              running={toolRunning}
+              trailingStatusText={toolWaitingText}
+            />
           </div>
         </div>
       )}
@@ -3076,12 +3152,30 @@ function TurnView({
   const hasPendingContinuation = hasPendingInvisibleRound(turn);
   const isRunning = turn.endedAt === null;
   const lastVisibleGroup = liveGroups[liveGroups.length - 1];
+  const hasActiveThinking = turn.rounds.some(
+    (round) => Boolean(round.thinkingText?.trim()) && round.waitEndedAt === null,
+  );
+  const hasRunningToolRound = Boolean(
+    lastRound &&
+    lastRound.waitEndedAt === null &&
+    roundHasToolSteps(lastRound) &&
+    !roundHasVisibleToolOutput(lastRound),
+  );
   const hasToolGroupWorking =
     liveGroupShowsOwnWorking(lastVisibleGroup, hasPendingContinuation);
+  const hasInvisibleRunningRound = hasPendingInvisibleRound(turn);
   const showWorking =
     isRunning &&
+    !hasActiveThinking &&
+    !hasRunningToolRound &&
     !hasToolGroupWorking &&
-    (liveGroups.length === 0 || shouldShowStreamingWorkingForRound(lastRound));
+    (
+      turn.rounds.length === 0 ||
+      Boolean(lastRound && lastRound.waitEndedAt !== null) ||
+      liveGroups.length === 0 ||
+      hasInvisibleRunningRound ||
+      shouldShowStreamingWorkingForRound(lastRound)
+    );
   const workingElapsed = lastRound
     ? formatElapsed(now - lastRound.waitStartedAt)
     : formatElapsed(now - turn.startedAt);
