@@ -249,11 +249,63 @@ def _get_screen_work_area_win32(window) -> tuple[int, int, int, int]:
 
 
 def _get_vertical_max_geometry_win32(window) -> tuple[int, int, int, int, int, int]:
-    """Return (x, y, w, h, new_y, new_h) for vertical-max on Windows."""
+    """Return (x, y, w, h, new_y, new_h) for vertical-max on Windows.
+
+    Work area coordinates from Win32 are in raw physical pixels, but
+    pywebview's ``window.x/y/width/height`` are in logical (CSS/DPI-
+    virtualized) pixels.  We use ``MonitorFromWindow`` (which takes the
+    HWND directly and avoids any coordinate-unit mismatch) to identify
+    the correct monitor, then convert its raw work area to logical
+    pixels via ``GetDpiForMonitor``.
+    """
+    import ctypes
+    from ctypes import wintypes
+
     cur_x, cur_y, cur_w, cur_h = _get_window_geometry(window)
-    left, top, right, bottom = _get_screen_work_area_win32(window)
-    wa_height = bottom - top
-    return cur_x, cur_y, cur_w, cur_h, top, wa_height
+
+    hwnd = _pywebview_window_hwnd(window)
+    if hwnd is None:
+        return cur_x, cur_y, cur_w, cur_h, 0, cur_h
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                    ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
+
+    user32 = ctypes.windll.user32
+    shcore = ctypes.windll.shcore
+    MONITOR_DEFAULTTONEAREST = 2
+
+    hmonitor = user32.MonitorFromWindow(
+        wintypes.HWND(hwnd), MONITOR_DEFAULTTONEAREST
+    )
+
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if user32.GetMonitorInfoW(hmonitor, ctypes.byref(mi)):
+        raw_top = mi.rcWork.top
+        raw_bottom = mi.rcWork.bottom
+        raw_h = raw_bottom - raw_top
+
+        dpi_scale = 1.0
+        try:
+            dpi_x = wintypes.UINT()
+            dpi_y = wintypes.UINT()
+            if shcore.GetDpiForMonitor(
+                hmonitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
+            ) == 0 and dpi_x.value > 0:
+                dpi_scale = dpi_x.value / 96.0
+        except Exception:
+            pass
+
+        wa_top = int(round(raw_top / dpi_scale))
+        wa_height = int(round(raw_h / dpi_scale))
+        return cur_x, cur_y, cur_w, cur_h, wa_top, wa_height
+
+    return cur_x, cur_y, cur_w, cur_h, 0, cur_h
 
 
 def _get_vertical_max_geometry_fallback(window) -> tuple[int, int, int, int, int, int]:
