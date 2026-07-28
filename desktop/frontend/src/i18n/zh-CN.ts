@@ -110,6 +110,7 @@ export const zhCN: Dict = {
   "menu.file": "文件",
   "menu.view": "视图",
   "menu.help": "帮助",
+  "menu.view.alwaysOnTop": "置顶显示",
   "menu.view.browser": "浏览器",
   "menu.view.console": "终端面板",
   "menu.view.zoomIn": "放大",

@@ -110,6 +110,7 @@ export const en: Dict = {
   "menu.file": "File",
   "menu.view": "View",
   "menu.help": "Help",
+  "menu.view.alwaysOnTop": "Always on Top",
   "menu.view.browser": "Browser",
   "menu.view.console": "Terminal",
   "menu.view.zoomIn": "Zoom In",
