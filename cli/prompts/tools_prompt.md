@@ -20,9 +20,12 @@ Only fall back to `rg` (via `shell`) when:
 - You need precise regex/string matching not captured by semantic search
 - You are in a Default workspace where the index is unavailable
 
+`rg` is **ripgrep**, not the system `grep`. If you need to check its options, run `rg -h` (via `shell`) to see the full help.
+
 When you get candidates back from `project_context_search`, use `read` to inspect their contents. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, or `tail` to read file contents — use `read`.
 [[else]]
 For all software-understanding tasks that require locating code, use `rg` (via `shell`) to find candidate files, then `read` to inspect their contents.
+`rg` is **ripgrep**, not the system `grep`. If you need to check its options, run `rg -h` (via `shell`) to see the full help.
 [[endif]]
 
 ## `shell` Tool
