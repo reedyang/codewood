@@ -825,23 +825,15 @@ class HostApi:
                 hwnd = _pywebview_window_hwnd(window)
                 if hwnd is not None:
                     user32 = ctypes.windll.user32
-                    user32.SetWindowPos.restype = wintypes.BOOL
-                    user32.SetWindowPos.argtypes = [
-                        wintypes.HWND, wintypes.HWND,
-                        ctypes.c_int, ctypes.c_int,
-                        ctypes.c_int, ctypes.c_int,
-                        wintypes.UINT
-                    ]
-                    HWND_TOPMOST = -1
-                    HWND_NOTOPMOST = -2
                     SWP_NOMOVE = 0x0002
                     SWP_NOSIZE = 0x0001
                     SWP_NOACTIVATE = 0x0010
-                    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x0040
+                    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                    c_hwnd = ctypes.c_void_p(hwnd)
                     if self._always_on_top:
-                        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+                        user32.SetWindowPos(c_hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, flags)
                     else:
-                        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+                        user32.SetWindowPos(c_hwnd, ctypes.c_void_p(-2), 0, 0, 0, 0, flags)
             else:
                 # Try pywebview's on_top attribute for other platforms
                 try:
