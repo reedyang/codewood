@@ -199,6 +199,21 @@ _EL_RE = re.compile(r"\x1b\[\d*K")
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
+
+def _should_flush_pending_cha_at_eof(ch: str) -> bool:
+    """Whether a buffered single-char ConPTY frame should survive EOF.
+
+    ``_pending_cha`` exists only to delay a lone visible character long enough
+    to see whether a following CHA/EL clear sequence erases it. Table-like
+    commands on Windows can leave a stray trailing backslash frame just before
+    the clear; if the process exits immediately afterward, surfacing that
+    residue creates a bogus standalone ``\\`` in chat history.
+
+    Preserve ordinary characters at EOF so legitimate one-character output
+    (for example ``print("x", end="")``) is not lost.
+    """
+    return str(ch or "") not in {"\\", "/"}
+
 def _collapse_cr_output(text: str) -> str:
     """Collapse \\r-based line overwrites and \\b-based backspaces
     (spinners, progress bars, timeout countdowns) in captured output.
@@ -361,6 +376,8 @@ if _WINPTY_PTYPROCESS is not None:
             if self._pending_cha is not None:
                 ch = self._pending_cha
                 self._pending_cha = None
+                if not _should_flush_pending_cha_at_eof(ch):
+                    return b""
                 return ch.encode("utf-8", errors="replace")
             return b""
         def read1(self, n=1024):

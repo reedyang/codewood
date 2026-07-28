@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import cli.tools.shell as shell_module
 from cli.tools.shell import action_shell_command
 from cli.tools.shell import parse_shell_invoked_script_path
 from cli.core.security.command_security import shell_command_in_allowlist
@@ -163,6 +164,26 @@ class _FakeCompleted:
         self.returncode = int(return_code)
         self.stdout = stdout_text.encode("utf-8")
         self.stderr = stderr_text.encode("utf-8")
+
+
+@unittest.skipUnless(hasattr(shell_module, "_WinPtyReader"), "winpty reader only exists on Windows with pywinpty")
+class WinPtyReaderPendingCharTests(unittest.TestCase):
+    class _FakePty:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read(self, _n):
+            if self._chunks:
+                return self._chunks.pop(0)
+            return ""
+
+    def test_eof_drops_stray_backslash_pending_char(self):
+        reader = shell_module._WinPtyReader(self._FakePty(["\\", ""]))
+        self.assertEqual(reader.read(4096), b"")
+
+    def test_eof_keeps_real_single_character_output(self):
+        reader = shell_module._WinPtyReader(self._FakePty(["x", ""]))
+        self.assertEqual(reader.read(4096), b"x")
 
 
 class ShellCommandExecutionGuardsTests(unittest.TestCase):

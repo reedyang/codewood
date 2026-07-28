@@ -285,6 +285,26 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             pass
         return _looks_like_tool_calls_blob(content)
 
+    def _format_history_answer_text(source_text: Any) -> str:
+        """Format assistant reply text for persisted GUI history."""
+        try:
+            formatted = format_assistant_display_response_plain(str(source_text or "")) or ""
+        except Exception:
+            formatted = ""
+        return (
+            strip_ansi(str(formatted))
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .strip("\n")
+        )
+
+    def _is_meaningless_answer_fragment(text: str) -> bool:
+        """True for cleanup residue that should not replace the real answer."""
+        stripped = str(text or "").strip()
+        if not stripped:
+            return True
+        return bool(re.fullmatch(r"[\\/]+", stripped))
+
     for idx, msg in enumerate(hist):
         if not isinstance(msg, dict):
             continue
@@ -502,17 +522,17 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         wait = (ts - prev_ts) if (ts is not None and prev_ts is not None) else 0
         answer_text = ""
         if _is_answer(content):
-            try:
-                # GUI history must preserve the raw ``<proposed_plan>`` block so
-                # the Markdown card and the plan chooser re-appear after a
-                # restart; the terminal-oriented formatter reframes/strips those
-                # tags, so use the GUI-plain variant here.
-                answer_text = format_assistant_display_response_plain(clean_content) or ""
-            except Exception:
-                answer_text = ""
-            answer_text = (
-                strip_ansi(str(answer_text)).replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-            )
+            # GUI history must preserve the raw ``<proposed_plan>`` block so
+            # the Markdown card and the plan chooser re-appear after a
+            # restart; the terminal-oriented formatter reframes/strips those
+            # tags, so use the GUI-plain variant here.
+            answer_text = _format_history_answer_text(clean_content)
+            if _is_meaningless_answer_fragment(answer_text):
+                raw_answer_text = _format_history_answer_text(content)
+                if not _is_meaningless_answer_fragment(raw_answer_text):
+                    answer_text = raw_answer_text
+                else:
+                    answer_text = ""
         if answer_text.strip():
             # Some models re-emit an identical final reply (e.g. an empty
             # tool-call round followed by a repeat of the same answer). Collapse

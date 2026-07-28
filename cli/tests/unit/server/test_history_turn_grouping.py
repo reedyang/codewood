@@ -196,6 +196,31 @@ class _FakeAgentWithReadRender(_FakeAgent):
 
 
 class StructuredTurnGroupingTests(unittest.TestCase):
+    def test_falls_back_to_raw_answer_when_clean_content_is_backslash_fragment(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": "查看我的codex用量",
+                "created_at": "2026-07-29 00:29:46",
+            },
+            {
+                "role": "assistant",
+                "content": "逍遥哥哥，您的 Codex 总用量约为 16.87 亿 Tokens。",
+                "_clean_content": "\\",
+                "created_at": "2026-07-29 00:30:03",
+            },
+        ]
+
+        turns = _build_structured_turns(agent)
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(len(turns[0]["rounds"]), 1)
+        self.assertEqual(
+            turns[0]["rounds"][0]["text"],
+            "逍遥哥哥，您的 Codex 总用量约为 16.87 亿 Tokens。",
+        )
+
     def test_no_duplicate_render_when_tool_rounds_raw_present(self):
         # Regression: an assistant message carrying both a recognized tool plan
         # and a pre-rendered ``_tool_rounds_raw`` must render the call ONCE.
