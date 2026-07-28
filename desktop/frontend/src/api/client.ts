@@ -955,11 +955,14 @@ export class ApiClient {
    *  When ``workspaceId`` is given the backend switches to that workspace and
    *  creates the chat there in one atomic op (avoids a separate selectChat that
    *  could leave an extra empty chat behind). */
-  async newChat(workspaceId = ""): Promise<string> {
+  async newChat(workspaceId = "", model = "", reasoning = ""): Promise<string> {
     const res = await fetch(`${this.base}/new-chat`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(workspaceId ? { workspaceId } : {}),
+      body: JSON.stringify(
+        workspaceId || model || reasoning
+          ? { workspaceId: workspaceId || undefined, model: model || undefined, reasoning: reasoning || undefined }
+          : {}),
     });
     if (!res.ok) {
       return "";
