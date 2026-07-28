@@ -5061,11 +5061,17 @@ class ServeApp:
         )
         return {"id": wsid, "wasActive": active_deleted}
 
-    def new_chat(self, workspace_id: str = "") -> Optional[str]:
+    def new_chat(self, workspace_id: str = "", model: str = "", reasoning: str = "") -> Optional[str]:
         """Silently create and activate a new chat; return its id.
 
         Not refused while other chats are running: the new chat gets its own
         loop thread on first input and is independent of any in-flight turn.
+
+        ``model`` an optional ``provider/model_name`` selector to apply
+        atomically during chat creation, overriding the default inheritance
+        from the last used chat. Used by the GUI draft mode to prevent a
+        race where the idle event carries the inherited model and overwrites
+        the frontend's optimistic model update.
 
         ``workspace_id`` optionally switches the focused workspace FIRST, so the
         new chat is created in the target workspace as a single atomic op. The
@@ -5094,7 +5100,19 @@ class ServeApp:
             name = translate("chat.new.default_name", get_display_language(agent))
             with agent._chat_state_lock:
                 cid = agent._next_chat_id()
-                agent._chat_entries().append(agent._new_chat_entry(cid, name=name))
+                entry = agent._new_chat_entry(cid, name=name)
+                model_sel = str(model or "").strip()
+                if model_sel and "/" in model_sel:
+                    parts = model_sel.split("/", 1)
+                    entry["model_provider"] = parts[0].strip()
+                    entry["model_name"] = parts[1].strip()
+                    # Reset reasoning level since the new model may not support
+                    # the previous chat's reasoning effort.
+                    entry["reasoning_level"] = ""
+                reasoning_sel = str(reasoning or "").strip()
+                if reasoning_sel:
+                    entry["reasoning_level"] = reasoning_sel
+                agent._chat_entries().append(entry)
                 agent._save_chat_state()
                 agent._activate_chat(
                     cid, announce=False, clear_screen=False, print_history=False
@@ -6364,7 +6382,9 @@ def _make_handler(app: ServeApp):
                 return
             if path == "/new-chat":
                 ws_id = str(body.get("workspaceId") or "")[:256]
-                cid = app.new_chat(ws_id)
+                model = str(body.get("model") or "")[:256]
+                reasoning = str(body.get("reasoning") or "")[:256]
+                cid = app.new_chat(ws_id, model=model, reasoning=reasoning)
                 self._send_json(
                     200 if cid else 409, {"ok": bool(cid), "id": cid or ""}
                 )

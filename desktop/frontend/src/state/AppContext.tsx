@@ -892,7 +892,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (switchWs) {
       pendingFocusWsIdRef.current = wsId;
     }
-    const newId = await client.newChat(switchWs ? wsId : "");
+    const draftModel = draftModelRef.current;
+    const draftReasoning = draftReasoningRef.current;
+    const newId = await client.newChat(switchWs ? wsId : "", draftModel, draftReasoning);
     if (!newId) {
       if (switchWs && pendingFocusWsIdRef.current === wsId) {
         pendingFocusWsIdRef.current = "";
@@ -920,7 +922,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     setDraftMode(false);
     setDraftWorkspaceId("");
-    // Apply the model the user chose while in draft mode, if any.
+    // The backend already applied the model atomically (passed in newChat body).
     const pendingModel = draftModelRef.current;
     if (pendingModel) {
       draftModelRef.current = "";
@@ -941,8 +943,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           },
         };
       });
-      // Fire-and-forget: the backend processes it asynchronously.
-      client.sendInput(`/model ${pendingModel}`, false, newId).catch(() => {});
     }
     // Apply the reasoning effort the user chose while in draft mode, if any.
     const pendingReasoning = draftReasoningRef.current;
@@ -952,8 +952,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!prev) return prev;
         return { ...prev, model: { ...prev.model, reasoningEffort: pendingReasoning } };
       });
-      // Fire-and-forget: the backend processes it asynchronously.
-      client.sendInput(`/reasoning ${pendingReasoning}`, false, newId).catch(() => {});
     }
     return { chatId: newId, workspaceId: targetWsId };
   }, [client]);
