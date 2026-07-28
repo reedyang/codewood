@@ -327,9 +327,13 @@ class ChatStateManager:
         except Exception:
             pass
 
-    def load_file_changes(self, chat_id: str) -> Optional[List[Dict[str, Any]]]:
-        """Load the persisted list of per-turn file-change summaries for ``chat_id``.
-        Returns an empty list when the sidecar is missing or unreadable."""
+    def load_file_changes(self, chat_id: str) -> Optional[Any]:
+        """Load persisted file-change data for ``chat_id``.
+
+        Returns the raw stored shape so callers can distinguish:
+        - new format: ``{ref: summary}``
+        - legacy format: ``[summary, ...]`` or a single summary dict
+        """
         path = self.chat_file_changes_path(chat_id)
         if path is None or not path.exists():
             return None
@@ -338,9 +342,8 @@ class ChatStateManager:
                 data = json.load(fh)
             if isinstance(data, list):
                 return data
-            # Backward-compat: old single-summary dict files
             if isinstance(data, dict):
-                return [data]
+                return data
             return None
         except Exception:
             return None

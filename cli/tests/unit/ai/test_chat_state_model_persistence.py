@@ -100,6 +100,37 @@ class _FakeAgent:
 
 
 class ChatStateModelPersistenceTests(unittest.TestCase):
+    def test_load_file_changes_preserves_new_ref_keyed_dict_format(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 1,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Chat 1",
+                        "_record_file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+                    }
+                ],
+            }
+            changes_path = manager.chat_file_changes_path("chat-1")
+            assert changes_path is not None
+            changes_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "ref-123": {
+                    "ref": "ref-123",
+                    "totalFiles": 1,
+                    "files": [{"filePath": "D:/workspace/demo.txt"}],
+                }
+            }
+            changes_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            loaded = manager.load_file_changes("chat-1")
+
+            self.assertEqual(loaded, payload)
+
     def test_reconcile_session_injected_from_history_tolerates_missing_skills_attr(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))

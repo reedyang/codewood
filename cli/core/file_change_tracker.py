@@ -143,9 +143,6 @@ class FileChangeTracker:
         segments (``old_lines``/``new_lines`` dicts) to the frontend
         ``DiffRow[]`` format expected by ``FileChangeDetails``.
         """
-        total_added = sum(c.added_lines for c in self._changes)
-        total_deleted = sum(c.deleted_lines for c in self._changes)
-
         # Lazy import to avoid circular dependencies at module level.
         try:
             from .change_preview_formatter import ChangePreviewFormatter
@@ -173,6 +170,7 @@ class FileChangeTracker:
                     "deletedLines": change.deleted_lines,
                     "patch": diff_rows,
                     "backupPath": change.backup_path,
+                    "_first_change_type": change.change_type,
                     "_first_before": change.content_before,
                     "_last_after": change.content_after,
                 }
@@ -183,21 +181,36 @@ class FileChangeTracker:
                 if change.change_type == "delete":
                     files[path]["changeType"] = "delete"
         for path, entry in files.items():
+            _first_change_type = str(entry.pop("_first_change_type", "") or "")
             _first = entry.pop("_first_before", None)
             _last = entry.pop("_last_after", None)
             if entry["changeType"] == "delete":
+                if _first_change_type == "create":
+                    entry["addedLines"] = 0
+                    entry["deletedLines"] = 0
+                elif _first is not None:
+                    entry["addedLines"] = 0
+                    entry["deletedLines"] = len(str(_first).splitlines())
                 continue
-            if (
+
+            final_patch: Optional[List[Dict[str, Any]]] = None
+            if _first_change_type == "create" and _last is not None:
+                final_patch = _compute_diff_rows("", _last)
+            elif (
                 _first is not None
                 and _last is not None
                 and _first != _last
             ):
-                entry["patch"] = _compute_diff_rows(_first, _last)
+                final_patch = _compute_diff_rows(_first, _last)
+
+            if final_patch is not None:
+                entry["patch"] = final_patch
+                entry["addedLines"], entry["deletedLines"] = _count_diff_rows(final_patch)
 
         return {
             "totalFiles": len(files),
-            "totalAdded": total_added,
-            "totalDeleted": total_deleted,
+            "totalAdded": sum(int(f.get("addedLines", 0) or 0) for f in files.values()),
+            "totalDeleted": sum(int(f.get("deletedLines", 0) or 0) for f in files.values()),
             "files": list(files.values()),
         }
 
@@ -269,13 +282,30 @@ def _compute_diff_rows(before: str, after: str) -> List[Dict[str, Any]]:
             old_no += i2 - i1
             new_no += j2 - j1
         elif tag == "replace":
-            for k in range(max(i2 - i1, j2 - j1)):
+            shared = min(i2 - i1, j2 - j1)
+            for k in range(shared):
                 rows.append({
                     "type": "change",
-                    "oldNo": old_no + k if i1 + k < i2 else None,
-                    "newNo": new_no + k if j1 + k < j2 else None,
-                    "oldText": before_lines[i1 + k] if i1 + k < i2 else "",
-                    "newText": after_lines[j1 + k] if j1 + k < j2 else "",
+                    "oldNo": old_no + k,
+                    "newNo": new_no + k,
+                    "oldText": before_lines[i1 + k],
+                    "newText": after_lines[j1 + k],
+                })
+            for k in range(shared, i2 - i1):
+                rows.append({
+                    "type": "del",
+                    "oldNo": old_no + k,
+                    "newNo": None,
+                    "oldText": before_lines[i1 + k],
+                    "newText": "",
+                })
+            for k in range(shared, j2 - j1):
+                rows.append({
+                    "type": "add",
+                    "oldNo": None,
+                    "newNo": new_no + k,
+                    "oldText": "",
+                    "newText": after_lines[j1 + k],
                 })
             old_no += i2 - i1
             new_no += j2 - j1
@@ -322,3 +352,21 @@ def _convert_segments_to_diff_rows(
         return rows if isinstance(rows, list) else []
     except Exception:
         return []
+
+
+def _count_diff_rows(rows: List[Dict[str, Any]]) -> tuple[int, int]:
+    """Return ``(added, deleted)`` counts for frontend DiffRow[] rows."""
+    added = 0
+    deleted = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_type = str(row.get("type", "") or "")
+        if row_type == "add":
+            added += 1
+        elif row_type == "del":
+            deleted += 1
+        elif row_type == "change":
+            added += 1
+            deleted += 1
+    return added, deleted

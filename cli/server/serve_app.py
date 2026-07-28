@@ -5543,13 +5543,17 @@ class ServeApp:
             if mgr is not None:
                 try:
                     on_disk = mgr.load_file_changes(str(chat_id or ""))
-                    if isinstance(on_disk, list):
+                    if isinstance(on_disk, dict):
+                        maybe_summary = on_disk.get(str(ref or ""))
+                        if isinstance(maybe_summary, dict):
+                            summary = maybe_summary
+                        elif on_disk.get("ref") == ref:
+                            summary = on_disk
+                    elif isinstance(on_disk, list):
                         for item in on_disk:
                             if isinstance(item, dict) and item.get("ref") == ref:
                                 summary = item
                                 break
-                    elif isinstance(on_disk, dict):
-                        summary = on_disk.get(str(ref or ""))
                 except Exception:
                     pass
         if not isinstance(summary, dict):
