@@ -2055,6 +2055,29 @@ class ServeApp:
                         "state", self._route(state=_build_state(self.agent))
                     )
                     return
+            # Apply reasoning effort changes immediately so the new level
+            # is used on the next model call, even while a task is executing.
+            if stripped.startswith("/reasoning ") or stripped == "/reasoning":
+                level = stripped[len("/reasoning"):].strip() if stripped.startswith("/reasoning ") else ""
+                try:
+                    self.agent._set_reasoning_effort(level)
+                except Exception:
+                    pass
+                self.broadcaster.publish(
+                    "state", self._route(state=_build_state(self.agent))
+                )
+                return
+            # Apply model switch immediately so the new model is used on the
+            # next call, even while a task is executing.
+            if stripped.startswith("/model ") or stripped == "/model":
+                try:
+                    self.agent._handle_model_builtin_command(stripped)
+                except Exception:
+                    pass
+                self.broadcaster.publish(
+                    "state", self._route(state=_build_state(self.agent))
+                )
+                return
             # All other slash commands: mark them so the runtime loop runs it
             # but keeps them out of the user's input history (history.json).
             line = GUI_INTERNAL_COMMAND_PREFIX + line

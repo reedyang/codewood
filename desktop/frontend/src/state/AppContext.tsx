@@ -3269,6 +3269,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
         return;
       }
+      // Optimistically update local state so the dropdown reflects the change
+      // immediately, even during active task execution. The backend applies the
+      // change right away (_set_reasoning_effort is called directly), but SSE
+      // "state" events are suppressed for the streaming chat to avoid disrupting
+      // segment accumulation, so without this optimistic update the UI would
+      // stay stuck on the old value until the task finishes.
+      setState((prev) => {
+        if (!prev) return prev;
+        return { ...prev, model: { ...prev.model, reasoningEffort: value } };
+      });
       await client.sendInput(
         `/reasoning ${value}`,
         false,
