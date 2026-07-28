@@ -237,6 +237,21 @@ function ImmediateSwitchProbe() {
   );
 }
 
+function EditThenModelProbe() {
+  const { state, editChat, setModel } = useApp();
+  return (
+    <>
+      <button onClick={() => { void editChat(-1); }}>
+        edit last
+      </button>
+      <button onClick={() => { void setModel("openai/family/model/v2"); }}>
+        set model v2
+      </button>
+      <pre data-testid="edit-model-state">{JSON.stringify(state)}</pre>
+    </>
+  );
+}
+
 describe("AppContext thinking rounds", () => {
   beforeEach(() => {
     apiMock.reset();
@@ -899,6 +914,50 @@ describe("AppContext thinking rounds", () => {
       };
       expect(view.historyLoading).toBe(false);
       expect(view.historyTurns[0]?.userText).toBe("hello");
+    });
+  });
+
+  it("keeps the newly selected model when edit clears the chat and a stale state snapshot arrives", async () => {
+    render(
+      <AppProvider>
+        <EditThenModelProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "edit last" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "set model v2" }));
+    });
+
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            model: {
+              current: "provider/model",
+              available: ["provider/model", "openai/family/model/v2"],
+              ready: true,
+              reasoningEffort: "",
+              reasoningEfforts: [],
+            },
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(screen.getByTestId("edit-model-state").textContent || "{}") as AppState;
+      expect(apiMock.sendInput).toHaveBeenCalledWith("/chat edit -1");
+      expect(apiMock.sendInput).toHaveBeenCalledWith("/model openai/family/model/v2", false, "chat-1");
+      expect(state.model.current).toBe("openai/family/model/v2");
     });
   });
 });
