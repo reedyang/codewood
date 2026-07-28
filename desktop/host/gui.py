@@ -342,6 +342,7 @@ class HostApi:
     def __init__(self) -> None:
         self._maximized = False
         self._vertically_maximized = False
+        self._always_on_top = False
         self._pre_vertical_max_geometry: tuple[int, int, int, int] | None = None
         # Set by ``main()`` once the overlay browser window exists. ``None``
         # until then (and stays a disabled instance when overlay mode is off),
@@ -808,6 +809,49 @@ class HostApi:
             except Exception:
                 pass
 
+    def toggle_always_on_top(self) -> bool:
+        """Toggle window always-on-top state. Returns the new state."""
+        window = webview.active_window()
+        if window is None:
+            return self._always_on_top
+        try:
+            self._always_on_top = not self._always_on_top
+            
+            # Platform-specific implementation
+            if sys.platform == "win32":
+                import ctypes
+                from ctypes import wintypes
+                
+                hwnd = _pywebview_window_hwnd(window)
+                if hwnd is not None:
+                    user32 = ctypes.windll.user32
+                    user32.SetWindowPos.restype = wintypes.BOOL
+                    user32.SetWindowPos.argtypes = [
+                        wintypes.HWND, wintypes.HWND,
+                        ctypes.c_int, ctypes.c_int,
+                        ctypes.c_int, ctypes.c_int,
+                        wintypes.UINT
+                    ]
+                    HWND_TOPMOST = -1
+                    HWND_NOTOPMOST = -2
+                    SWP_NOMOVE = 0x0002
+                    SWP_NOSIZE = 0x0001
+                    SWP_NOACTIVATE = 0x0010
+                    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | 0x0040
+                    if self._always_on_top:
+                        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+                    else:
+                        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+            else:
+                # Try pywebview's on_top attribute for other platforms
+                try:
+                    window.on_top = self._always_on_top
+                except Exception:
+                    # Fallback to keep the state but don't crash
+                    pass
+        except Exception:
+            pass
+        return self._always_on_top
 
 def main() -> int:
     backend = BackendProcess()

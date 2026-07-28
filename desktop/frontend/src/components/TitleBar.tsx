@@ -8,6 +8,7 @@ interface HostWindowApi {
   close_window?: () => void;
   open_external?: (url: string) => boolean | Promise<boolean>;
   start_window_drag?: () => boolean | Promise<boolean>;
+  toggle_always_on_top?: () => boolean | Promise<boolean>;
   host_platform?: () => string | Promise<string>;
 }
 
@@ -38,6 +39,20 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
   const zoomIn = () => { const next = ZOOM_LEVELS.findIndex((z) => z > zoomLevel); if (next >= 0) setZoomLevel(ZOOM_LEVELS[next]); };
   const zoomOut = () => { for (let i = ZOOM_LEVELS.length - 1; i >= 0; i--) { if (ZOOM_LEVELS[i] < zoomLevel) { setZoomLevel(ZOOM_LEVELS[i]); break; } } };
   const zoomReset = () => setZoomLevel(1);
+
+  const [alwaysOnTop, setAlwaysOnTop] = useState<boolean>(false);
+
+  const toggleAlwaysOnTop = async () => {
+    const api = hostApi();
+    if (api?.toggle_always_on_top) {
+      try {
+        const newState = await api.toggle_always_on_top();
+        setAlwaysOnTop(Boolean(newState));
+      } catch {
+        setAlwaysOnTop((v) => !v);
+      }
+    }
+  };
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
@@ -128,6 +143,8 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
       id: "view",
       label: t("menu.view"),
       entries: [
+        { label: t("menu.view.alwaysOnTop"), checked: alwaysOnTop, onSelect: () => void toggleAlwaysOnTop() },
+        "separator",
         { label: t("menu.view.browser"), checked: browserOpen, onSelect: () => browserOpen ? hideBrowserTab() : showBrowserTab() },
         { label: t("menu.view.console"), checked: consoleOpen, onSelect: () => consoleOpen ? hideConsole() : showConsole() },
         "separator",
