@@ -2798,6 +2798,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [clearLiveTurns],
   );
 
+  const trimHistoryTurnsForEdit = useCallback(
+    (index: number) => {
+      if (index >= 0 || historyTurns.length === 0) {
+        return;
+      }
+      const activeKey = chatKey(
+        activeWorkspaceIdRef.current,
+        activeChatIdRef.current,
+      );
+      const live = turnsByChatRef.current[activeKey] ?? EMPTY_TURNS;
+      const histUserCount = historyTurns.reduce(
+        (count, turn) => count + (turn.userText ? 1 : 0),
+        0,
+      );
+      const liveUserCount = live.reduce(
+        (count, turn) => count + (turn.userText ? 1 : 0),
+        0,
+      );
+      const totalUserCount = histUserCount + liveUserCount;
+      const targetOrdinal = totalUserCount + index + 1;
+      if (targetOrdinal <= 0 || targetOrdinal > histUserCount) {
+        return;
+      }
+      let seenUsers = 0;
+      let keepCount = historyTurns.length;
+      for (let i = 0; i < historyTurns.length; i += 1) {
+        if (!historyTurns[i].userText) {
+          continue;
+        }
+        seenUsers += 1;
+        if (seenUsers === targetOrdinal) {
+          keepCount = i;
+          break;
+        }
+      }
+      setHistoryTurns(historyTurns.slice(0, keepCount));
+      setHistoryTotal(historyStart + keepCount);
+    },
+    [historyTurns, historyStart],
+  );
+
   // Drop a chat's settled (ended) live turns but keep any in-progress one. Used
   // when switching to a still-running chat: its completed turns are now in the
   // reloaded history, but the streaming turn is not yet persisted and must be
@@ -3224,6 +3265,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const editChat = useCallback(
     async (index: number) => {
       clearTurns();
+      trimHistoryTurnsForEdit(index);
       // Editing the last user message deletes that turn (and any pending
       // request_user_input clarification it spawned). Drop the chat's pending
       // request_user_input bucket up front so the selection panel doesn't flash
@@ -3262,7 +3304,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pendingHistoryReloadRef.current = true;
       await client.sendInput(`/chat edit ${index}`);
     },
-    [client, clearTurns, activeChatId, askMoreInfoByChat, setBusyForChat],
+    [client, clearTurns, trimHistoryTurnsForEdit, activeChatId, askMoreInfoByChat, setBusyForChat],
   );
 
   const openWorkspaceInExplorer = useCallback(

@@ -260,6 +260,18 @@ function EditThenModelProbe() {
   );
 }
 
+function EditHistoryProbe() {
+  const { editChat, historyTurns, historyTotal } = useApp();
+  return (
+    <>
+      <button onClick={() => { void editChat(-1); }}>
+        edit last
+      </button>
+      <pre data-testid="edit-history-view">{JSON.stringify({ historyTurns, historyTotal })}</pre>
+    </>
+  );
+}
+
 function ModelThenSendProbe() {
   const { setModel, sendInput } = useApp();
   return (
@@ -980,6 +992,60 @@ describe("AppContext thinking rounds", () => {
       expect(apiMock.sendInput).toHaveBeenCalledWith("/chat edit -1");
       expect(apiMock.setChatModel).toHaveBeenCalledWith("chat-1", "openai/family/model/v2", "ws-1");
       expect(state.model.current).toBe("openai/family/model/v2");
+    });
+  });
+
+  it("optimistically trims history turns as soon as edit starts", async () => {
+    let resolveEdit: (() => void) | null = null;
+    apiMock.getChatHistory.mockResolvedValue({
+      turns: [
+        { userText: "first", rounds: [] },
+        { userText: "second", rounds: [] },
+      ],
+      start: 0,
+      total: 2,
+    });
+    apiMock.sendInput.mockImplementation((text: string) => {
+      if (text === "/chat edit -1") {
+        return new Promise<void>((resolve) => {
+          resolveEdit = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    render(
+      <AppProvider>
+        <EditHistoryProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("edit-history-view").textContent || "{}") as {
+        historyTurns: Array<{ userText?: string }>;
+        historyTotal: number;
+      };
+      expect(view.historyTurns).toHaveLength(2);
+      expect(view.historyTotal).toBe(2);
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "edit last" }));
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("edit-history-view").textContent || "{}") as {
+        historyTurns: Array<{ userText?: string }>;
+        historyTotal: number;
+      };
+      expect(view.historyTurns).toHaveLength(1);
+      expect(view.historyTurns[0]?.userText).toBe("first");
+      expect(view.historyTotal).toBe(1);
+    });
+
+    await act(async () => {
+      resolveEdit?.();
+      await Promise.resolve();
     });
   });
 
