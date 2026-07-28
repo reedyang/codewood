@@ -3011,7 +3011,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setHistoryTotal(0);
       setState((prev) => {
         if (!prev) return prev;
-        return { ...prev, contextUsage: undefined, plan: undefined, cacheStats: undefined };
+        return { ...prev, contextUsage: undefined, plan: undefined, cacheStats: undefined, tokenStats: undefined };
       });
     },
     [state?.workspace.id],
@@ -3051,6 +3051,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setHistoryTurns([]);
           setHistoryStart(0);
           setHistoryTotal(0);
+          setState((prev) => {
+            if (!prev) return prev;
+            return { ...prev, contextUsage: undefined, plan: undefined, cacheStats: undefined, tokenStats: undefined };
+          });
         }
       } else {
         // Non-active workspace: optimistically remove the deleted chat from
