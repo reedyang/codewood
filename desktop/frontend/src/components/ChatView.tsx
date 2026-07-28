@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import appIconUrl from "../assets/app_icon_mark.svg";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
 import type { HistoryRound, HistoryTurn, PlanStep, SubAgentMessage, Turn, TurnRound } from "../api/types";
@@ -49,6 +50,22 @@ import { RichComposer } from "./RichComposer";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
+}
+
+function ChatLoadingSplash() {
+  return (
+    <div className="chat-loading-splash" aria-hidden="true">
+      <div className="chat-loading-splash-orb">
+        <div className="chat-loading-splash-ripple" />
+        <img
+          className="chat-loading-splash-icon"
+          src={appIconUrl}
+          alt=""
+          draggable={false}
+        />
+      </div>
+    </div>
+  );
 }
 
 function refPillIconName(kind: TokenKind): IconName {
@@ -1559,6 +1576,12 @@ export function ChatView() {
   const showEmpty =
     draftMode ||
     (turns.length === 0 && historyTurns.length === 0 && !historyLoading);
+  const showChatLoadingSplash =
+    !draftMode &&
+    historyLoading &&
+    turns.length === 0 &&
+    historyTurns.length === 0 &&
+    Boolean(activeChatId);
   // In draft mode the greeting reflects the chosen draft workspace; otherwise
   // it reflects the active workspace. The Default workspace is not a real
   // project, so omit its name from the greeting.
@@ -1597,6 +1620,8 @@ export function ChatView() {
           <div className="subagent-session-loading-spinner" />
           <span>{t("subagents.loading")}</span>
         </div>
+      ) : showChatLoadingSplash ? (
+        <ChatLoadingSplash />
       ) : showEmpty ? emptyContent : (
         <>
           <TranscriptMinimap
