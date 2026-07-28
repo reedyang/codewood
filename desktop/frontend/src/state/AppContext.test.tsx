@@ -472,7 +472,7 @@ describe("AppContext thinking rounds", () => {
         activeChats: AppState["chats"];
         turns: Turn[];
       };
-      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2");
+      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2", "", "");
       expect(apiMock.sendInput).toHaveBeenCalledWith("hello from draft", true, "chat-2");
       expect(state.workspace.id).toBe("ws-1");
       expect(state.activeChatId).toBe("chat-1");
@@ -534,7 +534,7 @@ describe("AppContext thinking rounds", () => {
     });
 
     await waitFor(() => {
-      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2");
+      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2", "", "");
       expect(apiMock.pasteImage).toHaveBeenCalledWith(
         "chat-2",
         "data:image/png;base64,AAAA",
