@@ -289,6 +289,35 @@ def _parse_tool_args_node(raw_args: Any) -> Dict[str, Any]:
     return {}
 
 
+def _tool_calls_have_invalid_arguments(tool_calls: Any) -> bool:
+    if not isinstance(tool_calls, list):
+        return False
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        fn = tool_call.get("function")
+        if isinstance(fn, dict):
+            raw_args = fn.get("arguments")
+        else:
+            raw_args = (
+                tool_call.get("args")
+                if "args" in tool_call
+                else tool_call.get("arguments")
+            )
+        if not isinstance(raw_args, str):
+            continue
+        raw_text = raw_args.strip()
+        if not raw_text:
+            continue
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            return True
+        if not isinstance(parsed, dict):
+            return True
+    return False
+
+
 def _parse_tool_plans_from_tool_calls_node(
     tool_calls: Any,
 ) -> List[Tuple[str, Dict[str, Any]]]:
@@ -1979,6 +2008,8 @@ def _replace_latest_assistant_history_content(
 def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> None:
     if not isinstance(clean_content, str):
         return
+    if _looks_like_ephemeral_api_error_summary(clean_content):
+        return
     hist = getattr(agent, "conversation_history", None)
     if not isinstance(hist, list):
         return
@@ -2113,6 +2144,28 @@ def _build_apply_patch_failure_hints(
             "提示：请重新读取目标文件，并用最小化 unified diff patch 重试。",
         )
     return hints
+
+
+def _build_apply_patch_retry_prompt(
+    error_text: str,
+    args: Dict[str, Any],
+    t: Callable[[str, Optional[str]], str],
+) -> str:
+    hints = _build_apply_patch_failure_hints(error_text, args, t)
+    hint_block = "\n".join(f"- {hint}" for hint in hints if str(hint).strip())
+    return (
+        "Your previous `apply_patch` tool call failed.\n"
+        f"Error: {str(error_text or '').strip() or 'unknown error'}\n"
+        "Do not stop. Continue the task by issuing corrected standard API `tool_calls`.\n"
+        "If needed, re-read the target file first, then resend a valid `apply_patch` call.\n"
+        "Do not print tool JSON in visible assistant text.\n"
+        f"Hints:\n{hint_block}"
+    ).strip()
+ 
+
+def _looks_like_ephemeral_api_error_summary(text: str) -> bool:
+    low = str(text or "").strip().lower()
+    return low.startswith("❌ api error:") or low.startswith("error calling llm api")
 
 
 def _reload_chat_history_after_aborted_command(agent: Any) -> None:
@@ -4157,7 +4210,15 @@ def run_agent_loop(agent: Any):
                         break
                 if _issuing is not None:
                     self._last_tool_issuing_assistant = _issuing
-                    if fallback_plans and not _issuing.get("tool_calls"):
+                    _existing_tool_calls = _issuing.get("tool_calls")
+                    _needs_rebuild = (
+                        fallback_plans
+                        and (
+                            not _existing_tool_calls
+                            or _tool_calls_have_invalid_arguments(_existing_tool_calls)
+                        )
+                    )
+                    if _needs_rebuild:
                         _rebuilt = _build_tool_calls_from_plans(_issuing, fallback_plans)
                         if _rebuilt:
                             _issuing["tool_calls"] = _rebuilt
@@ -4668,6 +4729,22 @@ def run_agent_loop(agent: Any):
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))) and (not bool(getattr(self, "_gui_plain_stream", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
                         print(t("runtime.apply_patch_failed", error=err))
+                    if (
+                        tool_name == "apply_patch"
+                        and (not bool(result.get("success", False)))
+                        and (not self._result_indicates_user_cancelled(result))
+                        and bool(result.get("retryable", True))
+                        and (not bool(result.get("needs_user_input", False)))
+                    ):
+                        err = str(result.get("error") or result.get("message") or "unknown error").strip()
+                        next_input = _build_apply_patch_retry_prompt(
+                            err,
+                            args if isinstance(args, dict) else {},
+                            t,
+                        )
+                        no_tool_rounds = 0
+                        continue_after_batch = True
+                        break
                     if self._result_indicates_user_cancelled(result):
                         if explore_ticker is not None:
                             explore_ticker.stop()
