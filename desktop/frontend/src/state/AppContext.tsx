@@ -720,28 +720,55 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeKey = chatKey(activeWorkspaceId, activeChatId);
   const optimisticModel = activeKey ? optimisticModelByChat[activeKey] : undefined;
   const displayState = useMemo(() => {
-    if (draftMode || !state || !optimisticModel || !activeChatId) {
+    if (draftMode || !state) {
       return state;
     }
+    const selectedChatModel = (() => {
+      const sourceChats =
+        selectedWorkspaceId === (state.workspace.id ?? "")
+          ? state.chats
+          : (workspaceChats[selectedWorkspaceId] ?? []);
+      const selected = sourceChats.find((chat) => chat.id === activeChatId) as
+        | (Partial<ChatSummary> & { id: string })
+        | undefined;
+      return selected?.model;
+    })();
+    const shouldFollowSelectedChat =
+      Boolean(activeChatId) &&
+      (
+        selectedWorkspaceId !== (state.workspace.id ?? "") ||
+        activeChatId !== (state.activeChatId ?? "")
+      );
+    const currentModel =
+      optimisticModel?.current ??
+      (shouldFollowSelectedChat && selectedChatModel
+        ? selectedChatModel
+        : state.model.current);
+    const currentReasoningEffort =
+      optimisticModel?.reasoningEffort !== undefined
+        ? optimisticModel.reasoningEffort
+        : state.model.reasoningEffort;
+    const currentReasoningEfforts =
+      optimisticModel?.reasoningEfforts ?? state.model.reasoningEfforts;
     return {
       ...state,
       model: {
         ...state.model,
-        current: optimisticModel.current,
-        ...(optimisticModel.reasoningEffort !== undefined
-          ? { reasoningEffort: optimisticModel.reasoningEffort }
+        current: currentModel,
+        ...(currentReasoningEffort !== undefined
+          ? { reasoningEffort: currentReasoningEffort }
           : {}),
-        ...(optimisticModel.reasoningEfforts
-          ? { reasoningEfforts: optimisticModel.reasoningEfforts }
+        ...(currentReasoningEfforts
+          ? { reasoningEfforts: currentReasoningEfforts }
           : {}),
       },
       chats: state.chats.map((chat) =>
         chat.id === activeChatId
-          ? { ...chat, model: optimisticModel.current }
+          ? { ...chat, model: currentModel }
           : chat,
       ),
     };
-  }, [state, optimisticModel, activeChatId, draftMode]);
+  }, [state, optimisticModel, activeChatId, draftMode, selectedWorkspaceId, workspaceChats]);
   const compactNotice =
     activeKey && compactNoticeState.chatKey === activeKey
       ? compactNoticeState.notice
