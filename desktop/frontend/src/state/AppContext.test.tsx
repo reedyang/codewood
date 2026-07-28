@@ -15,6 +15,8 @@ const apiMock = vi.hoisted(() => {
   const pasteImage = vi.fn(async () => ({ path: "D:/workspace-b/.codewood/chats/data/record-chat-2/img.png", name: "img.png" }));
   const selectChat = vi.fn(async () => true);
   const sendInput = vi.fn(async () => undefined);
+  const setChatModel = vi.fn(async () => true);
+  const setChatReasoning = vi.fn(async () => true);
   const syncModelPresets = vi.fn(async () => undefined);
   return {
     getState,
@@ -25,6 +27,8 @@ const apiMock = vi.hoisted(() => {
     pasteImage,
     selectChat,
     sendInput,
+    setChatModel,
+    setChatReasoning,
     syncModelPresets,
     emit(event: ServerEvent) {
       if (!eventHandler) {
@@ -42,6 +46,8 @@ const apiMock = vi.hoisted(() => {
       pasteImage.mockClear();
       selectChat.mockClear();
       sendInput.mockClear();
+      setChatModel.mockClear();
+      setChatReasoning.mockClear();
       syncModelPresets.mockClear();
     },
   };
@@ -57,6 +63,8 @@ vi.mock("../api/client", () => ({
     pasteImage = apiMock.pasteImage;
     selectChat = apiMock.selectChat;
     sendInput = apiMock.sendInput;
+    setChatModel = apiMock.setChatModel;
+    setChatReasoning = apiMock.setChatReasoning;
     syncModelPresets = apiMock.syncModelPresets;
   },
 }));
@@ -248,6 +256,20 @@ function EditThenModelProbe() {
         set model v2
       </button>
       <pre data-testid="edit-model-state">{JSON.stringify(state)}</pre>
+    </>
+  );
+}
+
+function ModelThenSendProbe() {
+  const { setModel, sendInput } = useApp();
+  return (
+    <>
+      <button onClick={() => { void setModel("openai/family/model/v2"); }}>
+        set model v2
+      </button>
+      <button onClick={() => { void sendInput("hello after switch"); }}>
+        send message
+      </button>
     </>
   );
 }
@@ -956,8 +978,47 @@ describe("AppContext thinking rounds", () => {
     await waitFor(() => {
       const state = JSON.parse(screen.getByTestId("edit-model-state").textContent || "{}") as AppState;
       expect(apiMock.sendInput).toHaveBeenCalledWith("/chat edit -1");
-      expect(apiMock.sendInput).toHaveBeenCalledWith("/model openai/family/model/v2", false, "chat-1");
+      expect(apiMock.setChatModel).toHaveBeenCalledWith("chat-1", "openai/family/model/v2", "ws-1");
       expect(state.model.current).toBe("openai/family/model/v2");
+    });
+  });
+
+  it("waits for a pending model switch before sending the next message", async () => {
+    let resolveModelSwitch: (() => void) | null = null;
+    apiMock.setChatModel.mockImplementation((chatId: string, model: string) => {
+      if (chatId === "chat-1" && model === "openai/family/model/v2") {
+        return new Promise<boolean>((resolve) => {
+          resolveModelSwitch = () => resolve(true);
+        });
+      }
+      return Promise.resolve(true);
+    });
+
+    render(
+      <AppProvider>
+        <ModelThenSendProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "set model v2" }));
+      fireEvent.click(screen.getByRole("button", { name: "send message" }));
+    });
+
+    await waitFor(() => {
+      expect(apiMock.setChatModel).toHaveBeenCalledWith("chat-1", "openai/family/model/v2", "ws-1");
+    });
+    expect(apiMock.sendInput).toHaveBeenCalledTimes(0);
+
+    await act(async () => {
+      resolveModelSwitch?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(apiMock.sendInput).toHaveBeenNthCalledWith(1, "hello after switch", true, "chat-1");
     });
   });
 });

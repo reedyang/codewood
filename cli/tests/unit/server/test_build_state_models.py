@@ -1,3 +1,4 @@
+import contextlib
 import unittest
 from unittest.mock import patch
 
@@ -32,6 +33,9 @@ class _FakeAgent:
         self._last_context_input_tokens = 0
         self._last_context_usage_percent = 0
         self._last_context_window = 0
+        self._session_values = {
+            "chat-1": {"window": 0, "tokens": 0, "percent": 0},
+        }
 
     def _workspace_root_path(self, entry):
         return str(entry.get("root") or "")
@@ -59,6 +63,22 @@ class _FakeAgent:
     def _load_runtime_config_data(self):
         return {}
 
+    @contextlib.contextmanager
+    def _session_scope(self, chat_id: str):
+        prev_window = self._last_context_window
+        prev_tokens = self._last_context_input_tokens
+        prev_percent = self._last_context_usage_percent
+        values = self._session_values.get(chat_id, {})
+        self._last_context_window = int(values.get("window", 0) or 0)
+        self._last_context_input_tokens = int(values.get("tokens", 0) or 0)
+        self._last_context_usage_percent = int(values.get("percent", 0) or 0)
+        try:
+            yield
+        finally:
+            self._last_context_window = prev_window
+            self._last_context_input_tokens = prev_tokens
+            self._last_context_usage_percent = prev_percent
+
 
 class BuildStateModelTests(unittest.TestCase):
     def test_active_chat_model_uses_provider_slash_model_selector(self):
@@ -68,6 +88,23 @@ class BuildStateModelTests(unittest.TestCase):
 
         self.assertEqual(state["model"]["current"], "HappyCoding/Gemma-4-31B-IT")
         self.assertEqual(state["chats"][0]["model"], "HappyCoding/Gemma-4-31B-IT")
+
+    def test_active_chat_context_usage_uses_active_chat_session_snapshot(self):
+        agent = _FakeAgent()
+        agent._last_context_window = 32000
+        agent._last_context_input_tokens = 100
+        agent._last_context_usage_percent = 1
+        agent._session_values["chat-1"] = {
+            "window": 128000,
+            "tokens": 4096,
+            "percent": 3,
+        }
+        with patch("cli.server.serve_app._compute_chat_cache_stats", return_value={}):
+            state = _build_state_inner(agent)
+
+        self.assertEqual(state["contextUsage"]["window"], 128000)
+        self.assertEqual(state["contextUsage"]["tokens"], 4096)
+        self.assertEqual(state["contextUsage"]["percent"], 3)
 
 
 if __name__ == "__main__":

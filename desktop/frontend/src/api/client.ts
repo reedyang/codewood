@@ -71,6 +71,24 @@ export class ApiClient {
     });
   }
 
+  async setChatModel(chatId: string, model: string, workspaceId = ""): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-chat-model`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ chatId, model, workspaceId }),
+    });
+    return res.ok;
+  }
+
+  async setChatReasoning(chatId: string, reasoning: string, workspaceId = ""): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-chat-reasoning`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ chatId, reasoning, workspaceId }),
+    });
+    return res.ok;
+  }
+
   async savePendingInputs(chatId: string, inputs: string[], workspaceId = ""): Promise<boolean> {
     const res = await fetch(`${this.base}/save-pending-inputs`, {
       method: "POST",

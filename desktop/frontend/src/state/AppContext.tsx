@@ -598,6 +598,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const themeInitRef = useRef(false);
   const activeChatIdRef = useRef<string>("");
   const activeWorkspaceIdRef = useRef<string>("");
+  const pendingModelConfigRef = useRef<Promise<void>>(Promise.resolve());
   const stateRef = useRef<AppState | null>(null);
   // Track the most recently requested focus workspace so idle/state events
   // from it can bypass the background-event guard during a focus switch.
@@ -2587,6 +2588,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const sendNextPendingRef = useRef(sendNextPending);
   sendNextPendingRef.current = sendNextPending;
 
+  const queueModelConfigUpdate = useCallback((run: () => Promise<void>) => {
+    const next = pendingModelConfigRef.current
+      .catch(() => undefined)
+      .then(run);
+    pendingModelConfigRef.current = next.catch(() => undefined);
+    return next;
+  }, []);
+
   const sendInput = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -2633,6 +2642,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setPendingAutoSendByChat((prev) => ({ ...prev, [key]: true }));
         }
       }
+      await pendingModelConfigRef.current;
       await client.sendInput(trimmed, true, targetChatId);
     },
     [client, materializeDraftChat, startOptimisticTurn, setBusyForChat, persistPendingInputs],
@@ -3332,6 +3342,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!value) {
         return;
       }
+      const targetChatId =
+        selectedChatId || stateRef.current?.activeChatId || activeChatIdRef.current;
       if (draftModeRef.current) {
         // In draft mode just record the preference — don't materialize the
         // chat yet.  The selected model will be applied when the user sends
@@ -3392,11 +3404,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           },
         };
       });
-      await client.sendInput(
-        `/model ${value}`, false, activeChatIdRef.current,
+      await queueModelConfigUpdate(() =>
+        client.setChatModel(
+          targetChatId,
+          value,
+          selectedWorkspaceId || stateRef.current?.workspace.id || activeWorkspaceIdRef.current,
+        ).then(() => undefined),
       );
     },
-    [client, selectedWorkspaceId, selectedChatId],
+    [client, queueModelConfigUpdate, selectedWorkspaceId, selectedChatId],
   );
 
   const setReasoning = useCallback(
@@ -3404,6 +3420,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Empty ``level`` means "Default" (clear the selected effort). Unlike
       // model selection, Default is a valid choice and must not be dropped.
       const value = level.trim();
+      const targetChatId =
+        selectedChatId || stateRef.current?.activeChatId || activeChatIdRef.current;
       if (draftModeRef.current) {
         // In draft mode just record the preference — don't materialize the
         // chat yet. The selected reasoning effort will be applied when the
@@ -3441,13 +3459,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!prev) return prev;
         return { ...prev, model: { ...prev.model, reasoningEffort: value } };
       });
-      await client.sendInput(
-        `/reasoning ${value}`,
-        false,
-        activeChatIdRef.current,
+      await queueModelConfigUpdate(() =>
+        client.setChatReasoning(
+          targetChatId,
+          value,
+          selectedWorkspaceId || stateRef.current?.workspace.id || activeWorkspaceIdRef.current,
+        ).then(() => undefined),
       );
     },
-    [client, selectedWorkspaceId, selectedChatId],
+    [client, queueModelConfigUpdate, selectedWorkspaceId, selectedChatId],
   );
 
   const setExecutionPolicy = useCallback(
