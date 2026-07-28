@@ -190,6 +190,7 @@ function HistoryReloadProbe() {
 
 function BusySwitchProbe() {
   const {
+    state,
     activeWorkspaceId,
     activeChatId,
     busyByChat,
@@ -207,6 +208,7 @@ function BusySwitchProbe() {
       </button>
       <pre data-testid="busy-switch-view">
         {JSON.stringify({
+          modelCurrent: state?.model.current,
           activeWorkspaceId,
           activeChatId,
           busyByChat,
@@ -795,7 +797,7 @@ describe("AppContext thinking rounds", () => {
           running: true,
           archived: false,
           planMode: false,
-          model: "provider/model",
+          model: "provider/model-a",
         }, {
           index: 1,
           id: "chat-2",
@@ -805,8 +807,15 @@ describe("AppContext thinking rounds", () => {
           running: false,
           archived: false,
           planMode: false,
-          model: "provider/model",
+          model: "provider/model-b",
         }],
+        model: {
+          current: "provider/model-a",
+          available: ["provider/model-a", "provider/model-b"],
+          ready: true,
+          reasoningEffort: "",
+          reasoningEfforts: [],
+        },
       }),
     );
 
@@ -829,15 +838,58 @@ describe("AppContext thinking rounds", () => {
       fireEvent.click(screen.getByRole("button", { name: "switch to chat 2" }));
     });
 
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-2",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{
+              index: 0,
+              id: "chat-1",
+              name: "Chat 1",
+              messageCount: 1,
+              active: false,
+              running: true,
+              archived: false,
+              planMode: false,
+              model: "provider/model-a",
+            }, {
+              index: 1,
+              id: "chat-2",
+              name: "Chat 2",
+              messageCount: 0,
+              active: true,
+              running: false,
+              archived: false,
+              planMode: false,
+              model: "provider/model-b",
+            }],
+            activeChatId: "chat-2",
+            model: {
+              current: "provider/model-b",
+              available: ["provider/model-a", "provider/model-b"],
+              ready: true,
+              reasoningEffort: "",
+              reasoningEfforts: [],
+            },
+          }),
+        },
+      });
+    });
+
     await waitFor(() => {
       const view = JSON.parse(screen.getByTestId("busy-switch-view").textContent || "{}") as {
         activeWorkspaceId: string;
         activeChatId: string;
         busyByChat: Record<string, boolean>;
         runningChatStartedAtByChat: Record<string, number>;
+        modelCurrent: string;
       };
       expect(view.activeWorkspaceId).toBe("ws-1");
       expect(view.activeChatId).toBe("chat-2");
+      expect(view.modelCurrent).toBe("provider/model-b");
       expect(view.busyByChat["ws-1\u0000chat-1"]).toBe(true);
       expect(view.runningChatStartedAtByChat["ws-1\u0000chat-1"]).toBeTypeOf("number");
     });
@@ -850,10 +902,12 @@ describe("AppContext thinking rounds", () => {
       const view = JSON.parse(screen.getByTestId("busy-switch-view").textContent || "{}") as {
         activeWorkspaceId: string;
         activeChatId: string;
+        modelCurrent: string;
         turns: Turn[];
       };
       expect(view.activeWorkspaceId).toBe("ws-1");
       expect(view.activeChatId).toBe("chat-1");
+      expect(view.modelCurrent).toBe("provider/model-a");
       expect(view.turns).toHaveLength(1);
       expect(view.turns[0]?.endedAt).toBeNull();
     });
