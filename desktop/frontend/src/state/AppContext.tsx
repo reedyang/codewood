@@ -3022,9 +3022,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDraftWorkspaceId(workspaceId);
   }, []);
 
-  // Delete a chat. If it was the active chat and the workspace is now chat-less,
-  // drop into compose (draft) mode for that workspace instead of auto-creating a
-  // new chat. The idle event from the backend carries the post-delete state.
+  // Delete a chat. If it was the active chat always drop into compose (draft)
+  // mode for that workspace so the UI shows a clean New Chat view — no sidebar
+  // highlight, no title-bar name. The idle event from the backend carries the
+  // post-delete state but draft mode keeps the UI consistent.
   const deleteChat = useCallback(
     async (chatId: string, workspaceId = "") => {
       const wasActive = chatId === activeChatIdRef.current;
@@ -3032,17 +3033,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Whether deleting this chat empties the active workspace. (Only the
       // active workspace's chats are present in ``state.chats``.)
       const inActiveWs = !workspaceId || workspaceId === activeWorkspaceIdRef.current;
-      const willBeEmpty =
-        inActiveWs && (stateRef.current?.chats?.length ?? 0) <= 1;
       const ok = await client.deleteChat(chatId, workspaceId);
       if (!ok) {
         return;
       }
       clearLiveTurns(chatKey(wsId, chatId));
       if (inActiveWs) {
-        if (wasActive && willBeEmpty) {
-          // Chat-less workspace: enter compose mode so the user can type
-          // to create a fresh chat instead of auto-creating one.
+        if (wasActive) {
+          // Always enter draft mode (New Chat) so the sidebar doesn't
+          // high-light a sibling chat and the title bar shows no name.
+          // The backend auto-switches to another chat via SSE on delete,
+          // but draft mode keeps the UI showing a clean New Chat view.
           setDraftWorkspaceId(wsId);
           setDraftMode(true);
           resetDraftSelectionRef();
