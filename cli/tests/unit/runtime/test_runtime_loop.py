@@ -28,6 +28,8 @@ from cli.runtime.runtime_loop import (
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
     _build_apply_patch_failure_hints,
+    _build_apply_patch_retry_prompt,
+    _tool_calls_have_invalid_arguments,
     _parse_tool_plans_from_model_message,
     _parse_tool_plan_from_model_message,
     _looks_like_pseudo_tool_call_text,
@@ -42,6 +44,7 @@ from cli.runtime.runtime_loop import (
     _recover_latest_history_tool_plans,
     _should_fire_plan_finalize_nudge,
     _take_pending_stream_history_reload_request,
+    _update_latest_assistant_clean_content,
     _warn_loop_ended_with_pending_plan,
 )
 
@@ -144,6 +147,50 @@ class RuntimeLoopTests(unittest.TestCase):
         )
         merged = "\n".join(hints)
         self.assertIn("必须同时包含 `path` 和非空 `patch`", merged)
+
+    def test_apply_patch_retry_prompt_includes_continue_instruction_and_hints(self):
+        t = lambda key, fallback=None: str(fallback if fallback is not None else key)
+        prompt = _build_apply_patch_retry_prompt(
+            "Patch context mismatch (line 42)",
+            {"path": "bin/start.bat", "patch": "@@ -1,1 +1,1 @@\n-a\n+b\n"},
+            t,
+        )
+        self.assertIn("Do not stop", prompt)
+        self.assertIn("re-read the target file", prompt)
+        self.assertIn("文件内容可能已漂移", prompt)
+
+    def test_tool_calls_have_invalid_arguments_detects_malformed_json(self):
+        tool_calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "apply_patch",
+                    "arguments": "{\"patch\":\"@@ -1,1 +1,1 @@\\n+bad\"",
+                },
+            }
+        ]
+        self.assertTrue(_tool_calls_have_invalid_arguments(tool_calls))
+
+    def test_update_latest_assistant_clean_content_skips_api_error_summary(self):
+        class _Agent:
+            def __init__(self):
+                self.conversation_history = [
+                    {
+                        "role": "assistant",
+                        "content": "{\"tool_calls\":[]}",
+                    }
+                ]
+
+            def _sync_active_chat_messages(self):
+                return None
+
+        agent = _Agent()
+        _update_latest_assistant_clean_content(
+            agent,
+            "❌ API error: Unterminated string starting at: line 1 column 10",
+        )
+        self.assertNotIn("_clean_content", agent.conversation_history[0])
 
     def test_render_aborted_direct_shell_feedback_repaints_then_prints_banner(self):
         calls = []
