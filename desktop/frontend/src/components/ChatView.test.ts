@@ -5,6 +5,7 @@ import {
   groupLiveRounds,
   hasPendingInvisibleRound,
   shouldShowPendingWorking,
+  shouldShowStreamingWorkingForRound,
   splitCompletedTurn,
 } from "./ChatView";
 
@@ -244,6 +245,23 @@ describe("shouldShowPendingWorking", () => {
     expect(shouldShowPendingWorking(turn)).toBe(false);
   });
 
+  it("shows Working while answer text is still streaming", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          segments: [{ id: 1, kind: "answer", text: "正在输出正文" }],
+        },
+      ],
+    } as Parameters<typeof shouldShowPendingWorking>[0];
+
+    expect(shouldShowPendingWorking(turn)).toBe(true);
+  });
+
   it("does not show the placeholder when a live group is already visible", () => {
     const turn = {
       startedAt: 10,
@@ -259,5 +277,27 @@ describe("shouldShowPendingWorking", () => {
     } as Parameters<typeof shouldShowPendingWorking>[0];
 
     expect(shouldShowPendingWorking(turn, true)).toBe(false);
+  });
+});
+
+describe("shouldShowStreamingWorkingForRound", () => {
+  it("shows Working for a running answer round", () => {
+    const round = {
+      waitEndedAt: null,
+      thinkingText: "",
+      segments: [{ id: 1, kind: "answer", text: "流式正文" }],
+    } as Parameters<typeof shouldShowStreamingWorkingForRound>[0];
+
+    expect(shouldShowStreamingWorkingForRound(round)).toBe(true);
+  });
+
+  it("keeps Thinking-only rounds from showing Working", () => {
+    const round = {
+      waitEndedAt: null,
+      thinkingText: "hidden reasoning",
+      segments: [],
+    } as Parameters<typeof shouldShowStreamingWorkingForRound>[0];
+
+    expect(shouldShowStreamingWorkingForRound(round)).toBe(false);
   });
 });

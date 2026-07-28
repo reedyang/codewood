@@ -813,11 +813,14 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           )}
           {(() => {
             const lastRound = rounds[rounds.length - 1];
+            const hasVisibleToolRound = rounds.some((round) => Boolean(round.tools));
+            const hasVisibleAnswerRound = rounds.some((round) => Boolean(round.text));
             const showWorking =
               isLive &&
-              !session.output &&
               (rounds.length === 0 ||
-                (lastRound && !lastRound.text && !lastRound.thinking && !lastRound.tools));
+                Boolean(session.output) ||
+                Boolean(hasVisibleAnswerRound) ||
+                (lastRound && !hasVisibleToolRound && !lastRound.tools && !lastRound.thinking));
             if (!showWorking) return null;
             return (
               <div className="activity">
@@ -2505,6 +2508,38 @@ function hasVisibleRoundContent(round: TurnRound | undefined): boolean {
   return hasThinking || hasSegments;
 }
 
+function liveGroupShowsOwnWorking(
+  group: LiveRoundGroup | undefined,
+  waitingForContinuation: boolean,
+): boolean {
+  return Boolean(group && group.kind === "tool" && waitingForContinuation);
+}
+
+export function shouldShowStreamingWorkingForRound(
+  round: Pick<TurnRound, "segments" | "thinkingText" | "waitEndedAt"> | undefined,
+): boolean {
+  if (!round || round.waitEndedAt !== null) {
+    return false;
+  }
+  const hasTools = round.segments.some(
+    (segment) => segment.kind === "step" && segment.text.trim().length > 0,
+  );
+  if (hasTools) {
+    return false;
+  }
+  const hasAnswer = round.segments.some(
+    (segment) => segment.kind === "answer" && segment.text.trim().length > 0,
+  );
+  if (hasAnswer) {
+    return true;
+  }
+  const hasThinking = Boolean(round.thinkingText?.trim().length);
+  if (hasThinking) {
+    return false;
+  }
+  return true;
+}
+
 export function hasPendingInvisibleRound(
   turn: Pick<Turn, "endedAt" | "rounds">,
 ): boolean {
@@ -2521,6 +2556,13 @@ export function shouldShowPendingWorking(
   turn: Pick<Turn, "startedAt" | "endedAt" | "rounds">,
   hasVisibleLiveGroups = false,
 ): boolean {
+  if (turn.endedAt !== null || hasVisibleLiveGroups) {
+    return false;
+  }
+  const lastRound = turn.rounds[turn.rounds.length - 1];
+  if (shouldShowStreamingWorkingForRound(lastRound)) {
+    return true;
+  }
   return hasPendingInvisibleRound(turn) && !hasVisibleLiveGroups;
 }
 
@@ -3008,7 +3050,13 @@ function TurnView({
   const lastRound = turn.rounds[turn.rounds.length - 1];
   const hasPendingContinuation = hasPendingInvisibleRound(turn);
   const isRunning = turn.endedAt === null;
-  const showWorking = isRunning && liveGroups.length === 0;
+  const lastVisibleGroup = liveGroups[liveGroups.length - 1];
+  const hasToolGroupWorking =
+    liveGroupShowsOwnWorking(lastVisibleGroup, hasPendingContinuation);
+  const showWorking =
+    isRunning &&
+    !hasToolGroupWorking &&
+    (liveGroups.length === 0 || shouldShowStreamingWorkingForRound(lastRound));
   const workingElapsed = lastRound
     ? formatElapsed(now - lastRound.waitStartedAt)
     : formatElapsed(now - turn.startedAt);
