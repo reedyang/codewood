@@ -1723,6 +1723,11 @@ def action_shell_command(
             }
             if _shell_was_truncated:
                 base_out["full_output_path"] = str(_shell_output_path)
+            if is_file_read_shell_command(command):
+                base_out["read_tool_hint"] = (
+                    "Shell command was used to read file content. "
+                    "Consider using the `read` tool instead for better file handling."
+                )
 
             # ---- inline-code diagnostic: on Windows, cmd.exe does *not*
             #      understand \" as an escaped quote.  A python -c "...\""...\" "
@@ -2867,6 +2872,27 @@ def _rg_stderr_retry(
 
 
 _rg_stderr_retry._cache: Dict[str, Optional[str]] = {}
+
+_FILE_READ_COMMAND_RE = re.compile(
+    r"^(type|cat|head|tail|more|less|gc|get-content)(\.exe)?\s",
+    re.IGNORECASE,
+)
+
+
+def is_file_read_shell_command(command: str) -> bool:
+    """Return True when *command* is a file-content-reading shell command
+    (cat, type, head, tail, more, less, gc, get-content) that the model
+    should be advised to replace with the native ``read`` tool."""
+    raw = str(command or "").strip()
+    if not raw:
+        return False
+    if _FILE_READ_COMMAND_RE.search(raw):
+        return True
+    unwrapped = _unwrap_shell_command_layers(raw)
+    if unwrapped and unwrapped != raw:
+        if _FILE_READ_COMMAND_RE.search(unwrapped):
+            return True
+    return False
 
 
 _CD_AND_DELIMITERS: list[tuple[str, int]] = [
