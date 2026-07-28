@@ -100,6 +100,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
   const [chatToDelete, setChatToDelete] = useState<{ id: string; wsId: string; name: string } | null>(null);
+  const [optimisticChatNames, setOptimisticChatNames] = useState<Record<string, string>>({});
   const [workspaceToDelete, setWorkspaceToDelete] = useState<{ id: string; name: string } | null>(null);
   const [chatLoadCounts, setChatLoadCounts] = useState<Record<string, number>>({});
   const CHAT_PAGE_SIZE = 5;
@@ -239,6 +240,10 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     const value = target.value.trim();
     if (!value) {
       return;
+    }
+    if (target.kind === "chat") {
+      const key = chatKey(target.wsId, target.id);
+      setOptimisticChatNames((prev) => ({ ...prev, [key]: value }));
     }
     if (target.kind === "workspace") {
       await runCommand(`/workspace rename ${target.id} ${quote(value)}`);
@@ -384,7 +389,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
               }
             >
               <button className="tree-label" onClick={() => void switchChat(wsId, chat.id)}>
-                <span className="tree-name">{chat.name}</span>
+                <span className="tree-name">{optimisticChatNames[chatKey(wsId, chat.id)] ?? chat.name}</span>
                 {/* Running chats keep the pulsing busy dot and show their live
                     elapsed task time; idle chats show time since last update;
                     unread chats keep the steady dot so completion stands out

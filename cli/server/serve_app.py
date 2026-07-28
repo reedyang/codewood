@@ -2127,6 +2127,32 @@ class ServeApp:
                     "state", self._route(chat_id=cid, state=_build_state(self.agent))
                 )
                 return
+            # Apply chat rename immediately so the new name takes effect
+            # even while a multi-round task is executing (the inner tool loop
+            # does not poll the input queue until the current task finishes).
+            if stripped.startswith("/chat rename "):
+                parts = stripped.split()
+                if len(parts) >= 4:
+                    selector = parts[2]
+                    new_name = " ".join(parts[3:]).strip()
+                    if new_name:
+                        try:
+                            agent = self.agent
+                            with agent._chat_state_lock:
+                                target = agent._resolve_chat_selector(selector)
+                                if target:
+                                    target["name"] = new_name
+                                    target["name_source"] = "manual"
+                                    target["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    if str(target.get("id") or "") == agent.active_chat_id:
+                                        agent.active_chat_name = new_name
+                                    agent._save_chat_state()
+                        except Exception:
+                            pass
+                self.broadcaster.publish(
+                    "state", self._route(state=_build_state(self.agent))
+                )
+                return
             # All other slash commands: mark them so the runtime loop runs it
             # but keeps them out of the user's input history (history.json).
             line = GUI_INTERNAL_COMMAND_PREFIX + line

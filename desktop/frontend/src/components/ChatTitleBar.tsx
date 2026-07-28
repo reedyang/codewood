@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -40,7 +40,14 @@ export function ChatTitleBar() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [optimisticName, setOptimisticName] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Clear optimistic name when switching chats (back-end state will catch up
+  // via SSE, but the stale optimistic value from a previous chat must not
+  // leak into the next chat's render). Must be placed before any early return
+  // to satisfy React's Rules of Hooks.
+  useEffect(() => { setOptimisticName(null); }, [activeChatId]);
 
   const wsId = activeWorkspaceId;
   const activeChat = activeChats.find((c) => c.id === activeChatId);
@@ -65,11 +72,14 @@ export function ChatTitleBar() {
   const key = chatKey(wsId, activeChat.id);
   const isPinned = uiPrefs.pinnedChatIds.includes(key);
   const isArchived = Boolean(activeChat.archived);
+  const displayName = optimisticName ?? activeChat.name;
+
 
   const commitRename = async () => {
     const value = renameValue.trim();
     setRenaming(false);
     if (value && value !== activeChat.name) {
+      setOptimisticName(value);
       await runCommand(`/chat rename ${activeChat.id} ${quote(value)}`);
     }
   };
@@ -144,8 +154,8 @@ export function ChatTitleBar() {
           </span>
         </div>
       ) : (
-        <span className="chat-titlebar-name" title={activeChat.name}>
-          {activeChat.name}
+        <span className="chat-titlebar-name" title={displayName}>
+          {displayName}
         </span>
       )}
       <button
