@@ -1102,6 +1102,9 @@ def run_subagent(
                     "elapsed": r.get("_elapsed_seconds"),
                     "output": _round_output or "",
                 }
+                _err_text = str(r.get("error") or "")
+                if _err_text:
+                    raw_entry["error"] = _err_text
                 _marker = str(r.get("_guiSessionMarker") or "")
                 if _marker:
                     raw_entry["marker"] = _marker

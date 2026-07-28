@@ -3445,7 +3445,7 @@ class Agent:
             out = str(r.get("content") or "")
         if not out:
             out = str(r.get("message") or "")
-        if not out:
+        if not out and t != "shell":
             out = str(r.get("error") or "")
         return out
 
@@ -3702,6 +3702,9 @@ class Agent:
             "elapsed": r.get("_elapsed_seconds"),
             "output": output,
         }
+        error_text = str(r.get("error") or "")
+        if error_text:
+            raw_entry["error"] = error_text
         # Persist whether apply_patch was creating a new file, so history
         # reload can render the correct label after the file exists on disk.
         # Prefer the pre-execution snapshot captured by the runtime loop;
@@ -3928,6 +3931,16 @@ class Agent:
                         f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
                         f"{output}{GUI_CMD_OUTPUT_END}"
                     )
+            else:
+                err_text = item.get("error")
+                if err_text and (_tui_allowed_tools is None or tool in _tui_allowed_tools):
+                    if _tui_allowed_tools is not None and tool in ("shell", "bash"):
+                        tool_round = f"{tool_round}\n{err_text}"
+                    else:
+                        tool_round = (
+                            f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
+                            f"{err_text}{GUI_CMD_OUTPUT_END}"
+                        )
             marker = item.get("marker")
             if marker:
                 tool_round = f"{tool_round}\n{marker}"

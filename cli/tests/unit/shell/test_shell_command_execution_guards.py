@@ -897,6 +897,109 @@ class SafeReadOnlyCommandBypassTests(unittest.TestCase):
         assess.assert_called()
 
 
+class RgStderrRetryTests(unittest.TestCase):
+    def setUp(self):
+        from cli.tools.shell import _rg_stderr_retry
+        _rg_stderr_retry._cache.clear()
+
+    def test_is_rg_command_true_for_plain_rg(self):
+        from cli.tools.shell import _is_rg_command
+        self.assertTrue(_is_rg_command("rg -n pattern file.txt"))
+
+    def test_is_rg_command_true_for_rg_exe(self):
+        from cli.tools.shell import _is_rg_command
+        self.assertTrue(_is_rg_command("rg.exe -n pattern file.txt"))
+
+    def test_is_rg_command_true_for_full_path(self):
+        from cli.tools.shell import _is_rg_command
+        self.assertTrue(_is_rg_command('"D:\\bin\\rg.exe" -n pattern file.txt'))
+
+    def test_is_rg_command_false_for_grep(self):
+        from cli.tools.shell import _is_rg_command
+        self.assertFalse(_is_rg_command("grep pattern file.txt"))
+
+    def test_is_rg_command_false_for_empty(self):
+        from cli.tools.shell import _is_rg_command
+        self.assertFalse(_is_rg_command(""))
+
+    def test_rg_stderr_retry_returns_error_on_failure(self):
+        from cli.tools.shell import _rg_stderr_retry
+        import subprocess
+        side_effect = subprocess.CompletedProcess(
+            args="rg pattern nonexistent 2>nul",
+            returncode=0,
+            stdout="",
+            stderr="error: no such file or directory\n",
+        )
+        with patch("subprocess.run", return_value=side_effect) as mock_run:
+            with tempfile.TemporaryDirectory() as td:
+                reason = _rg_stderr_retry(
+                    "rg pattern nonexistent 2>nul", "", 1, Path(td), {},
+                )
+        self.assertIsNotNone(reason)
+        self.assertIn("no such file", str(reason))
+        mock_run.assert_called()
+
+    def test_rg_stderr_retry_returns_none_when_no_stderr_suppress(self):
+        from cli.tools.shell import _rg_stderr_retry
+        with tempfile.TemporaryDirectory() as td:
+            reason = _rg_stderr_retry(
+                "rg pattern file.txt", "", 1, Path(td), {},
+            )
+        self.assertIsNone(reason)
+
+    def test_rg_stderr_retry_returns_none_when_not_rg(self):
+        from cli.tools.shell import _rg_stderr_retry
+        with tempfile.TemporaryDirectory() as td:
+            reason = _rg_stderr_retry(
+                "grep pattern file.txt 2>/dev/null", "", 1, Path(td), {},
+            )
+        self.assertIsNone(reason)
+
+    def test_rg_stderr_retry_returns_none_when_success(self):
+        from cli.tools.shell import _rg_stderr_retry
+        with tempfile.TemporaryDirectory() as td:
+            reason = _rg_stderr_retry(
+                "rg pattern file.txt 2>nul", "some output", 0, Path(td), {},
+            )
+        self.assertIsNone(reason)
+
+    def test_rg_stderr_retry_handles_2_dev_null(self):
+        from cli.tools.shell import _rg_stderr_retry
+        import subprocess
+        side_effect = subprocess.CompletedProcess(
+            args="rg pattern nonexistent 2>/dev/null",
+            returncode=0,
+            stdout="",
+            stderr="error: not found\n",
+        )
+        with patch("subprocess.run", return_value=side_effect):
+            with tempfile.TemporaryDirectory() as td:
+                reason = _rg_stderr_retry(
+                    "rg pattern nonexistent 2>/dev/null", "", 2, Path(td), {},
+                )
+        self.assertIsNotNone(reason)
+        self.assertIn("not found", str(reason))
+
+    def test_rg_stderr_retry_caches_result(self):
+        from cli.tools.shell import _rg_stderr_retry
+        import subprocess
+        side_effect = subprocess.CompletedProcess(
+            args="rg x y 2>nul",
+            returncode=0,
+            stdout="",
+            stderr="error: cached result\n",
+        )
+        with patch("subprocess.run", return_value=side_effect) as mock_run:
+            with tempfile.TemporaryDirectory() as td:
+                r1 = _rg_stderr_retry("rg x y 2>nul", "", 1, Path(td), {})
+                r2 = _rg_stderr_retry("rg x y 2>nul", "", 1, Path(td), {})
+        self.assertIsNotNone(r1)
+        self.assertEqual(r1, r2)
+        self.assertIn("cached result", str(r1))
+        mock_run.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
 
