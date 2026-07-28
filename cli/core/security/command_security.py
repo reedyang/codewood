@@ -158,8 +158,50 @@ def save_confirm_allowlist(agent: Any) -> bool:
         return False
 
 
+_FILE_CONTENT_READ_EXES = frozenset(
+    {"cat", "type", "head", "tail", "more", "less", "gc", "get-content"}
+)
+
+
+def _is_safe_read_only_command(command: str) -> bool:
+    from ...tools.shell import (
+        _is_read_only_command,
+        _split_shell_like,
+        _token_exe_base,
+        _unwrap_shell_command_layers,
+    )
+
+    raw = str(command or "").strip()
+    if not raw:
+        return True
+
+    # File-content-reading commands need workspace-path validation to prevent
+    # reading files outside the workspace.  Those are already handled by
+    # _is_workspace_read_command() with proper path checks.
+    parts = _split_shell_like(raw)
+    exe = _token_exe_base(parts[0]) if parts else ""
+    if parts and exe in _FILE_CONTENT_READ_EXES:
+        return False
+
+    if _is_read_only_command(raw):
+        return True
+
+    unwrapped = _unwrap_shell_command_layers(raw)
+    if unwrapped and unwrapped != raw:
+        parts2 = _split_shell_like(unwrapped)
+        exe2 = _token_exe_base(parts2[0]) if parts2 else ""
+        if parts2 and exe2 in _FILE_CONTENT_READ_EXES:
+            return False
+        if _is_read_only_command(unwrapped):
+            return True
+
+    return False
+
+
 def shell_command_in_allowlist(agent: Any, command: str) -> bool:
     if _is_workspace_read_command(agent, command):
+        return True
+    if _is_safe_read_only_command(command):
         return True
     sk = shell_script_allowlist_key(agent, command)
     if sk is not None:

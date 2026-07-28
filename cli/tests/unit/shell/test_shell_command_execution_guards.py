@@ -663,6 +663,240 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertEqual(popen_mock.call_args.kwargs.get("stderr"), subprocess.STDOUT)
 
 
+class SafeReadOnlyCommandBypassTests(unittest.TestCase):
+    def _make_agent(self):
+        agent = _DummyAgent()
+        agent.allowlist_hit = False
+        return agent
+
+    def test_shell_allowlist_true_for_rg(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("rg -n TODO src"))
+
+    def test_shell_allowlist_true_for_rg_full_path(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("D:\\repo\\bin\\rg.exe -n TODO src"))
+
+    def test_shell_allowlist_true_for_grep(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("grep -r pattern ."))
+
+    def test_shell_allowlist_true_for_findstr(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("findstr /s pattern *.py"))
+
+    def test_shell_allowlist_true_for_find(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("find . -name '*.py'"))
+
+    def test_shell_allowlist_true_for_ls(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("ls"))
+
+    def test_shell_allowlist_true_for_dir(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("dir /s"))
+
+    def test_shell_allowlist_true_for_tree(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("tree"))
+
+    def test_shell_allowlist_true_for_cat(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("cat file.txt"))
+
+    def test_shell_allowlist_true_for_type(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("type file.txt"))
+
+    def test_shell_allowlist_true_for_head(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("head -n 10 file.txt"))
+
+    def test_shell_allowlist_true_for_ping(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("ping -n 1 localhost"))
+
+    def test_shell_allowlist_true_for_nslookup(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("nslookup google.com"))
+
+    def test_shell_allowlist_true_for_netstat(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("netstat -an"))
+
+    def test_shell_allowlist_true_for_ipconfig(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("ipconfig /all"))
+
+    def test_shell_allowlist_true_for_tracert(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("tracert google.com"))
+
+    def test_shell_allowlist_true_for_echo(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("echo hello"))
+
+    def test_shell_allowlist_true_for_cd(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("cd src"))
+
+    def test_shell_allowlist_true_for_pwd(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("pwd"))
+
+    def test_shell_allowlist_true_for_whoami(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("whoami"))
+
+    def test_shell_allowlist_true_for_date(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("date"))
+
+    def test_shell_allowlist_true_for_ver(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("ver"))
+
+    def test_shell_allowlist_true_for_set(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("set"))
+
+    def test_shell_allowlist_true_for_git_status(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("git status"))
+
+    def test_shell_allowlist_true_for_git_log(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("git log --oneline -5"))
+
+    def test_shell_allowlist_true_for_help(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("help"))
+
+    def test_shell_allowlist_true_for_timeout(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("timeout /t 1"))
+
+    def test_shell_allowlist_true_for_sleep(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("sleep 1"))
+
+    def test_shell_allowlist_true_for_which(self):
+        agent = self._make_agent()
+        self.assertTrue(agent._shell_command_in_allowlist("which python"))
+
+    def test_shell_allowlist_false_for_rm(self):
+        agent = self._make_agent()
+        self.assertFalse(agent._shell_command_in_allowlist("rm file.txt"))
+
+    def test_shell_allowlist_false_for_del(self):
+        agent = self._make_agent()
+        self.assertFalse(agent._shell_command_in_allowlist("del file.txt"))
+
+    def test_shell_allowlist_false_for_mv(self):
+        agent = self._make_agent()
+        self.assertFalse(agent._shell_command_in_allowlist("mv a.txt b.txt"))
+
+    def test_shell_allowlist_false_for_rmdir(self):
+        agent = self._make_agent()
+        self.assertFalse(agent._shell_command_in_allowlist("rmdir folder"))
+
+    def test_shell_allowlist_false_for_curl_with_output(self):
+        agent = self._make_agent()
+        self.assertFalse(agent._shell_command_in_allowlist("curl -o file.txt https://example.com"))
+
+    def test_shell_allowlist_false_for_echo_with_redirect(self):
+        agent = self._make_agent()
+        self.assertFalse(agent._shell_command_in_allowlist("echo hello > file.txt"))
+
+    def test_shell_allowlist_false_for_ls_with_pipe(self):
+        agent = self._make_agent()
+        self.assertFalse(agent._shell_command_in_allowlist("ls | sort"))
+
+    def test_shell_allowlist_true_for_powershell_wrapped_rg(self):
+        agent = self._make_agent()
+        self.assertTrue(
+            agent._shell_command_in_allowlist(
+                "powershell -ExecutionPolicy Bypass -Command \"rg -n TODO src\""
+            )
+        )
+
+    def test_freedom_auto_confirm_skips_ai_review_for_readonly_command(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+
+        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+            "cli.services.execution_policy_service._print_with_auto_hide_tracking"
+        ), patch(
+            "cli.services.execution_policy_service.shell_command_in_allowlist",
+            wraps=shell_command_in_allowlist,
+        ):
+            ok = freedom_auto_confirm(
+                agent,
+                {"action": "shell", "params": {"command": "rg -n TODO src"}},
+            )
+
+        self.assertTrue(ok)
+        self.assertFalse(bool(agent._manual_confirm_required_shell_once))
+        assess.assert_not_called()
+
+    def test_freedom_auto_confirm_skips_ai_review_for_ls(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+
+        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+            "cli.services.execution_policy_service._print_with_auto_hide_tracking"
+        ), patch(
+            "cli.services.execution_policy_service.shell_command_in_allowlist",
+            wraps=shell_command_in_allowlist,
+        ):
+            ok = freedom_auto_confirm(
+                agent,
+                {"action": "shell", "params": {"command": "ls"}},
+            )
+
+        self.assertTrue(ok)
+        self.assertFalse(bool(agent._manual_confirm_required_shell_once))
+        assess.assert_not_called()
+
+    def test_freedom_auto_confirm_skips_ai_review_for_ping(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+
+        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+            "cli.services.execution_policy_service._print_with_auto_hide_tracking"
+        ), patch(
+            "cli.services.execution_policy_service.shell_command_in_allowlist",
+            wraps=shell_command_in_allowlist,
+        ):
+            ok = freedom_auto_confirm(
+                agent,
+                {"action": "shell", "params": {"command": "ping localhost"}},
+            )
+
+        self.assertTrue(ok)
+        self.assertFalse(bool(agent._manual_confirm_required_shell_once))
+        assess.assert_not_called()
+
+    def test_freedom_auto_confirm_still_uses_ai_for_write_command(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+
+        with patch("cli.services.execution_policy_service.ai_assess_reversible", return_value=(False, "not reversible")) as assess, patch(
+            "cli.services.execution_policy_service._print_with_auto_hide_tracking"
+        ), patch(
+            "cli.services.execution_policy_service.shell_command_in_allowlist",
+            wraps=shell_command_in_allowlist,
+        ):
+            ok = freedom_auto_confirm(
+                agent,
+                {"action": "shell", "params": {"command": "rm file.txt"}},
+            )
+
+        self.assertFalse(ok)
+        assess.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 
