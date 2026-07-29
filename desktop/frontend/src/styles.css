@@ -2209,6 +2209,12 @@ body.resizing-x .browser-frame {
   overflow-y: auto;
   max-height: 240px;
 }
+
+.rich-composer-editor[data-drag-over] {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
 .rich-composer-editor:focus {
   outline: none;
 }

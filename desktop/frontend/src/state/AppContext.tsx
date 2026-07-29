@@ -178,6 +178,10 @@ interface AppContextValue {
   pasteImage: (
     dataUrl: string,
   ) => Promise<{ path: string; name: string } | null>;
+  saveDroppedFile: (
+    dataUrl: string,
+    fileName: string,
+  ) => Promise<{ path: string; name: string } | null>;
   chatImageUrl: (path: string) => string;
   mcpIconUrl: (server: string, icon: string) => string;
   subscribeBrowserCommand: (
@@ -1091,6 +1095,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return null;
       }
       return client.pasteImage(target.chatId, dataUrl, target.workspaceId);
+    },
+    [client, materializeDraftChat],
+  );
+
+  const saveDroppedFile = useCallback(
+    async (dataUrl: string, fileName: string) => {
+      const target = await materializeDraftChat();
+      if (!target?.chatId) {
+        return null;
+      }
+      return client.saveDroppedFile(target.chatId, dataUrl, fileName, target.workspaceId);
     },
     [client, materializeDraftChat],
   );
@@ -3790,6 +3805,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setBackgroundOpacity,
     backgroundImageUrl,
     pasteImage,
+    saveDroppedFile,
     chatImageUrl,
     mcpIconUrl,
     subscribeBrowserCommand,

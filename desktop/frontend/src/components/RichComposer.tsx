@@ -44,6 +44,8 @@ export interface RichComposerProps {
   onPasteImages?: (dataUrls: string[]) => void;
   /** Called when the user selects the "/compact" slash suggestion. */
   onCompact?: () => void;
+  /** Called with drag-dropped files from the OS file manager. */
+  onDropFiles?: (files: FileList) => void;
 }
 
 interface SlashItem {
@@ -605,6 +607,7 @@ export function RichComposer({
   rows = 3,
   onPasteImages,
   onCompact,
+  onDropFiles,
 }: RichComposerProps) {
   const { getCompletionCatalog, searchWorkspaceFiles, t } = useApp();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -1509,6 +1512,41 @@ export function RichComposer({
     [replaceSelectionWithSegments, onPasteImages],
   );
 
+  // Drag-and-drop from the OS file manager.
+  const dragCounterRef = useRef(0);
+  const [dragOver, setDragOver] = useState(false);
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    console.log("[drag-drop] RichComposer dragEnter, counter=" + dragCounterRef.current + " types=" + JSON.stringify(Array.from(e.dataTransfer.types)));
+    setDragOver(true);
+  }, []);
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setDragOver(false);
+    }
+  }, []);
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    console.log("[drag-drop] RichComposer handleDrop, items=" + e.dataTransfer.items.length + " files=" + e.dataTransfer.files.length);
+    dragCounterRef.current = 0;
+    setDragOver(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0 && onDropFiles) {
+      onDropFiles(files);
+    }
+  }, [onDropFiles]);
+
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
       // Undo / redo. We own the history because manual DOM rewrites defeat the
@@ -1736,6 +1774,11 @@ export function RichComposer({
           }
         }}
         onPaste={handlePaste}
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        data-drag-over={dragOver || undefined}
         onBlur={() => {
           // Close the slash / '@' popups when the editor loses focus; the
           // popups catch clicks on their own buttons via mousedown.
