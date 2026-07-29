@@ -664,14 +664,14 @@ function PromptWithAttachment({
           <span className="cmd-prompt-body">
             <AnsiText text={body} onPathPreview={onPathPreview} />
             {running && <SpinnerChar />}
-            <span className="cmd-prompt-diff-toggle subagent-view-btn">
-              <Icon name="chevron" size={14} className="chevron" />
-            </span>
             {trailingStatusText && (
               <span className="tool-inline-working">
                 <span className="activity-text marquee">{trailingStatusText}</span>
               </span>
             )}
+          </span>
+          <span className="cmd-prompt-diff-toggle subagent-view-btn">
+            <Icon name="chevron" size={14} className="chevron" />
           </span>
         </HoverTooltip>
       </div>
@@ -705,14 +705,14 @@ function PromptWithAttachment({
           <span className="cmd-prompt-body">
             <AnsiText text={body} onPathPreview={onPathPreview} />
             {running && <SpinnerChar />}
-            {isSubAgent && (
-              <span className="cmd-prompt-diff-toggle subagent-view-btn">
-                <Icon name="chevron" size={14} className="chevron" />
-              </span>
-            )}
-            <span className="cmd-prompt-diff-toggle">
-              <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
+          </span>
+          {isSubAgent && (
+            <span className="cmd-prompt-diff-toggle subagent-view-btn">
+              <Icon name="chevron" size={14} className="chevron" />
             </span>
+          )}
+          <span className="cmd-prompt-diff-toggle">
+            <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>
         </HoverTooltip>
       </div>
