@@ -97,6 +97,9 @@ function formatToolDetail(toolName: string, args: Record<string, unknown>): stri
     }
     return subagent || topic;
   }
+  if (name === "update_plan") {
+    return "";
+  }
   if (args.path != null) {
     const path = String(args.path || "").trim();
     if (path) {
