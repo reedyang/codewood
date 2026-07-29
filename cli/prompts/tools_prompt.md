@@ -54,6 +54,16 @@ For all software-understanding tasks that require locating code, use `grep` to f
 
 Results are grouped by file with line numbers and content previews. Use `grep` instead of running `rg` via `shell`. Only use `rg` via `shell` when you need rg options that `grep` does not expose.
 
+## `glob` Tool
+
+`glob` finds files matching a glob pattern within the workspace:
+
+- `pattern` (required): The glob pattern to match files (e.g. `"**/*.py"`, `"src/**/*.ts"`, `"*.md"`).
+- `path` (optional): Directory to search (relative from workspace root). Defaults to workspace root.
+- `limit` (optional): Maximum results to return (default: 100).
+
+Returns one relative file path per line, or `"No files found"`. Use `glob` instead of `ls`/`dir`/`Get-ChildItem` via `shell` for file discovery.
+
 [[if $project_context_search_enabled="true"]]
 When exploring a codebase, use `project_context_search` first to find relevant files, then use `read` to inspect them. Only use `grep` as a fallback for precise pattern matching.
 [[else]]
