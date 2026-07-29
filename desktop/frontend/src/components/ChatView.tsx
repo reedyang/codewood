@@ -1108,6 +1108,19 @@ export function ChatView() {
   // in-flight streaming turn can't yank them back down while they read
   // earlier messages. Re-pins as soon as they scroll back to the bottom.
   const stickToBottomRef = useRef<boolean>(true);
+  // Once history has loaded at least one turn (or a live turn appeared), the
+  // splash should not reappear during subsequent refreshes (e.g. after editing
+  // the first message and sending a new one). Reset when switching to a
+  // different chat so the splash still shows on the first load of a new chat.
+  const historyEverHadContentRef = useRef(false);
+  const prevDraftKeyRef = useRef(draftKey);
+  if (draftKey !== prevDraftKeyRef.current) {
+    prevDraftKeyRef.current = draftKey;
+    historyEverHadContentRef.current = false;
+  }
+  if ((historyTurns.length > 0 || turns.length > 0) && !historyEverHadContentRef.current) {
+    historyEverHadContentRef.current = true;
+  }
 
   // Seed each chat's compose mode from the backend's persisted Plan-mode flag
   // the first time we see it (e.g. after an app restart). Only seeds chats not
@@ -1596,7 +1609,7 @@ export function ChatView() {
   const showChatLoadingSplash =
     !draftMode &&
     !(historyTurns.length > 0 || turns.length > 0) &&
-    (state === null || historyLoading);
+    (state === null || (historyLoading && !historyEverHadContentRef.current));
   // In draft mode the greeting reflects the chosen draft workspace; otherwise
   // it reflects the active workspace. The Default workspace is not a real
   // project, so omit its name from the greeting.
