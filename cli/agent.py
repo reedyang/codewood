@@ -2722,6 +2722,9 @@ class Agent:
             else:
                 detail = ""
             return (label, detail)
+        if name == "update_plan":
+            label = translate("tool.label.update_plan", self._ui_language(), fallback=self._humanize_tool_name(tool_name))
+            return (label, "")
         if name == "run_subagent" and str(a.get("subagent") or "").strip().lower() == "explore":
             return (self._explore_running_label(a), "")
         if name.startswith("mcp__"):
