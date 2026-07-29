@@ -1021,6 +1021,7 @@ export function ChatView() {
     now,
     sendInput,
     pasteImage,
+    saveDroppedFile,
     chatImageUrl,
     interrupt,
     compactContext,
@@ -1055,6 +1056,8 @@ export function ChatView() {
   // that first composition survives until the user sends or discards.
   const DRAFT_KEY = "__draft__";
   const draftKey = draftMode ? DRAFT_KEY : chatKey(activeWorkspaceId, activeChatId);
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
   const [segmentsByChat, setSegmentsByChat] = useState<Record<string, Segment[]>>({});
   const segments = segmentsByChat[draftKey] ?? [];
   // Pending pasted-image attachments for the active draft, keyed by chat so
@@ -1365,6 +1368,75 @@ export function ChatView() {
     });
   };
 
+  // Drag-and-drop files into the composer.
+  const addAttachSegment = (path: string) => {
+    setSegmentsByChat((prev) => {
+      const key = draftKeyRef.current;
+      const current = prev[key] ?? [];
+      const existing = new Set(current.filter((s) => s.kind === "attach").map((s) => s.value));
+      if (existing.has(path)) return prev;
+      return { ...prev, [key]: [...current, { kind: "attach", value: path }] };
+    });
+  };
+  const handleComposerDropFiles = (files: FileList) => {
+    console.log("[drag-drop] handleComposerDropFiles called, fileCount=" + files.length);
+    const imageDataUrls: string[] = [];
+    const nonImageFiles: File[] = [];
+    let handled = 0;
+    const total = files.length;
+    const tryFinish = () => {
+      if (handled >= total) {
+        console.log("[drag-drop] tryFinish, imageDataUrls=" + imageDataUrls.length + " nonImageFiles=" + nonImageFiles.length);
+        if (imageDataUrls.length > 0) onPasteImages(imageDataUrls);
+        for (const file of nonImageFiles) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const url = String(reader.result || "");
+            console.log("[drag-drop] nonImage file read, urlLen=" + url.length + " name=" + file.name);
+            void saveDroppedFile(url, file.name).then((saved) => {
+              console.log("[drag-drop] saveDroppedFile result for " + file.name + ":", saved);
+              if (saved) {
+                addAttachSegment(saved.path);
+              }
+            });
+          };
+          reader.onerror = () => { console.log("[drag-drop] FileReader error for " + file.name); };
+          reader.readAsDataURL(file);
+        }
+      }
+    };
+    for (let i = 0; i < total; i++) {
+      const file = files[i];
+      console.log("[drag-drop] file[" + i + "]: name=" + file.name + " type=" + file.type + " size=" + file.size + " hasPath=" + (!!((file as unknown as { path?: string }).path)));
+      const osPath = (file as unknown as { path?: string }).path;
+      if (osPath) {
+        console.log("[drag-drop]  -> using osPath: " + osPath);
+        addAttachSegment(osPath);
+        handled++;
+        tryFinish();
+        continue;
+      }
+      if (file.type.startsWith("image/")) {
+        console.log("[drag-drop]  -> image file, reading as data URL");
+        const reader = new FileReader();
+        reader.onload = () => {
+          const url = String(reader.result || "");
+          if (url.startsWith("data:image/")) imageDataUrls.push(url);
+          handled++;
+          console.log("[drag-drop]  -> image read, handled=" + handled + "/" + total);
+          tryFinish();
+        };
+        reader.onerror = () => { console.log("[drag-drop]  -> image read error"); handled++; tryFinish(); };
+        reader.readAsDataURL(file);
+      } else {
+        console.log("[drag-drop]  -> non-image, will send to backend");
+        nonImageFiles.push(file);
+        handled++;
+      }
+    }
+    tryFinish();
+  };
+
   const canSend =
     draftText.trim().length > 0 ||
     attachmentPaths.length > 0 ||
@@ -1579,6 +1651,7 @@ export function ChatView() {
         rows={3}
         onPasteImages={onPasteImages}
         onCompact={() => void compactContext()}
+        onDropFiles={handleComposerDropFiles}
       />
       <div className="composer-toolbar">
         <div className="composer-left">

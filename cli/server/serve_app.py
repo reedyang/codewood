@@ -3006,6 +3006,26 @@ class ServeApp:
     }
     # Hard cap on a decoded pasted image (10 MB).
     _PASTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+    # MIME-to-extension mapping for drag-dropped files. Falls back to the
+    # source filename's extension or "bin" for unknown types.
+    _DROPPED_FILE_EXT = {
+        "text/plain": "txt",
+        "text/html": "html",
+        "text/css": "css",
+        "text/javascript": "js",
+        "text/x-python": "py",
+        "text/xml": "xml",
+        "text/csv": "csv",
+        "text/markdown": "md",
+        "application/json": "json",
+        "application/pdf": "pdf",
+        "application/zip": "zip",
+        "application/gzip": "gz",
+        "application/x-tar": "tar",
+        "application/x-7z-compressed": "7z",
+        "application/x-rar-compressed": "rar",
+        "image/svg+xml": "svg",
+    }
     _MCP_ICON_MAX_BYTES = 2 * 1024 * 1024
 
     def _chat_data_dir_for(self, chat_id: str, workspace_id: str = "") -> Optional[Path]:
@@ -3095,6 +3115,65 @@ class ServeApp:
 
             data_dir.mkdir(parents=True, exist_ok=True)
             name = f"img_{secrets.token_hex(8)}.{ext}"
+            target = data_dir / name
+            target.write_bytes(raw)
+            return {"ok": True, "path": str(target.resolve()), "name": name}
+        except Exception:
+            return {"ok": False, "error": "save failed"}
+
+    def save_dropped_file(
+        self, chat_id: str, data_url: str, file_name: str = "", workspace_id: str = ""
+    ) -> Dict[str, Any]:
+        """Persist a drag-dropped file under the active chat's side-data dir.
+        Returns ``{ok, path, name}`` or ``{ok: False, error}``."""
+        import base64
+        import os
+        import re
+
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return {"ok": False, "error": "missing chatId"}
+        m = re.match(
+            r"^data:([a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,(.+)$",
+            str(data_url or ""),
+            re.DOTALL,
+        )
+        if not m:
+            return {"ok": False, "error": "invalid data url"}
+        mime = m.group(1).lower()
+        ext = self._DROPPED_FILE_EXT.get(mime)
+        if not ext:
+            # Image types also work through _PASTE_IMAGE_EXT.
+            ext = self._PASTE_IMAGE_EXT.get(mime)
+        if not ext:
+            # Fall back to the source file's extension.
+            base = os.path.basename(str(file_name or ""))
+            _, dot_ext = os.path.splitext(base)
+            ext = (dot_ext.lstrip(".") or "").lower() or "bin"
+        try:
+            raw = base64.b64decode(m.group(2), validate=True)
+        except Exception:
+            return {"ok": False, "error": "invalid base64"}
+        if not raw:
+            return {"ok": False, "error": "empty file"}
+        max_bytes = 50 * 1024 * 1024
+        if len(raw) > max_bytes:
+            return {"ok": False, "error": "file too large"}
+        try:
+            data_dir = self._chat_data_dir_for(cid, workspace_id)
+            if data_dir is None:
+                return {"ok": False, "error": "unknown chat"}
+            import secrets
+
+            data_dir.mkdir(parents=True, exist_ok=True)
+            # Preserve the original filename for display; prepend a random
+            # token to avoid collisions between identically-named drops.
+            orig_base = os.path.basename(str(file_name or ""))
+            if orig_base:
+                stem, orig_ext = os.path.splitext(orig_base)
+                name = f"{stem}_{secrets.token_hex(4)}{orig_ext or ('.' + ext)}"
+            else:
+                name = f"drop_{secrets.token_hex(8)}.{ext}"
             target = data_dir / name
             target.write_bytes(raw)
             return {"ok": True, "path": str(target.resolve()), "name": name}
@@ -6574,6 +6653,8 @@ def _make_handler(app: ServeApp):
             # default 1 MiB JSON cap; allow a larger body only for that route.
             if path == "/paste-image":
                 max_body = ServeApp._PASTE_IMAGE_MAX_BYTES * 2 + 65536
+            elif path == "/save-dropped-file":
+                max_body = 50 * 1024 * 1024 * 2 + 65536
             elif path == "/browser-preview-html":
                 max_body = ServeApp._PREVIEW_HTML_MAX_BYTES * 2 + 65536
             else:
@@ -6627,6 +6708,18 @@ def _make_handler(app: ServeApp):
                     self._send_json(413, {"error": "image too large"})
                     return
                 result = app.save_pasted_image(chat_id, data_url, workspace_id)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/save-dropped-file":
+                chat_id = str(body.get("chatId") or "")[:256]
+                workspace_id = str(body.get("workspaceId") or "")[:256]
+                data_url = str(body.get("dataUrl") or "")
+                file_name = str(body.get("fileName") or "")[:256]
+                max_url_len = 50 * 1024 * 1024 * 2
+                if len(data_url) > max_url_len:
+                    self._send_json(413, {"error": "file too large"})
+                    return
+                result = app.save_dropped_file(chat_id, data_url, file_name, workspace_id)
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/browser-result":

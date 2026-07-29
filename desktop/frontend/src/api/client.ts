@@ -344,6 +344,31 @@ export class ApiClient {
     }
   }
 
+  /** Persist a drag-dropped file (any MIME type) under the active chat's
+   *  side-data dir. Returns ``{path, name}`` or ``null`` on failure. */
+  async saveDroppedFile(
+    chatId: string,
+    dataUrl: string,
+    fileName = "",
+    workspaceId = "",
+  ): Promise<{ path: string; name: string } | null> {
+    try {
+      const res = await fetch(`${this.base}/save-dropped-file`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, dataUrl, fileName, workspaceId }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        ok?: boolean; path?: string; name?: string;
+      };
+      if (!data.ok || !data.path) return null;
+      return { path: data.path, name: data.name ?? "" };
+    } catch {
+      return null;
+    }
+  }
+
   /** Absolute URL serving a pasted image by its on-disk path (token-gated;
    *  backend validates the path lives under the chats/data dir). */
   chatImageUrl(path: string): string {
