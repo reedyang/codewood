@@ -47,31 +47,6 @@ def _gui_mode_active(agent: Any) -> bool:
     return callable(getattr(agent, "_confirm_choice_provider", None))
 
 
-def _emit_gui_diff_block(file_path: str, preview_segments: List[Dict[str, Any]]) -> None:
-    """Print a sentinel-wrapped structured diff payload for the GUI transcript.
-
-    The desktop frontend splits step text on the GUI_DIFF_* sentinels and renders
-    a collapsible, syntax-highlighted diff block. The payload travels inside the
-    normal step output so it is persisted with the chat and re-rendered on reload.
-    """
-    try:
-        import json as _json
-
-        from ..core.change_preview_formatter import ChangePreviewFormatter
-        from ..core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
-
-        rows = ChangePreviewFormatter.format_segments_structured(preview_segments)
-        if not rows:
-            return
-        payload = _json.dumps(
-            {"file": file_path, "diffRows": rows}, ensure_ascii=False
-        )
-        print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
-    except Exception:
-        # Never let preview rendering break the patch application.
-        pass
-
-
 def _interactive_selector_available(agent: Any) -> bool:
     """Return True when an interactive UI will render the confirm prompt (and
     thus the change preview) itself, so apply_patch should hand over the
@@ -773,11 +748,11 @@ def action_apply_unified_patch(
             from ..core.logging.app_logging import get_logger
             get_logger("codewood.file_change").debug(f"[file_changes] apply_patch record error: {_e}")
             pass
-        # GUI: render the change preview as a collapsible, highlighted diff
-        # block in the transcript.  The runtime loop already printed the
-        # tool-call prompt line before executing; only emit the diff block here.
-        if gui_mode and preview_segments:
-            _emit_gui_diff_block(str(resolved), preview_segments)
+        # The diff preview is now emitted exclusively through
+        # _record_model_tool_execution_history → _append_tool_preview_blocks
+        # (via the live suffix stream), which the frontend attaches directly
+        # to the prompt line via PromptWithAttachment.  Emitting it here as
+        # well creates a duplicate standalone DiffStep in the transcript.
         change_preview_rows: List[Dict[str, Any]] = []
         if preview_segments:
             try:

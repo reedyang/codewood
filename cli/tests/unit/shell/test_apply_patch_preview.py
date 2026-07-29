@@ -277,13 +277,11 @@ class ApplyPatchPreviewTests(unittest.TestCase):
 
     def test_moderate_mode_gui_still_emits_live_diff_block(self):
         # Regression: under moderate policy the confirm prompt is skipped, but
-        # the GUI must still emit the collapsible diff block live (it was
-        # previously gated together with the confirm and only appeared on
-        # reload).
+        # the diff data must still be present in the result so
+        # _record_model_tool_execution_history can emit it via the live suffix
+        # (previously the diff was printed synchronously to stdout here).
         import contextlib
         import io
-
-        from cli.core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -305,8 +303,12 @@ class ApplyPatchPreviewTests(unittest.TestCase):
 
             self.assertTrue(result.get("success"), result.get("error"))
             self.assertEqual(agent.prompt_calls, 0)
-            self.assertIn(GUI_DIFF_BEGIN, out)
-            self.assertIn(GUI_DIFF_END, out)
+            # The structured diff rows are carried in the result so
+            # _record_model_tool_execution_history can stream them to
+            # the frontend via the live suffix.
+            rows = result.get("change_preview_rows")
+            self.assertIsInstance(rows, list)
+            self.assertTrue(len(rows) > 0)
 
     def test_apply_patch_falls_back_to_context_when_hunk_line_number_is_wrong(self):
         with tempfile.TemporaryDirectory() as td:
