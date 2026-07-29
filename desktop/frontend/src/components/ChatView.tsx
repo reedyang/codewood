@@ -1014,6 +1014,7 @@ export function ChatView() {
     turns,
     historyTurns,
     historyStart,
+    historyTotal,
     historyLoading,
     loadOlderHistory,
     busy,
@@ -1113,14 +1114,72 @@ export function ChatView() {
   // the first message and sending a new one). Reset when switching to a
   // different chat so the splash still shows on the first load of a new chat.
   const historyEverHadContentRef = useRef(false);
+  // Track whether a history load has ever completed (historyLoading
+  // transitioned true→false) for the current chat. Detected synchronously
+  // during render so the transition frame correctly hides the splash.
+  const historyLoadCompletedRef = useRef(false);
+  const prevHistoryLoadingRef = useRef(false);
+  if (prevHistoryLoadingRef.current && !historyLoading) {
+    historyLoadCompletedRef.current = true;
+  }
+  prevHistoryLoadingRef.current = historyLoading;
+  // When the first load on startup returns empty before the SSE idle has
+  // arrived (server persistence not yet caught up), defer showing the empty
+  // state for a grace period so the imminent idle-triggered reload can take
+  // over without a flash.
+  const [emptyDeferred, setEmptyDeferred] = useState(false);
+  const emptyGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevLoadCompletedRef = useRef(false);
+  if (historyLoadCompletedRef.current && !prevLoadCompletedRef.current) {
+    prevLoadCompletedRef.current = true;
+  }
+  if (historyLoadCompletedRef.current && historyTotal === 0 && historyTurns.length === 0 && !historyEverHadContentRef.current) {
+    if (!emptyDeferred && !emptyGraceTimerRef.current) {
+      emptyGraceTimerRef.current = setTimeout(() => {
+        emptyGraceTimerRef.current = null;
+        setEmptyDeferred(true);
+      }, 1500);
+    }
+  } else {
+    if (emptyGraceTimerRef.current) {
+      clearTimeout(emptyGraceTimerRef.current);
+      emptyGraceTimerRef.current = null;
+    }
+    if (emptyDeferred && (historyEverHadContentRef.current || historyTotal > 0)) {
+      setEmptyDeferred(false);
+    }
+  }
+  // If a second load starts (historyLoading flips true after having completed),
+  // cancel the grace timer and keep the splash.
+  if (prevLoadCompletedRef.current && historyLoading && emptyGraceTimerRef.current) {
+    clearTimeout(emptyGraceTimerRef.current);
+    emptyGraceTimerRef.current = null;
+  }
+  // Cleanup on unmount or draftKey change.
   const prevDraftKeyRef = useRef(draftKey);
   if (draftKey !== prevDraftKeyRef.current) {
     prevDraftKeyRef.current = draftKey;
     historyEverHadContentRef.current = false;
+    historyLoadCompletedRef.current = false;
+    prevHistoryLoadingRef.current = false;
+    prevLoadCompletedRef.current = false;
+    if (emptyGraceTimerRef.current) {
+      clearTimeout(emptyGraceTimerRef.current);
+      emptyGraceTimerRef.current = null;
+    }
   }
   if ((historyTurns.length > 0 || turns.length > 0) && !historyEverHadContentRef.current) {
     historyEverHadContentRef.current = true;
   }
+  // Reset deferred-empty flag when switching chats.
+  useEffect(() => { setEmptyDeferred(false); }, [draftKey]);
+  // Cleanup on unmount.
+  useEffect(() => () => {
+    if (emptyGraceTimerRef.current) {
+      clearTimeout(emptyGraceTimerRef.current);
+      emptyGraceTimerRef.current = null;
+    }
+  }, []);
 
   // Seed each chat's compose mode from the backend's persisted Plan-mode flag
   // the first time we see it (e.g. after an app restart). Only seeds chats not
@@ -1605,11 +1664,11 @@ export function ChatView() {
 
   const showEmpty =
     draftMode ||
-    (state !== null && !historyLoading && !historyStart && turns.length === 0 && historyTurns.length === 0);
+    (state !== null && !historyLoading && !historyStart && turns.length === 0 && historyTurns.length === 0 && historyLoadCompletedRef.current && !emptyGraceTimerRef.current);
   const showChatLoadingSplash =
     !draftMode &&
     !(historyTurns.length > 0 || turns.length > 0) &&
-    (state === null || (historyLoading && !historyEverHadContentRef.current));
+    (state === null || (historyLoading && !historyEverHadContentRef.current) || !historyLoadCompletedRef.current || Boolean(emptyGraceTimerRef.current));
   // In draft mode the greeting reflects the chosen draft workspace; otherwise
   // it reflects the active workspace. The Default workspace is not a real
   // project, so omit its name from the greeting.
