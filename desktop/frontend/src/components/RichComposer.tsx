@@ -1560,9 +1560,8 @@ export function RichComposer({
       }
       // Home / End: when the document starts (or ends) with a pill there is no
       // text node for the native caret to land in, so the caret can vanish.
-      // Drive these explicitly to the document's first / last edge. We use a
-      // ZWSP anchor when the edge is a pill so the caret has a real text node to
-      // sit in. Shift extends the existing selection; otherwise it collapses.
+      // Only intercept when the respective edge is a pill; otherwise let the
+      // browser handle Home/End natively (line-based navigation).
       if (
         (e.key === "Home" || e.key === "End") &&
         !e.ctrlKey &&
@@ -1574,51 +1573,51 @@ export function RichComposer({
         if (root && sel && sel.rangeCount > 0) {
           const kids = Array.from(root.childNodes);
           if (kids.length > 0) {
-            const r = document.createRange();
-            if (e.key === "Home") {
-              const first = kids[0];
-              if (
-                first.nodeType === Node.TEXT_NODE &&
-                (first.textContent ?? "").startsWith(ZWSP)
-              ) {
-                // Leading ZWSP anchor in front of a pill — land just after it
-                // so the caret is visible at the very start.
-                r.setStart(first, Math.min(1, (first.textContent ?? "").length));
-              } else if (
-                first.nodeType === Node.ELEMENT_NODE &&
-                (first as HTMLElement).hasAttribute("data-token-kind")
-              ) {
-                r.setStartBefore(first);
-              } else {
-                r.setStart(first, 0);
+            const isPillOrAnchor = (node: Node): boolean => {
+              if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).hasAttribute("data-token-kind")) {
+                return true;
               }
-            } else {
-              const last = kids[kids.length - 1];
-              if (
-                last.nodeType === Node.ELEMENT_NODE &&
-                (last as HTMLElement).hasAttribute("data-token-kind")
-              ) {
-                r.setStartAfter(last);
-              } else {
-                r.setStart(last, (last.textContent ?? "").length);
+              if (node.nodeType === Node.TEXT_NODE && (node.textContent ?? "").startsWith(ZWSP)) {
+                return true;
               }
-            }
-            r.collapse(true);
-            if (e.shiftKey) {
-              const cur = sel.getRangeAt(0);
+              return false;
+            };
+            const atEdge = e.key === "Home"
+              ? isPillOrAnchor(kids[0])
+              : isPillOrAnchor(kids[kids.length - 1]);
+            if (atEdge) {
+              const r = document.createRange();
               if (e.key === "Home") {
-                cur.setStart(r.startContainer, r.startOffset);
+                const first = kids[0];
+                if (
+                  first.nodeType === Node.TEXT_NODE &&
+                  (first.textContent ?? "").startsWith(ZWSP)
+                ) {
+                  r.setStart(first, Math.min(1, (first.textContent ?? "").length));
+                } else {
+                  r.setStartBefore(first);
+                }
               } else {
-                cur.setEnd(r.startContainer, r.startOffset);
+                const last = kids[kids.length - 1];
+                r.setStartAfter(last);
               }
-              sel.removeAllRanges();
-              sel.addRange(cur);
-            } else {
-              sel.removeAllRanges();
-              sel.addRange(r);
+              r.collapse(true);
+              if (e.shiftKey) {
+                const cur = sel.getRangeAt(0);
+                if (e.key === "Home") {
+                  cur.setStart(r.startContainer, r.startOffset);
+                } else {
+                  cur.setEnd(r.startContainer, r.startOffset);
+                }
+                sel.removeAllRanges();
+                sel.addRange(cur);
+              } else {
+                sel.removeAllRanges();
+                sel.addRange(r);
+              }
+              e.preventDefault();
+              return;
             }
-            e.preventDefault();
-            return;
           }
         }
       }
