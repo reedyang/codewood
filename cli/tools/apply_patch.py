@@ -186,8 +186,43 @@ def _normalize_apply_patch_text(raw_patch: str, file_path: str) -> tuple[str, Li
     return normalized, warnings
 
 
+# Translation table normalizing typographic/curly quotation marks to
+# their ASCII equivalents for matching.  AI-generated patches frequently
+# use straight quotes while source files contain curly ones (or vice
+# versa); normalizing both sides before comparison avoids spurious
+# "context does not match" failures.
+_QUOTE_NORMALIZE_TABLE = str.maketrans(
+    {
+        "\u2018": "'",   # LEFT SINGLE QUOTATION MARK
+        "\u2019": "'",   # RIGHT SINGLE QUOTATION MARK
+        "\u201a": "'",   # SINGLE LOW-9 QUOTATION MARK
+        "\u201b": "'",   # SINGLE HIGH-REVERSED-9 QUOTATION MARK
+        "\u201c": '"',   # LEFT DOUBLE QUOTATION MARK
+        "\u201d": '"',   # RIGHT DOUBLE QUOTATION MARK
+        "\u201e": '"',   # DOUBLE LOW-9 QUOTATION MARK
+        "\u201f": '"',   # DOUBLE HIGH-REVERSED-9 QUOTATION MARK
+        "\u2039": "'",   # SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+        "\u203a": "'",   # SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
+        "\u00ab": '"',   # LEFT-POINTING DOUBLE ANGLE QUOTATION MARK
+        "\u00bb": '"',   # RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK
+    }
+)
+
+
+def _normalize_for_match(s: str) -> str:
+    """Normalize a string for comparison by mapping typographic quotes to
+    their ASCII equivalents.  This is applied to both file content and
+    patch context lines before matching, so that AI-generated diffs
+    using straight quotes can patch files containing curly quotes (and
+    vice versa)."""
+    if not s:
+        return s
+    return s.translate(_QUOTE_NORMALIZE_TABLE)
+
+
 def _matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> bool:
-    """Strict exact matching of hunk context / deletion lines against old_lines."""
+    """Strict exact matching of hunk context / deletion lines against old_lines.
+    Both sides are normalized for typographic quote differences before comparison."""
     cur = start_idx
     for hl in hunk_lines:
         if hl.startswith("*** "):
@@ -199,7 +234,7 @@ def _matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> 
         prefix = hl[0]
         text = hl[1:]
         if prefix in (" ", "-"):
-            if cur >= len(old_lines) or old_lines[cur] != text:
+            if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                 return False
             cur += 1
         elif prefix == "+":
@@ -282,7 +317,7 @@ def _hunk_matches_at(
             ok = True
             for hl in leading_ctx:
                 text = hl[1:]
-                if cur >= len(old_lines) or old_lines[cur] != text:
+                if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                     ok = False
                     break
                 cur += 1
@@ -297,7 +332,7 @@ def _hunk_matches_at(
             for hl in core:
                 if hl.startswith(("-", " ")):
                     text = hl[1:]
-                    if cur >= len(old_lines) or old_lines[cur] != text:
+                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                         ok = False
                         break
                     cur += 1
@@ -312,7 +347,7 @@ def _hunk_matches_at(
                 ok = True
                 for hl in trailing_ctx:
                     text = hl[1:]
-                    if cur >= len(old_lines) or old_lines[cur] != text:
+                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                         ok = False
                         break
                     cur += 1
@@ -367,7 +402,7 @@ def _locate_hunk_start(
 
     candidates: List[int] = []
     for probe in range(src_idx, len(old_lines)):
-        if old_lines[probe] == anchor:
+        if _normalize_for_match(old_lines[probe]) == _normalize_for_match(anchor):
             candidates.append(probe)
     if not candidates:
         return None
@@ -397,7 +432,7 @@ def _locate_hunk_start(
             # matches directly; otherwise the subsequent hunk
             # application (which does exact line-by-line comparison)
             # will fail.
-            if old_lines[test_pos] != anchor:
+            if _normalize_for_match(old_lines[test_pos]) != _normalize_for_match(anchor):
                 continue
             if _hunk_matches_at(old_lines, test_pos, hunk_lines, fuzz=fuzz):
                 return test_pos
@@ -597,7 +632,7 @@ def action_apply_unified_patch(
                 prefix = hl[0]
                 text = hl[1:]
                 if prefix == " ":
-                    if cur >= len(old_lines) or old_lines[cur] != text:
+                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                         expected = repr(text)
                         actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
                         return {
@@ -613,7 +648,7 @@ def action_apply_unified_patch(
                     hunk_new_fragment.append(old_lines[cur])
                     cur += 1
                 elif prefix == "-":
-                    if cur >= len(old_lines) or old_lines[cur] != text:
+                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                         expected = repr(text)
                         actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
                         return {
