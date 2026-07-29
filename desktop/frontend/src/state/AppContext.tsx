@@ -2091,7 +2091,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const backendElapsedS = typeof roundMeta.thinkingElapsedSeconds === "number"
             ? roundMeta.thinkingElapsedSeconds as number : undefined;
           endRound(eventKey, backendElapsedS != null ? Math.round(backendElapsedS * 1000) : undefined);
-          // Refresh context-usage ring and cache-stats dashboard from the
+          // Refresh context-usage ring and cache/output token stats from the
           // round_end payload so they stay live during a multi-round task
           // instead of freezing until the terminal idle event.
           const cu = roundMeta.contextUsage as
@@ -2100,12 +2100,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const cs = roundMeta.cacheStats as
             | { totalTokens?: number; hitTokens?: number; missTokens?: number; hitRate?: number; supported?: boolean }
             | undefined;
-          if (cu || cs) {
+          const ts = roundMeta.tokenStats as
+            | { outputTokens?: number; reasoningTokens?: number; hasOutputTokens?: boolean; hasReasoningTokens?: boolean; includesReasoning?: boolean }
+            | undefined;
+          if (cu || cs || ts) {
             setState((prev) => {
               if (!prev) return prev;
               const next = { ...prev };
               if (cu) next.contextUsage = cu as AppState["contextUsage"];
               if (cs) next.cacheStats = cs as AppState["cacheStats"];
+              if (ts) next.tokenStats = ts as AppState["tokenStats"];
               return next;
             });
           }
