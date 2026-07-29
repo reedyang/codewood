@@ -860,36 +860,38 @@ def _safe_pending_request_user_input(agent: Any) -> Optional[Dict[str, Any]]:
 def _safe_active_plan(agent: Any) -> Dict[str, Any]:
     """Return the active chat's plan ({plan:[{step,status}], explanation}).
 
-    ``_active_chat_plan`` is session-scoped, but this runs on HTTP handler
-    threads that may not be bound to the active chat's session (and a
-    focus-only chat switch never rebinds/refreshes it). Bind to the active
-    chat and refresh the in-memory plan from its message stream so the panel
-    always reflects the latest plan-bearing message of the chat being shown.
+    Scan the chat's message list directly from its disk record so the plan
+    panel renders correctly on initial load (no session binding yet) and after
+    focus changes — no dependency on ``_session_scope`` or in-memory state.
     """
-    snapshot = None
+    items = []
+    explanation = ""
     try:
         cid = _primary_active_chat_id(agent)
-        with agent._session_scope(cid):
-            try:
-                agent._chat_state_manager.refresh_active_chat_plan_from_messages()
-            except Exception:
-                pass
-            snapshot = agent._chat_state_manager.active_chat_plan()
+        if cid:
+            chat = agent._chat_state_manager.find_chat_by_id(cid)
+            if chat:
+                messages = chat.get("messages")
+                if isinstance(messages, list):
+                    from ..managers.chat_state_manager import _normalize_plan_items
+                    for msg in reversed(messages):
+                        if not isinstance(msg, dict):
+                            continue
+                        raw_plan = msg.get("plan")
+                        items = _normalize_plan_items(raw_plan)
+                        if items:
+                            explanation = str(msg.get("plan_explanation") or "")
+                            break
+                        if msg.get("role") == "user" and not msg.get("_internal"):
+                            break
     except Exception:
-        snapshot = None
-    if not isinstance(snapshot, dict):
-        return {"plan": [], "explanation": ""}
+        pass
     steps = []
-    for item in snapshot.get("plan") or []:
+    for item in items:
         if not isinstance(item, dict):
             continue
-        steps.append(
-            {
-                "step": str(item.get("step") or ""),
-                "status": str(item.get("status") or ""),
-            }
-        )
-    return {"plan": steps, "explanation": str(snapshot.get("explanation") or "")}
+        steps.append({"step": str(item.get("step") or ""), "status": str(item.get("status") or "")})
+    return {"plan": steps, "explanation": explanation}
 
 
 def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
