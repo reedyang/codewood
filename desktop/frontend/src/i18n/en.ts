@@ -15,6 +15,8 @@ export const en: Dict = {
   "sidebar.noWorkspaces": "No workspaces",
   "sidebar.loadMore": "Load more",
 
+  "status.ran": "Ran",
+
   "activity.working": "Working...",
   "activity.workedFor": "Worked for",
   "activity.thinking": "Thinking",
