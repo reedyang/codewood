@@ -88,7 +88,6 @@ export const en: Dict = {
   "reasoning.effort.max": "Max",
   "reasoning.unavailable": "Unavailable",
   "plan.title": "To-dos",
-  "plan.empty": "No plan yet.",
   "todo.collapse": "Collapse to-dos",
   "todo.expand": "Expand to-dos",
 

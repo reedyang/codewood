@@ -88,7 +88,6 @@ export const zhCN: Dict = {
   "reasoning.effort.max": "最大",
   "reasoning.unavailable": "不可用",
   "plan.title": "待办事项",
-  "plan.empty": "暂无计划。",
   "todo.collapse": "折叠待办",
   "todo.expand": "展开待办",
 
