@@ -2714,6 +2714,14 @@ class Agent:
                     suffix_parts.append(f"limit={lim}")
                 detail = f"{rel}" + (f" [{', '.join(suffix_parts)}]" if suffix_parts else "")
             return (label, detail)
+        if name == "grep":
+            pat = str(a.get("pattern") or "").strip()
+            label = translate("tool.label.grep", self._ui_language())
+            sp = str(a.get("path") or "").strip()
+            detail = pat
+            if sp and sp != ".":
+                detail = f"{pat} in {sp}"
+            return (label, detail)
         if name == "project_context_search":
             q = str(a.get("query") or "").strip()
             label = translate("tool.label.project_context_search", self._ui_language())
@@ -3465,7 +3473,7 @@ class Agent:
             err = str(r.get("error") or "")
             if err:
                 return err
-        if t == "read":
+        if t == "read" or t == "grep":
             content = str(r.get("content") or "")
             if not content:
                 content = str(r.get("output") or "")

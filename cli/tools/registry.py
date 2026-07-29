@@ -20,6 +20,7 @@ from .base import BaseTool
 from .shell import ShellTool
 from .apply_patch import ApplyPatchTool
 from .read import ReadTool
+from .grep import GrepTool
 from .project_context_search import ProjectContextSearchTool
 from .mcp_read_resource import McpReadResourceTool
 from .mcp_list_resources import McpListResourcesTool
@@ -58,6 +59,7 @@ ALL_TOOLS: List[Type[BaseTool]] = [
     ShellTool,
     ApplyPatchTool,
     ReadTool,
+    GrepTool,
     ProjectContextSearchTool,
     McpReadResourceTool,
     McpListResourcesTool,
