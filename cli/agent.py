@@ -3986,8 +3986,12 @@ class Agent:
             # block so reloaded history can show every tool's result on demand.
             # In TUI mode, only shell/bash output is shown; all other tool
             # output is suppressed.
+            # run_subagent calls keep a separate, fully-persisted transcript
+            # (see cli/subagents/executor.py); recording its potentially large
+            # final output inline would bloat the main chat history. Skip it
+            # here — the guiSessionMarker still lets the GUI navigate in.
             output = item.get("output")
-            if output and (_tui_allowed_tools is None or tool in _tui_allowed_tools):
+            if output and tool != "run_subagent" and (_tui_allowed_tools is None or tool in _tui_allowed_tools):
                 if _tui_allowed_tools is not None and tool in ("shell", "bash"):
                     # TUI mode: format shell output with truncation
                     formatted = self._format_shell_output_for_tui(output)
