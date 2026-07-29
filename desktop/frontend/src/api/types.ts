@@ -470,6 +470,8 @@ export interface FileChangeSummary {
   turnIndex?: number;
   /** Backend hashcode identifying this change set (used by undo/reapply). */
   ref?: string;
+  /** File paths already undone (persisted across GUI restarts). */
+  undoneFiles?: string[];
 }
 
 /** Result from undo/reapply file changes API. */

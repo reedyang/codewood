@@ -20,7 +20,9 @@ function isUndoable(file: FileChangeRecord): boolean {
 export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProps) {
   const { client, activeChatId } = useApp();
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
-  const [undoneFiles, setUndoneFiles] = useState<Set<string>>(new Set());
+  const [undoneFiles, setUndoneFiles] = useState<Set<string>>(
+    () => new Set(summary.undoneFiles ?? []),
+  );
   const [isProcessing, setIsProcessing] = useState(false);
   const [failDialog, setFailDialog] = useState<{ title: string; files: Array<{ path: string; error: string }> } | null>(null);
 

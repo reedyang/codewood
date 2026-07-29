@@ -1315,12 +1315,26 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     if _bp:
                         _m["backupPath"] = _bp
             _files = [_by_file[_fp] for _fp in _file_order]
-            return [{
+            _undone = set()
+            _ref = None
+            for _s in summaries:
+                if isinstance(_s, dict):
+                    _r = _s.get("ref")
+                    if _r:
+                        _ref = _r
+                    for _uf in (_s.get("undoneFiles") or []):
+                        _undone.add(str(_uf))
+            _merged: Dict[str, Any] = {
                 "totalFiles": len(_files),
                 "totalAdded": sum(_f["addedLines"] for _f in _files),
                 "totalDeleted": sum(_f["deletedLines"] for _f in _files),
                 "files": _files,
-            }]
+            }
+            if _undone:
+                _merged["undoneFiles"] = list(_undone)
+            if _ref:
+                _merged["ref"] = _ref
+            return [_merged]
         for _ch in chats:
             _ch_id = str(_ch.get("id") or "")
             if not _ch_id:
@@ -5799,6 +5813,36 @@ class ServeApp:
                 return fc
         return None
 
+    def _update_undone_files_state(
+        self, chat_id: str, ref: str, file_paths: List[str], undone: bool,
+    ) -> None:
+        """Mark files as undone/redone in the file-changes store and persist to disk."""
+        _fc_by_chat: Dict[str, Any] = dict(
+            getattr(self.agent, "_file_changes_by_chat", {}) or {}
+        )
+        cid = str(chat_id or "")
+        store: dict = dict(_fc_by_chat.get(cid, {}))
+        summary = store.get(str(ref or ""))
+        if not isinstance(summary, dict):
+            return
+        undone_list: List[str] = list(summary.get("undoneFiles") or [])
+        if undone:
+            for p in file_paths:
+                if p not in undone_list:
+                    undone_list.append(p)
+        else:
+            undone_list = [p for p in undone_list if p not in file_paths]
+        summary["undoneFiles"] = undone_list
+        store[str(ref or "")] = summary
+        _fc_by_chat[cid] = store
+        setattr(self.agent, "_file_changes_by_chat", _fc_by_chat)
+        try:
+            mgr = getattr(self.agent, "_chat_state_manager", None)
+            if mgr is not None:
+                mgr.save_file_changes(cid, store)
+        except Exception:
+            pass
+
     def _resolve_backup_full_path(
         self, chat_id: str, backup_name: str,
     ) -> Optional[Path]:
@@ -5892,6 +5936,13 @@ class ServeApp:
                     outcome[fpath] = {"success": False, "error": f"restore failed: {exc}"}
             else:
                 outcome[fpath] = {"success": False, "error": f"unsupported change type: {ct}"}
+        if outcome:
+            undone_success = [
+                f for f, r in outcome.items()
+                if r.get("success")
+            ]
+            if undone_success:
+                self._update_undone_files_state(chat_id, ref, undone_success, undone=True)
         return {"results": outcome}
 
     def reapply_file_changes(
@@ -5956,6 +6007,13 @@ class ServeApp:
                 outcome[fpath] = {"success": False, "error": "binary reapply not supported"}
             else:
                 outcome[fpath] = {"success": False, "error": f"unsupported change type: {ct}"}
+        if outcome:
+            reapplied_success = [
+                f for f, r in outcome.items()
+                if r.get("success")
+            ]
+            if reapplied_success:
+                self._update_undone_files_state(chat_id, ref, reapplied_success, undone=False)
         return {"results": outcome}
 
     def request_shutdown(self) -> None:
