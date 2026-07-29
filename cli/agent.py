@@ -2722,6 +2722,14 @@ class Agent:
             if sp and sp != ".":
                 detail = f"{pat} in {sp}"
             return (label, detail)
+        if name == "glob":
+            pat = str(a.get("pattern") or "").strip()
+            label = translate("tool.label.glob", self._ui_language())
+            sp = str(a.get("path") or "").strip()
+            detail = pat
+            if sp and sp != ".":
+                detail = f"{pat} in {sp}"
+            return (label, detail)
         if name == "project_context_search":
             q = str(a.get("query") or "").strip()
             label = translate("tool.label.project_context_search", self._ui_language())
@@ -3473,7 +3481,7 @@ class Agent:
             err = str(r.get("error") or "")
             if err:
                 return err
-        if t == "read" or t == "grep":
+        if t == "read" or t == "grep" or t == "glob":
             content = str(r.get("content") or "")
             if not content:
                 content = str(r.get("output") or "")
