@@ -68,7 +68,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
 
         # ---------- text files ----------
         try:
-            content = abs_path.read_text(encoding="utf-8")
+            content = abs_path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             return {"success": False, "error": f"'{path}' is not a text file (binary content)"}
 
