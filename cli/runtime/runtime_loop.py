@@ -474,22 +474,36 @@ def _build_tool_calls_from_plans(
     from the message content so the upcoming ``role: tool`` results keep
     pairing with the correct call.
     """
-    content = str((assistant_msg or {}).get("content") or "")
+    # First, try to extract IDs from the existing structured tool_calls
+    # (which may have valid IDs but unparseable arguments).
     parsed_ids: Dict[str, str] = {}
-    try:
-        payload = json.loads(content)
-        raw_calls = payload.get("tool_calls") if isinstance(payload, dict) else None
-        if isinstance(raw_calls, list):
-            for c in raw_calls:
-                if not isinstance(c, dict):
-                    continue
-                fn = c.get("function") or {}
-                name = str(fn.get("name") or "").strip()
-                cid = str(c.get("id") or "").strip()
-                if name and cid:
-                    parsed_ids[name] = cid
-    except Exception:
-        parsed_ids = {}
+    existing_tool_calls = (assistant_msg or {}).get("tool_calls")
+    if isinstance(existing_tool_calls, list):
+        for c in existing_tool_calls:
+            if not isinstance(c, dict):
+                continue
+            fn = c.get("function") or {}
+            name = str(fn.get("name") or "").strip()
+            cid = str(c.get("id") or "").strip()
+            if name and cid:
+                parsed_ids[name] = cid
+    # Fall back to JSON content extraction (for pseudo-tool-call providers).
+    if not parsed_ids:
+        content = str((assistant_msg or {}).get("content") or "")
+        try:
+            payload = json.loads(content)
+            raw_calls = payload.get("tool_calls") if isinstance(payload, dict) else None
+            if isinstance(raw_calls, list):
+                for c in raw_calls:
+                    if not isinstance(c, dict):
+                        continue
+                    fn = c.get("function") or {}
+                    name = str(fn.get("name") or "").strip()
+                    cid = str(c.get("id") or "").strip()
+                    if name and cid:
+                        parsed_ids[name] = cid
+        except Exception:
+            parsed_ids = {}
     out: List[Dict[str, Any]] = []
     for idx, (tool_name, args) in enumerate(plans):
         cid = parsed_ids.get(str(tool_name or ""), "").strip() or f"call_{idx}"
