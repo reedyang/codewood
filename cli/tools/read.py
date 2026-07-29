@@ -83,8 +83,9 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
         else:
             sliced = lines[start:]
 
+        total_lines = len(lines)
         result = "\n".join(f"{start + i + 1}: {line}" for i, line in enumerate(sliced))
-        return {"success": True, "content": result, "file": str(abs_path), "call": _call_desc}
+        return {"success": True, "content": result, "file": str(abs_path), "call": _call_desc, "total_lines": total_lines}
     except Exception as e:
         return {"success": False, "error": f"Read failed: {str(e)}"}
 
