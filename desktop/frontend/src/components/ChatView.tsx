@@ -1161,11 +1161,15 @@ export function ChatView() {
   // Cleanup on unmount or draftKey change.
   const prevDraftKeyRef = useRef(draftKey);
   if (draftKey !== prevDraftKeyRef.current) {
+    // When materializing a draft chat (New Chat → real chat), there is no
+    // history to load — suppress the splash that would flash during the
+    // idle-triggered history reload.
+    const wasDraft = prevDraftKeyRef.current === DRAFT_KEY;
     prevDraftKeyRef.current = draftKey;
-    historyEverHadContentRef.current = false;
-    historyLoadCompletedRef.current = false;
+    historyEverHadContentRef.current = wasDraft;
+    historyLoadCompletedRef.current = wasDraft;
     prevHistoryLoadingRef.current = false;
-    prevLoadCompletedRef.current = false;
+    prevLoadCompletedRef.current = wasDraft;
     if (emptyGraceTimerRef.current) {
       clearTimeout(emptyGraceTimerRef.current);
       emptyGraceTimerRef.current = null;
