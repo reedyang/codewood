@@ -165,7 +165,7 @@ class GrepTool(BaseTool):
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         params = params if isinstance(params, dict) else {}
-        pattern = str(params.get("pattern") or "").strip()
+        pattern = str(params.get("pattern") or "").strip().strip('"')
         if not pattern:
             return {"success": False, "error": "missing pattern"}
         search_path = str(params.get("path") or ".")
