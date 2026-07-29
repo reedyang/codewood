@@ -501,6 +501,10 @@ def action_apply_unified_patch(
         normalized_patch, patch_warnings = _normalize_apply_patch_text(
             str(patch or ""), str(file_path or "")
         )
+        # Strip BOM (\ufeff) appearing right after hunk body line prefixes
+        # (space / - / +). Model may reproduce BOM that read tool exposed.
+        # Only matches at line start — content \ufeff elsewhere is untouched.
+        normalized_patch = re.sub(r'(?m)^([ +-])\ufeff', r'\1', normalized_patch)
         patch_lines = normalized_patch.splitlines()
         if not patch_lines:
             return {"success": False, "error": "Patch content cannot be empty"}
