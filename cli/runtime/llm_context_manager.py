@@ -455,6 +455,27 @@ class LLMContextManager:
             "summary_messages": 1 if summary_message else 0,
             "dropped_messages": dropped_messages,
         }
+        # Sanitize: remove tool_calls from assistant messages whose
+        # tool_call_ids don't all have corresponding tool responses in the
+        # final message list (e.g. user cancelled mid-batch, leaving an
+        # orphaned tool_call_id).  Without this the provider returns 400.
+        all_tcids: Set[str] = set()
+        for _m in working:
+            if str(_m.get("role") or "").strip().lower() == "tool":
+                _tid = str(_m.get("tool_call_id") or "").strip()
+                if _tid:
+                    all_tcids.add(_tid)
+        for _m in working:
+            if str(_m.get("role") or "").strip().lower() == "assistant":
+                _tcs = _m.get("tool_calls")
+                if isinstance(_tcs, list) and _tcs:
+                    _ids = [
+                        str(c.get("id") or "")
+                        for c in _tcs
+                        if isinstance(c, dict)
+                    ]
+                    if not all((i or "").strip() in all_tcids for i in _ids):
+                        del _m["tool_calls"]
         return working, stats
 
     def _message_cost_for_tail_budget(self, msg: Dict[str, Any]) -> int:
