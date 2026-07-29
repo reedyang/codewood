@@ -1666,6 +1666,15 @@ export function ChatView() {
                 );
               });
             })()}
+            {compactNotice && (
+              <div className="turn compact-notice-turn" role="alert" aria-live="polite">
+                <CompactNoticeView
+                  title={compactNotice.title}
+                  body={compactNotice.body}
+                  stage={compactNotice.stage}
+                />
+              </div>
+            )}
             {turns.map((turn, index) => (
               <TurnView
                 key={turn.id}
@@ -1771,15 +1780,6 @@ export function ChatView() {
                 </div>
               );
             })()}
-            {compactNotice && (
-              <div className="turn compact-notice-turn" role="alert" aria-live="polite">
-                <CompactNoticeView
-                  title={compactNotice.title}
-                  body={compactNotice.body}
-                  stage={compactNotice.stage}
-                />
-              </div>
-            )}
           </div>
           </div>
           <div className="composer-dock">
