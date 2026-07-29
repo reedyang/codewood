@@ -6134,6 +6134,7 @@ class ServeApp:
                               or getattr(self.agent, "context_window", 0) or 0),
                 },
                 cacheStats=_compute_chat_cache_stats(self.agent),
+                tokenStats=_compute_chat_token_stats(self.agent),
                 thinkingElapsedSeconds=round(
                     time.monotonic() - getattr(self.agent, "_gui_round_start_mono", time.monotonic()), 1
                 ),
