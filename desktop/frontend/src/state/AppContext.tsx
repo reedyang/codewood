@@ -2895,6 +2895,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // from the new-chat idle event and overwrite the correct history).
       const expectedKey = historyChatRef.current;
       setHistoryLoading(true);
+      // When history reloads (e.g. after a turn finishes), the persisted
+      // compact summary is already part of the returned structured turns.
+      // Clear the live compact notice so it doesn't duplicate the history turn.
+      setCompactNoticeState((state) =>
+        state.notice
+          ? { chatKey: "", notice: null, version: state.version + 1 }
+          : state,
+      );
       try {
         const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
         // The user switched to a different chat while we were fetching.
