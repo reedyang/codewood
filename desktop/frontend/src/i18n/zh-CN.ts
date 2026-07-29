@@ -15,6 +15,8 @@ export const zhCN: Dict = {
   "sidebar.noWorkspaces": "暂无工作区",
   "sidebar.loadMore": "加载更多",
 
+  "status.ran": "执行",
+
   "activity.working": "处理中...",
   "activity.workedFor": "用时",
   "activity.thinking": "思考中",

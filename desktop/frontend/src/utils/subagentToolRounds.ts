@@ -15,6 +15,10 @@ function ansiRgb(text: string, r: number, g: number, b: number): string {
   return `\u001b[38;2;${r};${g};${b}m${text}${ANSI_RESET}`;
 }
 
+function ansiBold(text: string): string {
+  return `\u001b[1m${text}${ANSI_RESET}`;
+}
+
 function toolLabel(toolName: string, lang: Lang): string {
   const name = String(toolName || "").trim().toLowerCase();
   if (name) {
@@ -97,6 +101,10 @@ function formatToolDetail(toolName: string, args: Record<string, unknown>): stri
     }
     return subagent || topic;
   }
+  if (name === "shell" || name === "bash") {
+    const cmd = String(args.command || "").trim();
+    return cmd || "";
+  }
   if (name === "update_plan") {
     return "";
   }
@@ -119,9 +127,12 @@ export function buildFallbackToolRound(
   const name = String(toolName || "").trim() || "tool";
   const lang = options?.lang ?? "en";
   const failed = Boolean(options?.failed);
+  const isShell = name === "shell" || name === "bash";
   const bullet = failed ? ansiRgb("•", 197, 15, 31) : ansiRgb("•", 19, 161, 14);
-  const label = toolLabel(name, lang);
-  const detail = formatToolDetail(name, args);
+  const label = isShell
+    ? ansiBold(translate(lang, "status.ran"))
+    : toolLabel(name, lang);
+  const detail = isShell ? String(args.command || "").trim() : formatToolDetail(name, args);
   let round = `${CMD_PROMPT_BEGIN}${bullet} ${label}${detail ? ` ${detail}` : ""}${CMD_PROMPT_END}`;
   if (output) {
     round += `\n${CMD_OUTPUT_BEGIN}${output}${CMD_OUTPUT_END}`;
