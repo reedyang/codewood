@@ -12,6 +12,7 @@
   "status.apply_patch": "Edit",
   "status.create_file": "Add",
   "tool.label.read": "Read",
+  "tool.label.grep": "Grep",
   "tool.label.run_subagent": "Run subagent",
   "tool.label.update_plan": "Update plan",
   "tool.label.request_user_input": "Request user input",
