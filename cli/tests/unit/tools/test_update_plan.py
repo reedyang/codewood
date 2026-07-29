@@ -249,12 +249,10 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             chat = agent._chat_state_manager.find_chat_by_id("chat-1")
             self.assertEqual(
                 [(it["step"], it["status"]) for it in chat["messages"][0]["plan"]],
-                [("First step", "in_progress"), ("Second step", "pending")],
-            )
-            self.assertEqual(
-                [(it["step"], it["status"]) for it in chat["messages"][1]["plan"]],
                 [("First step", "completed"), ("Second step", "in_progress")],
             )
+            # Only one assistant message now carries a plan — the second
+            # update_plan overwrote the first stamp (same-turn overwrite).
             # The latest plan reflects the most recent update.
             snapshot = UpdatePlanTool.current_plan(agent)
             self.assertEqual(

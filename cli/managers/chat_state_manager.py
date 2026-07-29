@@ -1444,9 +1444,8 @@ class ChatStateManager:
         Called when (re)activating a chat so the runtime loop's plan reminder
         reflects the loaded conversation's latest plan.
         """
-        snapshot = self._latest_plan_snapshot_from_messages(
-            list(getattr(self._agent, "conversation_history", None) or [])
-        )
+        history = list(getattr(self._agent, "conversation_history", None) or [])
+        snapshot = self._latest_plan_snapshot_from_messages(history)
         self._agent._active_chat_plan = snapshot
         self._agent._active_chat_plan_pending = False
 
@@ -1559,13 +1558,9 @@ class ChatStateManager:
             # Only stamp the latest assistant message if it does NOT already
             # carry a plan. A message that already has a plan belongs to a
             # finalized prior turn; retroactively overwriting it would erase
-            # that turn's plan snapshot (each message must keep the plan as
-            # it stood at that message). When the latest assistant message is
-            # already stamped, the new plan stays pending and attaches to the
-            # next recorded assistant message via
-            # ``attach_pending_plan_to_message``.
-            if msg.get("plan"):
-                return
+            # that turn's plan snapshot. However, within the same turn the plan
+            # evolves through multiple ``update_plan`` calls; the final plan
+            # MUST replace any earlier stamp so it survives restart.
             msg["plan"] = items
             msg["plan_explanation"] = str(snapshot.get("explanation") or "").strip()
             msg["plan_updated_at"] = str(snapshot.get("updated_at") or "").strip()

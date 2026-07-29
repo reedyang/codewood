@@ -700,7 +700,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const sameChat = prev.chatId === activeChatId;
     const planChanged = prev.hash !== planHash;
     const hasPlan = activePlanLen > 0;
-    if (sameChat && planChanged && hasPlan) {
+    const initialLoad = !prev.chatId;
+    if ((sameChat || initialLoad) && planChanged && hasPlan) {
       setTodoDockVisible(true);
     }
     planAutoOpenRef.current = { chatId: activeChatId, hash: planHash };

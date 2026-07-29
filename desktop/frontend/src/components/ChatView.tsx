@@ -1592,13 +1592,11 @@ export function ChatView() {
 
   const showEmpty =
     draftMode ||
-    (turns.length === 0 && historyTurns.length === 0 && !historyLoading);
+    (state !== null && !historyLoading && !historyStart && turns.length === 0 && historyTurns.length === 0);
   const showChatLoadingSplash =
     !draftMode &&
-    historyLoading &&
-    turns.length === 0 &&
-    historyTurns.length === 0 &&
-    Boolean(activeChatId);
+    !(historyTurns.length > 0 || turns.length > 0) &&
+    (state === null || historyLoading || (Boolean(activeChatId) && historyStart <= 0));
   // In draft mode the greeting reflects the chosen draft workspace; otherwise
   // it reflects the active workspace. The Default workspace is not a real
   // project, so omit its name from the greeting.
