@@ -312,11 +312,6 @@ function fileExt(path: string): string {
 }
 
 const DIFF_BEGIN = "\uE006";
-const CMD_OUTPUT_BEGIN = "\uE000";
-
-export function toolTextHasVisibleOutput(toolText: string): boolean {
-  return toolText.includes(CMD_OUTPUT_BEGIN) || toolText.includes(DIFF_BEGIN);
-}
 
 function roundHasToolSteps(
   round: Pick<TurnRound, "segments"> | undefined,
@@ -328,18 +323,6 @@ function roundHasToolSteps(
   );
 }
 
-function roundHasVisibleToolOutput(
-  round: Pick<TurnRound, "segments"> | undefined,
-): boolean {
-  if (!round) {
-    return false;
-  }
-  const toolText = round.segments
-    .filter((segment) => segment.kind === "step")
-    .map((segment) => segment.text)
-    .join("");
-  return toolTextHasVisibleOutput(toolText);
-}
 const DIFF_END = "\uE007";
 
 function extractFilesFromToolText(toolText: string): string[] {
@@ -2784,8 +2767,7 @@ export function getLiveTurnDisplayState(
   const hasRunningToolRound = Boolean(
     lastRound &&
     lastRound.waitEndedAt === null &&
-    roundHasToolSteps(lastRound) &&
-    !roundHasVisibleToolOutput(lastRound),
+    roundHasToolSteps(lastRound),
   );
   const hasToolGroupWorking =
     liveGroupShowsOwnWorking(lastVisibleGroup, hasPendingContinuation);
@@ -2858,10 +2840,7 @@ function LiveToolGroupView({
   const toolCount = countToolCalls(toolText);
   const lastRound = rounds[rounds.length - 1];
   const lastRunning = lastRound?.waitEndedAt === null;
-  const toolRunning =
-    Boolean(lastRunning) &&
-    toolText.trim().length > 0 &&
-    !toolTextHasVisibleOutput(toolText);
+  const toolRunning = Boolean(lastRunning) && toolText.trim().length > 0;
   const elapsedMs = rounds.reduce(
     (sum, round) => sum + Math.max(0, (round.waitEndedAt ?? now) - round.waitStartedAt),
     0,
@@ -3230,7 +3209,7 @@ export function LiveRoundView({
     .join("");
   const hasAnswer = answer.trim().length > 0;
   const hasTools = toolText.trim().length > 0;
-  const toolRunning = running && hasTools && !toolTextHasVisibleOutput(toolText);
+  const toolRunning = running && hasTools;
   const toolWaitingText =
     running && hasTools && !toolRunning && !Boolean(round.thinkingText)
       ? `${t("activity.working")} (${elapsed})`
