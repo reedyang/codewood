@@ -2043,6 +2043,14 @@ def action_shell_command(
                             _payload = json.dumps(_entry, ensure_ascii=False)
                             sys.stdout.write(f"{GUI_DIFF_BEGIN}{_payload}{GUI_DIFF_END}")
                             sys.stdout.flush()
+                        # Also emit via the agent's direct SSE hook so the
+                        # blocks arrive in a single contiguous stream.
+                        _emit_direct = getattr(agent, "_gui_tool_output_emit", None)
+                        if callable(_emit_direct):
+                            _emit_direct("".join(
+                                f"{GUI_DIFF_BEGIN}{json.dumps(e, ensure_ascii=False)}{GUI_DIFF_END}"
+                                for e in _shell_diff_entries
+                            ))
                 except Exception:
                     pass
 
