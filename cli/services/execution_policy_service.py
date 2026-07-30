@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,7 +12,8 @@ from ..core.security import command_security
 
 def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
     msg = str(text or "")
-    print(msg)
+    if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+        print(msg)
     tracker = getattr(agent, "_register_tool_call_feedback_interstitial_output", None)
     if callable(tracker):
         try:
