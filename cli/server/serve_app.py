@@ -46,21 +46,6 @@ from ..config.app_info import get_app_slug_snake
 
 _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 
-from ..core.logging.app_logging import get_logger as _get_logger
-_log = _get_logger("codewood.serve.cid")
-
-try:  # diagnostics: workspace-switch persistence routing (temporary)
-    from ..config.app_info import get_app_logger_root as _logger_root
-
-    def _wslog(msg: str) -> None:
-        try:
-            _get_logger(f"{_logger_root()}.serve.wsswitch").info(msg)
-        except Exception:
-            pass
-except Exception:  # pragma: no cover - logging is best-effort
-    def _wslog(msg: str) -> None:
-        return None
-
 # Matches CSI / SGR and most other ANSI escape sequences.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
 
@@ -1150,7 +1135,7 @@ def _wrap_preview_html(html: str) -> str:
     return body + _PREVIEW_BRIDGE_SCRIPT
 
 
-def _build_state(agent: Any) -> Dict[str, Any]:
+def _build_state(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
     """Serialize a read-only snapshot of agent state for the GUI.
 
     A background chat's loop thread may build this snapshot (e.g. when it emits
@@ -1159,18 +1144,28 @@ def _build_state(agent: Any) -> Dict[str, Any]:
     must describe the FOCUSED workspace (its chat list, active chat, etc.).
     Suspend the override for the whole build so chat reads (``_chat_entries``)
     resolve against the focused global index, not the background workspace's.
+
+    ``workspace_id`` overrides the workspace recorded in the returned snapshot
+    (e.g. a background loop thread passes its own workspace so the idle payload
+    carries the correct ``workspace.id``, not the user's newly-focused one).
     """
     suspend = getattr(agent, "_suspend_persist_workspace_ctx", None)
     if callable(suspend):
         with suspend():
-            return _build_state_inner(agent)
-    return _build_state_inner(agent)
+            return _build_state_inner(agent, workspace_id=workspace_id)
+    return _build_state_inner(agent, workspace_id=workspace_id)
 
 
-def _build_state_inner(agent: Any) -> Dict[str, Any]:
+def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
     from ..config.app_info import get_app_name, get_app_version
     from ..core.localization import get_display_language
     from ..managers.chat_state_manager import _chat_mode_is_plan
+
+    # Use the override if provided; otherwise fall back to agent global.
+    _ws_id = str(workspace_id or "").strip() or str(getattr(agent, "workspace_id", "") or "")
+    _ws_name = str(getattr(agent, "workspace_name", "") or "")
+    _ws_root = str(getattr(agent, "workspace_root", "") or "")
+    _ws_work_dir = str(getattr(agent, "work_directory", "") or "")
 
     default_ws_id = ""
     try:
@@ -1184,7 +1179,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
     workspaces: List[Dict[str, Any]] = []
     try:
         raw = agent._workspaces_state.get("workspaces", {})
-        active_ws_id = str(getattr(agent, "workspace_id", "") or "")
+        active_ws_id = _ws_id
         if isinstance(raw, dict):
             for entry in raw.values():
                 if not isinstance(entry, dict):
@@ -1514,10 +1509,10 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
     return {
         "app": {"name": get_app_name(), "version": get_app_version()},
         "workspace": {
-            "name": str(getattr(agent, "workspace_name", "") or ""),
-            "id": str(getattr(agent, "workspace_id", "") or ""),
-            "root": str(getattr(agent, "workspace_root", "") or ""),
-            "workDirectory": str(getattr(agent, "work_directory", "") or ""),
+            "name": _ws_name,
+            "id": _ws_id,
+            "root": _ws_root,
+            "workDirectory": _ws_work_dir,
         },
         "workspaces": workspaces,
         "chats": chats,
@@ -1751,7 +1746,6 @@ class ServeApp:
             cid = str(getattr(self.agent, "active_chat_id", "") or "")
         except Exception:
             cid = ""
-        _wslog(f"[CID] FALLBACK rt={'hit' if rt else 'miss'} agentCid={cid} rtCid={rt.chat_id if rt else 'N/A'}")
         return cid or _primary_active_chat_id(self.agent)
 
     def _active_chat_workspace_id(self) -> str:
@@ -1834,6 +1828,18 @@ class ServeApp:
         except Exception:
             pass
 
+    def _state_for_loop_thread(self) -> Dict[str, Any]:
+        """Build GUI state for the calling loop thread's workspace.
+
+        Unlike ``_build_state`` this does NOT suspend the persist override, so
+        ``_chat_entries()`` and ``_primary_active_chat_id()`` read from the
+        thread's workspace index — essential for background chats whose state
+        events must describe their OWN workspace, not the focused one.
+        """
+        rt = self._runtime_for_thread()
+        return _build_state_inner(self.agent,
+            workspace_id=rt.workspace_id if rt is not None else "")
+
     def _input_provider(self) -> str:
         """Replacement for ``agent._get_user_input_with_history``.
 
@@ -1846,7 +1852,7 @@ class ServeApp:
         if rt is not None:
             rt.busy.clear()
         self.broadcaster.publish(
-            "idle", self._route(state=_build_state(self.agent))
+            "idle", self._route(state=self._state_for_loop_thread())
         )
         if rt is None:
             # No runtime bound (should not happen); block on a private queue so
@@ -1880,11 +1886,6 @@ class ServeApp:
                                 )
                             ),
                         }
-                    )
-                    _wslog(
-                        f"install override turn chat={rt.chat_id} "
-                        f"rt_ws={rt.workspace_id} cfg={rt_cfg} "
-                        f"focused_ws={getattr(self.agent,'workspace_id','')}"
                     )
                 else:
                     setter(None)
@@ -6285,10 +6286,10 @@ class ServeApp:
         # Plan-mode "Execute now" button appear before the model had finished
         # streaming its plan reply.
         self.agent._gui_plan_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "state", self._route(state=_build_state(self.agent))
+            "state", self._route(state=self._state_for_loop_thread())
         )
         self.agent._gui_context_usage_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "state", self._route(state=_build_state(self.agent))
+            "state", self._route(state=self._state_for_loop_thread())
         )
         # Hook for sub-agent session events: lets the sub-agent executor emit
         # SSE events for real-time viewing in the GUI.
