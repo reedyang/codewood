@@ -89,3 +89,168 @@ class FileChangeTrackerTests(unittest.TestCase):
                 {"type": "add", "oldNo": None, "newNo": 4, "oldText": "", "newText": "delta"},
             ],
         )
+
+    def test_merge_overlapping_modifications_uses_first_before_last_after(self):
+        """Two modifications touching overlapping lines — merge computes diff
+        from very first before to very last after."""
+        tracker = FileChangeTracker()
+        path = "/ws/f.py"
+
+        first_before = "a\nb\nc\nd\ne\n"
+        first_after = "a\nB\nC\nd\ne\n"
+        second_after = "a\nX\nC\nDDD\ne\n"
+
+        tracker.record_change(
+            file_path=path, change_type="modify", source="apply_patch",
+            content_before=first_before, content_after=first_after,
+            patch=[],
+        )
+        tracker.record_change(
+            file_path=path, change_type="modify", source="apply_patch",
+            content_before=first_after, content_after=second_after,
+            patch=[],
+        )
+
+        summary = tracker.get_summary()
+        self.assertEqual(summary["totalFiles"], 1)
+        f = summary["files"][0]
+        self.assertEqual(f["changeType"], "modify")
+        # b→X, c→C, d→DDD = 3 changes → 3 added, 3 deleted
+        self.assertEqual(f["addedLines"], 3)
+        self.assertEqual(f["deletedLines"], 3)
+
+    def test_merge_create_then_modify_yields_create_with_final_content(self):
+        """Create followed by modify: merged as create from empty to last after."""
+        tracker = FileChangeTracker()
+        path = "/ws/new.py"
+
+        create_after = "alpha\nbeta\n"
+        modify_after = "alpha\nbeta-2\ngamma\n"
+
+        tracker.record_change(
+            file_path=path, change_type="create", source="shell",
+            content_before="", content_after=create_after,
+            patch=[],
+        )
+        tracker.record_change(
+            file_path=path, change_type="modify", source="apply_patch",
+            content_before=create_after, content_after=modify_after,
+            patch=[],
+        )
+
+        summary = tracker.get_summary()
+        self.assertEqual(summary["totalFiles"], 1)
+        f = summary["files"][0]
+        self.assertEqual(f["changeType"], "create")
+        self.assertEqual(f["addedLines"], 3)
+        self.assertEqual(f["deletedLines"], 0)
+        patch = f["patch"]
+        add_rows = [r for r in patch if r["type"] == "add"]
+        self.assertEqual(len(add_rows), 3)
+
+    def test_merge_modify_then_delete_yields_delete_with_first_before(self):
+        """Modify then delete: merged as delete, deletedLines = original count."""
+        tracker = FileChangeTracker()
+        path = "/ws/bye.py"
+
+        before = "line1\nline2\nline3\n"
+        after = "line1\nline2-modified\nline3\n"
+
+        tracker.record_change(
+            file_path=path, change_type="modify", source="shell",
+            content_before=before, content_after=after,
+            patch=[],
+        )
+        tracker.record_delete(
+            file_path=path, source="shell",
+            content_before=after,
+        )
+
+        summary = tracker.get_summary()
+        self.assertEqual(summary["totalFiles"], 1)
+        f = summary["files"][0]
+        self.assertEqual(f["changeType"], "delete")
+        self.assertEqual(f["addedLines"], 0)
+        self.assertEqual(f["deletedLines"], 3)  # line1, line2, line3
+        self.assertEqual(f["patch"], [])
+
+    def test_merge_create_then_delete_is_net_zero(self):
+        """Create then delete: cancel_create_for_deleted_file removes records."""
+        tracker = FileChangeTracker()
+        path = "/ws/tmp.py"
+
+        tracker.record_change(
+            file_path=path, change_type="create", source="shell",
+            content_before="", content_after="temp\ncontent\n",
+            patch=[],
+        )
+        tracker.record_delete(
+            file_path=path, source="shell",
+            content_before="temp\ncontent\n",
+        )
+        tracker.cancel_create_for_deleted_file(path)
+
+        summary = tracker.get_summary()
+        self.assertEqual(summary["totalFiles"], 0)
+        self.assertEqual(summary["totalAdded"], 0)
+        self.assertEqual(summary["totalDeleted"], 0)
+
+    def test_merge_modify_same_line_twice_returns_correct_unified_diff(self):
+        """dog→cat then cat→bird on same line → unified diff dog→bird."""
+        tracker = FileChangeTracker()
+        path = "/ws/animals.txt"
+
+        first_before = "the dog\nis happy\n"
+        first_after = "the cat\nis happy\n"
+        second_after = "the bird\nis happy\n"
+
+        tracker.record_change(
+            file_path=path, change_type="modify", source="apply_patch",
+            content_before=first_before, content_after=first_after,
+            patch=[],
+        )
+        tracker.record_change(
+            file_path=path, change_type="modify", source="apply_patch",
+            content_before=first_after, content_after=second_after,
+            patch=[],
+        )
+
+        summary = tracker.get_summary()
+        f = summary["files"][0]
+        self.assertEqual(f["addedLines"], 1)
+        self.assertEqual(f["deletedLines"], 1)
+        patch = f["patch"]
+        change_rows = [r for r in patch if r["type"] == "change"]
+        self.assertEqual(len(change_rows), 1)
+        self.assertEqual(change_rows[0]["oldText"], "the dog")
+        self.assertEqual(change_rows[0]["newText"], "the bird")
+
+    def test_merge_with_intermediate_null_before_uses_first_valid_before(self):
+        """First record has content_before, second has null — still uses
+        first_before and last_after for unified diff."""
+        tracker = FileChangeTracker()
+        path = "/ws/f.py"
+
+        first_before = "hello\nworld\n"
+        first_after = "hello\nworld!\n"
+
+        tracker.record_change(
+            file_path=path, change_type="modify", source="shell",
+            content_before=first_before, content_after=first_after,
+            patch=[],
+        )
+        tracker.record_change(
+            file_path=path, change_type="modify", source="shell",
+            content_before=None, content_after="hello\nworld!\nbonus\n",
+            patch=[],
+        )
+
+        summary = tracker.get_summary()
+        f = summary["files"][0]
+        self.assertEqual(f["changeType"], "modify")
+        self.assertEqual(f["addedLines"], 2)
+        self.assertEqual(f["deletedLines"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
