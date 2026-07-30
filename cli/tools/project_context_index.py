@@ -407,6 +407,7 @@ class ProjectContextIndex:
         self.last_index_at: float = 0.0
         self.version: int = _SCHEMA_VERSION
         self._lock = threading.RLock()
+        self._save_lock = threading.Lock()
         self._embedding_index = None
         self._embedding_provider: Optional[EmbeddingProvider] = None
         self._agent_params: Dict[str, Any] = {}
@@ -804,7 +805,10 @@ class ProjectContextIndex:
                 pass
 
     def _save(self) -> None:
-        # Caller controls synchronization. Keep this helper lock-free.
+        with self._save_lock:
+            self._save_locked()
+
+    def _save_locked(self) -> None:
         conn = self._connect()
         try:
             save_total = 10
