@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..actions.command_execution_buffer import CommandExecutionBuffer
 from ..config.app_info import get_app_config_dirname, get_app_runtime_attr_name
 from ..core.logging.app_logging import get_logger
+from .script_scanners import expand_command_file_paths
 
 _log = get_logger("codewood.shell_diff")
 
@@ -1777,9 +1778,13 @@ def action_shell_command(
                 _shell_rendered = _shell_rendered + _warning
                 base_out["output"] = _shell_rendered
 
+            _shell_diff_entries: List[Dict[str, Any]] = []
+
             # Check for file deletions: compare snapshotted files against
             # current filesystem state, backup deleted content, and record
             # a delete change via the file_change_tracker.
+            _log.info("delete_snapshots: %d entries, skip_monitoring=%s",
+                      len(_delete_snapshots), _skip_file_monitoring)
             if not _skip_file_monitoring and _delete_snapshots:
                 try:
                     _chat_mgr2 = getattr(agent, "_chat_state_manager", None)
@@ -1802,6 +1807,15 @@ def action_shell_command(
                                     backup_path=_backup_name,
                                 )
                                 _tracker.cancel_create_for_deleted_file(_path_str)
+                            _del_rows = _build_all_del_diff_rows(_content)
+                            _del_entry: Dict[str, Any] = {
+                                "file": _path_str,
+                                "changeType": "delete",
+                                "diffRows": _del_rows,
+                            }
+                            if _backup_name:
+                                _del_entry["backupPath"] = _backup_name
+                            _shell_diff_entries.append(_del_entry)
                 except Exception:
                     pass
 
@@ -1809,7 +1823,6 @@ def action_shell_command(
             # and post-execution workspace file listings.  Record create /
             # modify changes via the file_change_tracker and collect diff
             # preview data for GUI rendering.
-            _shell_diff_entries: List[Dict[str, Any]] = []
             try:
                 _after_file_list = _snapshot_workspace_file_list(execution_cwd) if not _skip_file_monitoring else {}
                 _new, _modified, _ws_deleted = _diff_workspace_snapshots(
@@ -1822,9 +1835,28 @@ def action_shell_command(
                 # no files at all (e.g. "timeout 10"), the set is empty and all
                 # three lists are naturally cleared.
                 _cmd_paths = _extract_command_file_paths(command, execution_cwd)
+                _cmd_paths_before_scan = set(_cmd_paths)
+                _cmd_paths = expand_command_file_paths(
+                    command, execution_cwd, _cmd_paths,
+                )
+                _scan_added = _cmd_paths - _cmd_paths_before_scan
+                if _scan_added:
+                    _log.info("scan added %d paths to cmd_paths: %s",
+                              len(_scan_added),
+                              ", ".join(Path(p).name for p in _scan_added))
+                _new_before_filter = len(_new)
+                _modified_before_filter = len(_modified)
+                _ws_deleted_before_filter = len(_ws_deleted)
                 _new = [p for p in _new if p in _cmd_paths]
                 _modified = [p for p in _modified if p in _cmd_paths]
                 _ws_deleted = [p for p in _ws_deleted if p in _cmd_paths]
+                _log.info("cmd_paths filter: new %d→%d modified %d→%d ws_deleted %d→%d",
+                          _new_before_filter, len(_new),
+                          _modified_before_filter, len(_modified),
+                          _ws_deleted_before_filter, len(_ws_deleted))
+                if _ws_deleted:
+                    _log.info("ws_deleted paths: %s",
+                              ", ".join(Path(p).name for p in _ws_deleted))
                 _tracker2 = getattr(agent, "file_change_tracker", None)
                 for _path_str in _new:
                     try:
@@ -1836,7 +1868,7 @@ def action_shell_command(
                     # Try to retrieve it so we can show a real diff instead of
                     # marking the whole file as added.
                     _new_before: Optional[str] = None
-                    if _stash_hash and _repo_root is not None:
+                    if _repo_root is not None:
                         _new_before = _git_content_before_via_stash(_repo_root, _path_str, _stash_hash)
                     if _new_before is None:
                         _new_before = _untracked_snapshot.get(_path_str)
@@ -1863,6 +1895,7 @@ def action_shell_command(
                         )
                     _shell_diff_entries.append({
                         "file": _path_str,
+                        "changeType": _change_type,
                         "diffRows": _diff_rows_new,
                     })
                 for _path_str in _modified:
@@ -1878,7 +1911,7 @@ def action_shell_command(
                     if _is_binary:
                         _before_binary: Optional[str] = None
                         _backups_dir_mod: Optional[Path] = None
-                        if _stash_hash and _repo_root is not None:
+                        if _repo_root is not None:
                             _before_binary = _git_content_before_via_stash(_repo_root, _path_str, _stash_hash)
                         if _before_binary is None:
                             _before_binary = _untracked_snapshot.get(_path_str)
@@ -1912,7 +1945,7 @@ def action_shell_command(
                     else:
                         # Try git stash to get pre-execution content.
                         _before_for_diff: Optional[str] = None
-                        if _stash_hash and _repo_root is not None:
+                        if _repo_root is not None:
                             _before_for_diff = _git_content_before_via_stash(_repo_root, _path_str, _stash_hash)
                         if _before_for_diff is None:
                             _before_for_diff = _untracked_snapshot.get(_path_str)
@@ -1943,6 +1976,7 @@ def action_shell_command(
                             )
                     _shell_diff_entries.append({
                         "file": _path_str,
+                        "changeType": "modify",
                         "diffRows": _diff_rows,
                     })
                     if _backup_name:
@@ -1955,15 +1989,49 @@ def action_shell_command(
                 for _path_str in _ws_deleted:
                     if _path_str in _delete_snapshots:
                         continue
+                    _ws_del_before: Optional[str] = None
+                    if _repo_root is not None:
+                        _ws_del_before = _git_content_before_via_stash(
+                            _repo_root, _path_str, _stash_hash,
+                        )
+                    if _ws_del_before is None:
+                        _ws_del_before = _untracked_snapshot.get(_path_str)
+                    if _ws_del_before is None:
+                        _ws_del_before = ""
+                    _ws_del_backup: Optional[str] = None
+                    if _ws_del_before:
+                        try:
+                            _chat_mgr_ws = getattr(agent, "_chat_state_manager", None)
+                            _chat_id_ws = str(getattr(agent, "active_chat_id", "") or "")
+                            if _chat_mgr_ws is not None and _chat_id_ws:
+                                _backups_dir_ws = _chat_mgr_ws.chat_backups_dir_for_chat(_chat_id_ws)
+                                _ws_del_backup = _backup_deleted_file(
+                                    _ws_del_before, Path(_path_str), _backups_dir_ws,
+                                )
+                        except Exception:
+                            pass
+                    _ws_del_diff = _build_all_del_diff_rows(_ws_del_before)
                     if _tracker2 is not None:
                         _tracker2.record_delete(
                             file_path=_path_str,
                             source="shell",
-                            content_before="",
-                            backup_path=None,
+                            content_before=_ws_del_before,
+                            backup_path=_ws_del_backup,
                         )
                         _tracker2.cancel_create_for_deleted_file(_path_str)
+                    _ws_del_entry: Dict[str, Any] = {
+                        "file": _path_str,
+                        "changeType": "delete",
+                        "diffRows": _ws_del_diff,
+                    }
+                    if _ws_del_backup:
+                        _ws_del_entry["backupPath"] = _ws_del_backup
+                    _shell_diff_entries.append(_ws_del_entry)
+                _log.info("shell_diff_entries total: %d, types: %s",
+                          len(_shell_diff_entries),
+                          ", ".join(e.get("changeType", "?") for e in _shell_diff_entries))
             except Exception:
+                _log.exception("shell_diff_entries build failed, clearing")
                 _shell_diff_entries = []
             if _shell_diff_entries:
                 base_out["_shell_diff_entries"] = _shell_diff_entries
@@ -3555,6 +3623,24 @@ def _build_all_add_diff_rows(content: str) -> List[Dict[str, Any]]:
     ]
 
 
+def _build_all_del_diff_rows(content_before: str) -> List[Dict[str, Any]]:
+    """Build ``DiffRow[]`` representing the entire *content_before* as deleted lines
+    (used for files that were deleted during command execution)."""
+    if not content_before:
+        return []
+    lines = content_before.splitlines()
+    return [
+        {
+            "type": "del",
+            "oldNo": i + 1,
+            "newNo": None,
+            "oldText": line,
+            "newText": "",
+        }
+        for i, line in enumerate(lines)
+    ]
+
+
 def _is_binary_file(file_path: str) -> bool:
     """Return True if *file_path* looks like binary data by checking the
     first 8 KB of raw bytes for null characters."""
@@ -3788,7 +3874,7 @@ def _git_content_before_via_stash(
         _log.warning("path resolve failed: file=%s repo=%s err=%s", file_path, repo_root, e)
         return None
     for _git_ref, _label in [
-        (f"{stash_hash}:{rel_str}", "stash") if stash_hash else None,
+        *([(f"{stash_hash}:{rel_str}", "stash")] if stash_hash else []),
         (f":{rel_str}", "index"),
         (f"HEAD:{rel_str}", "HEAD"),
     ]:
@@ -3831,13 +3917,30 @@ def _build_real_diff_rows(content_before: str, content_after: str) -> List[Dict[
             old_no += i2 - i1
             new_no += j2 - j1
         elif tag == "replace":
-            for k in range(max(i2 - i1, j2 - j1)):
+            shared = min(i2 - i1, j2 - j1)
+            for k in range(shared):
                 rows.append({
                     "type": "change",
-                    "oldNo": old_no + k if i1 + k < i2 else None,
-                    "newNo": new_no + k if j1 + k < j2 else None,
-                    "oldText": before_lines[i1 + k] if i1 + k < i2 else "",
-                    "newText": after_lines[j1 + k] if j1 + k < j2 else "",
+                    "oldNo": old_no + k,
+                    "newNo": new_no + k,
+                    "oldText": before_lines[i1 + k],
+                    "newText": after_lines[j1 + k],
+                })
+            for k in range(shared, i2 - i1):
+                rows.append({
+                    "type": "del",
+                    "oldNo": old_no + k,
+                    "newNo": None,
+                    "oldText": before_lines[i1 + k],
+                    "newText": "",
+                })
+            for k in range(shared, j2 - j1):
+                rows.append({
+                    "type": "add",
+                    "oldNo": None,
+                    "newNo": new_no + k,
+                    "oldText": "",
+                    "newText": after_lines[j1 + k],
                 })
             old_no += i2 - i1
             new_no += j2 - j1
@@ -3900,8 +4003,8 @@ def _backup_deleted_file(
         backup_name = f"{name}_{ts}_{suffix}.bak"
         backup_path = backups_dir / backup_name
         tmp = backup_path.with_suffix(backup_path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(content)
+        with open(tmp, "wb") as fh:
+            fh.write(content.encode("utf-8"))
         tmp.replace(backup_path)
         return backup_name
     except Exception:
