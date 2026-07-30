@@ -233,10 +233,11 @@ def _collapse_cr_output(text: str) -> str:
             parts = line.split("\r")
             non_empty = [p for p in parts if p]
             is_completed = idx < last_idx
-            if is_completed and len(non_empty) >= 2:
-                # Spinner / progress bar on a completed line whose last
-                # frame was never finalized — cursor moved to next line
-                # before overwrite.  Clear the entire line.
+            if is_completed and len(non_empty) >= 3:
+                # Spinner / progress bar with 3+ frames on a completed
+                # line whose last frame was never finalized.  Clear it.
+                # Simple \r overwrites (2 frames) are kept — they're
+                # legitimate output, not indeterminate animation.
                 out.append("")
                 continue
             if is_completed and len(non_empty) == 1 and parts[0] == "":
