@@ -189,7 +189,7 @@ ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 # while preserving SGR color/style codes (which end with 'm'), cursor
 # movement (A/B/C/D → \b/space), cursor position (H → \b via vcol),
 # horizontal-absolute (G → \r), and erase-line (K → \r).
-_PTY_CSI_STRIP_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@E-GI-JL-lno-~]")
+_PTY_CSI_STRIP_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@E-FI-JL-lno-~]")
 _CURSOR_LEFT_RE = re.compile(r"\x1b\[([0-9]*)D")
 _CURSOR_RIGHT_RE = re.compile(r"\x1b\[([0-9]*)C")
 _CURSOR_UP_RE = re.compile(r"\x1b\[([0-9]*)A")
@@ -225,18 +225,23 @@ def _collapse_cr_output(text: str) -> str:
     CRLF (\\r\\n) is preserved as LF.
     """
     text = text.replace("\r\n", "\n")
-    # Handle carriage-return: keep only the last \\r-separated segment per line.
     lines = text.split("\n")
     out = []
-    for line in lines:
+    last_idx = len(lines) - 1
+    for idx, line in enumerate(lines):
         if "\r" in line:
             parts = line.split("\r")
             non_empty = [p for p in parts if p]
-            # Multiple \\r frames on one line → spinner / progress bar
-            # whose last frame was never finalized (cursor moved to next
-            # line with \\n before the last frame was overwritten).
-            # Clear the entire line.
-            if len(non_empty) >= 2:
+            is_completed = idx < last_idx
+            if is_completed and len(non_empty) >= 2:
+                # Spinner / progress bar on a completed line whose last
+                # frame was never finalized — cursor moved to next line
+                # before overwrite.  Clear the entire line.
+                out.append("")
+                continue
+            if is_completed and len(non_empty) == 1 and parts[0] == "":
+                # Single non-empty frame after leading \r: spinner that
+                # wasn't finalized.  Clear.
                 out.append("")
                 continue
             line = line.rsplit("\r", 1)[-1]
@@ -317,9 +322,9 @@ if _WINPTY_PTYPROCESS is not None:
                         col = int(m.group(2) or 1)
                         target = max(0, col - 1)
                         cur = self._virtual_col
-                        if row <= 2 and cur > target:
+                        if cur > target:
                             return "\b" * (cur - target)
-                        if row <= 2 and cur < target:
+                        if cur < target:
                             return " " * (target - cur)
                         return ""
                     stripped = _CUP_RE.sub(_handle_cup, stripped)
@@ -332,9 +337,16 @@ if _WINPTY_PTYPROCESS is not None:
                     )
                     stripped = _CURSOR_UP_RE.sub("\r", stripped)
                     stripped = _CURSOR_DOWN_RE.sub("\n", stripped)
-                    stripped = _CHA_RE.sub(
-                        lambda m: "\r" if int(m.group(1) or 1) <= 1 else "", stripped,
-                    )
+                    def _handle_cha(m):
+                        col = max(1, int(m.group(1) or 1))
+                        target = max(0, col - 1)
+                        cur = self._virtual_col
+                        if cur > target:
+                            return "\b" * (cur - target)
+                        if cur < target:
+                            return " " * (target - cur)
+                        return ""
+                    stripped = _CHA_RE.sub(_handle_cha, stripped)
                     stripped = _EL_RE.sub("", stripped)
                     # Advance virtual column for visible characters so that
                     # subsequent CUP conversions compute the correct offset.
@@ -350,22 +362,33 @@ if _WINPTY_PTYPROCESS is not None:
                             self._virtual_col += 1
                     if not stripped:
                         continue
-                    # If the previous chunk was a single visible character, it
-                    # may be the target of an upcoming CHA+EL erase (e.g. the
-                    # trailing \\ that ConPTY emits before clearing a table
-                    # row). Buffer it until the next read arrives.
+                    # If the previous chunk was a single visible character that
+                    # looks like a ConPTY table-clearing artifact (trailing
+                    # \\ or / before a CHA+EL erase), buffer it.  Ordinary
+                    # digits/letters are never buffered — they belong to live
+                    # countdowns / progress updates and must pass through.
                     visible = stripped.replace("\r", "").replace("\n", "").replace("\b", "")
-                    if visible == stripped and len(stripped) == 1 and stripped not in "\r\n\b":
+                    if (
+                        visible == stripped
+                        and len(stripped) == 1
+                        and stripped not in "\r\n\b"
+                        and stripped in {"\\", "/"}
+                    ):
                         if self._pending_cha is None:
                             self._pending_cha = stripped
                             continue
-                    # If the current chunk is only \\r characters (CHA/EL
-                    # conversion), and we have a buffered single-char, the
-                    # character was being erased — flush only the \\r tail.
+                    # \r-only chunk (old CHA/EL path): the buffered character
+                    # was being erased — drop both the buffer and the chunk.
                     if visible == "" and stripped.strip("\r") == "":
                         if self._pending_cha is not None:
                             self._pending_cha = None
                         continue
+                    # \b-only chunk (CHA→\b* + EL path): still clear a
+                    # buffered table artifact, but keep the \b* bytes —
+                    # they may be CUP positioning needed by the output.
+                    if visible == "" and stripped.strip("\b") == "":
+                        if self._pending_cha is not None:
+                            self._pending_cha = None
                     # Emit: prepend any non-erased buffered character.
                     if self._pending_cha is not None:
                         stripped = self._pending_cha + stripped
