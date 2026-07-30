@@ -2888,7 +2888,7 @@ function LiveToolGroupView({
       <div className="turn-round">
         <div className="activity live-tool-activity">
           <StepsView
-            key={`tool-group-${rounds[0]?.id ?? "none"}-${lastRound?.id ?? "none"}-${lastRunning ? "running" : "settled"}-${lastRound?.waitEndedAt ?? "live"}-${toolText.length}`}
+            key={`tool-group-${rounds[0]?.id ?? "none"}-${lastRound?.id ?? "none"}`}
             text={toolText}
             running={toolRunning}
             trailingStatusText={
@@ -3271,7 +3271,7 @@ export function LiveRoundView({
         <div className="turn-round">
           <div className="activity">
             <StepsView
-              key={`live-round-${round.id}-${running ? "running" : "settled"}-${round.waitEndedAt ?? "live"}-${toolText.length}`}
+              key={`live-round-${round.id}`}
               text={toolText}
               running={toolRunning}
               trailingStatusText={toolWaitingText}
