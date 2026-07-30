@@ -611,6 +611,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // events during a streaming turn can be blocked (prevents React re-render
   // side effects from disrupting in-progress content accumulation).
   const streamingKeyRef = useRef<string>("");
+  const leftBusyChatAtRef = useRef<Record<string, number>>({});
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -669,10 +670,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeChatId = selectedChatId;
   const activeChatWsId = selectedWorkspaceId;
   useEffect(() => {
+    const prevKey = activeChatIdRef.current
+      ? chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current)
+      : "";
     activeChatIdRef.current = activeChatId;
-    // Opening (or switching to) a chat clears its unread marker. The unread
-    // set is keyed by the workspace-qualified bucket so we clear only the
-    // focused workspace's chat, never a same-id chat in another workspace.
     const key = chatKey(activeChatWsId, activeChatId);
     if (key) {
       setUnreadChatIds((prev) =>
@@ -682,6 +683,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             )
           : prev,
       );
+    }
+    // Track when the user navigates away from a busy chat. If the turn
+    // completes shortly afterward, the idle-event race will skip the unread
+    // marker — the user already saw the completion.
+    if (prevKey && prevKey !== key && busyByChatRef.current[prevKey]) {
+      leftBusyChatAtRef.current[prevKey] = Date.now();
     }
   }, [activeChatId, activeChatWsId]);
 
@@ -2002,12 +2009,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
             // (different chat, or a chat in another workspace) leaves an unread
             // marker until they open it. The unread set is keyed by the
             // workspace-qualified bucket so it can't bleed across workspaces.
+            // Skip the marker if the user *just* left the chat while it was
+            // busy — the idle event may arrive a tick after they switched away,
+            // even though they were watching when the last output arrived.
             const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
-            if (eventKey && eventKey !== focusedKey) {
+            const leftAgo =
+              leftBusyChatAtRef.current[eventKey] ?? 0;
+            const wasWatching =
+              leftAgo > 0 && Date.now() - leftAgo < 3000;
+            if (eventKey && eventKey !== focusedKey && !wasWatching) {
               setUnreadChatIds((prev) =>
                 prev[eventKey] ? prev : { ...prev, [eventKey]: true },
               );
             }
+            delete leftBusyChatAtRef.current[eventKey];
             // When the focused chat's turn finishes, reload its history from
             // the server so the GUI always reflects the full persisted content
             // — even when live-streaming events were partially lost.
@@ -2099,6 +2114,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           startTurn(String(data.text ?? ""), eventKey);
           setBusyForChat(eventKey, true);
           streamingKeyRef.current = eventKey;
+          delete leftBusyChatAtRef.current[eventKey];
           break;
         }
         case "round_start": {
