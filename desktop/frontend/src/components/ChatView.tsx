@@ -1741,7 +1741,7 @@ export function ChatView() {
 
   const showEmpty =
     draftMode ||
-    (state !== null && !historyLoading && !historyStart && turns.length === 0 && historyTurns.length === 0 && historyLoadCompletedRef.current && !emptyGraceTimerRef.current);
+    (state !== null && !historyStart && turns.length === 0 && historyTurns.length === 0 && historyLoadCompletedRef.current && !emptyGraceTimerRef.current);
   const showChatLoadingSplash =
     !draftMode &&
     !(historyTurns.length > 0 || turns.length > 0) &&
