@@ -157,9 +157,6 @@ class ChatStateManager:
                 from ..core.logging.app_logging import get_logger
 
                 cfg = resolved.get("config_dir") if isinstance(resolved, dict) else None
-                get_logger(f"{get_app_logger_root()}.serve.wsswitch").info(
-                    f"override ACTIVE ctx_ws={ctx_wsid} focused={focused} dir={cfg}"
-                )
             except Exception:
                 pass
             if isinstance(resolved, dict):
