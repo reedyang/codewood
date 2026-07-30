@@ -489,7 +489,7 @@ export function StepsView({
           // stopping at the next prompt if nothing is found.
           let cmdIdx = -1;
           let cmdPayload = "";
-          let diffIdx = -1;
+          let diffIndices: number[] = [];
           let subagentSessionId = "";
           for (let j = index + 1; j < segments.length; j += 1) {
             if (segments[j].kind === "prompt") {
@@ -504,10 +504,10 @@ export function StepsView({
             if (segments[j].kind === "cmd") {
               cmdIdx = j;
               cmdPayload = trimBlankEdges(segments[j].text);
-              break;
+              continue;
             }
             if (segments[j].kind === "diff") {
-              diffIdx = j;
+              diffIndices.push(j);
               continue;
             }
             if (segments[j].kind === "subagent_session") {
@@ -520,19 +520,19 @@ export function StepsView({
           if (cmdIdx >= 0 && cmdPayload) {
             consumed.add(cmdIdx);
           }
-          const diffPayload = diffIdx >= 0 ? trimBlankEdges(segments[diffIdx].text) : "";
-          if (diffPayload) {
-            consumed.add(diffIdx);
-          }
+          const diffPayloads = diffIndices
+            .map((i) => trimBlankEdges(segments[i].text))
+            .filter(Boolean);
+          diffIndices.forEach((i) => consumed.add(i));
           const isBrowserPreview = /browser_preview/i.test(body);
           return (
-            <PromptWithAttachment
-              key={index}
-              bullet={bullet}
-              body={body}
-              cmdPayload={cmdPayload}
-              diffPayload={diffPayload}
-              subagentSessionId={subagentSessionId}
+              <PromptWithAttachment
+                key={index}
+                bullet={bullet}
+                body={body}
+                cmdPayload={cmdPayload}
+                diffPayloads={diffPayloads}
+                subagentSessionId={subagentSessionId}
               defaultExpanded={false}
               onPathPreview={isBrowserPreview ? onPathPreview : undefined}
               running={running && index === lastPromptIdx}
@@ -575,7 +575,7 @@ function PromptWithAttachment({
   bullet,
   body,
   cmdPayload,
-  diffPayload,
+  diffPayloads,
   subagentSessionId,
   defaultExpanded,
   onPathPreview,
@@ -585,7 +585,7 @@ function PromptWithAttachment({
   bullet: string;
   body: string;
   cmdPayload: string;
-  diffPayload: string;
+  diffPayloads: string[];
   subagentSessionId: string;
   defaultExpanded: boolean;
   onPathPreview?: (path: string) => void;
@@ -594,16 +594,12 @@ function PromptWithAttachment({
 }) {
   const { enterSubAgentSession, pendingExpandSubAgentId } = useApp();
   const hasCmd = !!cmdPayload;
-  let parsed: DiffPayload | null = null;
-  if (diffPayload) {
-    try {
-      parsed = JSON.parse(diffPayload) as DiffPayload;
-    } catch {
-      parsed = null;
-    }
-  }
-  const rows = parsed?.diffRows ?? [];
-  const hasDiff = rows.length > 0;
+  const diffs: DiffPayload[] = diffPayloads
+    .map((p) => {
+      try { return JSON.parse(p) as DiffPayload; } catch { return null; }
+    })
+    .filter((d): d is DiffPayload => d !== null && (d.diffRows?.length ?? 0) > 0);
+  const hasDiff = diffs.length > 0;
   const hasAttachment = hasCmd || hasDiff;
   const isSubAgent = !!subagentSessionId;
   const shouldAutoExpand = isSubAgent && subagentSessionId === pendingExpandSubAgentId;
@@ -732,7 +728,29 @@ function PromptWithAttachment({
           </div>
         );
       })()}
-      {!isSubAgent && expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
+      {!isSubAgent && expanded && hasDiff && (
+        <div className="diff-files-container">
+          {diffs.map((d, i) => {
+            const rows = d.diffRows ?? [];
+            const fname = (d.file || "").split(/[\\/]/).pop() || d.file || "";
+            const added = countByType(rows, ["add", "change"]);
+            const deleted = countByType(rows, ["del", "change"]);
+            return (
+              <div className="diff-step" key={i}>
+                <div className="diff-step-header">
+                  <span className="diff-step-title">{fname}</span>
+                  <span className="diff-step-stats">
+                    <span className="file-change-added">+{added}</span>
+                    {" "}
+                    <span className="file-change-deleted">-{deleted}</span>
+                  </span>
+                </div>
+                <DiffPreview rows={rows} lang={langFromPath(d.file)} />
+              </div>
+            );
+          })}
+        </div>
+      )}
       {trailingStatusText && (
         <span className="tool-inline-working">
           <span className="activity-text marquee">{trailingStatusText}</span>
@@ -785,6 +803,8 @@ function DiffStep({
     return null;
   }
   const fileName = (parsed?.file || "").split(/[\\/]/).pop() || parsed?.file || "";
+  const added = countByType(rows, ["add", "change"]);
+  const deleted = countByType(rows, ["del", "change"]);
   return (
     <div className="diff-step">
       <button
@@ -795,7 +815,9 @@ function DiffStep({
         <span className={`diff-step-chevron ${expanded ? "open" : ""}`}>▸</span>
         <span className="diff-step-title">{fileName}</span>
         <span className="diff-step-stats">
-          {countByType(rows, ["add", "change"])} + / {countByType(rows, ["del", "change"])} -
+          <span className="file-change-added">+{added}</span>
+          {" "}
+          <span className="file-change-deleted">-{deleted}</span>
         </span>
       </button>
       {expanded ? (
