@@ -312,6 +312,11 @@ function fileExt(path: string): string {
 }
 
 const DIFF_BEGIN = "\uE006";
+const CMD_OUTPUT_BEGIN = "\uE000";
+
+export function toolTextHasVisibleOutput(toolText: string): boolean {
+  return toolText.includes(CMD_OUTPUT_BEGIN) || toolText.includes(DIFF_BEGIN);
+}
 
 function roundHasToolSteps(
   round: Pick<TurnRound, "segments"> | undefined,
