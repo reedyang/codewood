@@ -2150,8 +2150,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "output": {
           const stepText = String(data.text ?? "");
-          const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
-          if (eventKey !== focusedKey) break;
+          // Only apply output to the active chat; cross-chat SSE
+          // events (e.g. \b*37 from a shell running in another chat)
+          // would corrupt the wrong chat's content.
+          if (String(data.chatId ?? "") !== String(activeChatIdRef.current)) break;
           appendSegment("step", stepText, eventKey);
           break;
         }

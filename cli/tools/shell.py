@@ -1000,6 +1000,13 @@ def action_shell_command(
     input_data: Optional[str] = None,
 ) -> dict:
     """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
+    # Capture chat id on the main thread BEFORE any pipe-reader threads
+    # start, so SSE output retains the correct chat even after workspace
+    # switch.  agent.active_chat_id is per-session (thread-local); read
+    # the cross-thread truth from _chat_state instead.
+    _cs = getattr(agent, "_chat_state", None)
+    _shell_chat_id = str(_cs.get("active", "") or "") if isinstance(_cs, dict) else ""
+    _shell_ws_id = str(getattr(agent, "workspace_id", "") or "")
     if not command.strip():
         return {"success": False, "error": "Command cannot be empty"}
     manual_confirm_from_ai = bool(getattr(agent, "_manual_confirm_required_shell_once", False))
@@ -1223,6 +1230,12 @@ def action_shell_command(
                     target: Any,
                     bucket: List[str],
                 ) -> None:
+                    _tls = agent.__dict__.get("_session_tls")
+                    if _tls is not None and _shell_chat_id and _shell_ws_id:
+                        try:
+                            _tls.chat_id = f"{_shell_ws_id}::{_shell_chat_id}"
+                        except Exception:
+                            pass
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     realtime_started = False
                     try:
@@ -1469,6 +1482,12 @@ def action_shell_command(
                     completed_lines: List[str],
                     pending_line_state: Dict[str, str],
                 ) -> None:
+                    _tls = agent.__dict__.get("_session_tls")
+                    if _tls is not None and _shell_chat_id and _shell_ws_id:
+                        try:
+                            _tls.chat_id = f"{_shell_ws_id}::{_shell_chat_id}"
+                        except Exception:
+                            pass
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     realtime_started = False
 

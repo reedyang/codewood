@@ -14,6 +14,11 @@ import type { DiffRow } from "../api/types";
  *  (matching terminal behaviour where \\b doesn't erase). */
 function handleBackspace(text: string): string {
   if (!text.includes("\b")) return text;
+  // If the text starts with \b, those backspaces arrived without
+  // their preceding context (cross-chat / cross-context artifact).
+  if (text[0] === "\b") {
+    return text.replace(/\x08/g, "");
+  }
   let cur = "";
   let col = 0;
   for (const ch of text) {

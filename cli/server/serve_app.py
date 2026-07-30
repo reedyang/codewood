@@ -46,8 +46,10 @@ from ..config.app_info import get_app_slug_snake
 
 _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 
+from ..core.logging.app_logging import get_logger as _get_logger
+_log = _get_logger("codewood.serve.cid")
+
 try:  # diagnostics: workspace-switch persistence routing (temporary)
-    from ..core.logging.app_logging import get_logger as _get_logger
     from ..config.app_info import get_app_logger_root as _logger_root
 
     def _wslog(msg: str) -> None:
@@ -1737,14 +1739,19 @@ class ServeApp:
     def _active_chat_id(self) -> str:
         """Chat id the running turn / streamed output is attributed to.
 
-        On the agent-loop thread this is the thread-bound session's chat; on
-        HTTP handler threads (which have no bound session) it falls back to the
-        shared focused chat.
+        On the agent-loop thread this resolves from the thread-bound runtime
+        so a background chat's output carries ITS chat id even after the
+        user focuses another chat.  Falls back to the shared focused chat
+        for HTTP handler threads that have no bound runtime.
         """
+        rt = self._runtime_for_thread()
+        if rt is not None and rt.chat_id:
+            return rt.chat_id
         try:
             cid = str(getattr(self.agent, "active_chat_id", "") or "")
         except Exception:
             cid = ""
+        _wslog(f"[CID] FALLBACK rt={'hit' if rt else 'miss'} agentCid={cid} rtCid={rt.chat_id if rt else 'N/A'}")
         return cid or _primary_active_chat_id(self.agent)
 
     def _active_chat_workspace_id(self) -> str:
