@@ -3596,7 +3596,6 @@ def run_agent_loop(agent: Any):
                                     if self.input_handler:
                                         self.input_handler.update_work_directory(new_path)
                                     self._save_current_workspace_position()
-                                    self._reset_work_directory_to_startup_initial()
                             except Exception as e:
                                 msg = f"❌ Failed to change directory: {e}"
                                 print(msg)

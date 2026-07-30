@@ -176,8 +176,10 @@ class WorkspaceStateManager:
         # caller-provided fallback is used.
         if self._agent.workspace_kind != "default" and root.exists() and root.is_dir():
             self._agent.work_directory = root
+            self._agent.startup_initial_directory = root
         else:
             self._agent.work_directory = self._agent._resolve_path_lenient(fallback_dir)
+            self._agent.startup_initial_directory = self._agent._resolve_path_lenient(fallback_dir)
 
         self._agent._workspaces_state["active"] = self._agent.workspace_id
         workspaces = self._agent._workspaces_state.setdefault("workspaces", {})
