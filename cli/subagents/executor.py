@@ -1102,6 +1102,25 @@ def run_subagent(
                     "elapsed": r.get("_elapsed_seconds"),
                     "output": _round_output or "",
                 }
+                # Persist shell diff preview entries so sub-agent session
+                # replay can render inline diff blocks (same path as the
+                # main agent in _record_model_tool_execution_history).
+                _shell_entries = r.get("_shell_diff_entries") if str(tool_name) == "shell" else None
+                if isinstance(_shell_entries, list) and _shell_entries:
+                    import secrets as _secrets
+                    _refs: list = []
+                    for _entry in _shell_entries:
+                        _ref = _secrets.token_hex(8)
+                        _refs.append(_ref)
+                        agent._persist_apply_patch_preview_sidecar(
+                            {"file_path": _entry.get("file") or ""},
+                            {
+                                "change_preview_rows": _entry.get("diffRows") or [],
+                                "file": _entry.get("file") or "",
+                            },
+                            _ref,
+                        )
+                    raw_entry["previewRef"] = "|".join(_refs)
                 _err_text = str(r.get("error") or "")
                 if _err_text:
                     raw_entry["error"] = _err_text
