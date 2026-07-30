@@ -2150,6 +2150,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "output": {
           const stepText = String(data.text ?? "");
+          const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
+          if (eventKey !== focusedKey) break;
           appendSegment("step", stepText, eventKey);
           break;
         }
