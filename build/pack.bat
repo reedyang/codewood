@@ -97,7 +97,7 @@ rem resolved relative to --specpath. So the venv path must NOT use "../../".
 rem 1) codewood.exe (console, one-dir) carries ALL terminal-UI and GUI
 rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
 rem    Uses the pre-generated spec file which includes the application manifest.
-"%PYINSTALLER%" --noconfirm "build\\codewood\\codewood.spec"
+"%PYINSTALLER%" --noconfirm "build\\codewood.spec"
 if errorlevel 1 (
   echo codewood.exe build failed.
   exit /b 1
@@ -108,7 +108,7 @@ rem standard library (no pywebview / prompt_toolkit / etc.) and simply starts
 rem "codewood app" with no console window, so a double-click opens the GUI
 rem without flashing a terminal window. It is emitted INTO the codewood
 rem one-dir folder so it sits next to codewood.exe (single shippable folder).
-"%PYINSTALLER%" --noconfirm --distpath "dist\\codewood" "build\\codewood-gui\\codewood-gui.spec"
+"%PYINSTALLER%" --noconfirm --distpath "dist\\codewood" "build\\codewood-gui.spec"
 if errorlevel 1 (
   echo codewood-gui.exe build failed.
   exit /b 1
