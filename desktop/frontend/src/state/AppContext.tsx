@@ -1965,10 +1965,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
               const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
               const isPendingSwitch = eventWsId === pendingWs;
               if (chatId && eventKey && eventKey !== focusedKey && !isPendingSwitch) {
+                // Only merge chat lists from the same workspace. Background
+                // idle events can carry state from a different workspace when
+                // _build_state reads the focused (not runtime) workspace id.
+                const nextChatWs = String(next?.workspace?.id || "");
                 setState((prev) => {
                   if (!prev) return prev;
                   const merged: any = { ...prev };
-                  if (next.chats) {
+                  if (next.chats && (!nextChatWs || nextChatWs === String(prev.workspace?.id || ""))) {
                     const nextChats = Array.isArray(next.chats) ? next.chats : [];
                     merged.chats = prev.chats.map((c) => {
                       const updated = nextChats.find((nc: any) => String(nc.id) === String(c.id));
