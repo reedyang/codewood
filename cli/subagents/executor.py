@@ -27,7 +27,7 @@ from ..core.logging.app_logging import get_logger
 
 logger = get_logger()
 
-from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
+from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext, _build_reply_records
 from ..ai.ai_provider_clients import (
     AICallContext,
     resolve_api_mode,
@@ -928,13 +928,9 @@ def run_subagent(
                         _deduped_tc.append(_tc)
                 if len(_deduped_tc) != len(_raw_tcs):
                     message["tool_calls"] = _deduped_tc
-            # Mirror the main session: the provider's final_message already
-            # carries a sanitized "_clean_content" (set only when it differs
-            # from the raw text). Fall back to sanitizing here so the sub-agent
+            # Mirror the main session: sanitize the text here so the sub-agent
             # never leaks hidden markers into its answer or stored history.
-            clean_content = str(message.get("_clean_content") or "").strip()
-            if not clean_content:
-                clean_content = _sanitize_assistant_text(raw_content).strip()
+            clean_content = _sanitize_assistant_text(raw_content).strip()
             content_text = clean_content if clean_content else raw_content
             if content_text:
                 last_assistant_text = content_text
@@ -968,33 +964,33 @@ def run_subagent(
 
             # Record the assistant turn (with its tool_calls) so the follow-up
             # tool messages are valid in the next request.
-            assistant_msg = dict(message)
-            # Persist the SANITIZED text as the message content so the session
-            # viewer can never render hidden markers (e.g. <|channel>thought ...
-            # <channel|>), even on an older frontend build that does not yet
-            # prefer "_clean_content". The sub-agent's own next-round history
-            # also uses the cleaned text — it never needs to re-feed hidden
-            # markers to itself. Keep the cleaned form under "_clean_content"
-            # for parity with the main chat's content / _clean_content split.
-            assistant_msg["content"] = clean_content if clean_content else raw_content
-            if clean_content != raw_content:
-                # Record even an empty cleaned form so the GUI, on reload, knows
-                # there is no visible text (raw was entirely hidden markers)
-                # rather than falling back to the raw marker string.
-                assistant_msg["_clean_content"] = clean_content
+            # Persist the same big role:assistant block (_reply_records) the
+            # main chat uses: natural-order nodes + a trailing raw node when
+            # content cleaning happened. The in-memory follow-up request keeps a
+            # flat provider-shaped message (cleaned content + tool_calls).
+            _reply_events = message.pop("_reply_events", None)
+            reply_records = _build_reply_records(message, _reply_events, message.get("tool_calls"))
+            persisted_msg: Dict[str, Any] = {"role": "assistant", "content": "", "_reply_records": reply_records}
             _thinking_sent_elapsed: Optional[float] = None
             if thinking_text and _thinking_ended_at_sub is not None:
-                # Persist under ``_thinking`` (not a separate ``thinking`` key)
-                # so the session viewer and history reload render the reasoning
-                # block exactly like the main chat, with no duplicate field.
-                assistant_msg["_thinking"] = thinking_text
                 _thinking_elapsed = _thinking_ended_at_sub - _thinking_started_at_sub
                 if _thinking_elapsed > 0:
                     _thinking_elapsed_rounded = round(_thinking_elapsed, 1)
-                    assistant_msg["_thinking_elapsed_seconds"] = _thinking_elapsed_rounded
+                    persisted_msg["_thinking_elapsed_seconds"] = _thinking_elapsed_rounded
                     _thinking_sent_elapsed = _thinking_elapsed_rounded
-            store.append_message(agent, chat_id, session_id, assistant_msg)
-            messages.append(assistant_msg)
+            store.append_message(agent, chat_id, session_id, persisted_msg)
+            # Follow-up request message: flat provider shape (cleaned text so the
+            # sub-agent never re-feeds hidden markers to itself).
+            followup_msg: Dict[str, Any] = {
+                "role": "assistant",
+                "content": clean_content if clean_content else raw_content,
+            }
+            tcs = message.get("tool_calls")
+            if isinstance(tcs, list) and tcs:
+                followup_msg["tool_calls"] = tcs
+            if thinking_text:
+                followup_msg["_thinking"] = thinking_text
+            messages.append(followup_msg)
 
             # Collect each tool call + result as a structured ``_tool_rounds_raw``
             # entry (identical shape to the main session) so the GUI/TUI can

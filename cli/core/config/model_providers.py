@@ -133,7 +133,6 @@ def parse_configured_models(
         model_name = ""
         context_window_raw: Any = None
         streaming_raw: Any = True
-        use_clean_content_raw: Any = False
         extra_headers_raw: Any = {}
         multimodal_raw: Any = True
         reasoning_effort_raw: Any = None
@@ -144,7 +143,6 @@ def parse_configured_models(
             model_name = str(item.get("name") or "").strip()
             context_window_raw = item.get("context_window")
             streaming_raw = item.get("streaming", True)
-            use_clean_content_raw = item.get("use_clean_content", False)
             extra_headers_raw = item.get("extra_headers", {})
             multimodal_raw = item.get("multimodal", True)
             reasoning_effort_raw = item.get("reasoning_effort")
@@ -161,9 +159,6 @@ def parse_configured_models(
                 ),
                 "streaming": parse_bool_flag(
                     streaming_raw, default_value=True
-                ),
-                "use_clean_content": parse_bool_flag(
-                    use_clean_content_raw, default_value=False
                 ),
                 # Whether the model can accept image input. Defaults to True;
                 # set ``"multimodal": false`` to hide image-input capability

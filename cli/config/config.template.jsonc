@@ -25,7 +25,6 @@
             "name": "<YOUR MODEL NAME>",
             "context_window": 131072,
             "streaming": true,               // optional, default is true
-            "use_clean_content": false,      // optional, default is false; prefer sanitized ``_clean_content`` in request history
             "multimodal": true,              // optional, default is true; set false to hide image-input via ``read``
             // optional: enable reasoning-effort selection for this model.
             // List the effort levels the model supports (any labels accepted by

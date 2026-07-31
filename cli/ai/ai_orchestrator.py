@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -10,6 +11,7 @@ from .ai_provider_clients import (
     AIResult,
     ProviderCallContext,
     _extract_api_error_message,
+    _sanitize_assistant_text,
     call_ai_with_provider,
     prepare_image_input,
 )
@@ -67,6 +69,279 @@ def _build_tool_calls_plan_payload(message: Optional[Dict[str, Any]]) -> str:
         return json.dumps(payload, ensure_ascii=False)
     except Exception:
         return ""
+
+
+def _coalesce_reply_events(
+    events: List[Tuple[str, Any, str]],
+) -> List[Dict[str, Any]]:
+    """Coalesce the stream's natural-arrival events into reply nodes.
+
+    Consecutive same-kind/same-source text events merge into one node; each
+    tool_call event becomes its own node. "thinking" (extracted from content)
+    maps to kind ``reasoning`` / source ``content_split``."""
+    nodes: List[Dict[str, Any]] = []
+    for kind, data, source in events:
+        if kind == "thinking":
+            nkind: str = "reasoning"
+            nsrc: str = "content_split"
+        else:
+            nkind = str(kind or "").strip()
+            nsrc = str(source or "").strip()
+        if nkind == "tool_call":
+            if not isinstance(data, dict):
+                continue
+            nodes.append({
+                "kind": "tool_call",
+                "tool_call_id": str(data.get("id") or "").strip(),
+                "data": data,
+                "from": nsrc,
+            })
+            continue
+        if not isinstance(data, str) or not data:
+            continue
+        if nodes and nodes[-1].get("kind") == nkind and nodes[-1].get("from") == nsrc:
+            nodes[-1]["data"] = str(nodes[-1].get("data") or "") + data
+        else:
+            nodes.append({"kind": nkind, "data": data, "from": nsrc})
+    return nodes
+
+
+def _synthesize_reply_nodes(message: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Synthesize reply nodes from a final message dict in canonical order
+    (used when no natural-arrival events were captured, e.g. non-stream)."""
+    if not isinstance(message, dict):
+        return []
+    content = str(message.get("content") or "")
+    try:
+        clean = _sanitize_assistant_text(content)
+    except Exception:
+        clean = content
+    thinking = str(message.get("_thinking") or "").strip()
+    thinking_from_content = bool(message.get("_thinking_from_content"))
+    tool_calls = message.get("tool_calls")
+    nodes: List[Dict[str, Any]] = []
+    if thinking and thinking_from_content:
+        nodes.append({"kind": "reasoning", "data": thinking, "from": "content_split"})
+        nodes.append({"kind": "content", "data": clean, "from": "content_split"})
+    elif thinking:
+        nodes.append({"kind": "reasoning", "data": thinking, "from": "native"})
+        nodes.append({"kind": "content", "data": content, "from": "native"})
+    elif content or (clean != content):
+        nodes.append({"kind": "content", "data": clean, "from": "native"})
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            nodes.append({
+                "kind": "tool_call",
+                "tool_call_id": str(tc.get("id") or "").strip(),
+                "data": tc,
+                "from": "native",
+            })
+    return nodes
+
+
+def _replace_tool_call_nodes(
+    nodes: List[Dict[str, Any]],
+    deduped_tool_calls: Any,
+) -> List[Dict[str, Any]]:
+    """Replace tool-call node data with the deduplicated call set actually
+    used for execution, keeping arrival order."""
+    if not isinstance(deduped_tool_calls, list):
+        return nodes
+    calls = [c for c in deduped_tool_calls if isinstance(c, dict)]
+    out: List[Dict[str, Any]] = []
+    tc_index = 0
+    for node in nodes:
+        if node.get("kind") == "tool_call":
+            if tc_index >= len(calls):
+                continue
+            call = calls[tc_index]
+            tc_index += 1
+            node = dict(node)
+            node["data"] = call
+            node["tool_call_id"] = str(call.get("id") or "").strip()
+        out.append(node)
+    return out
+
+
+_PSEUDO_TOOL_CALL_ENVELOPE_RE = re.compile(
+    r"<tool_calls\b[^>]*>(.*?)</tool_calls>",
+    re.IGNORECASE | re.DOTALL,
+)
+_PSEUDO_TOOL_CALL_FENCE_RE = re.compile(
+    r"```json\s*(.*?)\s*```",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _pseudo_call_to_openai(obj: Any) -> Optional[Dict[str, Any]]:
+    """Convert a parsed pseudo tool-call payload into an OpenAI-shaped call
+    dict, or None when it is not a usable call (incompatible -> discarded)."""
+    if not isinstance(obj, dict):
+        return None
+    fn = obj.get("function")
+    if isinstance(fn, dict):
+        name = str(fn.get("name") or "").strip()
+        if not name:
+            return None
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args, ensure_ascii=False)
+            except Exception:
+                args = "{}"
+        return {
+            "id": str(obj.get("id") or "").strip(),
+            "type": "function",
+            "function": {"name": name, "arguments": args or "{}"},
+        }
+    name = str(obj.get("tool") or obj.get("name") or "").strip()
+    if not name:
+        return None
+    args = obj.get("args")
+    if not isinstance(args, dict):
+        args = {}
+    try:
+        args_str = json.dumps(args, ensure_ascii=False)
+    except Exception:
+        args_str = "{}"
+    return {
+        "id": str(obj.get("id") or "").strip(),
+        "type": "function",
+        "function": {"name": name, "arguments": args_str or "{}"},
+    }
+
+
+def _extract_pseudo_tool_calls_from_text(text: str) -> List[Dict[str, Any]]:
+    """Extract compatible pseudo tool calls embedded in assistant content text
+    (``<tool_calls>...</tool_calls>`` envelopes and fenced JSON tool payloads).
+
+    Compatible payloads become OpenAI-shaped call dicts; unparseable /
+    incompatible ones are dropped so they are never recorded as nodes."""
+    if not isinstance(text, str) or not text:
+        return []
+    calls: List[Dict[str, Any]] = []
+
+    def _push(payload: Any) -> None:
+        if isinstance(payload, dict):
+            items = payload.get("tool_calls")
+            if isinstance(items, list):
+                for item in items:
+                    parsed = _pseudo_call_to_openai(item)
+                    if parsed is not None:
+                        calls.append(parsed)
+            else:
+                parsed = _pseudo_call_to_openai(payload)
+                if parsed is not None:
+                    calls.append(parsed)
+        elif isinstance(payload, list):
+            for item in payload:
+                parsed = _pseudo_call_to_openai(item)
+                if parsed is not None:
+                    calls.append(parsed)
+
+    for matcher in (_PSEUDO_TOOL_CALL_ENVELOPE_RE, _PSEUDO_TOOL_CALL_FENCE_RE):
+        for match in matcher.finditer(text):
+            body = match.group(1).strip()
+            if not body:
+                continue
+            try:
+                payload = json.loads(body)
+            except Exception:
+                continue
+            _push(payload)
+    return calls
+
+
+def _reply_requires_split(
+    message: Optional[Dict[str, Any]],
+    nodes: List[Dict[str, Any]],
+) -> bool:
+    """Whether content cleaning happened (content text carried embedded
+    thinking / pseudo tool calls), which requires the raw node to be kept."""
+    if isinstance(message, dict):
+        content = str(message.get("content") or "")
+        try:
+            if _sanitize_assistant_text(content) != content:
+                return True
+        except Exception:
+            pass
+        if message.get("_thinking_from_content"):
+            return True
+    for node in nodes:
+        if str(node.get("from") or "").strip().lower() == "content_split":
+            return True
+    return False
+
+
+def _build_reply_records(
+    message: Optional[Dict[str, Any]],
+    reply_events: Optional[List[Tuple[str, Any, str]]],
+    deduped_tool_calls: Any,
+) -> List[Dict[str, Any]]:
+    """Build the ``_reply_records`` list for one model reply.
+
+    Natural-arrival events (when available) define node order; otherwise nodes
+    are synthesized in canonical order. When the reply required cleaning, the
+    block is ordered as: native nodes (reasoning from ``reasoning_content`` and
+    ``tool_calls``) in arrival order, then the ``raw`` node preserving the
+    original uncleaned content, then the nodes split out of that raw text
+    (cleaned ``content`` pieces, extracted thinking, pseudo tool calls) in
+    their split order. Split-out nodes carry ``from: "content_split"``; native
+    nodes keep ``from: "native"`` (they are not part of the raw text)."""
+    if reply_events:
+        nodes = _coalesce_reply_events(reply_events)
+    else:
+        nodes = _synthesize_reply_nodes(message)
+    if not nodes:
+        return []
+    if isinstance(deduped_tool_calls, list):
+        nodes = _replace_tool_call_nodes(nodes, deduped_tool_calls)
+    # Content-embedded pseudo tool calls (compatible ones) become tool_call
+    # content_split nodes; incompatible/unparseable blocks are discarded.
+    if isinstance(message, dict):
+        raw_text = str(message.get("content") or "")
+        if raw_text:
+            for pseudo_call in _extract_pseudo_tool_calls_from_text(raw_text):
+                nodes.append({
+                    "kind": "tool_call",
+                    "tool_call_id": str(pseudo_call.get("id") or "").strip(),
+                    "data": pseudo_call,
+                    "from": "content_split",
+                })
+    if _reply_requires_split(message, nodes):
+        raw_content = str(message.get("content") or "") if isinstance(message, dict) else ""
+        # Order reflects the natural arrival of the reply's data streams: the
+        # raw node sits at the position where the content stream arrived, so
+        # native reasoning that preceded it stays above it and native tool
+        # calls (which typically follow the content) sit below it. The nodes
+        # split out of the raw (cleaned content, extracted thinking, pseudo
+        # tool calls) come right after the raw and are marked
+        # ``from: "content_split"`` (the single "derived from raw" marker);
+        # native reasoning/tool_calls keep ``from: "native"``.
+        before_nodes: List[Dict[str, Any]] = []
+        after_nodes: List[Dict[str, Any]] = []
+        seen_content_stream = False
+        for node in nodes:
+            kind = str(node.get("kind") or "").strip().lower()
+            src = str(node.get("from") or "").strip().lower()
+            if kind == "content":
+                # Cleaned content of a split reply is derived from the raw text.
+                node["from"] = "content_split"
+                src = "content_split"
+            is_content_stream = kind == "content" or src == "content_split"
+            if is_content_stream:
+                seen_content_stream = True
+                after_nodes.append(node)
+            elif seen_content_stream:
+                after_nodes.append(node)
+            else:
+                before_nodes.append(node)
+        nodes = before_nodes + [
+            {"kind": "raw", "_split_source": True, "content": raw_content}
+        ] + after_nodes
+    return nodes
 
 
 @dataclass
@@ -185,10 +460,10 @@ class AIOrchestrator:
                 assistant_text = str(ai_response or "")
                 tool_calls_data: Any = None
                 cache_stats: Any = None
-                clean_content: Optional[str] = None
                 output_tokens: Optional[int] = None
                 reasoning_tokens: Optional[int] = None
                 token_count_includes_reasoning: Optional[bool] = None
+                reply_events: Optional[List[Tuple[str, Any, str]]] = None
                 if isinstance(message, dict):
                     tool_calls_data = message.get("tool_calls")
                     # Deduplicate tool_calls with identical function content
@@ -217,15 +492,11 @@ class AIOrchestrator:
                             tool_calls_data = _deduped_tc
                             message["tool_calls"] = _deduped_tc
                     cache_stats = message.get("_cache_stats")
-                    clean_content = message.get("_clean_content")
                     output_tokens = message.get("_output_tokens")
                     reasoning_tokens = message.get("_reasoning_tokens")
                     token_count_includes_reasoning = message.get("_token_count_includes_reasoning")
-                if not assistant_text.strip():
-                    plan_payload = _build_tool_calls_plan_payload(message)
-                    if plan_payload:
-                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning)
-                        return
+                    reply_events = message.pop("_reply_events", None)
+                if not assistant_text.strip() and not tool_calls_data and not reply_events:
                     _AI_HISTORY_LOG.warning(
                         "llm-history empty-assistant skipped provider=%s model=%s stream=%s return_message=%s history_skip_user=%s",
                         provider,
@@ -235,7 +506,24 @@ class AIOrchestrator:
                         bool(call_ctx.history_skip_user),
                     )
                     return
-                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning, thinking=message.get("_thinking", "") if isinstance(message, dict) else None, thinking_from_content=message.get("_thinking_from_content") if isinstance(message, dict) else None)
+                reply_records = _build_reply_records(message, reply_events, tool_calls_data)
+                if not reply_records:
+                    _AI_HISTORY_LOG.warning(
+                        "llm-history no-reply-records skipped provider=%s model=%s stream=%s",
+                        provider,
+                        model_name,
+                        bool(call_ctx.stream),
+                    )
+                    return
+                self.context.history_writer(
+                    "assistant",
+                    "",
+                    cache_stats=cache_stats,
+                    output_tokens=output_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    token_count_includes_reasoning=token_count_includes_reasoning,
+                    reply_records=reply_records,
+                )
 
             provider_ctx = ProviderCallContext(
                 provider=provider,

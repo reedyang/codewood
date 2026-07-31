@@ -390,9 +390,11 @@ def _recover_latest_history_tool_plans(agent: Any) -> List[Tuple[str, Dict[str, 
             continue
         if str(item.get("role") or "").strip().lower() != "assistant":
             continue
-        plans = _parse_tool_plans_from_tool_calls_node(item.get("tool_calls"))
+        from ..services.session_memory_service import _assistant_display_view, _assistant_tool_calls
+        plans = _parse_tool_plans_from_tool_calls_node(_assistant_tool_calls(item))
         if plans:
             return plans
+        item = _assistant_display_view(item)
         content = str(item.get("content") or "")
         if not content.strip():
             continue
@@ -425,7 +427,8 @@ def _recover_new_history_tool_plans(
             continue
         if str(item.get("role") or "").strip().lower() != "assistant":
             continue
-        plans = _parse_tool_plans_from_tool_calls_node(item.get("tool_calls"))
+        from ..services.session_memory_service import _assistant_tool_calls
+        plans = _parse_tool_plans_from_tool_calls_node(_assistant_tool_calls(item))
         if plans:
             return plans
     return []
@@ -522,6 +525,76 @@ def _build_tool_calls_from_plans(
             }
         )
     return out
+
+
+def _openai_call_from_plan(
+    tool_name: str,
+    args: Any,
+    call_id: str,
+) -> Dict[str, Any]:
+    """Build an OpenAI-shaped tool-call dict from a (tool, args) plan."""
+    try:
+        arguments = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)
+    except Exception:
+        arguments = "{}"
+    return {
+        "id": str(call_id or "").strip(),
+        "type": "function",
+        "function": {
+            "name": str(tool_name or ""),
+            "arguments": arguments,
+        },
+    }
+
+
+def _rebuild_block_tool_call_nodes(
+    block: Dict[str, Any],
+    fallback_plans: List[Tuple[str, Dict[str, Any]]],
+) -> bool:
+    """Ensure a reply block carries tool-call nodes matching the executed plans.
+
+    Never writes a flat outer ``tool_calls`` on the block — tool calls live
+    exclusively in ``_reply_records`` nodes. Existing node ids are preserved
+    (only invalid ``arguments`` are repaired); when no nodes exist yet, new
+    native tool-call nodes are appended from the plans.
+    """
+    if not isinstance(fallback_plans, list) or not fallback_plans:
+        return False
+    from ..services.session_memory_service import _is_reply_block
+    if not _is_reply_block(block):
+        return False
+    nodes = block["_reply_records"]
+    if not nodes:
+        return False
+    existing = [
+        n for n in nodes
+        if isinstance(n, dict) and str(n.get("kind") or "").strip().lower() == "tool_call"
+    ]
+    if existing:
+        existing_calls = [n.get("data") for n in existing if isinstance(n.get("data"), dict)]
+        if existing_calls and not _tool_calls_have_invalid_arguments(existing_calls):
+            return False
+        changed = False
+        for node, (tool_name, args) in zip(existing, fallback_plans):
+            call = node.get("data")
+            if not isinstance(call, dict):
+                call = {}
+            call_id = str(call.get("id") or "").strip() or f"call_{existing.index(node)}"
+            node["data"] = _openai_call_from_plan(tool_name, args, call_id)
+            node["tool_call_id"] = str(node["data"].get("id") or "").strip()
+            changed = True
+        return changed
+    # No tool-call nodes yet (e.g. the provider emitted the call as raw JSON
+    # text the recorder could not parse): append native nodes from the plans.
+    for idx, (tool_name, args) in enumerate(fallback_plans):
+        call = _openai_call_from_plan(tool_name, args, f"call_{idx}")
+        nodes.append({
+            "kind": "tool_call",
+            "tool_call_id": str(call.get("id") or "").strip(),
+            "data": call,
+            "from": "native",
+        })
+    return True
 
 
 def _split_trailing_pseudo_tool_calls_text(
@@ -2026,58 +2099,47 @@ def _replace_latest_assistant_history_content(
     hist = getattr(agent, "conversation_history", None)
     if not isinstance(hist, list):
         return
+    from ..services.session_memory_service import _is_reply_block, _assistant_reply_nodes
     for msg in reversed(hist):
         if not isinstance(msg, dict):
             continue
         if str(msg.get("role") or "").strip().lower() != "assistant":
             continue
-        if str(msg.get("content") or "") != old_text:
-            continue
-        msg["content"] = new_text
-        if pseudo_text:
-            msg["pseudo_tool_call_text"] = pseudo_text
-            if pseudo_tool_call_tools:
-                msg["pseudo_tool_call_tools"] = [
-                    str(x).strip()
-                    for x in pseudo_tool_call_tools
-                    if str(x).strip()
-                ]
-        try:
-            agent._sync_active_chat_messages()
-        except Exception:
-            pass
-        return
-
-
-def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> None:
-    if not isinstance(clean_content, str):
-        return
-    if _looks_like_ephemeral_api_error_summary(clean_content):
-        return
-    hist = getattr(agent, "conversation_history", None)
-    if not isinstance(hist, list):
-        return
-    for msg in reversed(hist):
-        if not isinstance(msg, dict):
-            continue
-        if str(msg.get("role") or "").strip().lower() != "assistant":
-            continue
-        # Remove any stale _clean_content that duplicates raw content.
-        if "_clean_content" in msg and str(msg["_clean_content"] or "") == str(msg.get("content") or ""):
-            del msg["_clean_content"]
-        raw_content = str(msg.get("content") or "")
-        # Strip ``<|channel>thought`` / ``<channel|>`` reasoning markers so
-        # they don't cause ``_clean_content`` to be treated as identical to
-        # the raw text (which would prevent recording it).
-        clean_visible = _strip_channel_thought_markers(clean_content)
-        raw_visible = _strip_channel_thought_markers(raw_content)
-        existing_clean = str(msg.get("_clean_content") or "")
-        if existing_clean == clean_visible:
-            return
-        if raw_visible == clean_visible:
-            msg.pop("_clean_content", None)
+        if _is_reply_block(msg):
+            records = _assistant_reply_nodes(msg)
+            replaced = False
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                kind = str(record.get("kind") or "").strip().lower()
+                if kind == "raw":
+                    continue
+                if str(record.get("data") or "") == old_text:
+                    record["data"] = new_text
+                    replaced = True
+                    break
+            if not replaced:
+                continue
+            if pseudo_text:
+                msg["pseudo_tool_call_text"] = pseudo_text
+                if pseudo_tool_call_tools:
+                    msg["pseudo_tool_call_tools"] = [
+                        str(x).strip()
+                        for x in pseudo_tool_call_tools
+                        if str(x).strip()
+                    ]
         else:
-            msg["_clean_content"] = clean_visible
+            if str(msg.get("content") or "") != old_text:
+                continue
+            msg["content"] = new_text
+            if pseudo_text:
+                msg["pseudo_tool_call_text"] = pseudo_text
+                if pseudo_tool_call_tools:
+                    msg["pseudo_tool_call_tools"] = [
+                        str(x).strip()
+                        for x in pseudo_tool_call_tools
+                        if str(x).strip()
+                    ]
         try:
             agent._sync_active_chat_messages()
         except Exception:
@@ -2098,6 +2160,26 @@ def _ensure_thinking_in_latest_assistant_message(agent: Any, thinking: str, thin
             continue
         if str(msg.get("role") or "").strip().lower() != "assistant":
             continue
+        from ..services.session_memory_service import _is_reply_block, _assistant_reply_nodes
+        if _is_reply_block(msg):
+            records = _assistant_reply_nodes(msg)
+            if any(
+                isinstance(r, dict)
+                and str(r.get("kind") or "").strip().lower() == "reasoning"
+                and str(r.get("data") or "").strip()
+                for r in records
+            ):
+                return
+            records.append({
+                "kind": "reasoning",
+                "data": thinking,
+                "from": "content_split" if thinking_from_content else "native",
+            })
+            try:
+                agent._sync_active_chat_messages()
+            except Exception:
+                pass
+            return
         if msg.get("_thinking"):
             return
         msg["_thinking"] = thinking
@@ -4239,7 +4321,6 @@ def run_agent_loop(agent: Any):
                         message_tool_plans = pseudo_text_tool_plans
                     ai_response = visible_ai_response
 
-                _update_latest_assistant_clean_content(self, ai_response)
                 fallback_plans = list(message_tool_plans)
                 if fallback_plans:
                     _raw_tool_plans = list(fallback_plans)
@@ -4275,22 +4356,33 @@ def run_agent_loop(agent: Any):
                         break
                 if _issuing is not None:
                     self._last_tool_issuing_assistant = _issuing
-                    _existing_tool_calls = _issuing.get("tool_calls")
-                    _needs_rebuild = (
-                        fallback_plans
-                        and (
-                            not _existing_tool_calls
-                            or _tool_calls_have_invalid_arguments(_existing_tool_calls)
-                        )
-                    )
-                    if _needs_rebuild:
-                        _rebuilt = _build_tool_calls_from_plans(_issuing, fallback_plans)
-                        if _rebuilt:
-                            _issuing["tool_calls"] = _rebuilt
+                    from ..services.session_memory_service import _is_reply_block
+                    if _is_reply_block(_issuing):
+                        # Reply blocks keep tool calls in ``_reply_records``
+                        # nodes; rebuild/repair the nodes, never a flat outer
+                        # ``tool_calls`` (which would duplicate + desync ids).
+                        if _rebuild_block_tool_call_nodes(_issuing, fallback_plans):
                             try:
                                 self._sync_active_chat_messages()
                             except Exception:
                                 pass
+                    else:
+                        _existing_tool_calls = _issuing.get("tool_calls")
+                        _needs_rebuild = (
+                            fallback_plans
+                            and (
+                                not _existing_tool_calls
+                                or _tool_calls_have_invalid_arguments(_existing_tool_calls)
+                            )
+                        )
+                        if _needs_rebuild:
+                            _rebuilt = _build_tool_calls_from_plans(_issuing, fallback_plans)
+                            if _rebuilt:
+                                _issuing["tool_calls"] = _rebuilt
+                                try:
+                                    self._sync_active_chat_messages()
+                                except Exception:
+                                    pass
                 ai_response_looks_like_pseudo_tool = _looks_like_pseudo_tool_call_text(ai_response)
                 if (
                     task_uses_standard_openai_tools
@@ -4306,7 +4398,6 @@ def run_agent_loop(agent: Any):
                     )
                     if cleaned_for_history and cleaned_for_history != ai_response:
                         ai_response = cleaned_for_history
-                        _update_latest_assistant_clean_content(self, ai_response)
                     if pending_stream_history_reload:
                         _reload_chat_history_after_streamed_assistant_output(self)
                         pending_stream_history_reload = False
@@ -4546,7 +4637,8 @@ def run_agent_loop(agent: Any):
                         skill_tool_call_id = "call_0"
                         _issuing = getattr(self, "_last_tool_issuing_assistant", None)
                         if isinstance(_issuing, dict):
-                            for _tc in (_issuing.get("tool_calls") or []):
+                            from ..services.session_memory_service import _assistant_tool_calls
+                            for _tc in _assistant_tool_calls(_issuing):
                                 if isinstance(_tc, dict) and str(_tc.get("function", {}).get("name") or "").strip() == "request_skill_prompt":
                                     _cid = str(_tc.get("id") or "").strip()
                                     if _cid:
@@ -4581,8 +4673,9 @@ def run_agent_loop(agent: Any):
                         }
                         _issuing_msg = getattr(self, "_last_tool_issuing_assistant", None)
                         if not (isinstance(_issuing_msg, dict) and str(_issuing_msg.get("role") or "").strip().lower() == "assistant"):
+                            from ..services.session_memory_service import _assistant_tool_calls
                             for _m in reversed(getattr(self, "conversation_history", None) or []):
-                                if isinstance(_m, dict) and str(_m.get("role") or "").strip().lower() == "assistant" and _m.get("tool_calls"):
+                                if isinstance(_m, dict) and str(_m.get("role") or "").strip().lower() == "assistant" and _assistant_tool_calls(_m):
                                     _issuing_msg = _m
                                     break
                         if isinstance(_issuing_msg, dict):

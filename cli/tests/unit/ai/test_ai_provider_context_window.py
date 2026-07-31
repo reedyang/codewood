@@ -330,7 +330,43 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(sent[1]["content"], "a1")
         self.assertEqual(sent[2]["content"], "u2")
 
-    def test_openai_use_clean_content_defaults_off(self):
+    def test_responses_assistant_text_comes_before_function_call_output(self):
+        """A tool round whose assistant turn carries visible text must emit the
+        text message BEFORE the function_call, so the function_call_output that
+        follows directly answers the call (strict gateways otherwise reject it
+        with "No tool output found for tool call <id>")."""
+        from cli.ai.ai_provider_clients import _build_openai_responses_input_messages
+
+        messages = [
+            {"role": "assistant", "content": "我来帮你查。",
+             "tool_calls": [{"id": "call_abc", "type": "function",
+                             "function": {"name": "shell", "arguments": '{"command": "ls"}'}}]},
+            {"role": "tool", "tool_call_id": "call_abc", "name": "shell",
+             "content": '{"success": true, "output": "ok"}'},
+        ]
+        items = _build_openai_responses_input_messages(messages, None, None, "")
+        types = [i.get("type") for i in items]
+        self.assertEqual(types, ["message", "function_call", "function_call_output"])
+        self.assertEqual(items[1]["call_id"], "call_abc")
+        self.assertEqual(items[2]["call_id"], "call_abc")
+
+    def test_responses_tool_only_round_emits_call_then_output(self):
+        """A tool-only assistant turn (no visible text) emits function_call
+        directly followed by its function_call_output."""
+        from cli.ai.ai_provider_clients import _build_openai_responses_input_messages
+
+        messages = [
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "call_x", "type": "function",
+                             "function": {"name": "shell", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_x", "name": "shell",
+             "content": '{"success": true, "output": "ok"}'},
+        ]
+        items = _build_openai_responses_input_messages(messages, None, None, "")
+        types = [i.get("type") for i in items]
+        self.assertEqual(types, ["function_call", "function_call_output"])
+
+    def test_openai_always_uses_raw_content(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
             out = call_ai_with_provider(
                 context=ProviderCallContext(
@@ -362,9 +398,10 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual(out, "ok")
         sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        # Raw content is always sent (never substituted with _clean_content).
         self.assertEqual(sent[0]["content"], "<think>hidden</think>raw answer")
 
-    def test_openai_model_config_can_enable_clean_content(self):
+    def test_openai_ignores_legacy_use_clean_content_setting(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
             out = call_ai_with_provider(
                 context=ProviderCallContext(
@@ -397,7 +434,7 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual(out, "ok")
         sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
-        self.assertEqual(sent[0]["content"], "raw answer")
+        self.assertEqual(sent[0]["content"], "<think>hidden</think>raw answer")
 
     def test_openai_provider_can_explicitly_include_thinking_in_history(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
@@ -1031,7 +1068,7 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertTrue(sent_tools)
         self.assertEqual(sent_tools[0].get("function", {}).get("name"), "read_file")
 
-    def test_ollama_model_config_can_enable_clean_content(self):
+    def test_ollama_always_uses_raw_content(self):
         fake_response = _FakeOllamaHttpResponse(data={"message": {"content": "ok"}})
         with patch("requests.post", return_value=fake_response) as mock_post:
             out = call_ai_with_provider(
@@ -1064,7 +1101,7 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual(out, "ok")
         sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
-        self.assertEqual(sent[0]["content"], "raw answer")
+        self.assertEqual(sent[0]["content"], "<think>hidden</think>raw answer")
 
     def test_ollama_stream_summary_keeps_num_ctx_and_summary_options(self):
         fake_response = _FakeOllamaHttpResponse(

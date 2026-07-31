@@ -203,8 +203,6 @@ export interface EditorModel {
   enabled: boolean;
   context_window?: string | number;
   multimodal?: boolean;
-  /** Whether history should prefer the sanitized ``_clean_content`` form. */
-  use_clean_content?: boolean;
   /** Whether the model supports thinking/reasoning tokens. */
   thinking?: boolean;
   /** Whether streaming responses are enabled (default true). */
@@ -242,7 +240,6 @@ export function toEditorProvider(raw: unknown): EditorProvider {
       return {
         name: m,
         enabled: true,
-        use_clean_content: false,
         reasoning_effort: [],
         extra_headers: [],
       };
@@ -264,7 +261,6 @@ export function toEditorProvider(raw: unknown): EditorProvider {
       enabled: true,
       context_window: mm.context_window as string | number | undefined,
       multimodal: mm.multimodal as boolean | undefined,
-      use_clean_content: mm.use_clean_content as boolean | undefined,
       thinking: mm.thinking as boolean | undefined,
       streaming: mm.streaming as boolean | undefined,
       reasoning_effort: re,
@@ -354,9 +350,6 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         }
         if (m.multimodal !== undefined) {
           model.multimodal = m.multimodal;
-        }
-        if (m.use_clean_content !== undefined) {
-          model.use_clean_content = m.use_clean_content;
         }
         if (m.streaming !== undefined) {
           model.streaming = m.streaming;

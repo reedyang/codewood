@@ -65,7 +65,11 @@ from .core.status_bar import (
 from .integrations.mcp import McpManager, McpError
 from .core.change_preview_formatter import ChangePreviewFormatter
 from .ai.ai_provider_clients import AICallContext, resolve_api_mode
-from .services.session_memory_service import SessionMemoryService
+from .services.session_memory_service import (
+    SessionMemoryService,
+    _assistant_display_view,
+    _assistant_tool_calls,
+)
 from .policy.path_policy import PathPolicy
 from .core.console_utils import (
     GUI_CMD_OUTPUT_BEGIN,
@@ -771,7 +775,6 @@ class Agent:
                 model_name = str(model_item.get("name") or "").strip()
                 context_window = int(model_item.get("context_window") or 0)
                 streaming = bool(model_item.get("streaming", True))
-                use_clean_content = bool(model_item.get("use_clean_content", False))
                 multimodal = bool(model_item.get("multimodal", True))
                 thinking = bool(model_item.get("thinking", True))
                 selector = f"{provider}/{model_name}"
@@ -783,7 +786,6 @@ class Agent:
                 params["model"] = model_name
                 params["context_window"] = context_window
                 params["streaming"] = streaming
-                params["use_clean_content"] = use_clean_content
                 params["multimodal"] = multimodal
                 params["thinking"] = thinking
                 params["extra_headers"] = dict(model_item.get("extra_headers") or {})
@@ -1728,6 +1730,10 @@ class Agent:
         for idx, msg in enumerate(hist):
             _reset_plan_tracker_if_stale(idx)
             role = str(msg.get("role") or "").strip().lower()
+            if role == "assistant":
+                # Flatten model-reply blocks (_reply_records) into the display
+                # message: split raw node skipped, nodes render in order.
+                msg = _assistant_display_view(msg)
             content = str(msg.get("content") or "")
             if role == "user":
                 if msg.get("_internal"):
@@ -3866,8 +3872,8 @@ class Agent:
         """
         issuing = getattr(self, "_last_tool_issuing_assistant", None)
         if isinstance(issuing, dict) and str(issuing.get("role") or "").strip().lower() == "assistant":
-            tcs = issuing.get("tool_calls")
-            if isinstance(tcs, list) and tcs:
+            tcs = _assistant_tool_calls(issuing)
+            if tcs:
                 paired = 0
                 found_assistant = False
                 for earlier in reversed(self.conversation_history):
@@ -3896,8 +3902,8 @@ class Agent:
                 continue
             if str(msg.get("role") or "").strip().lower() != "assistant":
                 continue
-            tcs = msg.get("tool_calls")
-            if not isinstance(tcs, list) or not tcs:
+            tcs = _assistant_tool_calls(msg)
+            if not tcs:
                 continue
             # Count existing tool messages that follow this assistant
             paired = 0
@@ -3943,7 +3949,7 @@ class Agent:
                     continue
                 if str(msg.get("role") or "").strip().lower() != "assistant":
                     continue
-                if not msg.get("tool_calls"):
+                if not _assistant_tool_calls(msg):
                     continue
                 target = msg
                 break
@@ -6573,8 +6579,8 @@ class Agent:
             self._stop_interrupt_monitor(cancel_task_on_interrupt=False)
             restore_app_console_title()
 
-    def _append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None) -> None:
-        self.session_memory_service.append_chat_message(role, content, tool_calls=tool_calls, _internal=_internal, api_content=api_content, context_suffix=context_suffix, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning, thinking=thinking, thinking_from_content=thinking_from_content)
+    def _append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None, reply_records: Optional[List[Dict[str, Any]]] = None) -> None:
+        self.session_memory_service.append_chat_message(role, content, tool_calls=tool_calls, _internal=_internal, api_content=api_content, context_suffix=context_suffix, cache_stats=cache_stats, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning, thinking=thinking, thinking_from_content=thinking_from_content, reply_records=reply_records)
         if str(role or "").strip().lower() == "assistant":
             try:
                 self.session_memory_service.schedule_context_usage_refresh_async()

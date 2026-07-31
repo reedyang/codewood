@@ -49,6 +49,46 @@ _PLAN_STATUSES = ("pending", "in_progress", "completed")
 _PLAN_MAX_ITEMS = 32
 _PLAN_MAX_STEP_CHARS = 200
 
+_REPLY_NODE_KINDS = frozenset({"reasoning", "content", "tool_call"})
+_REPLY_RAW_KIND = "raw"
+
+
+def _normalize_reply_records(records: Any) -> List[Dict[str, Any]]:
+    """Normalize a ``_reply_records`` list for persistence.
+
+    Only whitelisted fields survive: node records keep kind/data/from/
+    tool_call_id; the trailing raw record keeps kind/_split_source/content."""
+    if not isinstance(records, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        kind = str(record.get("kind") or "").strip().lower()
+        normalized: Dict[str, Any] = {"kind": kind}
+        if kind == _REPLY_RAW_KIND:
+            content = str(record.get("content") or "")
+            if content:
+                normalized["content"] = content
+            if record.get("_split_source"):
+                normalized["_split_source"] = True
+        elif kind in _REPLY_NODE_KINDS:
+            if kind == "tool_call":
+                tcid = str(record.get("tool_call_id") or "").strip()
+                if tcid:
+                    normalized["tool_call_id"] = tcid
+            data = record.get("data")
+            if kind == "tool_call":
+                if isinstance(data, dict):
+                    normalized["data"] = data
+            elif isinstance(data, str) and data:
+                normalized["data"] = data
+            src = str(record.get("from") or "").strip().lower()
+            if src in ("native", "content_split"):
+                normalized["from"] = src
+        out.append(normalized)
+    return out
+
 # Chat interaction mode, persisted on the chat record root as ``"mode"``.
 # ``"agent"`` is the default; ``"plan"`` is the sticky Plan mode.
 CHAT_MODE_AGENT = "agent"
@@ -509,6 +549,10 @@ class ChatStateManager:
         tool_rounds = raw.get("tool_rounds")
         if isinstance(tool_rounds, list) and tool_rounds:
             out["tool_rounds"] = tool_rounds
+        if role == "assistant":
+            reply_records = raw.get("_reply_records")
+            if isinstance(reply_records, list) and reply_records:
+                out["_reply_records"] = _normalize_reply_records(reply_records)
         raw_rounds = raw.get("_tool_rounds_raw")
         if isinstance(raw_rounds, list) and raw_rounds:
             out["_tool_rounds_raw"] = raw_rounds
@@ -735,15 +779,6 @@ class ChatStateManager:
                             continue
 
                 if write_record:
-                    for msg in chat.get("messages", []):
-                        if isinstance(msg, dict) and msg.get("role") == "assistant" and not msg.get("_clean_content"):
-                            raw = str(msg.get("content") or "")
-                            from ..runtime.runtime_loop import _stream_visible_text_with_json_pause, _strip_channel_thought_markers
-                            cleaned = _stream_visible_text_with_json_pause(raw, final=True)
-                            if cleaned == raw:
-                                cleaned = _strip_channel_thought_markers(raw)
-                            if cleaned != raw:
-                                msg["_clean_content"] = cleaned
                     record_payload = {
                         k: v for k, v in chat.items()
                         if (not str(k).startswith("_") or k == "_tool_rounds_raw")
@@ -1288,6 +1323,10 @@ class ChatStateManager:
             tool_rounds = m.get("tool_rounds")
             if isinstance(tool_rounds, list) and tool_rounds:
                 entry["tool_rounds"] = tool_rounds
+            if role == "assistant":
+                reply_records = m.get("_reply_records")
+                if isinstance(reply_records, list) and reply_records:
+                    entry["_reply_records"] = reply_records
             raw_rounds = m.get("_tool_rounds_raw")
             if isinstance(raw_rounds, list) and raw_rounds:
                 entry["_tool_rounds_raw"] = raw_rounds
@@ -1310,11 +1349,6 @@ class ChatStateManager:
                     ]
                     if cleaned_tools:
                         entry["pseudo_tool_call_tools"] = cleaned_tools
-            # Preserve _clean_content even when empty: a blank value is an
-            # explicit signal that the raw content was entirely hidden
-            # markers (no visible text), which must survive export.
-            if "_clean_content" in m:
-                entry["_clean_content"] = m["_clean_content"]
             thinking = str(m.get("_thinking") or "").strip()
             if thinking:
                 entry["_thinking"] = thinking

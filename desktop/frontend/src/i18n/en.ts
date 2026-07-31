@@ -334,9 +334,6 @@ export const en: Dict = {
   "models.resetContextWindow": "Reset to API value",
   "models.multimodal": "Multimodal (accepts images)",
   "models.streaming": "Streaming",
-  "models.useCleanContent": "Send cleaned history content",
-  "models.useCleanContentHint":
-    "When enabled, request history prefers cleaned content and strips thinking tags and similar noise. Default is off.",
   "models.thinking": "Enable thinking/reasoning tokens",
   "models.thinkingHint": "Allows the model to output its internal reasoning steps.",
   "thinking.show": "Show thinking",
