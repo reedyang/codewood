@@ -288,6 +288,20 @@ function ModelThenSendProbe() {
   );
 }
 
+function HealthSendProbe() {
+  const { sendInput } = useApp();
+  return (
+    <>
+      <button onClick={() => { void sendInput("/server-health"); }}>
+        send health
+      </button>
+      <button onClick={() => { void sendInput("normal message"); }}>
+        send normal
+      </button>
+    </>
+  );
+}
+
 describe("AppContext thinking rounds", () => {
   beforeEach(() => {
     apiMock.reset();
@@ -1246,5 +1260,36 @@ describe("AppContext thinking rounds", () => {
     await waitFor(() => {
       expect(apiMock.sendInput).toHaveBeenNthCalledWith(1, "hello after switch", true, "chat-1");
     });
+  });
+
+  it("sends /server-health immediately even while the chat is busy", async () => {
+    render(
+      <AppProvider>
+        <HealthSendProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Mark the active chat as busy (a turn is streaming).
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // /server-health bypasses the pending queue and reaches the server at once.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "send health" }));
+    });
+    expect(apiMock.sendInput).toHaveBeenCalledTimes(1);
+    expect(apiMock.sendInput).toHaveBeenCalledWith("/server-health", true, "chat-1");
+
+    // A normal message while busy is buffered into the pending queue instead.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "send normal" }));
+    });
+    expect(apiMock.sendInput).toHaveBeenCalledTimes(1);
   });
 });

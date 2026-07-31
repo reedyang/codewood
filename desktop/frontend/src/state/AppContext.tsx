@@ -2705,6 +2705,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!trimmed) {
         return;
       }
+      // Debug diagnostic command: send straight to the server (no optimistic
+      // turn, no pending-queue buffering) so it reaches the backend even while
+      // the chat is busy/stuck. The server only acts on it with CODEWOOD_DEBUG=1.
+      if (trimmed === "/server-health") {
+        await client.sendInput(trimmed, true, activeChatIdRef.current);
+        return;
+      }
       let targetChatId = activeChatIdRef.current;
       let targetWsId = activeWorkspaceIdRef.current;
       if (draftModeRef.current) {

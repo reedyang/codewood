@@ -2137,8 +2137,163 @@ class ServeApp:
             apply_fn()
         return cid
 
+    def _diagnose_server_health(self) -> None:
+        """Emit a diagnostic snapshot to the server log for ``/server-health``.
+
+        Only reachable with ``CODEWOOD_DEBUG=1`` (see ``submit_input``). The
+        dump covers the things you want when the GUI shows "Working…" for a
+        long time with no new output:
+
+        * a full stack trace of every live thread (where is each one stuck?);
+        * SSE client connections and how backed up each client's event queue
+          is (a deep queue means the GUI is lagging behind the server);
+        * every chat runtime: busy flag, pending input depth, loop thread state;
+        * pending confirm / ``request_user_input`` / browser-command queues
+          (a blocked interaction silently stalls a turn);
+        * the HTTP server endpoint and basic agent state.
+
+        Nothing here touches the model, the input queue, or persisted history.
+        """
+
+        def _qsize(q: Any) -> int:
+            try:
+                return int(q.qsize())
+            except Exception:
+                return -1
+
+        lines: List[str] = []
+        try:
+            import platform
+            import traceback
+
+            from ..config.app_info import get_app_logger_root
+            from ..core.logging.app_logging import get_log_file_path, get_logger
+        except Exception:
+            return
+        agent = self.agent
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lines.append("=" * 76)
+        lines.append(
+            f"[server-health] {stamp} PID={os.getpid()} "
+            f"log={get_log_file_path() or 'n/a'} python={platform.python_version()}"
+        )
+        # --- SSE client connections -------------------------------------
+        try:
+            subs = list(self.broadcaster._subscribers)
+            lines.append(f"SSE subscribers: {len(subs)}")
+            for i, q in enumerate(subs):
+                lines.append(f"  subscriber[{i}] pending_events={_qsize(q)}")
+        except Exception as exc:  # pragma: no cover
+            lines.append(f"SSE subscribers: <error: {exc}>")
+        # --- HTTP server -------------------------------------------------
+        try:
+            httpd = self._httpd
+            if httpd is not None:
+                lines.append(
+                    f"HTTP server: {getattr(httpd, 'server_address', None)} "
+                    f"shutdown={self._shutdown_event.is_set()}"
+                )
+            else:
+                lines.append("HTTP server: <not started>")
+        except Exception:
+            lines.append("HTTP server: <unavailable>")
+        # --- chat runtimes -----------------------------------------------
+        lines.append("Chat runtimes:")
+        try:
+            with self._runtimes_lock:
+                runtimes = list(self._runtimes.values())
+        except Exception:
+            runtimes = []
+        if not runtimes:
+            lines.append("  (none)")
+        for rt in runtimes:
+            t = getattr(rt, "thread", None)
+            busy = bool(getattr(rt, "busy", None) is not None and rt.busy.is_set())
+            thread_desc = "dead"
+            if t is not None:
+                thread_desc = f"alive name={t.name} ident={t.ident}"
+                try:
+                    if not t.is_alive():
+                        thread_desc = "dead"
+                except Exception:
+                    pass
+            lines.append(
+                f"  chat={getattr(rt, 'chat_id', '?')} "
+                f"ws={getattr(rt, 'workspace_id', '')} "
+                f"busy={busy} pending_inputs={_qsize(getattr(rt, 'input_queue', None))} "
+                f"thread={thread_desc} "
+                f"turn_started_at={getattr(rt, 'turn_started_at', None)}"
+            )
+        # --- pending interaction queues ----------------------------------
+        lines.append("Pending interaction queues:")
+        for label, lock, coll in (
+            ("confirms", self._confirms_lock, self._confirms),
+            ("request_user_input", self._request_user_input_lock, self._request_user_input),
+            ("browser_cmds", self._browser_cmds_lock, self._browser_cmds),
+        ):
+            try:
+                with lock:
+                    count = len(coll)
+            except Exception:
+                count = -1
+            lines.append(f"  {label}: {count}")
+        # --- agent overview ----------------------------------------------
+        lines.append("Agent state:")
+        for key, value in (
+            ("active_chat_id", getattr(agent, "active_chat_id", "")),
+            ("active_chat_name", getattr(agent, "active_chat_name", "")),
+            ("workspace_id", getattr(agent, "workspace_id", "")),
+            ("workspace_name", getattr(agent, "workspace_name", "")),
+            ("execution_policy", getattr(agent, "execution_policy", "")),
+            ("gui_plain_stream", getattr(agent, "_gui_plain_stream", False)),
+        ):
+            lines.append(f"  {key}={value}")
+        try:
+            lines.append(f"  busy_chats={self._owned_runtime_chat_ids()}")
+        except Exception:
+            pass
+        # --- thread stacks ------------------------------------------------
+        lines.append("Thread stacks:")
+        try:
+            frames = sys._current_frames()  # type: ignore[attr-defined]
+        except Exception:
+            frames = {}
+        alive = [t for t in threading.enumerate() if t.is_alive()]
+        if not alive:
+            lines.append("  (no live threads)")
+        for t in alive:
+            name = getattr(t, "name", "?")
+            ident = getattr(t, "ident", None)
+            daemon = bool(getattr(t, "daemon", False))
+            lines.append(f"  [{name}] ident={ident} daemon={daemon} alive=True")
+            frame = frames.get(ident) if ident is not None else None
+            if frame is None:
+                lines.append("      <no current frame>")
+                continue
+            try:
+                for raw in traceback.format_stack(frame):
+                    lines.append("      " + raw.strip())
+            except Exception as exc:  # pragma: no cover
+                lines.append(f"      <stack unavailable: {exc}>")
+        lines.append("=" * 76)
+        try:
+            logger = get_logger(f"{get_app_logger_root()}.server")
+            logger.info("%s", "\n".join(lines))
+        except Exception:  # pragma: no cover
+            pass
+
     def submit_input(self, text: str, chat_id: str = "", as_prompt: bool = False) -> None:
         line = str(text or "")
+        # Debug-only diagnostic hook: with CODEWOOD_DEBUG=1, ``/server-health``
+        # dumps thread stacks and connection state to the server log. It is
+        # swallowed entirely — never queued, never sent to the model, and never
+        # persisted — so it can be fired even while a turn looks stuck.
+        if (
+            os.environ.get("CODEWOOD_DEBUG") == "1"
+            and line.strip() == "/server-health"
+        ):
+            self._diagnose_server_health()
+            return
         cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
         # Composer input is forced to a model prompt: prefix a sentinel the
         # runtime loop strips so "/foo" / "!bar" never run as command/shell.
