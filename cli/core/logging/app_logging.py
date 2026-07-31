@@ -17,7 +17,7 @@ _log_file_path: Optional[Path] = None
 
 
 def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging.INFO) -> logging.Logger:
-    if os.environ.get("CODEWOOD_DEBUG_LOG") == "1":
+    if os.environ.get("CODEWOOD_DEBUG") == "1":
         level = logging.DEBUG
     """
     Configure the root logger to write the application log file into the config directory.
