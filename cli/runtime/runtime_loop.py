@@ -4450,12 +4450,6 @@ def run_agent_loop(agent: Any):
                         patch_path = str(args.get("path") or "").strip() if isinstance(args, dict) else ""
                         patch_text = args.get("patch") if isinstance(args, dict) else None
                         if (not patch_path) or (not isinstance(patch_text, str)) or (not patch_text.strip()):
-                            print(
-                                t(
-                                    "⚠️ apply_patch plan is missing required `path`/`patch`; requesting the model to resend a valid patch/git-apply unified diff call.",
-                                    "⚠️ apply_patch 计划缺少必要的 `path`/`patch`；正在请求模型重新发送有效的 patch/git-apply unified diff 调用。",
-                                )
-                            )
                             next_input = (
                                 "Your previous `apply_patch` tool plan was missing required arguments.\n"
                                 "Retry with a valid standard API tool_calls entry for `apply_patch`; do not print JSON in visible text:\n"
