@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useApp } from "../state/AppContext";
 import type { WorkspaceSummary } from "../api/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -113,6 +113,24 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   };
 
   const getVisibleCount = (wsId: string) => chatLoadCounts[wsId] ?? CHAT_PAGE_SIZE;
+
+  // Collapsing a workspace resets its chat load count so re-expanding returns
+  // to the initial view (most recent page + "Load more") instead of keeping
+  // previously expanded list.
+  const prevExpandedRef = useRef(expandedWorkspaceIds);
+  useEffect(() => {
+    const prevExpanded = prevExpandedRef.current;
+    prevExpandedRef.current = expandedWorkspaceIds;
+    const collapsedIds = prevExpanded.filter((id) => !expandedWorkspaceIds.includes(id));
+    if (collapsedIds.length === 0) return;
+    setChatLoadCounts((prev) => {
+      const next = { ...prev };
+      for (const id of collapsedIds) {
+        delete next[id];
+      }
+      return next;
+    });
+  }, [expandedWorkspaceIds]);
 
   const workspaces = state?.workspaces ?? [];
   const activeWsId = activeWorkspaceId;
