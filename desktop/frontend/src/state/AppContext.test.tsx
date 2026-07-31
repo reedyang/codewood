@@ -1409,4 +1409,80 @@ describe("AppContext thinking rounds", () => {
       expect(state.chats.map((c) => c.id)).toEqual(["chat-2"]);
     });
   });
+
+  it("settles and clears the live turn on idle so the finished task collapses into history", async () => {
+    // The persisted history now contains the finished turn; the live in-memory
+    // turn must be settled (endedAt set) and then cleared so the history view
+    // (collapsed "Worked for") takes over instead of the expanded live view.
+    apiMock.getChatHistory.mockResolvedValue({
+      turns: [
+        {
+          userText: "查看我的codex用量",
+          timestamp: "2026-08-01 00:20:39",
+          rounds: [
+            {
+              waitSeconds: 20,
+              text: "您的 Codex 总用量约为 8.18 亿 tokens",
+              tools: "\uE004• Ran shell npx ccusage codex\uE005",
+              thinking: "",
+              selection: "",
+              compactNoticeTitle: "",
+              compactNoticeBody: "",
+              interrupted: "",
+              modelError: "",
+            },
+          ],
+        },
+      ],
+      start: 0,
+      total: 1,
+    });
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Stream a live turn with a tool round.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "查看我的codex用量", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\uE004• Ran shell npx ccusage codex\uE005", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+    });
+
+    // Task finishes: idle with running=false. The live turn must be settled and
+    // cleared (so the collapsed history view renders), not left expanded.
+    await act(async () => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(0);
+    });
+  });
 });

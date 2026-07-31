@@ -1,5 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { liveTurnToHistoryTurn } from "./ChatView";
+import type { Turn } from "../api/types";
 
 vi.mock("../state/AppContext", () => ({
   useApp: () => ({
@@ -205,5 +207,56 @@ describe("StepsView", () => {
     expect(screen.queryByText("Exploring sub-agent architecture...")).toBeNull();
     expect(screen.getByText("Explored sub-agent architecture for 41.3s")).toBeTruthy();
     expect(screen.getByTitle("View sub-agent session")).toBeTruthy();
+  });
+});
+
+describe("liveTurnToHistoryTurn", () => {
+  it("maps a settled live turn (tool rounds + final answer) into the history shape so it collapses into \"Worked for\"", () => {
+    const live: Turn = {
+      id: 1,
+      userText: "查看我的codex用量",
+      rounds: [
+        {
+          id: 11,
+          waitStartedAt: 1000,
+          waitEndedAt: 5000,
+          segments: [
+            { id: 111, kind: "step", text: "\uE004• Ran request_skill_prompt codex-usage\uE005" },
+          ],
+        },
+        {
+          id: 12,
+          waitStartedAt: 5000,
+          waitEndedAt: 15000,
+          segments: [
+            { id: 121, kind: "step", text: "\uE004• Ran shell npx ccusage codex\uE005" },
+          ],
+        },
+        {
+          id: 13,
+          waitStartedAt: 15000,
+          waitEndedAt: 20000,
+          thinkingText: "hidden reasoning",
+          segments: [
+            { id: 131, kind: "answer", text: "您的 Codex 总用量约为 8.18 亿 tokens" },
+          ],
+        },
+      ],
+      startedAt: 1000,
+      endedAt: 20000,
+    };
+
+    const history = liveTurnToHistoryTurn(live);
+
+    expect(history.userText).toBe("查看我的codex用量");
+    expect(history.rounds).toHaveLength(3);
+    expect(history.rounds[0].tools).toContain("Ran request_skill_prompt");
+    expect(history.rounds[1].tools).toContain("Ran shell npx ccusage codex");
+    // Final answer round becomes the round whose text feeds the "final answer".
+    expect(history.rounds[2].text).toContain("8.18 亿 tokens");
+    expect(history.rounds[2].thinking).toBe("hidden reasoning");
+    // Elapsed time is carried over so the "Worked for" timer is correct.
+    expect(history.rounds[0].waitSeconds).toBe(4);
+    expect(history.rounds[1].waitSeconds).toBe(10);
   });
 });
