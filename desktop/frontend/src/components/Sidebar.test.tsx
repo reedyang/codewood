@@ -164,4 +164,76 @@ describe("Sidebar workspace routing", () => {
     expect(screen.getAllByText("30s")).toHaveLength(1);
     expect(container.querySelector(".chat-busy-dot")).toBeTruthy();
   });
+
+  it("resets the visible chat count after collapsing and re-expanding a workspace", () => {
+    const chats = Array.from({ length: 7 }, (_, i) => ({
+      id: `chat-${i}`,
+      name: `Chat ${i + 1}`,
+      active: false,
+      archived: false,
+    }));
+    const baseMock = () => ({
+      state: {
+        workspace: {
+          id: "ws-1",
+          name: "Workspace A",
+          root: "D:/workspace-a",
+        },
+        workspaces: [{
+          id: "ws-1",
+          name: "Workspace A",
+          root: "D:/workspace-a",
+          active: true,
+          isDefault: false,
+        }],
+      },
+      activeWorkspaceId: "ws-1",
+      activeChatId: "chat-0",
+      activeChats: chats,
+      uiPrefs: {
+        pinnedWorkspaceIds: [],
+        pinnedChatIds: [],
+      },
+      workspaceChats: {},
+      busyByChat: {},
+      runningChatStartedAtByChat: {},
+      unreadChatIds: {},
+      now: Date.parse("2026-07-08T15:20:00"),
+      t: (key: string) => key,
+      runCommand: vi.fn(async () => undefined),
+      switchToChat: vi.fn(async () => undefined),
+      newChat: vi.fn(async () => undefined),
+      deleteChat: vi.fn(async () => undefined),
+      openWorkspaceInExplorer: vi.fn(async () => true),
+      deleteWorkspace: vi.fn(async () => true),
+      toggleWorkspacePin: vi.fn(),
+      toggleChatPin: vi.fn(),
+      toggleChatArchive: vi.fn(async () => undefined),
+      archiveChats: vi.fn(async () => undefined),
+      toggleWorkspaceExpanded: vi.fn(),
+      refreshWorkspaceChats: vi.fn(async () => undefined),
+      client: {
+        exportChat: vi.fn(async () => true),
+      },
+    });
+
+    useAppMock.mockReturnValue({ ...baseMock(), expandedWorkspaceIds: ["ws-1"] });
+    const { rerender } = render(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
+
+    expect(screen.getAllByRole("button").filter((b) => b.textContent?.startsWith("Chat "))).toHaveLength(5);
+    expect(screen.getByText("sidebar.loadMore")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("sidebar.loadMore"));
+    expect(screen.getAllByRole("button").filter((b) => b.textContent?.startsWith("Chat "))).toHaveLength(7);
+    expect(screen.queryByText("sidebar.loadMore")).not.toBeInTheDocument();
+
+    useAppMock.mockReturnValue({ ...baseMock(), expandedWorkspaceIds: [] });
+    rerender(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
+    expect(screen.queryAllByRole("button").filter((b) => b.textContent?.startsWith("Chat "))).toHaveLength(0);
+
+    useAppMock.mockReturnValue({ ...baseMock(), expandedWorkspaceIds: ["ws-1"] });
+    rerender(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
+    expect(screen.getAllByRole("button").filter((b) => b.textContent?.startsWith("Chat "))).toHaveLength(5);
+    expect(screen.getByText("sidebar.loadMore")).toBeInTheDocument();
+  });
 });
