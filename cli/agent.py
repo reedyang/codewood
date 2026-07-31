@@ -154,6 +154,7 @@ MemoryService = None  # type: ignore[misc, assignment]
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
 CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
+MODEL_CALL_ERROR_HISTORY_PREFIX = "[MODEL_CALL_ERROR]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
@@ -1394,6 +1395,10 @@ class Agent:
         message = str(text or "")
         if not message:
             return
+        # In GUI (serve) mode the ephemeral notice is replaced by the durable
+        # model-call-error history marker; avoid printing raw text to stdout.
+        if bool(getattr(self, "_gui_plain_stream", False)):
+            return
         try:
             existing = list(getattr(self, "_ephemeral_screen_notices", []) or [])
         except Exception:
@@ -2081,6 +2086,14 @@ class Agent:
         if self._parse_conversation_interrupted_history_content(content) is not None:
             self._print_conversation_interrupted_banner()
             return
+        model_error_payload = self._parse_model_call_error_history_content(content)
+        if model_error_payload is not None:
+            error_message = str(model_error_payload.get("error_message") or "").strip()
+            if error_message:
+                self._print_model_call_error_banner(error_message)
+            else:
+                self._print_model_call_error_banner("Model call error")
+            return
         direct_result = self._parse_direct_shell_result_history_content(content)
         if direct_result is not None:
             aborted_result = self._is_direct_shell_result_aborted(direct_result)
@@ -2542,6 +2555,20 @@ class Agent:
         except Exception:
             pass
         return 3
+
+    def _print_model_call_error_banner(self, error_message: str = "") -> int:
+        print("")
+        msg = str(error_message or "").strip()
+        if not msg:
+            from .core.localization import get_display_language, translate
+            msg = translate("runtime.model_call_error", get_display_language(self))
+        try:
+            print(_ansi_rgb(msg, 239, 68, 68))
+        except Exception:
+            print(msg)
+        print("")
+        return 3
+
 
     def _consume_conversation_interrupted_banner_recent(self) -> bool:
         try:
@@ -4277,6 +4304,59 @@ class Agent:
             detail=detail,
         )
         self._append_chat_message("assistant", assistant_content)
+
+    def _build_model_call_error_history_content(
+        self,
+        error_message: str = "",
+    ) -> str:
+        payload = {
+            "kind": "model_call_error",
+            "error_message": str(error_message or ""),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return f"{MODEL_CALL_ERROR_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_model_call_error_history_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(MODEL_CALL_ERROR_HISTORY_PREFIX):
+            return None
+        body = text[len(MODEL_CALL_ERROR_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "model_call_error":
+            return None
+        return payload
+
+    def _record_model_call_error_history(
+        self,
+        error_message: str = "",
+    ) -> None:
+        assistant_content = self._build_model_call_error_history_content(
+            error_message=error_message,
+        )
+        # Deduplicate: skip if the most recent history entry already records
+        # the same error message (multiple retries with identical errors).
+        try:
+            hist = getattr(self, "conversation_history", None) or []
+            if hist:
+                last_msg = hist[-1]
+                if isinstance(last_msg, dict):
+                    last_content = str(last_msg.get("content") or "")
+                    parsed = self._parse_model_call_error_history_content(last_content)
+                    if parsed is not None and str(parsed.get("error_message") or "").strip() == error_message.strip():
+                        return
+        except Exception:
+            pass
+        try:
+            self._append_chat_message("assistant", assistant_content)
+        except Exception:
+            pass
 
     def _print_direct_shell_history_output(
         self,

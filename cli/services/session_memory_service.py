@@ -667,6 +667,16 @@ class SessionMemoryService:
         text = cmd if cmd else raw
         return str(text or "").strip().startswith("/")
 
+    def _is_model_call_error_history_message(self, item: Dict[str, Any]) -> bool:
+        try:
+            parse_error = getattr(self.agent, "_parse_model_call_error_history_content", None)
+            if callable(parse_error):
+                raw = str(item.get("content") or "")
+                return parse_error(raw) is not None
+        except Exception:
+            pass
+        return False
+
     def _context_eligible_history(self) -> List[Dict[str, Any]]:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
 
@@ -681,6 +691,8 @@ class SessionMemoryService:
                 if role == "user" and self._is_excluded_user_message_for_model_context(item):
                     continue
                 if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
+                    continue
+                if self._is_model_call_error_history_message(item):
                     continue
                 out.append(item)
             return out
@@ -708,6 +720,8 @@ class SessionMemoryService:
             if role == "user" and self._is_excluded_user_message_for_model_context(item):
                 continue
             if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
+                continue
+            if self._is_model_call_error_history_message(item):
                 continue
             out.append((idx, item))
         return out

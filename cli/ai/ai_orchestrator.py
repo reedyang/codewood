@@ -85,6 +85,11 @@ class AgentAIContext:
     # displayed on screen and survive terminal-resize redraws but must NOT be
     # persisted to chat history. Receives a single pre-formatted string.
     ephemeral_notice_writer: Optional[Callable[[str], None]] = None
+    # Optional sink for model-call error messages that should be persisted
+    # to chat history so the GUI can render a centered error banner (but
+    # excluded from the model context so it never reaches the AI).
+    # Receives a single human-readable error message string.
+    model_error_history_writer: Optional[Callable[[str], None]] = None
 
 
 class AIOrchestrator:
@@ -263,6 +268,14 @@ class AIOrchestrator:
             if callable(sink):
                 try:
                     sink(clean_msg)
+                except Exception:
+                    pass
+            # Persist to chat history for GUI rendering.
+            write_hist = self.context.model_error_history_writer
+            if callable(write_hist):
+                try:
+                    display_msg = clean_msg if clean_msg else str(e)
+                    write_hist(display_msg)
                 except Exception:
                     pass
             return AIResult(text="", error_code="API_ERROR")

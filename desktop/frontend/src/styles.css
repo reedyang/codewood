@@ -4286,6 +4286,16 @@ html[data-has-bg] .select {
   user-select: text;
 }
 
+/* Model-call error banner — fixed horizontal centering, strong red. */
+.model-error-banner {
+  display: block;
+  text-align: center;
+  font-size: 13px;
+  color: var(--danger-color, #ef4444);
+  margin: 4px 0;
+  user-select: text;
+}
+
 /* One model round inside a turn: wait timer + model text + tool output,
    stacked in natural order. Consecutive rounds get a little breathing room. */
 .turn-round + .turn-round {

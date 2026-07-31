@@ -233,6 +233,8 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     return False
             if agent._parse_conversation_interrupted_history_content(content) is not None:
                 return False
+            if agent._parse_model_call_error_history_content(content) is not None:
+                return False
             if agent._parse_direct_shell_result_history_content(content) is not None:
                 return False
             if agent._parse_task_worked_summary_history_content(content) is not None:
@@ -568,11 +570,22 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             # Conversation-interrupted banners are rendered as a separate
             # field so the frontend can display them outside the collapsible
             # "Worked for" section — they are status messages, not tool steps.
-            is_interrupted = agent._parse_conversation_interrupted_history_content(content) is not None
-            if is_interrupted:
+            is_interrupted = agent._parse_conversation_interrupted_history_content(content)
+            if is_interrupted is not None:
                 if current_round is None or current_round.get("text") or current_round.get("interrupted"):
                     current_round = _new_round(turn, wait)
                 current_round["interrupted"] = strip_ansi(rendered)
+            elif agent._parse_model_call_error_history_content(content) is not None:
+                model_error_payload = agent._parse_model_call_error_history_content(content)
+                error_message = str((model_error_payload or {}).get("error_message") or "").strip()
+                if not error_message:
+                    error_message = rendered.strip()
+                if current_round is None or current_round.get("text") or current_round.get("modelError"):
+                    current_round = _new_round(turn, wait)
+                current_round["modelError"] = error_message
+                # Also record the rendered banner so CLI keeps seeing it.
+                if rendered.strip():
+                    current_round["interrupted"] = strip_ansi(rendered)
             else:
                 has_own_thinking = bool(str(msg.get("_thinking") or "").strip()) if isinstance(msg, dict) else False
                 if current_round is None or current_round.get("text") or has_own_thinking:
@@ -611,6 +624,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 "compactNoticeTitle": str(r.get("compactNoticeTitle") or "").strip(),
                 "compactNoticeBody": str(r.get("compactNoticeBody") or "").strip(),
                 "interrupted": str(r.get("interrupted") or "").strip(),
+                "modelError": str(r.get("modelError") or "").strip(),
             }
             for r in turn.get("rounds", [])
         ]
@@ -628,6 +642,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 or r["compactNoticeTitle"].strip()
                 or r["compactNoticeBody"].strip()
                 or r["interrupted"].strip()
+                or r["modelError"].strip()
             )
         ]
     # Attach per-turn file-change summaries from the sidecar.

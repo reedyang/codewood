@@ -351,6 +351,10 @@ export interface HistoryRound {
   /** Conversation-interrupted banner text, rendered outside the "Worked for"
    *  collapsible section so the user always sees the status message. */
   interrupted?: string;
+  /** Model-call error banner text, rendered as a centered red message
+   *  outside the "Worked for" collapsible section. Stored in history
+   *  for display only; never sent to the model. */
+  modelError?: string;
 }
 
 /** A previously-recorded turn loaded from chat history (already classified). */

@@ -2466,11 +2466,23 @@ function CompletedTurnView({
   const detailNodes: ReactNode[] = [];
   const compactNoticeNodes: ReactNode[] = [];
   const interruptedNodes: ReactNode[] = [];
+  const modelErrorNodes: ReactNode[] = [];
   detailRounds.forEach((round, index) => {
     const interruptedText = String(round.interrupted || "").trim();
+    const modelErrorText = String(round.modelError || "").trim();
     const compactNoticeTitle = String(round.compactNoticeTitle || "").trim();
     const compactNoticeBody = String(round.compactNoticeBody || "").trim();
-    if (interruptedText.length > 0) {
+    if (modelErrorText.length > 0) {
+      modelErrorNodes.push(
+        <div className="turn-round" key={`model-error-${index}`}>
+          <div className="activity-centered">
+            <span className="model-error-banner">{modelErrorText}</span>
+          </div>
+        </div>,
+      );
+      // When there's also an interrupted banner for the same round,
+      // skip it — the model error is the primary reason for stopping.
+    } else if (interruptedText.length > 0) {
       interruptedNodes.push(
         <div className="turn-round" key={`interrupted-${index}`}>
           <div className="activity-centered">
@@ -2520,7 +2532,7 @@ function CompletedTurnView({
       <MarkdownText text={finalAnswerText} />
     </div>
   ) : null;
-  if (!hasDetails && !finalAnswer && !hasCompactNotices && interruptedNodes.length === 0) {
+  if (!hasDetails && !finalAnswer && !hasCompactNotices && interruptedNodes.length === 0 && modelErrorNodes.length === 0) {
     return (
       <div className="turn">
         {turn.userText && (
@@ -2563,6 +2575,7 @@ function CompletedTurnView({
         finalAnswer
       )}
       {interruptedNodes}
+      {modelErrorNodes}
       {(() => {
         return turn.fileChanges ? <FileChangeList summary={turn.fileChanges} t={t} workspaceRoot={state?.workspace?.root} /> : null;
       })()}
