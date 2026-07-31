@@ -2239,10 +2239,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "output": {
           const stepText = String(data.text ?? "");
-          // Only apply output to the active chat; cross-chat SSE
-          // events (e.g. \b*37 from a shell running in another chat)
-          // would corrupt the wrong chat's content.
-          if (String(data.chatId ?? "") !== String(activeChatIdRef.current)) break;
+          // Route tool/step output into the EVENT's own workspace+chat bucket
+          // (like ``assistant`` / ``thinking``), never only the focused chat.
+          // Dropping a background chat's output while the user views another
+          // chat would lose the tool-call description (the collapsible block
+          // opener), so when the user switches back the streaming command
+          // output renders bare instead of inside the tool-call block. The
+          // backend tags every event with chatId + workspaceId (see the
+          // ``_OutputBridge`` chat getters), so the bucket is always correct.
+          if (!eventKey || !String(data.chatId ?? "")) break;
           appendSegment("step", stepText, eventKey);
           break;
         }
