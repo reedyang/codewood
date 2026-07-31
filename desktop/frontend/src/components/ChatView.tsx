@@ -2127,6 +2127,40 @@ export function HistoryRoundDetailView({
   );
 }
 
+/** Convert a (settled) live turn into the history-turn shape so it can be
+ *  rendered by ``CompletedTurnView`` (collapsed "Worked for" shell + final
+ *  answer), matching what a chat reload produces. */
+export function liveTurnToHistoryTurn(turn: Turn): HistoryTurn {
+  const rounds: HistoryRound[] = turn.rounds.map((r) => {
+    const answer = r.segments
+      .filter((s) => s.kind === "answer")
+      .map((s) => s.text)
+      .join("");
+    const tools = r.segments
+      .filter((s) => s.kind === "step")
+      .map((s) => s.text)
+      .join("");
+    const waitEndedAt = r.waitEndedAt ?? Date.now();
+    const elapsedMs = Math.max(0, waitEndedAt - r.waitStartedAt);
+    const backendMs = (r as unknown as { backendElapsedMs?: number }).backendElapsedMs;
+    return {
+      waitSeconds:
+        backendMs != null && backendMs > 0
+          ? Math.max(0, Math.round(backendMs / 1000))
+          : Math.max(0, Math.round(elapsedMs / 1000)),
+      text: answer,
+      tools,
+      thinking: String(r.thinkingText || ""),
+    };
+  });
+  return {
+    userText: turn.userText || "",
+    rounds,
+    timestamp: new Date(turn.startedAt).toISOString(),
+    fileChanges: turn.fileChanges,
+  };
+}
+
 export function splitCompletedTurn(turn: HistoryTurn): {
   detailRounds: HistoryRound[];
   finalAnswerText: string;
@@ -3298,6 +3332,20 @@ function TurnView({
   handlers: MessageHandlers;
 }) {
   const { t, state } = useApp();
+  // A finished live turn (``endedAt`` set) must render collapsed into the
+  // "Worked for" shell exactly like a reloaded history turn — otherwise the
+  // finished task's tool calls stay expanded in the live layout until a manual
+  // reload. This happens when the settled turn is still held in the live bucket
+  // (e.g. the post-idle history reload came back with an empty page yet).
+  if (turn.endedAt !== null) {
+    return (
+      <CompletedTurnView
+        turn={liveTurnToHistoryTurn(turn)}
+        negIndex={negIndex}
+        handlers={handlers}
+      />
+    );
+  }
   const liveGroups = groupLiveRounds(turn.rounds);
   const { lastRound, hasPendingContinuation, showWorking } =
     getLiveTurnDisplayState(turn, liveGroups);
