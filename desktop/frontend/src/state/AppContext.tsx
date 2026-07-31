@@ -1180,7 +1180,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const previewHtml = useCallback(
-    (html: string) => client.previewHtml(activeChatIdRef.current, html),
+    (html: string) =>
+      client.previewHtml(
+        activeChatIdRef.current,
+        html,
+        activeWorkspaceIdRef.current,
+      ),
     [client],
   );
 
@@ -1309,7 +1314,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Browser tab is visible+active and the right panel is open, then navigate.
   const previewHtmlInBrowser = useCallback(
     async (html: string) => {
-      const saved = await client.previewHtml(activeChatIdRef.current, html);
+      const saved = await client.previewHtml(
+        activeChatIdRef.current,
+        html,
+        activeWorkspaceIdRef.current,
+      );
       if (!saved) {
         return false;
       }
@@ -2034,10 +2043,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   const merged: any = { ...prev };
                   if (next.chats && (!nextChatWs || nextChatWs === String(prev.workspace?.id || ""))) {
                     const nextChats = Array.isArray(next.chats) ? next.chats : [];
-                    merged.chats = prev.chats.map((c) => {
-                      const updated = nextChats.find((nc: any) => String(nc.id) === String(c.id));
-                      return updated ? { ...c, ...updated } : c;
-                    });
+                    // ``next.chats`` is the authoritative full chat list for
+                    // this workspace, so a chat absent from it (deleted on the
+                    // backend) must be dropped — otherwise the deleted chat
+                    // lingers in the sidebar after a delete.
+                    const nextChatIds = new Set(nextChats.map((nc: any) => String(nc.id)));
+                    merged.chats = prev.chats
+                      .filter((c) => nextChatIds.has(String(c.id)))
+                      .map((c) => {
+                        const updated = nextChats.find((nc: any) => String(nc.id) === String(c.id));
+                        return updated ? { ...c, ...updated } : c;
+                      });
                   }
                   if (next.plan) {
                     merged.plan = next.plan;
@@ -2684,7 +2700,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
       }
       setTodoDockVisible(false);
-      await client.sendInput(next, true, chatId);
+      await client.sendInput(next, true, chatId, wsId);
     },
     [client, persistPendingInputs],
   );
@@ -2709,7 +2725,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // turn, no pending-queue buffering) so it reaches the backend even while
       // the chat is busy/stuck. The server only acts on it with CODEWOOD_DEBUG=1.
       if (trimmed === "/server-health") {
-        await client.sendInput(trimmed, true, activeChatIdRef.current);
+        await client.sendInput(
+          trimmed,
+          true,
+          activeChatIdRef.current,
+          activeWorkspaceIdRef.current,
+        );
         return;
       }
       let targetChatId = activeChatIdRef.current;
@@ -2723,7 +2744,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         targetWsId = target.workspaceId;
         startOptimisticTurn(trimmed, chatKey(targetWsId, targetChatId));
         setBusyForChat(chatKey(targetWsId, targetChatId), true);
-        await client.sendInput(trimmed, true, targetChatId);
+        await client.sendInput(trimmed, true, targetChatId, targetWsId);
         return;
       }
       const key = chatKey(targetWsId, targetChatId);
@@ -2753,7 +2774,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
       await pendingModelConfigRef.current;
-      await client.sendInput(trimmed, true, targetChatId);
+      await client.sendInput(trimmed, true, targetChatId, targetWsId);
     },
     [client, materializeDraftChat, startOptimisticTurn, setBusyForChat, persistPendingInputs],
   );
@@ -2809,7 +2830,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const runCommand = useCallback(
     async (command: string) => {
-      await client.sendInput(command);
+      await client.sendInput(
+        command,
+        false,
+        activeChatIdRef.current,
+        activeWorkspaceIdRef.current,
+      );
     },
     [client],
   );
@@ -2817,7 +2843,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const interrupt = useCallback(async () => {
     const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
     if (key) {
-      await client.interrupt();
+      // Scope the interrupt to the chat whose stop button was clicked so a
+      // different chat's running task is never aborted by mistake.
+      await client.interrupt(
+        activeChatIdRef.current,
+        activeWorkspaceIdRef.current,
+      );
     }
     // Stop auto-send for the pending queue: clicking Stop means the user
     // wants to halt everything, not just the current turn. The pending list
@@ -3007,7 +3038,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : state,
       );
       try {
-        const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
+        const page = await client.getChatHistory(undefined, INITIAL_HISTORY, cid, wsId);
         // The user switched to a different chat while we were fetching.
         if (historyChatRef.current !== expectedKey) {
           return;
@@ -3126,7 +3157,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     setHistoryLoading(true);
     try {
-      const page = await client.getChatHistory(historyStart, HISTORY_PAGE);
+      const page = await client.getChatHistory(
+        historyStart,
+        HISTORY_PAGE,
+        activeChatIdRef.current,
+        activeWorkspaceIdRef.current,
+      );
       setHistoryTurns((prev) => [...page.turns, ...prev]);
       setHistoryStart(page.start);
       setHistoryTotal(page.total);
@@ -3333,6 +3369,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       clearLiveTurns(chatKey(wsId, chatId));
       if (inActiveWs) {
+        // Optimistically drop the deleted chat from the sidebar list so it
+        // disappears immediately, without waiting for the SSE idle event.
+        setState((prev) => {
+          if (!prev || String(prev.workspace?.id || "") !== wsId) return prev;
+          return { ...prev, chats: prev.chats.filter((c) => c.id !== chatId) };
+        });
         if (wasActive) {
           // Always enter draft mode (New Chat) so the sidebar doesn't
           // high-light a sibling chat and the title bar shows no name.
@@ -3345,6 +3387,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setHistoryTurns([]);
           setHistoryStart(0);
           setHistoryTotal(0);
+          // The deleted chat is no longer active; clear the stale ref so
+          // subsequent SSE events (output guard, idle merge) don't route to it.
+          activeChatIdRef.current = "";
           setState((prev) => {
             if (!prev) return prev;
             return { ...prev, contextUsage: undefined, plan: undefined, cacheStats: undefined, tokenStats: undefined };
@@ -3371,7 +3416,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (index: number) => {
       clearTurns();
       historyChatRef.current = "\u0000";
-      await client.sendInput(`/chat fork ${index}`);
+      await client.sendInput(
+        `/chat fork ${index}`,
+        false,
+        activeChatIdRef.current,
+        activeWorkspaceIdRef.current,
+      );
     },
     [client, clearTurns],
   );
@@ -3420,7 +3470,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
       pendingHistoryReloadRef.current = true;
-      await client.sendInput(`/chat edit ${index}`);
+      // Route the edit to the exact chat (and workspace) being edited so the
+      // backend scopes its interrupt to that chat instead of the active one.
+      await client.sendInput(
+        `/chat edit ${index}`,
+        false,
+        activeChatId,
+        activeWorkspaceIdRef.current,
+      );
     },
     [client, clearTurns, trimHistoryTurnsForEdit, activeChatId, askMoreInfoByChat, setBusyForChat],
   );
@@ -3926,7 +3983,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ? { chatKey: "", notice: null, version: state.version + 1 }
           : state,
       );
-      const result = await client.compactContext();
+      const result = await client.compactContext(
+        activeChatIdRef.current,
+        activeWorkspaceIdRef.current,
+      );
       if (!result.ok && result.text && activeKey) {
         setCompactNoticeState((state) => ({
           chatKey: activeKey,
@@ -3996,7 +4056,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deleteSubAgent: (name: string) => client.deleteSubAgent(name),
     setSubAgentEnabled: (name: string, enabled: boolean) =>
       client.setSubAgentEnabled(name, enabled),
-    setPlanMode: (enabled: boolean) => client.setPlanMode(enabled),
+    setPlanMode: (enabled: boolean) =>
+      client.setPlanMode(
+        enabled,
+        activeChatIdRef.current,
+        activeWorkspaceIdRef.current,
+      ),
     searchWorkspaceFiles: (query: string, limit = 10) =>
       client.searchWorkspaceFiles(
         query,

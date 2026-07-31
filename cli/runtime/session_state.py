@@ -51,6 +51,14 @@ class SessionState:
         # contents have been injected into this chat's history at least once.
         "session_injected_skills",
         "session_injected_mcp_prompts",
+        # Per-chat interrupt flags. In serve mode a GUI interrupt (stop button,
+        # ``/chat edit``) targets ONE chat: the request lands on that chat's
+        # session, so only that chat's loop thread consumes it and a different
+        # chat's running task / subprocess is never aborted. The agent-global
+        # ``_task_interrupt_requested`` / ``_process_interrupt_requested`` flags
+        # remain the TUI / ESC legacy path and are untouched.
+        "task_interrupt_requested",
+        "process_interrupt_requested",
     )
 
     def __init__(self) -> None:
@@ -85,6 +93,8 @@ class SessionState:
         self.reasoning_effort: str = ""
         self.session_injected_skills: set = set()
         self.session_injected_mcp_prompts: set = set()
+        self.task_interrupt_requested: bool = False
+        self.process_interrupt_requested: bool = False
 
 
 # Maps each public Agent attribute name to the SessionState slot backing it.

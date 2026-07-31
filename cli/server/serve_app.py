@@ -328,8 +328,15 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 _ref = content[len("[FILE_CHANGE_REF:"):].rstrip("]")
                 if _ref:
                     _fc_store = getattr(agent, "_file_changes_by_chat", {}) or {}
-                    _cid = str(getattr(agent, "active_chat_id", "") or "")
-                    _chat_store = _fc_store.get(_cid, {})
+                    # The bound session key is already the workspace-qualified
+                    # composite (``workspace_id::chat_id``) that the sidecar store
+                    # is keyed by, so a same-id chat in another workspace can't
+                    # pull the wrong file-changes record.
+                    try:
+                        _scope_key = str(agent._current_session_chat_key() or "")
+                    except Exception:
+                        _scope_key = str(getattr(agent, "active_chat_id", "") or "")
+                    _chat_store = _fc_store.get(_scope_key, {})
                     if isinstance(_chat_store, dict):
                         _fc = _chat_store.get(_ref)
                         if isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
@@ -649,15 +656,22 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     # New format: hashcode-ref dict loaded via [FILE_CHANGE_REF] messages
     # (already handled above).  Legacy fallback: turnIndex-based list.
     try:
-        _cs = getattr(agent, "_chat_state", None)
-        _cid = str(_cs.get("active", "")) if isinstance(_cs, dict) else ""
-        if _cid:
+        # The bound session key is already the workspace-qualified composite
+        # (``workspace_id::chat_id``) the sidecar store is keyed by, so a
+        # same-id chat in another workspace reads its own in-memory record.
+        try:
+            _scope_key = str(agent._current_session_chat_key() or "")
+        except Exception:
+            _scope_key = str(getattr(agent, "active_chat_id", "") or "")
+        if _scope_key:
             _fc_by_chat = getattr(agent, "_file_changes_by_chat", {}) or {}
-            _fc_store = _fc_by_chat.get(_cid, {})
+            _fc_store = _fc_by_chat.get(_scope_key, {})
             if not _fc_store:
                 _mgr = getattr(agent, "_chat_state_manager", None)
                 if _mgr is not None:
-                    _disk = _mgr.load_file_changes(_cid)
+                    # Disk fallback (legacy back-compat; the new-format refs are
+                    # handled via the in-memory cache above).
+                    _disk = _mgr.load_file_changes(str(_scope_key.split("::", 1)[-1] or ""))
                     if isinstance(_disk, list):
                         # Legacy turnIndex format: attach by position
                         for i, turn in enumerate(turns):
@@ -1360,11 +1374,15 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
             _ch_id = str(_ch.get("id") or "")
             if not _ch_id:
                 continue
-            if _ch_id in _fc_map:
+            # The in-memory sidecar store is keyed by the workspace-qualified
+            # composite so a same-id chat in another workspace can't pull the
+            # wrong record.
+            _fc_key = ServeApp._file_changes_scope_key(_ch_id, _ws_id)
+            if _fc_key in _fc_map:
                 # Convert the dict (keyed by hashcode ref) to an array of
                 # summaries, then merge by file path so every file shows
                 # cumulative changes across all turns.
-                _raw_list = list(_fc_map[_ch_id].values())
+                _raw_list = list(_fc_map[_fc_key].values())
                 _ch["fileChanges"] = _merge_by_file(_raw_list)
             elif _fc_mgr is not None:
                 try:
@@ -1397,7 +1415,7 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
                             else:
                                 _raw_list = list(_fc_store.values())
                             _ch["fileChanges"] = _merge_by_file(_raw_list)
-                            _fc_map[_ch_id] = _fc_store
+                            _fc_map[_fc_key] = _fc_store
                 except Exception:
                     pass
         if _fc_map:
@@ -2282,7 +2300,13 @@ class ServeApp:
         except Exception:  # pragma: no cover
             pass
 
-    def submit_input(self, text: str, chat_id: str = "", as_prompt: bool = False) -> None:
+    def submit_input(
+        self,
+        text: str,
+        chat_id: str = "",
+        as_prompt: bool = False,
+        workspace_id: str = "",
+    ) -> None:
         line = str(text or "")
         # Debug-only diagnostic hook: with CODEWOOD_DEBUG=1, ``/server-health``
         # dumps thread stacks and connection state to the server log. It is
@@ -2294,7 +2318,10 @@ class ServeApp:
         ):
             self._diagnose_server_health()
             return
-        cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
+        # Validate the (workspace_id, chat_id) pair so a same-id chat in the
+        # wrong workspace is never dispatched to; invalid pairs fall back to the
+        # focused active chat.
+        cid, wsid = self._resolve_chat_scope(chat_id, workspace_id)
         # Composer input is forced to a model prompt: prefix a sentinel the
         # runtime loop strips so "/foo" / "!bar" never run as command/shell.
         if as_prompt and line:
@@ -2389,18 +2416,28 @@ class ServeApp:
                     self.agent._conversation_interrupt_banner_recent_at = 0.0
                 except Exception:
                     pass
-                self.interrupt()
-        rt = self._get_or_spawn_runtime(cid)
+                # Interrupt only the chat being edited. The interrupt is scoped
+                # to that chat's session and process bucket (see ``interrupt``),
+                # so editing a message in chat B can never abort a task that is
+                # running in a different chat (e.g. chat A).
+                self.interrupt(chat_id=cid, workspace_id=wsid)
+        rt = self._get_or_spawn_runtime(cid, wsid)
         rt.input_queue.put(line)
 
-    def _get_or_spawn_runtime(self, chat_id: str) -> "_ChatRuntime":
+    def _get_or_spawn_runtime(
+        self, chat_id: str, workspace_id: Optional[str] = None
+    ) -> "_ChatRuntime":
         """Return the chat's runtime, starting its loop thread on first use.
 
         Keyed by the workspace-qualified composite so a chat in a newly-focused
         workspace never reuses a same-id chat's runtime from another workspace.
+        ``workspace_id`` defaults to the agent's current workspace.
         """
         cid = str(chat_id or "")
-        wsid = str(getattr(self.agent, "workspace_id", "") or "").strip()
+        if workspace_id is not None and str(workspace_id or "").strip():
+            wsid = str(workspace_id or "").strip()
+        else:
+            wsid = str(getattr(self.agent, "workspace_id", "") or "").strip()
         key = self._runtime_key(cid, wsid)
         with self._runtimes_lock:
             rt = self._runtimes.get(key)
@@ -2580,8 +2617,8 @@ class ServeApp:
         )
         return True
 
-    def interrupt(self) -> None:
-        """Cancel the in-flight turn for the GUI's "stop" button.
+    def interrupt(self, chat_id: str = "", workspace_id: str = "") -> None:
+        """Cancel an in-flight turn for the GUI's "stop" button / message edit.
 
         The agent loops run on per-chat worker threads, so the CLI's
         ``_thread.interrupt_main()`` path is unusable here (it would raise in
@@ -2589,8 +2626,27 @@ class ServeApp:
         interrupt flag the loop polls on every model-stream chunk, tool-round
         boundary, and tool dispatch (see ``runtime_loop``), and terminate any
         running interruptible subprocess so the loop unwinds promptly.
+
+        When ``chat_id`` is given the request is scoped to that single chat: it
+        lands on the chat's :class:`SessionState` and its own process bucket, so
+        only that chat's loop thread consumes it and only its subprocesses are
+        terminated. Stopping / editing in one chat therefore never aborts a
+        different chat's running task. Without ``chat_id`` the legacy
+        agent-global path is used (TUI-era stop / no chat context).
         """
         agent = self.agent
+        cid = str(chat_id or "").strip()
+        if cid:
+            # Validate the pair so a same-id chat in the wrong workspace is never
+            # interrupted; an unresolvable pair is a safe no-op (never falls
+            # back to the agent-global interrupt, which would abort other chats).
+            cid, wsid = self._resolve_chat_scope(cid, workspace_id)
+            if cid:
+                try:
+                    agent._request_chat_interrupt(cid, wsid)
+                except Exception:
+                    pass
+            return
         try:
             lock = getattr(agent, "_interrupt_state_lock", None)
             if lock is not None:
@@ -2624,7 +2680,9 @@ class ServeApp:
             return False
         return mgr.save_pending_inputs(cid, inputs)
 
-    def compact_context(self) -> Dict[str, Any]:
+    def compact_context(
+        self, chat_id: str = "", workspace_id: str = ""
+    ) -> Dict[str, Any]:
         """Trigger manual context compaction via the session memory service.
 
         Bridge output on the HTTP thread is suppressed so the compaction's
@@ -2632,13 +2690,17 @@ class ServeApp:
         The localized ``compaction.no_context`` message is returned in the response
         so the frontend can render it as a sidebar-style notification (no turn
         lifecycle, no history interference).
+
+        ``chat_id`` + ``workspace_id`` identify the chat to compact explicitly
+        (chat ids repeat across workspaces); empty values fall back to the
+        focused chat.
         """
         from ..core.localization import get_display_language, translate
 
         agent = self.agent
         svc = getattr(agent, "session_memory_service", None)
         compact_fn = getattr(svc, "compact_context", None) if svc else None
-        focus_chat = _primary_active_chat_id(agent)
+        focus_chat, wsid = self._resolve_chat_scope(chat_id, workspace_id)
         if callable(compact_fn):
             bridge = getattr(self, "_bridge", None)
             prev_suppressed = getattr(bridge, "suppressed", False) if bridge is not None else False
@@ -2646,7 +2708,7 @@ class ServeApp:
                 bridge.suppressed = True
             try:
                 if focus_chat:
-                    with agent._session_scope(focus_chat):
+                    with self._session_scope_for_chat(focus_chat, wsid):
                         ok = compact_fn(mode="manual")
                 else:
                     ok = compact_fn(mode="manual")
@@ -2655,7 +2717,7 @@ class ServeApp:
                     bridge.suppressed = prev_suppressed
             if not ok:
                 if focus_chat:
-                    with agent._session_scope(focus_chat):
+                    with self._session_scope_for_chat(focus_chat, wsid):
                         lang = get_display_language(agent)
                         msg = translate("compaction.no_context", lang)
                 else:
@@ -2741,17 +2803,28 @@ class ServeApp:
             return False
         return _open_in_file_manager(root)
 
-    def chat_history(self, before: Optional[int], limit: int) -> Dict[str, Any]:
-        """Return a paginated slice of structured turns for the active chat.
+    def chat_history(
+        self,
+        before: Optional[int],
+        limit: int,
+        chat_id: str = "",
+        workspace_id: str = "",
+    ) -> Dict[str, Any]:
+        """Return a paginated slice of structured turns for a chat.
 
         ``before`` is the exclusive end index (0-based among turns); ``None``
         means "from the end". The newest ``limit`` turns up to ``before`` are
         returned along with ``start`` (the index of the first returned turn) and
         the overall ``total`` count, so the GUI can lazily load older turns.
+
+        ``chat_id`` + ``workspace_id`` identify the chat explicitly (chat ids
+        repeat across workspaces); empty values fall back to the focused chat.
         """
         # Reading history happens on an HTTP handler thread; bind it to the
-        # focused chat so the per-session conversation_history resolves to that
-        # chat's live session.
+        # requested chat so the per-session conversation_history resolves to
+        # that chat's live session (workspace-qualified). The pair is validated
+        # so a same-id chat in the wrong workspace is never read.
+        focus_chat, wsid = self._resolve_chat_scope(chat_id, workspace_id)
         try:
             try:
                 idx = getattr(self.agent, "_project_context_index", None)
@@ -2759,16 +2832,19 @@ class ServeApp:
                     idx.request_yield()
             except Exception:
                 pass
-            focus_chat = _primary_active_chat_id(self.agent)
-            # When the active chat is not actively streaming a turn here
-            # (no busy runtime), pull the latest record from disk before
-            # building turns so messages, ``pending_request_user_input`` markers
-            # and plan updates written by a peer process (e.g. another
-            # codewood TUI) are reflected. An idle parked runtime no longer
-            # blocks the refresh, which is what lets the GUI pick up a
-            # changed history on switch/reload.
-            is_busy = self._chat_is_busy(focus_chat)
-            if focus_chat and not is_busy:
+            # When the chat is not actively streaming a turn here (no busy
+            # runtime), pull the latest record from disk before building turns
+            # so messages, ``pending_request_user_input`` markers and plan
+            # updates written by a peer process (e.g. another codewood TUI) are
+            # reflected. An idle parked runtime no longer blocks the refresh,
+            # which is what lets the GUI pick up a changed history on
+            # switch/reload. Only refresh when the requested workspace matches
+            # the focused one (the common case) — a background workspace's
+            # record lives under its own index and would not resolve here.
+            is_busy = self._chat_is_busy(focus_chat, wsid or None)
+            current_ws = str(getattr(self.agent, "workspace_id", "") or "").strip()
+            same_ws = (not wsid) or (wsid == current_ws)
+            if focus_chat and not is_busy and same_ws:
                 try:
                     refresh = getattr(self.agent, "_refresh_chat_record_from_disk", None)
                     if callable(refresh):
@@ -2784,7 +2860,7 @@ class ServeApp:
                         )
                 except Exception:
                     pass
-            with self.agent._session_scope(focus_chat):
+            with self._session_scope_for_chat(focus_chat, wsid):
                 turns = _build_structured_turns(self.agent)
         except Exception:
             turns = []
@@ -3212,6 +3288,87 @@ class ServeApp:
         "image/svg+xml": "svg",
     }
     _MCP_ICON_MAX_BYTES = 2 * 1024 * 1024
+
+    @staticmethod
+    def _file_changes_scope_key(chat_id: str, workspace_id: str = "") -> str:
+        """Workspace-qualified key for per-chat sidecar state.
+
+        Chat ids repeat across workspaces, so the in-memory file-changes store
+        is keyed by the composite ``workspace_id::chat_id`` to keep a chat in
+        workspace A from reading/writing a same-id chat's record in workspace B.
+        """
+        cid = str(chat_id or "").strip()
+        wsid = str(workspace_id or "").strip()
+        return f"{wsid}::{cid}" if wsid else cid
+
+    def _resolve_chat_record(
+        self, chat_id: str, workspace_id: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """Return the chat record for ``(workspace_id, chat_id)`` from that
+        workspace's chat index, or ``None`` when the chat does not exist there.
+
+        This is the receiving-end validation for every chat-scoped request: chat
+        ids repeat across workspaces, so a request may only be dispatched when
+        its ``workspace_id`` + ``chat_id`` pair actually resolves in that
+        workspace.
+        """
+        agent = self.agent
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return None
+        wsid = str(workspace_id or "").strip()
+        focused_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+        if not wsid or wsid == focused_wsid:
+            finder = getattr(agent, "_find_chat_by_id", None)
+            if callable(finder):
+                try:
+                    return finder(cid)
+                except Exception:
+                    return None
+            return None
+        ctx = self._persist_ctx_for_workspace(wsid)
+        if not isinstance(ctx, dict):
+            return None
+        state = ctx.get("chat_state")
+        chats = state.get("chats") if isinstance(state, dict) else None
+        if not isinstance(chats, list):
+            return None
+        for item in chats:
+            if isinstance(item, dict) and str(item.get("id") or "").strip() == cid:
+                return item
+        return None
+
+    def _resolve_chat_scope(
+        self, chat_id: str = "", workspace_id: str = ""
+    ) -> "tuple[str, str]":
+        """Validate a ``(workspace_id, chat_id)`` pair and return the effective
+        ``(chat_id, workspace_id)`` to dispatch to.
+
+        Chat ids repeat across workspaces, so a request whose pair does not
+        resolve (stale id, or an id that belongs to a different workspace than
+        the one supplied) is corrected to the focused workspace's active chat
+        rather than silently acting on a same-id chat in the wrong workspace.
+        """
+        agent = self.agent
+        cid = str(chat_id or "").strip()
+        wsid = str(workspace_id or "").strip()
+        current_ws = str(getattr(agent, "workspace_id", "") or "").strip()
+        if cid:
+            record = self._resolve_chat_record(cid, wsid)
+            if record is not None:
+                return cid, wsid or current_ws
+            try:
+                from ..core.logging.app_logging import get_logger, get_app_logger_root
+
+                get_logger(f"{get_app_logger_root()}.server").warning(
+                    "chat-scoped request for unknown (ws=%r, chat=%r); "
+                    "falling back to the active chat",
+                    wsid,
+                    cid,
+                )
+            except Exception:
+                pass
+        return _primary_active_chat_id(agent), current_ws
 
     def _chat_data_dir_for(self, chat_id: str, workspace_id: str = "") -> Optional[Path]:
         """Resolve a chat side-data dir without relying on the focused workspace.
@@ -3881,9 +4038,14 @@ class ServeApp:
     # by ``/chat-file``.
     _PREVIEW_HTML_MAX_BYTES = 2 * 1024 * 1024
 
-    def save_preview_html(self, chat_id: str, html: str) -> Dict[str, Any]:
+    def save_preview_html(
+        self, chat_id: str, html: str, workspace_id: str = ""
+    ) -> Dict[str, Any]:
         """Persist an HTML snippet (wrapped with the preview bridge) under the
-        chat data dir. Returns ``{ok, path}`` or ``{ok: False, error}``."""
+        chat data dir. Returns ``{ok, path}`` or ``{ok: False, error}``.
+
+        ``workspace_id`` scopes the chat (chat ids repeat across workspaces).
+        """
         cid = str(chat_id or "").strip()
         if not cid:
             return {"ok": False, "error": "missing chatId"}
@@ -3893,10 +4055,7 @@ class ServeApp:
         if len(raw.encode("utf-8", "ignore")) > self._PREVIEW_HTML_MAX_BYTES:
             return {"ok": False, "error": "html too large"}
         try:
-            mgr = getattr(self.agent, "_chat_state_manager", None)
-            if mgr is None:
-                return {"ok": False, "error": "no chat"}
-            data_dir = mgr.chat_data_dir_for_chat(cid)
+            data_dir = self._chat_data_dir_for(cid, workspace_id)
             if data_dir is None:
                 return {"ok": False, "error": "unknown chat"}
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -4652,7 +4811,9 @@ class ServeApp:
         self._publish_mcp_state()
         return True
 
-    def set_plan_mode(self, enabled: bool) -> bool:
+    def set_plan_mode(
+        self, enabled: bool, chat_id: str = "", workspace_id: str = ""
+    ) -> bool:
         """Toggle the agent's sticky plan mode.
 
         The GUI uses this to keep the user's message bubble free of any
@@ -4661,7 +4822,10 @@ class ServeApp:
         the localized directive (send-time only) inside the agent boundary. The
         flag is shared with the TUI's ``/plan`` command — flipping it from the
         GUI is equivalent to a TUI ``/plan on`` for the same process — and is
-        mirrored onto the active chat record root so a chat reload resumes it.
+        mirrored onto the chat record root so a chat reload resumes it.
+
+        ``chat_id`` + ``workspace_id`` identify the chat explicitly (chat ids
+        repeat across workspaces); empty values fall back to the focused chat.
         """
         try:
             self.agent._plan_mode_sticky = bool(enabled)
@@ -4675,10 +4839,10 @@ class ServeApp:
                 # ``agent.active_chat_id`` is the thread's (empty) session, so
                 # persisting without binding to the focused chat finds no active
                 # chat and silently drops the toggle (the "sometimes not saved"
-                # bug). Bind to the stable cross-thread primary chat first.
-                cid = _primary_active_chat_id(self.agent)
+                # bug). Bind to the validated (workspace_id, chat_id) pair.
+                cid, wsid = self._resolve_chat_scope(chat_id, workspace_id)
                 if cid:
-                    with self.agent._session_scope(cid):
+                    with self._session_scope_for_chat(cid, wsid):
                         persist(bool(enabled))
                 else:
                     persist(bool(enabled))
@@ -5676,7 +5840,10 @@ class ServeApp:
             remaining: list = []
             with agent._chat_state_lock:
                 chats = agent._chat_entries()
-                was_active = rid == str(getattr(agent, "active_chat_id", "") or "")
+                # ``agent.active_chat_id`` is thread-bound and empty on the HTTP
+                # handler thread, so resolve the active chat from the stable
+                # cross-thread index instead.
+                was_active = rid == _primary_active_chat_id(agent)
                 remaining = [c for c in chats if str(c.get("id") or "") != rid]
                 chats[:] = remaining
                 agent._chat_state["chats"] = chats
@@ -5723,7 +5890,7 @@ class ServeApp:
         except Exception:
             return False
         self.broadcaster.publish(
-            "idle", {"state": _build_state(agent)}
+            "idle", self._route(state=_build_state(agent))
         )
         return True
 
@@ -6064,35 +6231,41 @@ class ServeApp:
         return result
 
     def _lookup_file_change(
-        self, chat_id: str, ref: str, file_path: str,
+        self, chat_id: str, ref: str, file_path: str, workspace_id: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """Find a single file change record by chat, ref, and file path."""
+        """Find a single file change record by chat, ref, and file path.
+
+        ``workspace_id`` qualifies the chat (chat ids repeat across workspaces).
+        """
+        scope_key = ServeApp._file_changes_scope_key(chat_id, workspace_id)
         _fc_by_chat: Dict[str, Any] = dict(
             getattr(self.agent, "_file_changes_by_chat", {}) or {}
         )
-        store = _fc_by_chat.get(str(chat_id or ""), {})
+        store = _fc_by_chat.get(scope_key, {})
         if not isinstance(store, dict):
             return None
         summary = store.get(str(ref or ""))
         if not isinstance(summary, dict):
-            # Try loading from disk too.
-            mgr = getattr(self.agent, "_chat_state_manager", None)
-            if mgr is not None:
+            # Try loading from disk (workspace-aware sidecar).
+            data_dir = self._chat_data_dir_for(chat_id, workspace_id)
+            if data_dir is not None:
+                on_disk = None
                 try:
-                    on_disk = mgr.load_file_changes(str(chat_id or ""))
-                    if isinstance(on_disk, dict):
-                        maybe_summary = on_disk.get(str(ref or ""))
-                        if isinstance(maybe_summary, dict):
-                            summary = maybe_summary
-                        elif on_disk.get("ref") == ref:
-                            summary = on_disk
-                    elif isinstance(on_disk, list):
-                        for item in on_disk:
-                            if isinstance(item, dict) and item.get("ref") == ref:
-                                summary = item
-                                break
+                    with open(data_dir / "file_changes.json", "r", encoding="utf-8") as _fh:
+                        on_disk = json.load(_fh)
                 except Exception:
-                    pass
+                    on_disk = None
+                if isinstance(on_disk, dict):
+                    maybe_summary = on_disk.get(str(ref or ""))
+                    if isinstance(maybe_summary, dict):
+                        summary = maybe_summary
+                    elif on_disk.get("ref") == ref:
+                        summary = on_disk
+                elif isinstance(on_disk, list):
+                    for item in on_disk:
+                        if isinstance(item, dict) and item.get("ref") == ref:
+                            summary = item
+                            break
         if not isinstance(summary, dict):
             return None
         files = summary.get("files")
@@ -6107,14 +6280,22 @@ class ServeApp:
         return None
 
     def _update_undone_files_state(
-        self, chat_id: str, ref: str, file_paths: List[str], undone: bool,
+        self,
+        chat_id: str,
+        ref: str,
+        file_paths: List[str],
+        undone: bool,
+        workspace_id: str = "",
     ) -> None:
-        """Mark files as undone/redone in the file-changes store and persist to disk."""
+        """Mark files as undone/redone in the file-changes store and persist to disk.
+
+        ``workspace_id`` qualifies the chat (chat ids repeat across workspaces).
+        """
+        scope_key = ServeApp._file_changes_scope_key(chat_id, workspace_id)
         _fc_by_chat: Dict[str, Any] = dict(
             getattr(self.agent, "_file_changes_by_chat", {}) or {}
         )
-        cid = str(chat_id or "")
-        store: dict = dict(_fc_by_chat.get(cid, {}))
+        store: dict = dict(_fc_by_chat.get(scope_key, {}))
         summary = store.get(str(ref or ""))
         if not isinstance(summary, dict):
             return
@@ -6127,39 +6308,44 @@ class ServeApp:
             undone_list = [p for p in undone_list if p not in file_paths]
         summary["undoneFiles"] = undone_list
         store[str(ref or "")] = summary
-        _fc_by_chat[cid] = store
+        _fc_by_chat[scope_key] = store
         setattr(self.agent, "_file_changes_by_chat", _fc_by_chat)
         try:
-            mgr = getattr(self.agent, "_chat_state_manager", None)
-            if mgr is not None:
-                mgr.save_file_changes(cid, store)
+            data_dir = self._chat_data_dir_for(chat_id, workspace_id)
+            if data_dir is not None:
+                data_dir.mkdir(parents=True, exist_ok=True)
+                from ..managers.chat_state_manager import _safe_replace
+                import json as _json
+                target = data_dir / "file_changes.json"
+                tmp = target.with_suffix(target.suffix + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as _fh:
+                    _json.dump(store, _fh, ensure_ascii=False, indent=2)
+                    _fh.write("\n")
+                _safe_replace(tmp, target)
         except Exception:
             pass
 
     def _resolve_backup_full_path(
-        self, chat_id: str, backup_name: str,
+        self, chat_id: str, backup_name: str, workspace_id: str = "",
     ) -> Optional[Path]:
         """Convert a relative backup filename to an absolute path under the chat's
-        backups directory."""
-        mgr = getattr(self.agent, "_chat_state_manager", None)
-        if mgr is None:
+        backups directory (workspace-qualified)."""
+        data_dir = self._chat_data_dir_for(chat_id, workspace_id)
+        if data_dir is None:
             return None
-        backups_dir = getattr(mgr, "chat_backups_dir_for_chat", None)
-        if not callable(backups_dir):
-            return None
-        bd = backups_dir(str(chat_id or ""))
-        if bd is None:
-            return None
-        return bd / str(backup_name)
+        return data_dir / "backups" / str(backup_name)
 
     def undo_file_changes(
-        self, chat_id: str, ref: str, files: List[str],
+        self, chat_id: str, ref: str, files: List[str], workspace_id: str = "",
     ) -> Dict[str, Any]:
-        """Undo a list of files.  Returns {results: {filePath: {success, error?}}}."""
+        """Undo a list of files.  Returns {results: {filePath: {success, error?}}}.
+
+        ``workspace_id`` scopes the chat (chat ids repeat across workspaces).
+        """
         outcome: Dict[str, Dict[str, Any]] = {}
         for fpath in files:
             try:
-                fc = self._lookup_file_change(chat_id, ref, fpath)
+                fc = self._lookup_file_change(chat_id, ref, fpath, workspace_id)
                 if fc is None:
                     outcome[fpath] = {"success": False, "error": "change record not found"}
                     continue
@@ -6199,7 +6385,7 @@ class ServeApp:
                     if not bp:
                         outcome[fpath] = {"success": False, "error": "no backup available"}
                         continue
-                    backup_full = self._resolve_backup_full_path(chat_id, bp)
+                    backup_full = self._resolve_backup_full_path(chat_id, bp, workspace_id)
                     if backup_full is None or not backup_full.exists():
                         outcome[fpath] = {"success": False, "error": "backup file missing"}
                         continue
@@ -6218,7 +6404,7 @@ class ServeApp:
                     if not bp:
                         outcome[fpath] = {"success": False, "error": "no backup available"}
                         continue
-                    backup_full = self._resolve_backup_full_path(chat_id, bp)
+                    backup_full = self._resolve_backup_full_path(chat_id, bp, workspace_id)
                     if backup_full is None or not backup_full.exists():
                         outcome[fpath] = {"success": False, "error": "backup file missing"}
                         continue
@@ -6238,17 +6424,22 @@ class ServeApp:
                 if r.get("success")
             ]
             if undone_success:
-                self._update_undone_files_state(chat_id, ref, undone_success, undone=True)
+                self._update_undone_files_state(
+                    chat_id, ref, undone_success, undone=True, workspace_id=workspace_id
+                )
         return {"results": outcome}
 
     def reapply_file_changes(
-        self, chat_id: str, ref: str, files: List[str],
+        self, chat_id: str, ref: str, files: List[str], workspace_id: str = "",
     ) -> Dict[str, Any]:
-        """Reapply a list of files.  Returns {results: {filePath: {success, error?}}}."""
+        """Reapply a list of files.  Returns {results: {filePath: {success, error?}}}.
+
+        ``workspace_id`` scopes the chat (chat ids repeat across workspaces).
+        """
         outcome: Dict[str, Dict[str, Any]] = {}
         for fpath in files:
             try:
-                fc = self._lookup_file_change(chat_id, ref, fpath)
+                fc = self._lookup_file_change(chat_id, ref, fpath, workspace_id)
                 if fc is None:
                     outcome[fpath] = {"success": False, "error": "change record not found"}
                     continue
@@ -6282,7 +6473,7 @@ class ServeApp:
                     if not bp:
                         outcome[fpath] = {"success": False, "error": "no backup available"}
                         continue
-                    backup_full = self._resolve_backup_full_path(chat_id, bp)
+                    backup_full = self._resolve_backup_full_path(chat_id, bp, workspace_id)
                     if backup_full is None or not backup_full.exists():
                         outcome[fpath] = {"success": False, "error": "backup file missing"}
                         continue
@@ -6312,7 +6503,9 @@ class ServeApp:
                 if r.get("success")
             ]
             if reapplied_success:
-                self._update_undone_files_state(chat_id, ref, reapplied_success, undone=False)
+                self._update_undone_files_state(
+                    chat_id, ref, reapplied_success, undone=False, workspace_id=workspace_id
+                )
         return {"results": outcome}
 
     def request_shutdown(self) -> None:
@@ -6484,6 +6677,7 @@ class ServeApp:
         _fc_logger = get_logger("codewood.file_change")
         def _on_file_changes(summary: dict) -> None:
             cid = str(self._active_chat_id())
+            wsid = str(self._active_chat_workspace_id())
             # Reuse hashcodes from _pending_preview_refs (generated by
             # _record_model_tool_execution_history for each apply_patch)
             # so previews.json and file_changes.json share the same key.
@@ -6495,17 +6689,27 @@ class ServeApp:
             else:
                 _hash = secrets.token_hex(8)
             summary["ref"] = _hash
-            # Store as a dict keyed by hashcode
+            # Store as a dict keyed by hashcode under the workspace-qualified
+            # composite key so a same-id chat in another workspace can't collide.
+            _scope_key = ServeApp._file_changes_scope_key(cid, wsid)
             _fc_by_chat = dict(getattr(self.agent, "_file_changes_by_chat", {}) or {})
-            _fc_store: dict = dict(_fc_by_chat.get(cid, {}))
+            _fc_store: dict = dict(_fc_by_chat.get(_scope_key, {}))
             _fc_store[_hash] = summary
-            _fc_by_chat[cid] = _fc_store
+            _fc_by_chat[_scope_key] = _fc_store
             setattr(self.agent, "_file_changes_by_chat", _fc_by_chat)
-            # Persist to disk so it survives restarts
+            # Persist to disk so it survives restarts (workspace-aware dir).
             try:
-                mgr = getattr(self.agent, "_chat_state_manager", None)
-                if mgr is not None:
-                    mgr.save_file_changes(cid, _fc_store)
+                data_dir = self._chat_data_dir_for(cid, wsid)
+                if data_dir is not None:
+                    data_dir.mkdir(parents=True, exist_ok=True)
+                    from ..managers.chat_state_manager import _safe_replace
+                    import json as _json
+                    target = data_dir / "file_changes.json"
+                    tmp = target.with_suffix(target.suffix + ".tmp")
+                    with open(tmp, "w", encoding="utf-8") as _fh:
+                        _json.dump(_fc_store, _fh, ensure_ascii=False, indent=2)
+                        _fh.write("\n")
+                    _safe_replace(tmp, target)
             except Exception:
                 pass
             # Insert a [FILE_CHANGE_REF:<hashcode>] internal message into the
@@ -6808,7 +7012,11 @@ def _make_handler(app: ServeApp):
                         limit = max(1, min(200, int(str(limit_vals[0])[:6])))
                 except (ValueError, TypeError):
                     limit = 12
-                self._send_json(200, app.chat_history(before, limit))
+                chat_id = str((query.get("chatId") or [""])[0] or "")[:256]
+                ws_id = str((query.get("workspaceId") or [""])[0] or "")[:256]
+                self._send_json(
+                    200, app.chat_history(before, limit, chat_id, ws_id)
+                )
                 return
             if path == "/background-image":
                 result = app.read_background_image()
@@ -6887,8 +7095,12 @@ def _make_handler(app: ServeApp):
                     self._send_json(413, {"error": "input too large"})
                     return
                 chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
                 app.submit_input(
-                    text, chat_id=chat_id, as_prompt=bool(body.get("asPrompt"))
+                    text,
+                    chat_id=chat_id,
+                    as_prompt=bool(body.get("asPrompt")),
+                    workspace_id=ws_id,
                 )
                 self._send_json(200, {"ok": True})
                 return
@@ -6950,8 +7162,9 @@ def _make_handler(app: ServeApp):
                 return
             if path == "/browser-preview-html":
                 chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
                 html = str(body.get("html") or "")
-                result = app.save_preview_html(chat_id, html)
+                result = app.save_preview_html(chat_id, html, ws_id)
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/preview-local-file":
@@ -6979,11 +7192,15 @@ def _make_handler(app: ServeApp):
                 self._send_json(200 if ok else 404, {"ok": ok})
                 return
             if path == "/interrupt":
-                app.interrupt()
+                cid = str(body.get("chatId") or "")[:256]
+                wsid = str(body.get("workspaceId") or "")[:256]
+                app.interrupt(chat_id=cid, workspace_id=wsid)
                 self._send_json(200, {"ok": True})
                 return
             if path == "/compact":
-                result = app.compact_context()
+                cid = str(body.get("chatId") or "")[:256]
+                wsid = str(body.get("workspaceId") or "")[:256]
+                result = app.compact_context(chat_id=cid, workspace_id=wsid)
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/export-chat":
@@ -7146,7 +7363,11 @@ def _make_handler(app: ServeApp):
                 self._send_json(200, {"ok": True, "config": app.get_mcp_server_config(srv)})
                 return
             if path == "/set-plan-mode":
-                ok = app.set_plan_mode(bool(body.get("enabled")))
+                cid = str(body.get("chatId") or "")[:256]
+                wsid = str(body.get("workspaceId") or "")[:256]
+                ok = app.set_plan_mode(
+                    bool(body.get("enabled")), chat_id=cid, workspace_id=wsid
+                )
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/search-workspace-files":
@@ -7319,22 +7540,24 @@ def _make_handler(app: ServeApp):
                 return
             if path == "/undo-file-changes":
                 chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
                 ref = str(body.get("ref") or "")[:256]
                 file_list = body.get("files")
                 if not isinstance(file_list, list):
                     file_list = []
                 file_list = [str(f) for f in file_list if str(f).strip()]
-                result = app.undo_file_changes(chat_id, ref, file_list)
+                result = app.undo_file_changes(chat_id, ref, file_list, ws_id)
                 self._send_json(200, result)
                 return
             if path == "/reapply-file-changes":
                 chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
                 ref = str(body.get("ref") or "")[:256]
                 file_list = body.get("files")
                 if not isinstance(file_list, list):
                     file_list = []
                 file_list = [str(f) for f in file_list if str(f).strip()]
-                result = app.reapply_file_changes(chat_id, ref, file_list)
+                result = app.reapply_file_changes(chat_id, ref, file_list, ws_id)
                 self._send_json(200, result)
                 return
             if path == "/shutdown":

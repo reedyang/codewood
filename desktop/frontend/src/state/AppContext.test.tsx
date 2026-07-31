@@ -18,6 +18,7 @@ const apiMock = vi.hoisted(() => {
   const setChatModel = vi.fn(async () => true);
   const setChatReasoning = vi.fn(async () => true);
   const syncModelPresets = vi.fn(async () => undefined);
+  const deleteChat = vi.fn(async () => true);
   return {
     getState,
     connectEvents,
@@ -30,6 +31,7 @@ const apiMock = vi.hoisted(() => {
     setChatModel,
     setChatReasoning,
     syncModelPresets,
+    deleteChat,
     emit(event: ServerEvent) {
       if (!eventHandler) {
         throw new Error("Event handler not connected");
@@ -49,6 +51,7 @@ const apiMock = vi.hoisted(() => {
       setChatModel.mockClear();
       setChatReasoning.mockClear();
       syncModelPresets.mockClear();
+      deleteChat.mockClear();
     },
   };
 });
@@ -66,6 +69,7 @@ vi.mock("../api/client", () => ({
     setChatModel = apiMock.setChatModel;
     setChatReasoning = apiMock.setChatReasoning;
     syncModelPresets = apiMock.syncModelPresets;
+    deleteChat = apiMock.deleteChat;
   },
 }));
 
@@ -184,6 +188,22 @@ function HistoryReloadProbe() {
         switch workspace
       </button>
       <pre data-testid="history-state">{JSON.stringify(state)}</pre>
+    </>
+  );
+}
+
+function DeleteChatProbe() {
+  const { state, activeChats, deleteChat } = useApp();
+  return (
+    <>
+      <button onClick={() => { void deleteChat("chat-2", "ws-1"); }}>
+        delete chat 2
+      </button>
+      <button onClick={() => { void deleteChat("chat-1", "ws-1"); }}>
+        delete active chat
+      </button>
+      <pre data-testid="delete-state">{JSON.stringify(state)}</pre>
+      <pre data-testid="delete-chats">{JSON.stringify(activeChats)}</pre>
     </>
   );
 }
@@ -671,7 +691,7 @@ describe("AppContext thinking rounds", () => {
         turns: Turn[];
       };
       expect(apiMock.newChat).toHaveBeenCalledWith("ws-2", "", "");
-      expect(apiMock.sendInput).toHaveBeenCalledWith("hello from draft", true, "chat-2");
+      expect(apiMock.sendInput).toHaveBeenCalledWith("hello from draft", true, "chat-2", "ws-2");
       expect(state.workspace.id).toBe("ws-1");
       expect(state.activeChatId).toBe("chat-1");
       expect(view.activeWorkspaceId).toBe("ws-2");
@@ -1163,7 +1183,7 @@ describe("AppContext thinking rounds", () => {
 
     await waitFor(() => {
       const state = JSON.parse(screen.getByTestId("edit-model-state").textContent || "{}") as AppState;
-      expect(apiMock.sendInput).toHaveBeenCalledWith("/chat edit -1");
+      expect(apiMock.sendInput).toHaveBeenCalledWith("/chat edit -1", false, "chat-1", "ws-1");
       expect(apiMock.setChatModel).toHaveBeenCalledWith("chat-1", "openai/family/model/v2", "ws-1");
       expect(state.model.current).toBe("openai/family/model/v2");
     });
@@ -1258,7 +1278,7 @@ describe("AppContext thinking rounds", () => {
     });
 
     await waitFor(() => {
-      expect(apiMock.sendInput).toHaveBeenNthCalledWith(1, "hello after switch", true, "chat-1");
+      expect(apiMock.sendInput).toHaveBeenNthCalledWith(1, "hello after switch", true, "chat-1", "ws-1");
     });
   });
 
@@ -1284,12 +1304,109 @@ describe("AppContext thinking rounds", () => {
       fireEvent.click(screen.getByRole("button", { name: "send health" }));
     });
     expect(apiMock.sendInput).toHaveBeenCalledTimes(1);
-    expect(apiMock.sendInput).toHaveBeenCalledWith("/server-health", true, "chat-1");
+    expect(apiMock.sendInput).toHaveBeenCalledWith("/server-health", true, "chat-1", "ws-1");
 
     // A normal message while busy is buffered into the pending queue instead.
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "send normal" }));
     });
     expect(apiMock.sendInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes a deleted chat from the active workspace chat list immediately", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          { id: "chat-1", name: "Chat 1", active: true, running: false },
+          { id: "chat-2", name: "Chat 2", active: false, running: false },
+        ],
+      }),
+    );
+    render(
+      <AppProvider>
+        <DeleteChatProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "delete chat 2" }));
+    });
+
+    expect(apiMock.deleteChat).toHaveBeenCalledWith("chat-2", "ws-1");
+    await waitFor(() => {
+      const chats = JSON.parse(screen.getByTestId("delete-chats").textContent || "[]") as Array<{ id: string }>;
+      expect(chats.map((c) => c.id)).toEqual(["chat-1"]);
+    });
+  });
+
+  it("drops a chat from the sidebar when an idle SSE event omits it (merge path)", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          { id: "chat-1", name: "Chat 1", active: true, running: false },
+          { id: "chat-2", name: "Chat 2", active: false, running: false },
+        ],
+      }),
+    );
+    render(
+      <AppProvider>
+        <DeleteChatProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // The idle event is for a DIFFERENT chat than the focused one (so the merge
+    // path runs) and its authoritative chat list no longer contains chat-2.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-3",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [
+              { id: "chat-1", name: "Chat 1", active: true, running: false },
+            ],
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const chats = JSON.parse(screen.getByTestId("delete-chats").textContent || "[]") as Array<{ id: string }>;
+      expect(chats.map((c) => c.id)).toEqual(["chat-1"]);
+    });
+  });
+
+  it("enters draft mode and clears the deleted active chat from the list", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          { id: "chat-1", name: "Chat 1", active: true, running: false },
+          { id: "chat-2", name: "Chat 2", active: false, running: false },
+        ],
+      }),
+    );
+    render(
+      <AppProvider>
+        <DeleteChatProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "delete active chat" }));
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(screen.getByTestId("delete-state").textContent || "{}") as AppState;
+      const chats = JSON.parse(screen.getByTestId("delete-chats").textContent || "[]") as Array<{ id: string }>;
+      expect(chats.map((c) => c.id)).toEqual(["chat-2"]);
+      expect(state.chats.map((c) => c.id)).toEqual(["chat-2"]);
+    });
   });
 });

@@ -59,6 +59,7 @@ def _app(cfg_dir: Path) -> ServeApp:
         "answer_browser_result",
         "save_preview_html",
         "read_chat_file",
+        "_chat_data_dir_for",
     ):
         setattr(stub, name, getattr(ServeApp, name).__get__(stub, _Stub))
     stub._BROWSER_CMD_TIMEOUT_S = 2.0

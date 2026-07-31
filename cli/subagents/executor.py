@@ -737,7 +737,10 @@ def run_subagent(
         _round = 0
         while max_rounds is None or _round < max_rounds:
             _round += 1
-            if getattr(agent, "_task_interrupt_requested", False):
+            if (
+                getattr(agent, "_task_interrupt_requested", False)
+                or getattr(agent, "_chat_task_interrupt_requested", lambda: False)()
+            ):
                 cancelled_msg = _t(agent, "subagents.error.cancelled")
                 store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
                 _emit_subagent_event(agent, "sub_agent_end", {
@@ -844,7 +847,10 @@ def run_subagent(
                 if not isinstance(message, dict):
                     message = {"role": "assistant", "content": "".join(_streamed_text)}
 
-            if getattr(agent, "_task_interrupt_requested", False):
+            if (
+                getattr(agent, "_task_interrupt_requested", False)
+                or getattr(agent, "_chat_task_interrupt_requested", lambda: False)()
+            ):
                 cancelled_msg = _t(agent, "subagents.error.cancelled")
                 store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
                 _emit_subagent_event(agent, "sub_agent_end", {
@@ -996,7 +1002,10 @@ def run_subagent(
             # on reload — exactly like the main chat's tool-round history.
             round_raw: List[Dict[str, Any]] = []
             for idx, (tool_name, args) in enumerate(plans):
-                if getattr(agent, "_task_interrupt_requested", False):
+                if (
+                    getattr(agent, "_task_interrupt_requested", False)
+                    or getattr(agent, "_chat_task_interrupt_requested", lambda: False)()
+                ):
                     cancelled_msg = _t(agent, "subagents.error.cancelled")
                     store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
                     _emit_subagent_event(agent, "sub_agent_end", {
