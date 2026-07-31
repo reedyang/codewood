@@ -7592,6 +7592,23 @@ class Agent:
         return result
     def _call_orchestrator(self, call_ctx: AICallContext) -> Any:
         prov, mname, mparams, mconf = self._session_model_for_call()
+        # Stamp the resolved model + config onto the call context so the
+        # orchestrator uses this frozen snapshot for the whole call. The shared
+        # ``ai_orchestrator.context`` is rewritten by a concurrent chat
+        # activation (chat switch), which otherwise pairs this chat's model name
+        # with another chat's server config (base_url crossed).
+        try:
+            from dataclasses import replace
+
+            call_ctx = replace(
+                call_ctx,
+                provider=prov,
+                model_name=mname,
+                model_params=mparams,
+                openai_conf=mconf,
+            )
+        except Exception:
+            pass
         lock = getattr(self, "_model_call_lock", None)
         def _do_call():
             self.ai_orchestrator.context.provider = prov

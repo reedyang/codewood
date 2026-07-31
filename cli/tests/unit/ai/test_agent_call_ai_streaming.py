@@ -7,7 +7,7 @@ if "ollama" not in sys.modules:
     sys.modules["ollama"] = fake_ollama
 
 from cli.agent import Agent
-from cli.ai.ai_provider_clients import AIResult
+from cli.ai.ai_provider_clients import AICallContext, AIResult
 
 
 class _FakeOrchestrator:
@@ -179,6 +179,41 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.assertEqual(agent.params.get("model"), "plain")
         self.assertEqual(agent.params.get("extra_headers"), {})
         self.assertEqual(agent.ai_orchestrator.context.openai_conf.get("extra_headers"), {})
+
+    def test_call_uses_session_snapshot_even_when_shared_context_is_mutated_by_another_chat(self):
+        # Regression: a background chat's model call must not pick up a config
+        # that a concurrent chat activation wrote into the shared orchestrator
+        # context. The call carries its own resolved snapshot (provider, model,
+        # base_url) so a chat switch can't pair chat A's model name with chat
+        # B's server address.
+        agent = Agent.__new__(Agent)
+        agent.work_directory = "."
+        agent._install_session_registry()
+        agent._session_for_key("")
+        agent.ai_orchestrator = _FakeOrchestrator()
+        # "Loop thread" bound to chat-a, whose session is pinned to model A.
+        agent._bind_session("chat-a", "ws-1")
+        agent.provider = "provA"
+        agent.model_name = "model-a"
+        agent.params = {"api_key": "k", "base_url": "https://api-a.example.com"}
+        agent.openai_conf = dict(agent.params)
+        agent._pin_session_model()
+        # Simulate a concurrent chat activation (switch to chat B) clobbering
+        # the shared orchestrator context with chat B's server config.
+        agent.ai_orchestrator.context.provider = "provB"
+        agent.ai_orchestrator.context.model_name = "model-b"
+        agent.ai_orchestrator.context.model_params = {"base_url": "https://api-b.example.com"}
+        agent.ai_orchestrator.context.openai_conf = {"base_url": "https://api-b.example.com"}
+
+        agent._call_orchestrator(AICallContext(user_input="hello", stream=False))
+
+        ctx = agent.ai_orchestrator.last_call_ctx
+        # The call used its OWN resolved snapshot (chat A), not the shared
+        # context that a concurrent chat switch had clobbered with chat B's
+        # server address.
+        self.assertEqual(ctx.provider, "provA")
+        self.assertEqual(ctx.model_name, "model-a")
+        self.assertEqual((ctx.openai_conf or {}).get("base_url"), "https://api-a.example.com")
 
 
 if __name__ == "__main__":

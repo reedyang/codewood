@@ -335,6 +335,16 @@ class AICallContext:
     tool_choice: Any = None
     messages_override: Optional[List[Dict[str, Any]]] = None
     record_history_override: Optional[bool] = None
+    # Per-call resolved model snapshot. The shared ``AgentAIContext`` is
+    # mutated by concurrent chat activations (a chat switch rewrites its
+    # provider/model/params), so a call must carry its OWN frozen snapshot of
+    # the resolved model + config instead of re-reading the shared context mid
+    # call — otherwise a background chat's request can end up with chat A's
+    # model name but chat B's server config (base_url crossed).
+    provider: Optional[str] = None
+    model_name: Optional[str] = None
+    model_params: Optional[Dict[str, Any]] = None
+    openai_conf: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
