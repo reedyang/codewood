@@ -302,8 +302,9 @@ class _FakeStreamResponse:
 
 class ResponsesApiContentContractTests(unittest.TestCase):
     """Responses API must follow the same storage contract as chat/completions:
-    ``content`` keeps the raw text, ``_clean_content`` keeps the sanitized
-    text, and thinking extracted from content sets ``_thinking_from_content``.
+    ``content`` keeps the raw text (the cleaned form lives in the reply block's
+    content nodes), and thinking extracted from content sets
+    ``_thinking_from_content``.
     """
 
     def test_nonstream_responses_keeps_raw_content_and_extracts_thinking(self):
@@ -345,7 +346,7 @@ class ResponsesApiContentContractTests(unittest.TestCase):
         raw_text, history_msg = recorded[0]
         self.assertEqual(raw_text, _RAW_CHANNEL_CONTENT)
         self.assertEqual(history_msg["content"], _RAW_CHANNEL_CONTENT)
-        self.assertEqual(history_msg["_clean_content"], "visible")
+        self.assertNotIn("_clean_content", history_msg)
         self.assertEqual(history_msg["_thinking"], "test message")
         self.assertTrue(history_msg["_thinking_from_content"])
         self.assertEqual(message["content"], "visible")
@@ -391,7 +392,7 @@ class ResponsesApiContentContractTests(unittest.TestCase):
         raw_text, history_msg = recorded[0]
         self.assertEqual(raw_text, _RAW_CHANNEL_CONTENT)
         self.assertEqual(history_msg["content"], _RAW_CHANNEL_CONTENT)
-        self.assertEqual(history_msg["_clean_content"], "visible")
+        self.assertNotIn("_clean_content", history_msg)
         self.assertEqual(history_msg["_thinking"], "test message")
         self.assertTrue(history_msg["_thinking_from_content"])
 
@@ -420,7 +421,7 @@ class ResponsesApiContentContractTests(unittest.TestCase):
         raw_text, history_msg = recorded[0]
         self.assertEqual(raw_text, _RAW_CHANNEL_CONTENT)
         self.assertEqual(history_msg["content"], _RAW_CHANNEL_CONTENT)
-        self.assertEqual(history_msg["_clean_content"], "visible")
+        self.assertNotIn("_clean_content", history_msg)
         self.assertEqual(history_msg["_thinking"], "test message")
         self.assertTrue(history_msg["_thinking_from_content"])
 

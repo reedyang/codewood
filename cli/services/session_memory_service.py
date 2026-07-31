@@ -74,6 +74,306 @@ def _message_effective_token_count(msg: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Model-reply block (_reply_records) helpers.
+#
+# A real model reply is recorded as ONE ``role:assistant`` message whose
+# ``_reply_records`` list stores, in natural arrival order:
+#   * "reasoning" / "content" / "tool_call" nodes — the derived pieces. When
+#     the reply required cleaning (content text carried embedded thinking or
+#     pseudo tool calls) the split-out nodes are marked ``from: "content_split"``
+#     while native nodes keep ``from: "native"``.
+#   * a final "raw" node (``_split_source: true``) holding the original
+#     uncleaned content — present ONLY when the reply was split. It is used to
+#     assemble the model-context history (cache-prefix fidelity) and is
+#     skipped by GUI/TUI replay.
+# When no cleaning happened the block holds only the native nodes in order.
+# Message-level metadata (stats, ``_tool_rounds_raw``, plan) lives on the
+# block's outer dict.
+# ---------------------------------------------------------------------------
+
+REPLY_RAW_KIND = "raw"
+_REPLY_NODE_KINDS = frozenset({"reasoning", "content", "tool_call"})
+_REPLY_META_KEYS = (
+    "_cache_stats",
+    "_output_tokens",
+    "_reasoning_tokens",
+    "_token_count_includes_reasoning",
+    "_token_count",
+    "_model",
+    "_tool_rounds_raw",
+    "_thinking_elapsed_seconds",
+    "plan",
+    "plan_explanation",
+    "plan_updated_at",
+    "pseudo_tool_call_text",
+    "pseudo_tool_call_tools",
+    "exclude_from_model_context",
+    "_internal",
+    "created_at",
+)
+
+
+def _is_reply_block(msg: Any) -> bool:
+    """True when ``msg`` is a model-reply block (has a non-empty _reply_records)."""
+    if not isinstance(msg, dict):
+        return False
+    records = msg.get("_reply_records")
+    return isinstance(records, list) and bool(records)
+
+
+def _assistant_reply_nodes(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Ordered ``_reply_records`` of a reply block (empty list for non-blocks)."""
+    if not _is_reply_block(msg):
+        return []
+    return list(msg["_reply_records"])
+
+
+def _assistant_reply_raw_node(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The raw node of a split reply block (sits after the native nodes and
+    before the nodes split out of it), or None."""
+    for record in _assistant_reply_nodes(msg):
+        if isinstance(record, dict) and str(record.get("kind") or "").strip().lower() == REPLY_RAW_KIND:
+            return record
+    return None
+
+
+def _tool_calls_plan_payload(tool_calls: Any) -> str:
+    """Serialize standard-API tool_calls into the JSON plan string the display
+    renderers parse (mirrors ``ai_orchestrator._build_tool_calls_plan_payload``)."""
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return ""
+    serialized: List[Dict[str, Any]] = []
+    for entry in tool_calls:
+        if not isinstance(entry, dict):
+            continue
+        function = entry.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args: Any = function.get("arguments")
+        if isinstance(raw_args, str):
+            try:
+                parsed_args = json.loads(raw_args)
+            except Exception:
+                parsed_args = None
+            if not isinstance(parsed_args, dict):
+                parsed_args = {"_raw_arguments": raw_args}
+        elif isinstance(raw_args, dict):
+            parsed_args = raw_args
+        else:
+            parsed_args = {}
+        serialized.append({
+            "id": str(entry.get("id") or "").strip(),
+            "type": str(entry.get("type") or "function"),
+            "function": {
+                "name": name,
+                "arguments": json.dumps(parsed_args, ensure_ascii=False),
+            },
+        })
+    if not serialized:
+        return ""
+    try:
+        return json.dumps({"tool_calls": serialized}, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def _assistant_model_view(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a reply block into today's assistant-message field names for the
+    provider/context consumers (cache-prefix fidelity):
+
+    * non-block message -> returned unchanged;
+    * split block -> content is the raw (uncleaned) text preserved on the raw
+      node, ``_thinking`` is the native reasoning nodes only (content-derived
+      reasoning stays inside the raw content text and is never re-emitted as
+      reasoning_content);
+    * unsplit block -> content / _thinking / tool_calls synthesized from the
+      native nodes (no cleaning happened, so this reproduces the sent payload).
+    """
+    if not _is_reply_block(msg):
+        return msg
+    records = list(msg["_reply_records"])
+    raw_node = _assistant_reply_raw_node(msg)
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        kind = str(record.get("kind") or "").strip().lower()
+        if kind == REPLY_RAW_KIND:
+            continue
+        data = record.get("data")
+        if kind == "content" and isinstance(data, str):
+            content_parts.append(data)
+        elif kind == "reasoning" and isinstance(data, str):
+            if str(record.get("from") or "").strip().lower() == "native":
+                reasoning_parts.append(data)
+        elif kind == "tool_call" and isinstance(data, dict):
+            if str(record.get("from") or "").strip().lower() == "native":
+                tool_calls.append(data)
+    view: Dict[str, Any] = {"role": "assistant"}
+    if raw_node is not None:
+        view["content"] = str(raw_node.get("content") or "")
+    else:
+        view["content"] = "".join(content_parts)
+    if reasoning_parts:
+        view["_thinking"] = "".join(reasoning_parts)
+        view["_thinking_from_content"] = False
+    if tool_calls:
+        view["tool_calls"] = tool_calls
+    for key in _REPLY_META_KEYS:
+        if key in msg:
+            view[key] = msg[key]
+    return view
+
+
+def _assistant_display_view(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a reply block for GUI/TUI rendering:
+
+    * content is the cleaned visible text (joined content nodes) — hidden
+      markers never reach the renderers;
+    * ``_thinking`` covers ALL reasoning nodes (native + content-derived);
+    * ``tool_calls`` covers all tool-call nodes; a tool-only block synthesizes
+      the JSON plan payload into ``content`` so existing plan renderers work.
+    """
+    if not _is_reply_block(msg):
+        return msg
+    records = list(msg["_reply_records"])
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        kind = str(record.get("kind") or "").strip().lower()
+        if kind == REPLY_RAW_KIND:
+            continue
+        data = record.get("data")
+        if kind == "content" and isinstance(data, str):
+            content_parts.append(data)
+        elif kind == "reasoning" and isinstance(data, str):
+            reasoning_parts.append(data)
+        elif kind == "tool_call" and isinstance(data, dict):
+            tool_calls.append(data)
+    view: Dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
+    if not view["content"] and tool_calls:
+        plan_text = _tool_calls_plan_payload(tool_calls)
+        if plan_text:
+            view["content"] = plan_text
+    if reasoning_parts:
+        view["_thinking"] = "".join(reasoning_parts)
+        view["_thinking_from_content"] = False
+    if tool_calls:
+        view["tool_calls"] = tool_calls
+    for key in _REPLY_META_KEYS:
+        if key in msg:
+            view[key] = msg[key]
+    return view
+
+
+def _assistant_tool_calls(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Tool-call dicts of an assistant message (block-aware). For blocks these
+    are the native calls the model actually issued."""
+    if not _is_reply_block(msg):
+        raw = msg.get("tool_calls")
+        return list(raw) if isinstance(raw, list) else []
+    return list(_assistant_model_view(msg).get("tool_calls") or [])
+
+
+def _assistant_reply_pieces_for_model(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The model-context representation of a reply block, in natural order:
+    the nodes that must reach the provider. For split blocks this is just the
+    raw node; for unsplit blocks it is the native nodes."""
+    if not _is_reply_block(msg):
+        return []
+    raw_node = _assistant_reply_raw_node(msg)
+    if raw_node is not None:
+        return [raw_node]
+    return [
+        record
+        for record in _assistant_reply_nodes(msg)
+        if isinstance(record, dict) and str(record.get("kind") or "").strip().lower() != REPLY_RAW_KIND
+    ]
+
+
+def _assistant_model_messages(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Ordered provider messages for a reply block, preserving the natural
+    arrival order recorded in ``_reply_records``.
+
+    Nodes split out of the raw content (``from == "content_split"``) are
+    skipped — their data already lives in the raw node. A reasoning node merges
+    with the content/raw node that follows it (the natural message unit), so
+    the model still sees ``reasoning`` then its ``content`` in order.
+    Consecutive tool-call nodes merge into ONE assistant ``tool_calls`` message
+    so the following tool results stay paired. The result is a list of
+    assistant messages in the recorded order, never merged across kinds.
+    """
+    if not _is_reply_block(msg):
+        return [msg]
+    messages: List[Dict[str, Any]] = []
+    pending_reasoning: List[str] = []
+    pending_tool_calls: List[Dict[str, Any]] = []
+
+    def _take_reasoning() -> str:
+        if not pending_reasoning:
+            return ""
+        text = "".join(pending_reasoning)
+        pending_reasoning.clear()
+        return text
+
+    def _append(message: Dict[str, Any]) -> None:
+        messages.append(message)
+
+    def _flush_tool_calls() -> None:
+        if not pending_tool_calls:
+            return
+        reasoning = _take_reasoning()
+        message: Dict[str, Any] = {"role": "assistant", "content": ""}
+        if reasoning:
+            message["_thinking"] = reasoning
+            message["_thinking_from_content"] = False
+        message["tool_calls"] = list(pending_tool_calls)
+        pending_tool_calls.clear()
+        _append(message)
+
+    for record in _assistant_reply_nodes(msg):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("from") or "").strip().lower() == "content_split":
+            continue
+        kind = str(record.get("kind") or "").strip().lower()
+        if kind == REPLY_RAW_KIND or kind == "content":
+            _flush_tool_calls()
+            text = str(record.get("content") or "") if kind == REPLY_RAW_KIND else str(record.get("data") or "")
+            reasoning = _take_reasoning()
+            message: Dict[str, Any] = {"role": "assistant", "content": text}
+            if reasoning:
+                message["_thinking"] = reasoning
+                message["_thinking_from_content"] = False
+            _append(message)
+        elif kind == "reasoning":
+            _flush_tool_calls()
+            pending_reasoning.append(str(record.get("data") or ""))
+        elif kind == "tool_call":
+            data = record.get("data")
+            if isinstance(data, dict):
+                pending_tool_calls.append(data)
+    _flush_tool_calls()
+    reasoning = _take_reasoning()
+    if reasoning:
+        message = {"role": "assistant", "content": ""}
+        message["_thinking"] = reasoning
+        message["_thinking_from_content"] = False
+        _append(message)
+    if not messages:
+        messages.append({"role": "assistant", "content": ""})
+    return messages
+
+
 class SessionMemoryService:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
@@ -289,6 +589,8 @@ class SessionMemoryService:
         role = str(msg.get("role") or "").strip().lower()
         if role not in ("user", "assistant"):
             return []
+        if role == "assistant":
+            msg = _assistant_model_view(msg)
         raw_content = str(msg.get("content") or "")
         if not raw_content.strip():
             return []
@@ -403,9 +705,19 @@ class SessionMemoryService:
         self._start_token_counter_warmup()
         return None
 
-    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None) -> None:
+    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None, reply_records: Optional[List[Dict[str, Any]]] = None) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant", "tool"):
+            return
+        if reply_records:
+            self._append_reply_block(
+                reply_records,
+                _internal=_internal,
+                cache_stats=cache_stats,
+                output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
+                token_count_includes_reasoning=token_count_includes_reasoning,
+            )
             return
         should_attach_suffix = False
         if r == "user" and isinstance(context_suffix, str) and context_suffix.strip():
@@ -433,8 +745,6 @@ class SessionMemoryService:
             message["_context_suffix"] = str(context_suffix)
         if _internal:
             message["_internal"] = True
-        if isinstance(clean_content, str) and clean_content != str(content or ""):
-            message["_clean_content"] = clean_content
         if isinstance(api_content, str) and api_content:
             message["_api_content"] = api_content
         if isinstance(thinking, str) and thinking:
@@ -471,13 +781,59 @@ class SessionMemoryService:
                     pass
         if isinstance(tool_calls, list) and tool_calls:
             message["tool_calls"] = tool_calls
-        # Defensive cleanup: _clean_content should never duplicate raw content.
-        if "_clean_content" in message and str(message["_clean_content"] or "") == str(message.get("content") or ""):
-            del message["_clean_content"]
         self.agent.conversation_history.append(message)
         self.agent._sync_active_chat_messages()
         if r == "user":
             self.agent._maybe_schedule_auto_chat_name()
+
+    def _append_reply_block(
+        self,
+        reply_records: List[Dict[str, Any]],
+        *,
+        _internal: bool = False,
+        cache_stats: Optional[Dict[str, Any]] = None,
+        output_tokens: Optional[int] = None,
+        reasoning_tokens: Optional[int] = None,
+        token_count_includes_reasoning: Optional[bool] = None,
+    ) -> None:
+        """Append a model-reply block (``_reply_records``) as one assistant
+        message. Message-level metadata (stats, ``_model``) stays on the outer
+        dict; content/reasoning/tool_calls live in the nodes."""
+        if not isinstance(reply_records, list) or not reply_records:
+            return
+        message: Dict[str, Any] = {
+            "role": "assistant",
+            "content": "",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "_reply_records": reply_records,
+        }
+        if _internal:
+            message["_internal"] = True
+        if isinstance(cache_stats, dict):
+            message["_cache_stats"] = cache_stats
+        if output_tokens is not None:
+            message["_output_tokens"] = output_tokens
+            message["_reasoning_tokens"] = reasoning_tokens or 0
+            if token_count_includes_reasoning is not None:
+                message["_token_count_includes_reasoning"] = token_count_includes_reasoning
+        provider = str(getattr(self.agent, "provider", "") or "").strip()
+        model_name = str(getattr(self.agent, "model_name", "") or "").strip()
+        if provider and model_name:
+            message["_model"] = f"{provider}/{model_name}"
+        if output_tokens is None:
+            view = _assistant_model_view(message)
+            message["_token_count"] = self._estimate_message_tokens(
+                "assistant", str(view.get("content") or "")
+            )
+        manager = getattr(self.agent, "_chat_state_manager", None)
+        attach = getattr(manager, "attach_pending_plan_to_message", None)
+        if callable(attach):
+            try:
+                attach(message)
+            except Exception:
+                pass
+        self.agent.conversation_history.append(message)
+        self.agent._sync_active_chat_messages()
 
     def build_context_compaction_summary_content(
         self,

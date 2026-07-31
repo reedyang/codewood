@@ -594,10 +594,6 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     const result: SubAgentMessage[] = [];
     let i = 0;
     const visibleTextOf = (m: SubAgentMessage): string => {
-      const mAny = m as unknown as Record<string, unknown>;
-      if (Object.prototype.hasOwnProperty.call(mAny, "_clean_content")) {
-        return String(mAny["_clean_content"] ?? "");
-      }
       return stripHiddenAssistantMarkers(m.content || "");
     };
     while (i < session.messages.length) {
@@ -647,11 +643,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
       if (msg.role !== "assistant") continue;
       const thinking = String((msg as unknown as { _thinking?: string })._thinking || "").trim();
       const tools = getSubAgentMessageToolRounds(msg, { lang }).join("\n\n");
-      const msgAny = msg as unknown as Record<string, unknown>;
-      const hasClean = Object.prototype.hasOwnProperty.call(msgAny, "_clean_content");
-      const text = hasClean
-        ? String(msgAny["_clean_content"] ?? "").trim()
-        : stripHiddenAssistantMarkers(msg.content || "").trim();
+      const text = stripHiddenAssistantMarkers(msg.content || "").trim();
       const waitSeconds = (msg as unknown as { _thinking_elapsed_seconds?: number })._thinking_elapsed_seconds ?? 0;
       totalWait += waitSeconds;
       if (!thinking && !tools && !text) continue;

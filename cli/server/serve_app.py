@@ -43,6 +43,7 @@ from ..core.console_utils import (
     GUI_INTERNAL_COMMAND_PREFIX,
 )
 from ..config.app_info import get_app_slug_snake
+from ..services.session_memory_service import _assistant_display_view
 
 _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 
@@ -305,8 +306,12 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         if not isinstance(msg, dict):
             continue
         role = str(msg.get("role") or "").strip().lower()
+        if role == "assistant":
+            # Flatten model-reply blocks (_reply_records) into the display
+            # message (split raw node skipped; nodes render in order).
+            msg = _assistant_display_view(msg)
         content = str(msg.get("content") or "")
-        clean_content = str(msg.get("_clean_content") or "") or content
+        clean_content = content
         ts = _parse_ts(msg.get("created_at"))
         if idx in genuine:
             current = {
@@ -7490,9 +7495,15 @@ def _make_handler(app: ServeApp):
                 # session dict (and the on-disk file) stay structured.
                 try:
                     _session_out = json.loads(json.dumps(session))
+                    _session_messages_out: List[Dict[str, Any]] = []
                     for _m in _session_out.get("messages", []) or []:
                         if not isinstance(_m, dict):
                             continue
+                        if str(_m.get("role") or "").strip().lower() == "assistant":
+                            _m = _assistant_display_view(_m)
+                        _session_messages_out.append(_m)
+                    _session_out["messages"] = _session_messages_out
+                    for _m in _session_out.get("messages", []) or []:
                         _raw = _m.get("_tool_rounds_raw")
                         if isinstance(_raw, list) and _raw and not _m.get("tool_rounds"):
                             try:

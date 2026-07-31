@@ -264,7 +264,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
               name,
               enabled: prov.auto_refresh ?? false,
               context_window: ctx ? String(ctx) : undefined,
-              use_clean_content: false,
               reasoning_effort: [],
               extra_headers: [],
             };
@@ -776,23 +775,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                                   />
                                   {t("models.streaming")}
                                 </label>
-                              </div>
-                              <div className="models-field">
-                                <label className="models-effort">
-                                  <input
-                                    type="checkbox"
-                                    checked={m.use_clean_content === true}
-                                    onChange={(e) =>
-                                      patchModel(idx, m.name, {
-                                        use_clean_content: e.target.checked,
-                                      })
-                                    }
-                                  />
-                                  {t("models.useCleanContent")}
-                                </label>
-                                <div className="models-hint">
-                                  {t("models.useCleanContentHint")}
-                                </div>
                               </div>
                               <div className="models-field">
                                 <label className="models-effort">

@@ -50,6 +50,40 @@ def get_logger():  # type: ignore[no-redef]
 def _ansi_gray(text: str) -> str:  # type: ignore[no-redef]
     return _sms._ansi_gray(text)
 
+
+def _assistant_replay_mode_from_agent(agent: Any) -> str:
+    """Whether reply blocks replay their ``_reply_records`` interleaved or merged.
+
+    Chat Completions (incl. DeepSeek) return a single flattened assistant
+    message (one ``reasoning_content``, one ``content``, one ``tool_calls``),
+    so merged replay reproduces the original message boundary and best matches
+    the provider's prompt-prefix cache. Responses / Anthropic preserve
+    multi-segment reasoning in their response structure, so interleaved replay
+    is more faithful there. The stored ``_reply_records`` is never changed;
+    this only selects how the block is flattened during model-context assembly.
+    """
+    params = getattr(agent, "params", None)
+    provider = str(getattr(agent, "provider", "") or "")
+    try:
+        from ..ai.ai_provider_clients import _base_url_suffix_hint, resolve_api_mode
+        mode = resolve_api_mode(params=params, provider=provider)
+    except Exception:
+        mode = "auto"
+    if mode == "responses":
+        return "interleaved"
+    if mode == "chat":
+        return "merged"
+    # auto (or unknown): follow the base_url suffix the request router would use.
+    base_url = ""
+    if isinstance(params, dict):
+        base_url = str(params.get("base_url") or "")
+    try:
+        if _base_url_suffix_hint(base_url) == "responses":
+            return "interleaved"
+    except Exception:
+        pass
+    return "merged"
+
 CONTEXT_OUTPUT_RESERVE_RATIO = 0.20
 CONTEXT_OUTPUT_RESERVE_MIN = 512
 CONTEXT_OUTPUT_RESERVE_MAX = 8192
@@ -326,30 +360,109 @@ class LLMContextManager:
 
         normalized: List[Dict[str, Any]] = []
         assistant_trimmed = 0
+        use_interleaved_replay = _assistant_replay_mode_from_agent(self.agent) == "interleaved"
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
         parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
         for idx, msg in enumerate(hist):
             role = str(msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant", "tool"):
                 continue
-            raw_content = str(msg.get("content") or "")
+            if role == "assistant" and _sms._is_reply_block(msg):
+                if not use_interleaved_replay:
+                    # Chat Completions (incl. DeepSeek): replay the block as a
+                    # single flattened assistant message (reasoning_content +
+                    # content + tool_calls), reproducing the original message
+                    # boundary for prompt-prefix cache hits. Falls through to
+                    # the single-entry path below via model_view.
+                    effective = _sms._assistant_model_view(msg)
+                    raw_content = str(effective.get("content") or "")
+                    content = self._normalize_history_content_for_model("assistant", raw_content, message=effective)
+                    content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
+                    entry: Dict[str, Any] = {"role": "assistant", "content": content}
+                    tcs = effective.get("tool_calls")
+                    if isinstance(tcs, list) and tcs:
+                        entry["tool_calls"] = tcs
+                    thinking = str(effective.get("_thinking") or "").strip()
+                    if thinking:
+                        entry["_thinking"] = thinking
+                        if effective.get("_thinking_from_content"):
+                            entry["_thinking_from_content"] = True
+                    msg_model = str(msg.get("_model") or "").strip()
+                    if msg_model:
+                        entry["_model"] = msg_model
+                    cs = msg.get("_cache_stats")
+                    if isinstance(cs, dict) and cs:
+                        entry["_cache_stats"] = cs
+                    from ..services.session_memory_service import _message_effective_token_count
+                    outer_tc = _message_effective_token_count(msg)
+                    if outer_tc is not None:
+                        entry["_token_count"] = outer_tc
+                    elif idx >= last_cache_src_idx:
+                        local = self._estimate_message_tokens("assistant", raw_content)
+                        msg["_token_count"] = local
+                        entry["_token_count"] = local
+                    normalized.append(entry)
+                    continue
+                # Responses / Anthropic preserve multi-segment reasoning: emit
+                # one provider assistant message per recorded node (reasoning
+                # merged with its following content), never merged across
+                # kinds. Split-out nodes are skipped (their data lives in the
+                # raw node). Tool results follow the tool-calls message.
+                from ..services.session_memory_service import _message_effective_token_count
+                sub_messages = _sms._assistant_model_messages(msg)
+                msg_model = str(msg.get("_model") or "").strip()
+                outer_tc = _message_effective_token_count(msg)
+                for _si, sub in enumerate(sub_messages):
+                    sub_role = str(sub.get("role") or "assistant").strip().lower()
+                    raw_content = str(sub.get("content") or "")
+                    content = self._normalize_history_content_for_model(sub_role, raw_content, message=sub)
+                    content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
+                    entry: Dict[str, Any] = {"role": sub_role, "content": content}
+                    tcs = sub.get("tool_calls")
+                    if isinstance(tcs, list) and tcs:
+                        entry["tool_calls"] = tcs
+                    thinking = str(sub.get("_thinking") or "").strip()
+                    if thinking:
+                        entry["_thinking"] = thinking
+                        if sub.get("_thinking_from_content"):
+                            entry["_thinking_from_content"] = True
+                    if msg_model:
+                        entry["_model"] = msg_model
+                    if _si == len(sub_messages) - 1:
+                        cs = msg.get("_cache_stats")
+                        if isinstance(cs, dict) and cs:
+                            entry["_cache_stats"] = cs
+                        if outer_tc is not None:
+                            entry["_token_count"] = outer_tc
+                        elif idx >= last_cache_src_idx:
+                            local = self._estimate_message_tokens(sub_role, raw_content)
+                            msg["_token_count"] = local
+                            entry["_token_count"] = local
+                    normalized.append(entry)
+                continue
+            # Reply blocks keep content/reasoning/tool_calls inside
+            # ``_reply_records``; flatten them via the model view so the
+            # provider payload reproduces the original call exactly (split
+            # blocks use the raw node's uncleaned content for cache fidelity).
+            effective = _sms._assistant_model_view(msg) if role == "assistant" else msg
+            raw_content = str(effective.get("content") or "")
             # When the message carries ``_api_content`` (the exact text that was
             # sent to the provider), use it for the model context so replayed
             # history prefixes match upstream cache units.
-            api_content = msg.get("_api_content")
+            api_content = effective.get("_api_content")
             if isinstance(api_content, str) and api_content.strip():
                 raw_content = api_content
             # ``_context_suffix`` carries auto-injected content (evidence block,
             # local time, etc.) that was previously stored as a separate _internal
             # user message. Append it to the message content so the model still
             # receives it during history replay.
-            context_suffix = msg.get("_context_suffix")
+            context_suffix = effective.get("_context_suffix")
             if role == "user" and isinstance(context_suffix, str) and context_suffix.strip():
                 if raw_content.strip():
                     raw_content = raw_content + "\n\n" + context_suffix.strip()
                 else:
                     raw_content = context_suffix.strip()
-            if role == "user" and self._is_excluded_user_message_for_model_context(msg):
+            if role == "user" and self._is_excluded_user_message_for_model_context(effective):
                 continue
             if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
                 continue
@@ -367,7 +480,7 @@ class LLMContextManager:
                     worked_payload = None
                 if isinstance(worked_payload, dict):
                     continue
-            content = self._normalize_history_content_for_model(role, raw_content, message=msg)
+            content = self._normalize_history_content_for_model(role, raw_content, message=effective)
             if role == "assistant":
                 before = content
                 content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
@@ -382,13 +495,13 @@ class LLMContextManager:
                 if tname:
                     entry["name"] = tname
             if role == "assistant":
-                tcs = msg.get("tool_calls")
+                tcs = effective.get("tool_calls")
                 if isinstance(tcs, list) and tcs:
                     entry["tool_calls"] = tcs
-                msg_model = str(msg.get("_model") or "").strip()
+                msg_model = str(effective.get("_model") or "").strip()
                 if msg_model:
                     entry["_model"] = msg_model
-                cs = msg.get("_cache_stats")
+                cs = effective.get("_cache_stats")
                 if isinstance(cs, dict) and cs:
                     entry["_cache_stats"] = cs
             from ..services.session_memory_service import _message_effective_token_count
@@ -484,7 +597,8 @@ class LLMContextManager:
         if tc is not None:
             return tc
         role = str(msg.get("role") or "").strip().lower()
-        content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""), message=msg)
+        effective = _sms._assistant_model_view(msg) if role == "assistant" else msg
+        content = self._normalize_history_content_for_model(role, str(effective.get("content") or ""), message=effective)
         return self._estimate_message_tokens(role, content)
 
     def _history_tokens_cumulative(self, messages: List[Dict[str, Any]]) -> int:
@@ -536,7 +650,8 @@ class LLMContextManager:
             if tc is not None:
                 return int(tc)
             role = str(msg.get("role") or "").strip().lower()
-            content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""), message=msg)
+            effective = _sms._assistant_model_view(msg) if role == "assistant" else msg
+            content = self._normalize_history_content_for_model(role, str(effective.get("content") or ""), message=effective)
             return self._estimate_message_tokens(role, content)
 
         total = 0

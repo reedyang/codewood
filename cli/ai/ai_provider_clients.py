@@ -119,11 +119,7 @@ def _sanitize_assistant_text(text: Any) -> str:
 
 
 def _output_tokens_include_reasoning_for_url(url: str) -> bool:
-    """Whether the provider's output-token count is known to include reasoning.
-
-    This remains provider-family behavior, but it is independent from the
-    model-level ``use_clean_content`` setting.
-    """
+    """Whether the provider's output-token count is known to include reasoning."""
     return "api.deepseek.com" in str(url or "").strip().lower()
 
 
@@ -806,8 +802,8 @@ def _extract_stream_snapshot_message(payload: Any) -> Optional[Dict[str, Any]]:
 
     def _text_from_part(value: Any) -> str:
         # Return raw text (hidden reasoning markers included). The stream
-        # finalizer keeps raw content in the recorded message and derives
-        # _clean_content/_thinking from it, matching chat/completions.
+        # finalizer keeps raw content in the recorded message and extracts
+        # _thinking from it, matching chat/completions.
         if isinstance(value, str):
             return value
         if isinstance(value, list):
@@ -1015,6 +1011,12 @@ def _stream_openai_like_response(
             self.thinking_text: str = ""
             self._thinking_from_content: bool = False
             self._sanitizer: Optional[_StreamingSanitizer] = None
+            # Natural-arrival record of the stream, in order, as tuples
+            # (kind, data, source) with kind in
+            # ("reasoning", "content", "thinking", "tool_call") and source in
+            # ("native", "content_split"). tool_call events carry the call
+            # state key until the final message is built.
+            self.reply_events: List[Tuple[str, Any, str]] = []
 
         def __iter__(self):
             raw_buffer = ""
@@ -1025,6 +1027,8 @@ def _stream_openai_like_response(
             seen_payload_keys: List[str] = []
             tool_call_states: Dict[str, Dict[str, Any]] = {}
             tool_call_order: List[str] = []
+            _reply_events: List[Tuple[str, Any, str]] = []
+            _tool_order_len = 0
             sanitizer = _make_stream_sanitizer()
             self._sanitizer = sanitizer
             last_usage: Optional[Dict[str, Any]] = None
@@ -1072,6 +1076,10 @@ def _stream_openai_like_response(
                     states=tool_call_states,
                     order=tool_call_order,
                 )
+                if len(tool_call_order) > _tool_order_len:
+                    for _key in tool_call_order[_tool_order_len:]:
+                        _reply_events.append(("tool_call", _key, "native"))
+                    _tool_order_len = len(tool_call_order)
                 current_snapshot = _extract_stream_snapshot_message(payload)
                 if current_snapshot:
                     snapshot_message = current_snapshot
@@ -1079,12 +1087,14 @@ def _stream_openai_like_response(
                 if reasoning_delta:
                     _accumulated_thinking.append(reasoning_delta)
                     self.thinking_text = "".join(_accumulated_thinking)
+                    _reply_events.append(("reasoning", reasoning_delta, "native"))
                 delta_yielded = False
                 if raw_delta:
                     raw_buffer += raw_delta
                     delta, first_chunk = _emit(raw_delta, first=first_chunk)
                     if delta:
                         yielded_text += delta
+                        _reply_events.append(("content", delta, "native"))
                         yield delta
                         delta_yielded = True
                 # Drain any newly captured thinking from the sanitizer
@@ -1093,6 +1103,7 @@ def _stream_openai_like_response(
                     _accumulated_thinking.append(new_thinking)
                     self._thinking_from_content = True
                     self.thinking_text = "".join(_accumulated_thinking)
+                    _reply_events.append(("thinking", new_thinking, "content_split"))
                 # When reasoning-only chunks arrive (no visible text), yield an
                 # empty heartbeat so the consumer checks thinking_text.
                 if reasoning_delta and not delta_yielded:
@@ -1169,29 +1180,55 @@ def _stream_openai_like_response(
             if isinstance(self.final_message, dict):
                 clean_content = _sanitize_assistant_text(raw_buffer)
                 if clean_content != raw_buffer:
-                    # Record the sanitized form even when it is empty (e.g. the
-                    # raw content was entirely hidden markers like
-                    # "<|channel>thought\n<channel|>"). An explicit empty
-                    # "_clean_content" signals "no visible text", so the renderer
-                    # can rely on it instead of falling back to the raw markers.
-                    self.final_message["_clean_content"] = clean_content
                     # The recorded content carries hidden reasoning blocks. If
                     # the sanitizer never saw them (e.g. the raw buffer came
                     # from a snapshot instead of streamed deltas), extract the
-                    # thinking now so it is not lost.
+                    # thinking now so it is not lost. (The cleaned form itself
+                    # lives in the reply block's content nodes, not here.)
                     if not self.thinking_text:
                         content_thinking = _extract_thinking_from_text(raw_buffer)
                         if content_thinking:
                             self.thinking_text = content_thinking
                             self._thinking_from_content = True
-                elif self.final_message.get("_clean_content"):
-                    # Stale _clean_content that duplicates raw content — remove it.
-                    if self.final_message["_clean_content"] == raw_buffer:
-                        del self.final_message["_clean_content"]
             if isinstance(self.final_message, dict) and self.thinking_text:
                 self.final_message["_thinking"] = self.thinking_text
                 if self._thinking_from_content:
                     self.final_message["_thinking_from_content"] = True
+            # Resolve tool-call events into the final call dicts (by order key)
+            # and attach the natural-arrival record to the message as a
+            # transient field the history writer consumes and drops.
+            if isinstance(self.final_message, dict) and _reply_events:
+                _resolved: List[Tuple[str, Any, str]] = []
+                _tool_by_key: Dict[str, Dict[str, Any]] = {}
+                _built_calls = self.final_message.get("tool_calls")
+                if isinstance(_built_calls, list):
+                    for _idx, _key in enumerate(tool_call_order):
+                        if _idx < len(_built_calls):
+                            _tool_by_key[_key] = _built_calls[_idx]
+                for _kind, _data, _src in _reply_events:
+                    if _kind == "tool_call":
+                        _call = _tool_by_key.get(_data)
+                        if isinstance(_call, dict):
+                            _resolved.append(("tool_call", _call, _src))
+                    else:
+                        _resolved.append((_kind, _data, _src))
+                # Snapshot-only providers may deliver tool calls without delta
+                # events; append any final calls not already represented so the
+                # recorded block never loses them.
+                _seen_ids = {
+                    str(_d.get("id") or "")
+                    for _k, _d, _s in _resolved
+                    if _k == "tool_call" and isinstance(_d, dict)
+                }
+                if isinstance(_built_calls, list):
+                    for _call in _built_calls:
+                        if not isinstance(_call, dict):
+                            continue
+                        _cid = str(_call.get("id") or "")
+                        if _cid and _cid not in _seen_ids:
+                            _resolved.append(("tool_call", _call, "native"))
+                self.final_message["_reply_events"] = _resolved
+                self.reply_events = _resolved
             append_history(raw_buffer, self.final_message)
 
     return _OpenAIStreamResult()
@@ -1279,7 +1316,6 @@ def _extract_message_from_ollama_response_data(data: Any) -> Dict[str, Any]:
 
 def _normalize_openai_message_for_request(
     message: Any,
-    use_clean_content: bool = False,
     include_thinking: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(message, dict):
@@ -1287,8 +1323,6 @@ def _normalize_openai_message_for_request(
     role = str(message.get("role") or "").strip() or "user"
     normalized = dict(message)
     normalized["role"] = role
-    if use_clean_content and normalized.get("_clean_content"):
-        normalized["content"] = normalized["_clean_content"]
     # Map stored _thinking to reasoning_content only when the active provider
     # configuration explicitly enables it. This is provider-level policy now.
     # When the thinking was extracted from content (via the streaming sanitizer)
@@ -1298,7 +1332,7 @@ def _normalize_openai_message_for_request(
     if role == "assistant" and normalized.get("_thinking"):
         if include_thinking:
             from_content = normalized.get("_thinking_from_content", False)
-            if not from_content or use_clean_content:
+            if not from_content:
                 if not normalized.get("reasoning_content"):
                     normalized["reasoning_content"] = normalized.pop("_thinking")
                 else:
@@ -1327,12 +1361,11 @@ def _normalize_openai_message_for_request(
 
 def _normalize_openai_messages_for_request(
     messages: List[Dict[str, Any]],
-    use_clean_content: bool = False,
     include_thinking: bool = False,
 ) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for message in messages:
-        item = _normalize_openai_message_for_request(message, use_clean_content=use_clean_content, include_thinking=include_thinking)
+        item = _normalize_openai_message_for_request(message, include_thinking=include_thinking)
         if item is None:
             continue
         normalized.append(item)
@@ -1534,11 +1567,21 @@ def _build_openai_responses_input_messages(
                 output = str(content or "")
             out.append({"type": "function_call_output", "call_id": call_id, "output": output})
             continue
-        # Assistant turns that invoked tools become ``function_call`` items so the
-        # following ``function_call_output`` results stay correlated by call_id.
+        # Assistant turns that invoked tools become ``message`` (their visible
+        # text) followed by ``function_call`` items, so the following
+        # ``function_call_output`` results directly follow the call they answer.
+        # (Emitting the text AFTER the function_call would interpose a message
+        # between the call and its output, which strict Responses gateways
+        # reject with "No tool output found for tool call <id>".)
         if role == "assistant":
             tool_calls = message.get("tool_calls")
             if isinstance(tool_calls, list) and tool_calls:
+                if isinstance(content, (str, list)):
+                    text = _extract_text_from_response_content(content)
+                else:
+                    text = ""
+                if text:
+                    out.append({"type": "message", "role": "assistant", "content": [{"type": "input_text", "text": text}]})
                 for tc in tool_calls:
                     if not isinstance(tc, dict):
                         continue
@@ -1549,12 +1592,6 @@ def _build_openai_responses_input_messages(
                         "name": str(func.get("name") or ""),
                         "arguments": _normalize_tool_call_arguments(func.get("arguments")),
                     })
-                if isinstance(content, (str, list)):
-                    text = _extract_text_from_response_content(content)
-                else:
-                    text = ""
-                if text:
-                    out.append({"type": "message", "role": "assistant", "content": [{"type": "input_text", "text": text}]})
                 continue
         if image_data is not None and image_user_idx is not None and idx == image_user_idx:
             parts = [
@@ -1962,11 +1999,10 @@ def _call_openai_once(
     _attach_cache_stats(message_for_history, data, url)
     _attach_output_usage(message_for_history, data, url)
     if display_text != raw_text:
-        message_for_history["_clean_content"] = display_text
-        message_for_return["_clean_content"] = display_text
         # The raw content carried hidden reasoning blocks; surface them as
         # _thinking and mark the origin so history replay can decide whether
-        # re-sending would duplicate the text.
+        # re-sending would duplicate the text. (The cleaned form lives in the
+        # reply block's content nodes, not in a _clean_content field.)
         if not message_for_history.get("_thinking"):
             content_thinking = _extract_thinking_from_text(raw_text)
             if content_thinking:
@@ -2239,8 +2275,8 @@ def _extract_message_from_openai_response_data(data: Any) -> Dict[str, Any]:
             if item_type == "message":
                 role = str(item.get("role") or role)
                 # Keep raw text (hidden reasoning markers included): callers
-                # store raw content and derive _clean_content/_thinking, the
-                # same contract as the chat/completions surface.
+                # store raw content and derive _thinking, the same contract as
+                # the chat/completions surface.
                 piece = _extract_text_from_response_content(item.get("content"), sanitize=False)
                 if piece:
                     if content_text:
@@ -2318,16 +2354,12 @@ def _call_with_openai_compatible(
     if not api_key:
         return api_key_error_msg
 
-    use_clean = parse_bool_flag(
-        conf.get("use_clean_content"),
-        default_value=False,
-    )
     include_thinking = parse_bool_flag(
         conf.get("include_thinking_in_messages"),
         default_value=False,
     )
     provider_messages = _normalize_openai_messages_for_request(
-        messages, use_clean_content=use_clean, include_thinking=include_thinking
+        messages, include_thinking=include_thinking
     )
     if image_data is not None and image_user_idx is not None:
         provider_messages = [dict(m) for m in provider_messages]
@@ -2530,15 +2562,6 @@ def _call_with_ollama(
     port = parse_port(params_for_port.get("port"), default_value=DEFAULT_OLLAMA_PORT)
     url = f"http://127.0.0.1:{port}/api/chat"
 
-    # Apply _clean_content substitution only when the selected model enables it.
-    use_clean = parse_bool_flag(params_for_port.get("use_clean_content"), default_value=False)
-    if use_clean and any(isinstance(m, dict) and m.get("_clean_content") for m in provider_messages):
-        if provider_messages is messages:
-            provider_messages = [dict(m) for m in provider_messages]
-        for m in provider_messages:
-            if isinstance(m, dict) and m.get("_clean_content"):
-                m["content"] = m["_clean_content"]
-
     ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
     ollama_tools = _normalize_openai_tool_schemas(tool_schemas, api_kind="chat")
     ollama_tool_choice = _normalize_openai_tool_choice(tool_choice, api_kind="chat")
@@ -2700,9 +2723,6 @@ def _call_with_ollama(
                     }
                     if tool_calls:
                         self.final_message["tool_calls"] = tool_calls
-                    clean_content = _sanitize_assistant_text(raw_buffer)
-                    if clean_content != raw_buffer:
-                        self.final_message["_clean_content"] = clean_content
                     if self.thinking_text:
                         self.final_message["_thinking"] = self.thinking_text
                         if self._thinking_from_content:
@@ -2724,10 +2744,6 @@ def _call_with_ollama(
     message = _extract_message_from_ollama_response_data(response_data)
     ai_response = str(message.get("content", "") or "")
     display_response = _sanitize_assistant_text(ai_response)
-    if display_response != ai_response:
-        message["_clean_content"] = display_response
-    elif message.get("_clean_content") and message["_clean_content"] == ai_response:
-        del message["_clean_content"]
     append_history(ai_response, message)
     if return_message:
         display_message = dict(message)
