@@ -18,7 +18,7 @@ function isUndoable(file: FileChangeRecord): boolean {
 }
 
 export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProps) {
-  const { client, activeChatId } = useApp();
+  const { client, activeChatId, activeWorkspaceId } = useApp();
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   const [undoneFiles, setUndoneFiles] = useState<Set<string>>(
     () => new Set(summary.undoneFiles ?? []),
@@ -52,7 +52,7 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
     if (filesToUndo.length === 0) return;
     setIsProcessing(true);
     try {
-      const result = await client.undoFileChanges(activeChatId, summary.ref!, filesToUndo);
+      const result = await client.undoFileChanges(activeChatId, summary.ref!, filesToUndo, activeWorkspaceId);
       const newUndone = new Set(undoneFiles);
       const failures: Array<{ path: string; error: string }> = [];
       for (const [path, res] of Object.entries(result.results)) {
@@ -69,7 +69,7 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
     } finally {
       setIsProcessing(false);
     }
-  }, [undoableFiles, undoneFiles, client, activeChatId, summary.ref, t]);
+  }, [undoableFiles, undoneFiles, client, activeChatId, activeWorkspaceId, summary.ref, t]);
 
   const handleReapply = useCallback(async () => {
     const filesToReapply = undoableFiles
@@ -78,7 +78,7 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
     if (filesToReapply.length === 0) return;
     setIsProcessing(true);
     try {
-      const result = await client.reapplyFileChanges(activeChatId, summary.ref!, filesToReapply);
+      const result = await client.reapplyFileChanges(activeChatId, summary.ref!, filesToReapply, activeWorkspaceId);
       const newUndone = new Set(undoneFiles);
       const failures: Array<{ path: string; error: string }> = [];
       for (const [path, res] of Object.entries(result.results)) {
@@ -95,7 +95,7 @@ export function FileChangeList({ summary, t, workspaceRoot }: FileChangeListProp
     } finally {
       setIsProcessing(false);
     }
-  }, [undoableFiles, undoneFiles, client, activeChatId, summary.ref, t]);
+  }, [undoableFiles, undoneFiles, client, activeChatId, activeWorkspaceId, summary.ref, t]);
 
   if (!summary || summary.totalFiles === 0) {
     return null;

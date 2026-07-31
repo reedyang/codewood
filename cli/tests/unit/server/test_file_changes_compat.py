@@ -45,6 +45,7 @@ def _app(cfg_dir: Path) -> ServeApp:
     stub = _Stub()
     stub.agent = _FakeAgent(cfg_dir)
     stub._lookup_file_change = getattr(ServeApp, "_lookup_file_change").__get__(stub, _Stub)
+    stub._chat_data_dir_for = getattr(ServeApp, "_chat_data_dir_for").__get__(stub, _Stub)
     return stub  # type: ignore[return-value]
 
 

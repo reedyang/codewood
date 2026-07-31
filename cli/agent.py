@@ -5405,18 +5405,30 @@ class Agent:
         err_stream = self._build_direct_shell_output_stream(sys.stderr, state)
         return out_stream, err_stream
 
-    def _register_interruptible_process(self, process: Any) -> None:
+    def _register_interruptible_process(
+        self, process: Any, chat_key: Optional[str] = None
+    ) -> None:
         if process is None:
             return
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
             return
+        if chat_key is None:
+            try:
+                chat_key = self._current_session_chat_key()
+            except Exception:
+                chat_key = ""
+        chat_key = str(chat_key or "")
         with lock:
             procs = getattr(self, "_interruptible_processes", None)
             if not isinstance(procs, dict):
                 procs = {}
                 self._interruptible_processes = procs
-            procs[id(process)] = process
+            bucket = procs.setdefault(chat_key, {})
+            if not isinstance(bucket, dict):
+                bucket = {}
+                procs[chat_key] = bucket
+            bucket[id(process)] = process
 
     def _unregister_interruptible_process(self, process: Any) -> None:
         if process is None:
@@ -5428,10 +5440,12 @@ class Agent:
         with lock:
             procs = getattr(self, "_interruptible_processes", None)
             if isinstance(procs, dict):
-                try:
-                    procs.pop(id(process), None)
-                except Exception:
-                    pass
+                for bucket in procs.values():
+                    if isinstance(bucket, dict):
+                        try:
+                            bucket.pop(id(process), None)
+                        except Exception:
+                            pass
             marks = getattr(self, "_aborted_process_keys", None)
             if isinstance(marks, set):
                 marks.discard(key)
@@ -5543,22 +5557,38 @@ class Agent:
         if lock is None:
             wanted = bool(getattr(self, "_process_interrupt_requested", False))
             self._process_interrupt_requested = False
-            return wanted
-        with lock:
-            wanted = bool(getattr(self, "_process_interrupt_requested", False))
-            self._process_interrupt_requested = False
-            return wanted
+        else:
+            with lock:
+                wanted = bool(getattr(self, "_process_interrupt_requested", False))
+                self._process_interrupt_requested = False
+        # Per-chat process interrupt (serve mode): only the target chat's loop
+        # thread (bound to its session) consumes this.
+        chat_wanted = self._consume_chat_process_interrupt_requested()
+        return bool(wanted or chat_wanted)
 
-    def _terminate_interruptible_processes(self) -> bool:
+    def _terminate_interruptible_processes(self, chat_key: Optional[str] = None) -> bool:
+        """Terminate running interruptible subprocesses.
+
+        Without ``chat_key`` every tracked subprocess is targeted (the TUI /
+        ESC legacy global path). With ``chat_key`` only the subprocesses that
+        chat registered are targeted, so a serve-mode interrupt scoped to one
+        chat never kills another chat's running subprocess.
+        """
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
             return False
         with lock:
             cur = getattr(self, "_interruptible_processes", {})
-            if isinstance(cur, dict):
-                procs = list(cur.values())
+            if not isinstance(cur, dict):
+                cur = {}
+            if chat_key is not None:
+                bucket = cur.get(str(chat_key or ""), {})
+                procs = list(bucket.values()) if isinstance(bucket, dict) else []
             else:
                 procs = []
+                for bucket in cur.values():
+                    if isinstance(bucket, dict):
+                        procs.extend(bucket.values())
         requested_any = False
         for p in procs:
             is_running = False
@@ -5598,16 +5628,95 @@ class Agent:
             except Exception:
                 pass
 
+    def _request_chat_interrupt(self, chat_id: str, workspace_id: str = "") -> bool:
+        """Interrupt ONE chat (serve-mode stop / ``/chat edit``).
+
+        The request lands on the target chat's :class:`SessionState` and on the
+        process bucket registered under that chat's key, so only that chat's
+        loop thread consumes it and only its own subprocesses are terminated.
+        Interrupting chat B therefore never aborts chat A's running task or
+        kills chat A's subprocess — unlike the agent-global
+        ``_request_task_interrupt`` path (TUI ESC / legacy stop).
+        """
+        try:
+            wsid = str(workspace_id or "").strip()
+            key = (
+                self._session_registry_key_for(chat_id, wsid)
+                if wsid
+                else self._session_registry_key(chat_id)
+            )
+        except Exception:
+            return False
+        try:
+            sess = self._session_for_key(key)
+            sess.task_interrupt_requested = True
+            sess.process_interrupt_requested = True
+        except Exception:
+            pass
+        try:
+            self._terminate_interruptible_processes(key)
+        except Exception:
+            pass
+        return True
+
+    def _chat_task_interrupt_requested(self) -> bool:
+        """Peek (without consuming) the bound session's per-chat interrupt flag.
+
+        Used by nested loops (sub-agents) that must check whether their chat's
+        task was cancelled without stealing the flag from the main loop, which
+        consumes it at the next round boundary.
+        """
+        try:
+            sess = self._session()
+        except Exception:
+            return False
+        if sess is None:
+            return False
+        return bool(getattr(sess, "task_interrupt_requested", False))
+
+    def _consume_chat_task_interrupt_requested(self) -> bool:
+        """Consume the bound session's per-chat task-interrupt flag (if any)."""
+        try:
+            sess = self._session()
+        except Exception:
+            return False
+        if sess is None:
+            return False
+        try:
+            wanted = bool(getattr(sess, "task_interrupt_requested", False))
+            sess.task_interrupt_requested = False
+            return wanted
+        except Exception:
+            return False
+
+    def _consume_chat_process_interrupt_requested(self) -> bool:
+        """Consume the bound session's per-chat process-interrupt flag (if any)."""
+        try:
+            sess = self._session()
+        except Exception:
+            return False
+        if sess is None:
+            return False
+        try:
+            wanted = bool(getattr(sess, "process_interrupt_requested", False))
+            sess.process_interrupt_requested = False
+            return wanted
+        except Exception:
+            return False
+
     def _consume_task_interrupt_requested(self) -> bool:
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
             wanted = bool(getattr(self, "_task_interrupt_requested", False))
             self._task_interrupt_requested = False
-            return wanted
-        with lock:
-            wanted = bool(getattr(self, "_task_interrupt_requested", False))
-            self._task_interrupt_requested = False
-            return wanted
+        else:
+            with lock:
+                wanted = bool(getattr(self, "_task_interrupt_requested", False))
+                self._task_interrupt_requested = False
+        # Per-chat interrupt (serve mode): consume the bound session's flag so a
+        # chat-scoped interrupt (stop / edit) aborts THIS chat's task only.
+        chat_wanted = self._consume_chat_task_interrupt_requested()
+        return bool(wanted or chat_wanted)
 
     def _restore_posix_interrupt_tty_locked(self) -> None:
         """Return the controlling tty to its saved (cooked) state. Lock held."""
@@ -7931,18 +8040,28 @@ class Agent:
                     disk_path.unlink()
                 except Exception:
                     pass
-                # Also clear in-memory cache
+                # Also clear in-memory cache. The store is keyed by the
+                # workspace-qualified composite (``workspace_id::chat_id``); the
+                # bound session key on this (loop) thread is exactly that key.
+                try:
+                    _scope_key = str(self._current_session_chat_key() or "")
+                except Exception:
+                    _scope_key = cid
                 _fc_map = dict(getattr(self, "_file_changes_by_chat", {}) or {})
-                _fc_map.pop(cid, None)
+                _fc_map.pop(_scope_key, None)
                 setattr(self, "_file_changes_by_chat", _fc_map)
                 return
             tmp = disk_path.with_suffix(disk_path.suffix + ".tmp")
             with open(tmp, "w", encoding="utf-8") as _fh:
                 _json.dump(pruned, _fh, ensure_ascii=False)
             tmp.replace(disk_path)
-            # Update in-memory cache
+            # Update in-memory cache (workspace-qualified composite key)
+            try:
+                _scope_key = str(self._current_session_chat_key() or "")
+            except Exception:
+                _scope_key = cid
             _fc_map = dict(getattr(self, "_file_changes_by_chat", {}) or {})
-            _fc_map[cid] = pruned
+            _fc_map[_scope_key] = pruned
             setattr(self, "_file_changes_by_chat", _fc_map)
         except Exception:
             pass

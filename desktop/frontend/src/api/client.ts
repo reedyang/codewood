@@ -63,11 +63,16 @@ export class ApiClient {
     return (await res.json()) as IndexStatus;
   }
 
-  async sendInput(text: string, asPrompt = false, chatId = ""): Promise<void> {
+  async sendInput(
+    text: string,
+    asPrompt = false,
+    chatId = "",
+    workspaceId = "",
+  ): Promise<void> {
     await fetch(`${this.base}/input`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ text, asPrompt, chatId }),
+      body: JSON.stringify({ text, asPrompt, chatId, workspaceId }),
     });
   }
 
@@ -115,14 +120,14 @@ export class ApiClient {
     });
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(chatId = "", workspaceId = ""): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       await fetch(`${this.base}/interrupt`, {
         method: "POST",
         headers: this.headers(),
-        body: "{}",
+        body: JSON.stringify({ chatId, workspaceId }),
         signal: controller.signal,
       });
     } catch {
@@ -132,12 +137,15 @@ export class ApiClient {
     }
   }
 
-  async compactContext(): Promise<{ ok: boolean; text?: string }> {
+  async compactContext(
+    chatId = "",
+    workspaceId = "",
+  ): Promise<{ ok: boolean; text?: string }> {
     try {
       const res = await fetch(`${this.base}/compact`, {
         method: "POST",
         headers: this.headers(),
-        body: "{}",
+        body: JSON.stringify({ chatId, workspaceId }),
       });
       const data = (await res.json()) as { ok: boolean; text?: string };
       return { ok: data.ok === true, text: data.text };
@@ -163,13 +171,24 @@ export class ApiClient {
     }
   }
 
-  /** Load a paginated slice of structured turns for the active chat. */
-  async getChatHistory(before?: number, limit = 12): Promise<ChatHistoryPage> {
+  /** Load a paginated slice of structured turns for a chat. */
+  async getChatHistory(
+    before?: number,
+    limit = 12,
+    chatId = "",
+    workspaceId = "",
+  ): Promise<ChatHistoryPage> {
     const params = new URLSearchParams();
     if (typeof before === "number") {
       params.set("before", String(before));
     }
     params.set("limit", String(limit));
+    if (chatId) {
+      params.set("chatId", chatId);
+    }
+    if (workspaceId) {
+      params.set("workspaceId", workspaceId);
+    }
     const res = await fetch(`${this.base}/chat-history?${params.toString()}`, {
       headers: this.headers(),
     });
@@ -419,11 +438,12 @@ export class ApiClient {
     chatId: string,
     ref: string,
     files: string[],
+    workspaceId = "",
   ): Promise<UndoReapplyResult> {
     const res = await fetch(`${this.base}/undo-file-changes`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ chatId, ref, files }),
+      body: JSON.stringify({ chatId, ref, files, workspaceId }),
     });
     try {
       return (await res.json()) as UndoReapplyResult;
@@ -437,11 +457,12 @@ export class ApiClient {
     chatId: string,
     ref: string,
     files: string[],
+    workspaceId = "",
   ): Promise<UndoReapplyResult> {
     const res = await fetch(`${this.base}/reapply-file-changes`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ chatId, ref, files }),
+      body: JSON.stringify({ chatId, ref, files, workspaceId }),
     });
     try {
       return (await res.json()) as UndoReapplyResult;
@@ -454,12 +475,13 @@ export class ApiClient {
   async previewHtml(
     chatId: string,
     html: string,
+    workspaceId = "",
   ): Promise<{ url: string } | null> {
     try {
       const res = await fetch(`${this.base}/browser-preview-html`, {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify({ chatId, html }),
+        body: JSON.stringify({ chatId, html, workspaceId }),
       });
       if (!res.ok) return null;
       const data = (await res.json()) as { ok?: boolean; path?: string };
@@ -916,11 +938,15 @@ export class ApiClient {
     }
   }
 
-  async setPlanMode(enabled: boolean): Promise<boolean> {
+  async setPlanMode(
+    enabled: boolean,
+    chatId = "",
+    workspaceId = "",
+  ): Promise<boolean> {
     const res = await fetch(`${this.base}/set-plan-mode`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ enabled, chatId, workspaceId }),
     });
     return res.ok;
   }
