@@ -127,7 +127,7 @@ describe("groupLiveRounds", () => {
     }
   });
 
-  it("splits a running tool-only round from earlier settled tool rounds", () => {
+  it("merges consecutive tool-only rounds into one group regardless of settled/running state", () => {
     const rounds = [
       {
         id: 1,
@@ -145,16 +145,12 @@ describe("groupLiveRounds", () => {
 
     const groups = groupLiveRounds(rounds);
 
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(1);
     expect(groups[0]?.kind).toBe("tool");
-    expect(groups[1]?.kind).toBe("tool");
     if (groups[0]?.kind === "tool") {
-      expect(groups[0].rounds).toHaveLength(1);
+      expect(groups[0].rounds).toHaveLength(2);
       expect(groups[0].rounds[0]?.id).toBe(1);
-    }
-    if (groups[1]?.kind === "tool") {
-      expect(groups[1].rounds).toHaveLength(1);
-      expect(groups[1].rounds[0]?.id).toBe(2);
+      expect(groups[0].rounds[1]?.id).toBe(2);
     }
   });
 });

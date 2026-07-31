@@ -381,6 +381,9 @@ const CONSOLE_OPEN_KEY = "codewood.consoleOpen";
 const EMPTY_TURNS: Turn[] = [];
 const CMD_PROMPT_BEGIN = "\uE004";
 const CMD_PROMPT_END = "\uE005";
+const CMD_OUTPUT_BEGIN = "\uE000";
+const CMD_OUTPUT_END = "\uE001";
+const DIFF_BEGIN = "\uE006";
 
 function loadInitialTheme(): Theme {
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -1481,6 +1484,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(handle);
   }, [anyBusy]);
 
+  // Whether a round's step text contains a command-output block that has been
+  // opened (CMD_OUTPUT_BEGIN) but not yet closed (CMD_OUTPUT_END). Used to
+  // detect streaming continuations that belong to the round.
+  const roundHasOpenCmdBlock = useCallback((round: TurnRound | undefined) => {
+    if (!round) {
+      return false;
+    }
+    const text = round.segments
+      .filter((segment) => segment.kind === "step")
+      .map((segment) => segment.text)
+      .join("");
+    return text.lastIndexOf(CMD_OUTPUT_BEGIN) > text.lastIndexOf(CMD_OUTPUT_END);
+  }, []);
+
   // Append a streamed delta to the current round of the active turn. Within a
   // round, consecutive same-kind deltas merge into one segment so model text
   // and tool output each stay contiguous while preserving arrival order.
@@ -1515,9 +1532,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const turn = next[next.length - 1];
         const rounds = [...turn.rounds];
         let round = rounds[rounds.length - 1];
-        // If the last round is closed (timer ended), open a fresh round rather
-        // than appending new visible output to an earlier model pass.
-        if (round && round.waitEndedAt !== null) {
+        // Command output is live-streamed in raw chunks; only the first chunk
+        // carries the CMD_OUTPUT_BEGIN sentinel and the final one the END
+        // sentinel. When the tool round closes (``round_end``) or a new model
+        // round starts while chunks are still draining, a continuation chunk
+        // (no BEGIN sentinel) must keep appending to the most recent round that
+        // holds an open command block — otherwise the block is split across
+        // rounds and the tail renders as orphaned raw text.
+        let openCmdRound: TurnRound | undefined;
+        for (let i = rounds.length - 1; i >= 0; i -= 1) {
+          if (roundHasOpenCmdBlock(rounds[i])) {
+            openCmdRound = rounds[i];
+            break;
+          }
+        }
+        const isCmdContinuation =
+          kind === "step" &&
+          !text.startsWith(CMD_OUTPUT_BEGIN) &&
+          !text.startsWith(CMD_PROMPT_BEGIN) &&
+          !text.startsWith(DIFF_BEGIN) &&
+          Boolean(openCmdRound);
+        if (isCmdContinuation) {
+          // Keep the stream contiguous: append to the round that owns the open
+          // command block without touching its frozen wait timer. Drop any
+          // empty trailing rounds (opened by ``round_start``) that belong to
+          // the still-streaming command; leave non-empty rounds (e.g. an early
+          // model reply) in place.
+          while (rounds.length > 0 && rounds[rounds.length - 1] !== openCmdRound) {
+            const trailing = rounds[rounds.length - 1];
+            if (trailing && trailing.segments.length === 0 && !trailing.thinkingText) {
+              rounds.pop();
+            } else {
+              break;
+            }
+          }
+          round = openCmdRound as TurnRound;
+        } else if (!round) {
           round = {
             id: nextIdRef.current++,
             waitStartedAt: Date.now(),
@@ -1525,7 +1575,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             segments: [],
           };
           rounds.push(round);
-        } else if (!round) {
+        } else if (round.waitEndedAt !== null) {
+          // If the last round is closed (timer ended), open a fresh round
+          // rather than appending new visible output to an earlier model pass.
           round = {
             id: nextIdRef.current++,
             waitStartedAt: Date.now(),
@@ -1574,6 +1626,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         // Freeze the current round's thinking timer on the first visible
         // content so that later model passes can open their own Thinking block.
+        const roundIndex = Math.max(0, rounds.indexOf(round));
         if (round.thinkingText && !round.thinkingEndedAt) {
           round = { ...round, thinkingEndedAt: Date.now() };
         }
@@ -1584,12 +1637,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } else {
           segments.push({ id: nextIdRef.current++, kind, text });
         }
-        rounds[rounds.length - 1] = { ...round, segments };
+        rounds[roundIndex] = { ...round, segments };
         next[next.length - 1] = { ...turn, rounds };
         return { ...prev, [chatId]: next };
       });
     },
-    [],
+    [roundHasOpenCmdBlock],
   );
 
   const repaintLastToolPrompt = useCallback((text: string, chatId: string) => {

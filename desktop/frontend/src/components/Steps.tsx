@@ -492,7 +492,6 @@ export function StepsView({
           // Find the next command-output, diff, or subagent_session block
           // that belongs to this prompt, skipping blank/text segments and
           // stopping at the next prompt if nothing is found.
-          let cmdIdx = -1;
           let cmdPayload = "";
           let diffIndices: number[] = [];
           let subagentSessionId = "";
@@ -507,7 +506,10 @@ export function StepsView({
               continue;
             }
             if (segments[j].kind === "cmd") {
-              cmdIdx = j;
+              // Consume every cmd segment attached to this prompt so
+              // orphaned cmd blocks never render outside the prompt's
+              // expand-collapse boundary.
+              consumed.add(j);
               cmdPayload = trimBlankEdges(segments[j].text);
               continue;
             }
@@ -521,9 +523,6 @@ export function StepsView({
               continue;
             }
             break;
-          }
-          if (cmdIdx >= 0 && cmdPayload) {
-            consumed.add(cmdIdx);
           }
           const diffPayloads = diffIndices
             .map((i) => trimBlankEdges(segments[i].text))
@@ -551,11 +550,7 @@ export function StepsView({
           );
         }
         if (seg.kind === "cmd") {
-          const hasPrecedingPrompt = segments.slice(0, index).some((s) => s.kind === "prompt");
-          if (hasPrecedingPrompt) {
-            return null;
-          }
-          return <CmdOutputBlock key={index} text={value} />;
+          return null;
         }
         if (seg.kind === "subagent_session") {
           // This segment contains the session ID for a sub-agent call.
@@ -765,21 +760,7 @@ function PromptWithAttachment({
   );
 }
 
-function CmdOutputBlock({ text }: { text: string }) {
-  const clean = handleCarriageReturn(text);
-  const tw = getLongestTableBorderWidth(clean);
-  return (
-    <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
-      {tw ? (
-        <div style={{ width: `${tw + 2}ch`, wordBreak: "normal" }}>
-          <AnsiText text={clean} />
-        </div>
-      ) : (
-        <AnsiText text={clean} />
-      )}
-    </div>
-  );
-}
+
 
 interface DiffPayload {
   file?: string;

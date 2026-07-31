@@ -2135,11 +2135,16 @@ class Agent:
                 raw_rounds = msg.get("_tool_rounds_raw")
                 if isinstance(raw_rounds, list) and raw_rounds:
                     try:
-                        rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True, tui_mode=True)
+                        gui_mode = bool(getattr(self, "_gui_no_wrap", False))
+                        rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=not gui_mode, tui_mode=not gui_mode)
                         for r in rendered:
-                            clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
-                            print(clean)
-                            print("")
+                            if gui_mode:
+                                print(r)
+                                print("")
+                            else:
+                                clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
+                                print(clean)
+                                print("")
                     except Exception:
                         pass
             return
@@ -2149,11 +2154,16 @@ class Agent:
             raw_rounds = msg.get("_tool_rounds_raw")
             if isinstance(raw_rounds, list) and raw_rounds:
                 try:
-                    rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True, tui_mode=True)
+                    gui_mode = bool(getattr(self, "_gui_no_wrap", False))
+                    rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=not gui_mode, tui_mode=not gui_mode)
                     for r in rendered:
-                        clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
-                        print(clean)
-                        print("")
+                        if gui_mode:
+                            print(r)
+                            print("")
+                        else:
+                            clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
+                            print(clean)
+                            print("")
                 except Exception:
                     pass
         display_response = format_assistant_display_response(content)
@@ -3782,8 +3792,16 @@ class Agent:
         if live_suffix:
             emit_live = getattr(self, "_gui_tool_output_emit", None)
             if callable(emit_live):
+                # Shell output is live-streamed through stdout in GUI mode;
+                # re-emitting it here would send a second copy of the sentinel-
+                # wrapped CMD_OUTPUT block to the frontend, causing duplicate
+                # rendering (output visible even when collapsed, two copies
+                # when expanded).
+                gui_mode = bool(getattr(self, "_gui_no_wrap", False))
+                skip_live_emit = (t == "shell" and gui_mode)
                 try:
-                    emit_live(live_suffix)
+                    if not skip_live_emit:
+                        emit_live(live_suffix)
                     if isinstance(r, dict):
                         r["_gui_live_suffix_emitted"] = True
                 except Exception:
