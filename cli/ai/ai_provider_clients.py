@@ -1,4 +1,5 @@
 import json
+import queue
 import re
 import threading
 import time
@@ -364,6 +365,128 @@ class ProviderCallContext:
     tool_schemas: Optional[List[Dict[str, Any]]] = None
     tool_choice: Any = None
     display_language: str = "en"
+
+
+class _ThreadedInterruptibleStream:
+    """Iterate a blocking/streaming model call on a background daemon thread.
+
+    The real network work (HTTP connect + reads) runs on a separate thread so
+    the consumer can stop promptly on a user interrupt: it pulls chunks from a
+    queue, re-checking ``should_cancel`` between pulls, and returns immediately
+    when cancelled — it never waits for the network thread to finish. The
+    background thread checks the cancel flag between reads (and every time an
+    HTTP read timeout fires, unblocking it), stops and discards the remaining
+    stream once it is no longer blocked.
+
+    Proxies ``final_message`` / ``last_usage`` / ``thinking_text`` (and any
+    other attribute) to the inner stream result so existing consumers keep
+    working unchanged.
+    """
+
+    _END = object()
+
+    def __init__(
+        self,
+        producer: Callable[[], Any],
+        *,
+        should_cancel: Optional[Callable[[], bool]] = None,
+        bind_thread: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._producer = producer
+        self._should_cancel = should_cancel
+        self._bind_thread = bind_thread
+        self._cancel = threading.Event()
+        self._queue: "queue.Queue[Any]" = queue.Queue(maxsize=64)
+        self._inner: Any = None
+        self._final_value: Any = None
+        self._error: Any = None
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name=f"{get_app_logger_root()}-llm-network",
+        )
+        self._thread.start()
+
+    # ----- background thread ----------------------------------------------
+    def _run(self) -> None:
+        if callable(self._bind_thread):
+            try:
+                self._bind_thread()
+            except Exception:
+                pass
+        try:
+            inner = self._producer()
+            if self._cancel.is_set():
+                return
+            if (
+                inner is not None
+                and hasattr(inner, "__iter__")
+                and not isinstance(inner, (str, bytes, bytearray, dict, list, tuple))
+            ):
+                self._inner = inner
+                for item in inner:
+                    if self._cancel.is_set():
+                        break
+                    self._put(item)
+                    if self._cancel.is_set():
+                        break
+            else:
+                self._final_value = inner
+        except Exception as exc:
+            self._error = exc
+        finally:
+            self._put(self._END)
+
+    def _put(self, item: Any) -> None:
+        while True:
+            if self._cancel.is_set():
+                return
+            try:
+                self._queue.put(item, timeout=0.5)
+                return
+            except queue.Full:
+                continue
+
+    # ----- consumer API ----------------------------------------------------
+    def cancel(self) -> None:
+        """Signal the background network thread to stop and discard its result."""
+        self._cancel.set()
+
+    def close(self) -> None:
+        self.cancel()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> Any:
+        while True:
+            try:
+                item = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                # No data yet — the network thread is still connecting/reading.
+                # Poll the user interrupt here so we can stop promptly instead
+                # of blocking until the stuck network op returns.
+                if callable(self._should_cancel):
+                    try:
+                        if bool(self._should_cancel()):
+                            self.cancel()
+                            raise KeyboardInterrupt
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception:
+                        pass
+                continue
+            if item is self._END:
+                if self._error is not None:
+                    raise self._error
+                raise StopIteration
+            return item
+
+    def __getattr__(self, name: str) -> Any:
+        inner = self.__dict__.get("_inner")
+        if inner is not None and hasattr(inner, name):
+            return getattr(inner, name)
+        raise AttributeError(name)
 
 
 class OpenAIRequestError(RuntimeError):
@@ -1690,7 +1813,17 @@ def _post_openai_request(
 ) -> Any:
     import requests
 
-    resp = requests.post(url, headers=headers, json=payload, verify=False, timeout=120, stream=stream)
+    # ``timeout`` is a (connect, read) tuple. The read timeout bounds each
+    # ``iter_lines()`` read so a network thread parked on a silent server
+    # periodically unblocks and can observe a user interrupt.
+    resp = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        verify=False,
+        timeout=(15, 60),
+        stream=stream,
+    )
     try:
         resp.raise_for_status()
     except requests.HTTPError as e:

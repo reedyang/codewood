@@ -1,4 +1,5 @@
 import sys
+import threading
 import types
 import unittest
 
@@ -7,7 +8,11 @@ if "ollama" not in sys.modules:
     sys.modules["ollama"] = fake_ollama
 
 from cli.agent import Agent
-from cli.ai.ai_provider_clients import AICallContext, AIResult
+from cli.ai.ai_provider_clients import (
+    AICallContext,
+    AIResult,
+    _ThreadedInterruptibleStream,
+)
 
 
 class _FakeOrchestrator:
@@ -37,9 +42,13 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.agent.ai_orchestrator = _FakeOrchestrator()
 
     def test_call_ai_defaults_to_model_streaming_true(self):
+        # Streaming calls are returned as a threaded iterable (the network work
+        # runs on a background thread so interrupt is immediate); draining it
+        # runs the underlying call and records the resolved streaming flag.
         self.agent.params = {"streaming": True}
         out = self.agent.call_ai("hello")
-        self.assertEqual(out, "ok")
+        self.assertTrue(hasattr(out, "__iter__"))
+        list(out)
         self.assertTrue(self.agent.ai_orchestrator.last_call_ctx.stream)
 
     def test_call_ai_defaults_to_model_streaming_false(self):
@@ -49,7 +58,9 @@ class AgentCallAiStreamingTests(unittest.TestCase):
 
     def test_call_ai_explicit_stream_overrides_model_setting(self):
         self.agent.params = {"streaming": False}
-        self.agent.call_ai("hello", stream=True)
+        out = self.agent.call_ai("hello", stream=True)
+        self.assertTrue(hasattr(out, "__iter__"))
+        list(out)
         self.assertTrue(self.agent.ai_orchestrator.last_call_ctx.stream)
 
     def test_standard_tools_mode_is_enabled_for_ollama(self):
@@ -214,6 +225,54 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.assertEqual(ctx.provider, "provA")
         self.assertEqual(ctx.model_name, "model-a")
         self.assertEqual((ctx.openai_conf or {}).get("base_url"), "https://api-a.example.com")
+
+
+class ThreadedInterruptibleStreamTests(unittest.TestCase):
+    def test_yields_items_produced_on_background_thread(self):
+        bridge = _ThreadedInterruptibleStream(lambda: iter(["a", "b", "c"]))
+        self.assertEqual(list(bridge), ["a", "b", "c"])
+
+    def test_proxies_inner_stream_result_attributes(self):
+        class _Inner:
+            final_message = {"role": "assistant", "content": "hello"}
+            thinking_text = "hidden"
+
+            def __iter__(self):
+                return iter(["h", "i"])
+
+        bridge = _ThreadedInterruptibleStream(_Inner)
+        self.assertEqual(list(bridge), ["h", "i"])
+        self.assertEqual(bridge.final_message["content"], "hello")
+        self.assertEqual(bridge.thinking_text, "hidden")
+
+    def test_cancel_returns_immediately_even_while_network_call_is_stuck(self):
+        started = threading.Event()
+        release = threading.Event()
+        cancel_flag = {"value": False}
+
+        def stuck_producer():
+            started.set()
+            # Simulate a network connect/read that never returns.
+            release.wait(10)
+            return iter(["late"])
+
+        bridge = _ThreadedInterruptibleStream(
+            stuck_producer, should_cancel=lambda: cancel_flag["value"]
+        )
+        # The producer is running (blocked) on the background thread.
+        self.assertTrue(started.wait(2))
+
+        # User interrupts while the network call is stuck: __next__ must return
+        # immediately (raise KeyboardInterrupt) WITHOUT waiting for the network
+        # thread to finish.
+        cancel_flag["value"] = True
+        with self.assertRaises(KeyboardInterrupt):
+            next(bridge)
+        release.set()
+
+    def test_should_cancel_consumed_flag_does_not_raise_when_not_cancelled(self):
+        bridge = _ThreadedInterruptibleStream(lambda: iter(["ok"]), should_cancel=lambda: False)
+        self.assertEqual(list(bridge), ["ok"])
 
 
 if __name__ == "__main__":
