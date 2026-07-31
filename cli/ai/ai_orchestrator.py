@@ -97,8 +97,12 @@ class AIOrchestrator:
         self.context = context
 
     def call(self, *, call_ctx: AICallContext) -> AIResult:
-        provider = str(self.context.provider or "")
-        model_name = str(self.context.model_name or "")
+        # Prefer the per-call resolved snapshot when the caller supplied one
+        # (see AICallContext). The shared ``self.context`` is mutated by
+        # concurrent chat activations, so reading it mid-call can pair one
+        # chat's model name with another chat's server config.
+        provider = str(call_ctx.provider or self.context.provider or "")
+        model_name = str(call_ctx.model_name or self.context.model_name or "")
         try:
             if call_ctx.messages_override is not None:
                 messages = list(call_ctx.messages_override)
@@ -236,8 +240,8 @@ class AIOrchestrator:
             provider_ctx = ProviderCallContext(
                 provider=provider,
                 model_name=model_name,
-                model_params=self.context.model_params,
-                openai_conf=self.context.openai_conf,
+                model_params=call_ctx.model_params or self.context.model_params,
+                openai_conf=call_ctx.openai_conf or self.context.openai_conf,
                 messages=messages,
                 stream=call_ctx.stream,
                 return_message=call_ctx.return_message,
