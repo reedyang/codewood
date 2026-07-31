@@ -9,45 +9,26 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 
 def _prefer_wayland_when_available() -> None:
-    """Keep GTK on the native Wayland backend under WSLg/Wayland sessions.
-
-    Earlier builds forced ``GDK_BACKEND=x11`` because frameless dragging and
-    "restore from maximize" relied on ``window.move``, which Wayland forbids.
-    The window controls now drive moves/resizes through the window manager
-    (``begin_move_drag`` / ``begin_resize_drag``), which work natively on
-    Wayland — so the X11 force is no longer needed and is actively harmful:
-    under WSLg, an X11 *frameless* window does NOT fill the workspace when
-    maximized and offsets all clicks by that gap, while Wayland windows do not
-    have this bug (microsoft/wslg#1015, #935). We therefore leave the backend
-    alone (defaulting to Wayland when the session offers it) and only honor an
-    explicit user ``GDK_BACKEND`` override. Must run before ``webview``/GTK is
-    imported, since GDK reads the backend at initialization.
-    """
-    # Intentionally a no-op beyond respecting an explicit override: do not set
-    # GDK_BACKEND so GTK selects Wayland on WSLg/Wayland and X11 elsewhere.
     if sys.platform == "win32" or os.name == "nt":
         return
-    # If the user pinned a backend, that wins; nothing to do either way.
     return
 
 
 _prefer_wayland_when_available()
 
-import webview  # noqa: E402 - must follow the GDK_BACKEND setup above
+import webview  # noqa: E402
 
-try:
-    from backend import BackendError, BackendProcess
-    from bridge import resolve_frontend_url
-    from browser_overlay import BrowserOverlay
-except ImportError:  # pragma: no cover - allow running as a module too
-    from .backend import BackendError, BackendProcess  # type: ignore
-    from .bridge import resolve_frontend_url  # type: ignore
-    from .browser_overlay import BrowserOverlay  # type: ignore
+from backend import BackendError, BackendProcess
+from bridge import resolve_frontend_url
+from browser_overlay import BrowserOverlay
+
 
 WINDOW_TITLE = "Code Wood"
+
 
 MIN_WIDTH = 960
 MIN_HEIGHT = 640
@@ -850,12 +831,7 @@ def main() -> int:
     try:
         port, token = backend.start()
     except BackendError as exc:
-        # No window yet; surface the failure in a minimal error window. Escape
-        # the backend's output so a stray ``<`` in a traceback can't break the
-        # markup, and preserve line breaks so multi-line diagnostics read
-        # cleanly.
         import html
-
         safe = html.escape(str(exc)).replace("\n", "<br>")
         error_html = (
             "<body style=\"font-family:Segoe UI,Arial,sans-serif;"
@@ -868,7 +844,6 @@ def main() -> int:
         webview.create_window(WINDOW_TITLE, html=error_html)
         webview.start()
         return 1
-
     url = resolve_frontend_url(port, token)
     host_api = HostApi()
     host_api.set_backend(port, token)
@@ -883,19 +858,10 @@ def main() -> int:
         js_api=host_api,
     )
 
-    # In-window embedded browser: a tracked, frameless, always-on-top overlay
-    # window positioned over the right panel's browser viewport. Created up
-    # front (hidden) when overlay mode is enabled; the renderer drives its
-    # bounds/visibility and navigation through ``host_api``.
     overlay = BrowserOverlay(webview, window, enabled=_overlay_browser_enabled())
     host_api.attach_overlay(overlay)
 
     def _on_closing() -> None:
-        # Tear the overlay down *before* the main window destroys its own
-        # WebView2 host. The overlay is owned by the main window, so letting
-        # Windows auto-destroy it during the main window's teardown races with
-        # WebView2 cleanup and pops a brief, textless native error dialog.
-        # Destroying it first (and idempotently) avoids that.
         try:
             overlay.destroy()
         except Exception:
@@ -906,14 +872,10 @@ def main() -> int:
             overlay.destroy()
         except Exception:
             pass
-        backend.stop()
 
     window.events.closing += _on_closing
     window.events.closed += _on_closed
 
-    # Keep the overlay glued to the main window as it moves/resizes, and hide
-    # it while minimized so it doesn't float over other apps. ``resync`` reads
-    # the latest reported rect and re-applies geometry/visibility.
     if overlay.enabled:
         def _resync(*_args: object) -> None:
             try:
@@ -936,13 +898,9 @@ def main() -> int:
         except Exception:
             pass
 
-    # Opt-in debugging: ``CODEWOOD_GUI_DEBUG=1`` enables pywebview's web
-    # inspector (right-click → Inspect Element) so frontend errors behind a
-    # blank window can be diagnosed. Off by default to keep production builds
-    # locked down.
-    # NOTE: We set ``OPEN_DEVTOOLS_IN_DEBUG`` to False so DevTools don't
-    # auto-open on startup; they remain accessible via F12 or right-click.
-    debug = str(os.environ.get("CODEWOOD_GUI_DEBUG", "")).strip() not in ("", "0", "false", "False")
+    debug = str(os.environ.get("CODEWOOD_GUI_DEBUG", "")).strip() not in (
+        "", "0", "false", "False"
+    )
     if debug:
         webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
 
@@ -950,13 +908,6 @@ def main() -> int:
         webview.start(gui=_preferred_gui(), debug=debug)
     finally:
         backend.stop()
-    # Guarantee the process terminates. On the GTK/WebKit backend stray helper
-    # threads (WebKit network/web processes, GLib workers) can otherwise keep
-    # the interpreter alive after the window closes, so a plain ``return`` would
-    # hang. ``os._exit`` is safe here: the backend subprocess has already been
-    # stopped above and there is no further Python cleanup to run. Windows'
-    # EdgeChromium backend returns cleanly, so restrict the hard exit to other
-    # platforms to keep Windows behavior unchanged.
     if sys.platform != "win32":
         sys.stdout.flush()
         sys.stderr.flush()
