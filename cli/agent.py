@@ -7617,6 +7617,38 @@ class Agent:
             self.ai_orchestrator.context.openai_conf = mconf
             self.ai_orchestrator.context.work_directory = str(self.work_directory)
             return self.ai_orchestrator.call(call_ctx=call_ctx)
+        # Streaming calls are the long-running, user-facing generation path.
+        # Run the real network work (HTTP connect + reads) on a background
+        # thread so a stuck/slow model API server can never freeze the loop: on
+        # interrupt we set the cancelled state and return immediately, and the
+        # network thread stops/discards once it is no longer blocked.
+        if bool(getattr(call_ctx, "stream", False)):
+            try:
+                from .ai.ai_provider_clients import _ThreadedInterruptibleStream
+
+                session_key = str(self._current_session_chat_key() or "")
+                _wsid, _, _cid = session_key.rpartition("::") if session_key else ("", "", "")
+                _persist_ctx = self._persist_workspace_ctx()
+
+                def _bind_network_thread() -> None:
+                    if _cid:
+                        try:
+                            self._bind_session(_cid, _wsid)
+                        except Exception:
+                            pass
+                    if _persist_ctx is not None:
+                        try:
+                            self._set_persist_workspace_ctx(_persist_ctx)
+                        except Exception:
+                            pass
+
+                return _ThreadedInterruptibleStream(
+                    _do_call,
+                    should_cancel=lambda: bool(self._consume_task_interrupt_requested()),
+                    bind_thread=_bind_network_thread,
+                )
+            except Exception:
+                pass
         if lock is None:
             return _do_call()
         with lock:
