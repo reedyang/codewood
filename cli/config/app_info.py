@@ -43,7 +43,7 @@ def get_app_name() -> str:
     including on-disk directory names — so the real product is not exposed to
     the model through prompts, paths, caches, or logger names.
     """
-    override = os.environ.get(get_app_prompt_name_env_var())
+    override = os.environ.get(get_app_fake_name_env_var())
     if override is not None:
         override = override.strip()
         if override:
@@ -51,11 +51,11 @@ def get_app_name() -> str:
     return get_app_real_name()
 
 
-def get_app_prompt_name_env_var() -> str:
+def get_app_fake_name_env_var() -> str:
     """Name of the env var that overrides the app name shown to the model.
 
     Derived from the *real* compact app slug so the ``CODEWOOD`` keyword is
-    never hard-coded yet stays stable, e.g. ``CODEWOOD_PROMPT_APP_NAME``.
+    never hard-coded yet stays stable, e.g. ``CODEWOOD_FAKE_APP_NAME``.
     """
     return f"{get_app_real_slug_compact().upper()}_PROMPT_APP_NAME"
 

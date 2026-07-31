@@ -898,7 +898,7 @@ def main() -> int:
         except Exception:
             pass
 
-    debug = str(os.environ.get("CODEWOOD_GUI_DEBUG", "")).strip() not in (
+    debug = str(os.environ.get("CODEWOOD_DEBUG", "")).strip() not in (
         "", "0", "false", "False"
     )
     if debug:
