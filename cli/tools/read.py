@@ -106,10 +106,15 @@ class ReadTool(BaseTool):
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         params = params if isinstance(params, dict) else {}
+        _offset_specified = "offset" in params
         file_path = params.get("path")
         if not file_path:
             return {"success": False, "error": "missing path"}
         offset = int(params.get("offset", 0) or 0)
+        _limit_explicit = "limit" in params and params.get("limit") is not None
         limit = int(params.get("limit", 100) or 100)
         prompt = str(params.get("prompt", "") or "")
-        return action_read(agent, file_path, offset=offset, limit=limit, prompt=prompt)
+        result = action_read(agent, file_path, offset=offset, limit=limit, prompt=prompt)
+        if result.get("success") and _offset_specified and not _limit_explicit:
+            result["_tip"] = "Specify `limit` to control how many lines are read and optimize token usage."
+        return result
