@@ -7,7 +7,7 @@ from ..core.logging.app_logging import get_logger
 from .ai_provider_clients import (
     AICallContext,
     ModelCallError,
-    OpenAIRequestError,
+    AIResult,
     ProviderCallContext,
     _extract_api_error_message,
     call_ai_with_provider,
@@ -91,7 +91,7 @@ class AIOrchestrator:
     def __init__(self, context: AgentAIContext) -> None:
         self.context = context
 
-    def call(self, *, call_ctx: AICallContext):
+    def call(self, *, call_ctx: AICallContext) -> AIResult:
         provider = str(self.context.provider or "")
         model_name = str(self.context.model_name or "")
         try:
@@ -110,7 +110,7 @@ class AIOrchestrator:
                     self_repo_root=self.context.self_repo_root,
                 )
                 if special_error:
-                    return special_error
+                    return AIResult(text="", error_code="API_ERROR")
                 if special_messages is not None:
                     messages = special_messages
                     record_history = special_record_history
@@ -122,7 +122,7 @@ class AIOrchestrator:
                     record_history = bool(call_ctx.record_history_override)
 
             if not provider or not model_name:
-                return "❌ Error: model is not configured correctly. Please check the model settings in config.jsonc."
+                return AIResult(text="", error_code="API_ERROR")
 
             internal_mode = any(
                 (
@@ -138,7 +138,7 @@ class AIOrchestrator:
                 internal_mode=internal_mode,
             )
             if image_error:
-                return image_error
+                return AIResult(text="", error_code="API_ERROR")
 
             def _append_history(
                 ai_response: str,
@@ -245,11 +245,18 @@ class AIOrchestrator:
                 tool_choice=call_ctx.tool_choice,
                 display_language=self.context.display_language,
             )
-            return call_ai_with_provider(
+            raw = call_ai_with_provider(
                 context=provider_ctx,
                 append_history=_append_history,
                 ollama_importer=self.context.ollama_importer,
             )
+            if raw is None:
+                return AIResult(text="")
+            if isinstance(raw, dict):
+                return AIResult(text=str(raw.get("content", "")))
+            if isinstance(raw, str):
+                return AIResult(text=raw)
+            return raw
         except ModelCallError as e:
             clean_msg = _extract_clean_api_error(e) or str(e)
             sink = self.context.ephemeral_notice_writer
@@ -258,9 +265,9 @@ class AIOrchestrator:
                     sink(clean_msg)
                 except Exception:
                     pass
-            return _API_ERROR_PREFIX + clean_msg
+            return AIResult(text="", error_code="API_ERROR")
         except Exception as e:
-            return _API_ERROR_PREFIX + str(e)
+            return AIResult(text="", error_code="API_ERROR")
 
 
 _API_ERROR_PREFIX = "❌ API error: "

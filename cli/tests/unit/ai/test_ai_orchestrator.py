@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from cli.ai.ai_provider_clients import AIResult
 from cli.ai.ai_orchestrator import AgentAIContext, AIOrchestrator
 from cli.ai.ai_provider_clients import AICallContext, ModelCallError
 
@@ -41,7 +42,7 @@ class AIOrchestratorTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(result, "compact summary")
+        self.assertEqual(result.text, "compact summary")
         self.assertEqual(history, [])
 
     def test_empty_assistant_response_is_not_written_to_history(self):
@@ -71,7 +72,7 @@ class AIOrchestratorTests(unittest.TestCase):
                 call_ctx=AICallContext(user_input="hello", stream=True)
             )
 
-        self.assertEqual(result, "")
+        self.assertEqual(result.text, "")
         self.assertEqual(history, [("user", "hello")])
 
 
@@ -110,8 +111,8 @@ class AIOrchestratorTests(unittest.TestCase):
         with patch("cli.ai.ai_orchestrator.call_ai_with_provider", _raise_full_trail):
             result = orchestrator.call(call_ctx=AICallContext(user_input="hello", stream=False))
 
-        self.assertIsInstance(result, str)
-        self.assertTrue(result.startswith("❌ API error:"))
+        self.assertIsInstance(result, AIResult)
+        self.assertEqual(result.error_code, "API_ERROR")
         self.assertEqual(history, [], "model-call errors must not be persisted to chat history")
         self.assertEqual(len(notices), 1, "ephemeral notice must be emitted exactly once")
         self.assertIn("Not Found", notices[0])
