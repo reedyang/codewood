@@ -1332,25 +1332,29 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
 
 
 def _strip_channel_thought_markers(text: str) -> str:
-    """Remove ``<|channel>thought`` / ``<channel|>`` reasoning markers,
-    keeping only the visible text after the closing tag. When the content
-    consists entirely of markers the result is an empty string."""
+    """Remove ``<|channel>thought ... <channel|>`` reasoning blocks from
+    anywhere in the text (leading, trailing, or middle), keeping the visible
+    prose. The block may be a leading reasoning dump (visible text follows) or
+    a trailing appendage (visible text precedes it) — both must be stripped
+    while the surrounding prose is kept. When the content consists entirely of
+    markers the result is an empty string."""
     s = str(text or "")
-    # Find the last ``<channel|>`` closing tag: everything before it (including
-    # any ``<|channel>thought`` opener and the reasoning body) is hidden.
-    close_idx = s.rfind("<channel|>")
-    if close_idx >= 0:
-        s = s[close_idx + len("<channel|>"):]
-    # Strip any remaining opener without a matching closer.
-    open_idx = s.find("<|channel>thought")
-    if open_idx >= 0:
-        # Find the next ``<channel|>`` after the opener.
-        next_close = s.find("<channel|>", open_idx + len("<|channel>thought"))
-        if next_close >= 0:
-            s = s[:open_idx] + s[next_close + len("<channel|>"):]
-        else:
-            s = s[:open_idx]
-    return s.strip()
+    out: List[str] = []
+    pos = 0
+    while True:
+        open_idx = s.find("<|channel>thought", pos)
+        if open_idx < 0:
+            out.append(s[pos:])
+            break
+        # Keep any visible text before the opener.
+        out.append(s[pos:open_idx])
+        close_idx = s.find("<channel|>", open_idx + len("<|channel>thought"))
+        if close_idx < 0:
+            # Unclosed opener: drop the opener and everything after it; the
+            # text before it (already appended) is kept.
+            break
+        pos = close_idx + len("<channel|>")
+    return "".join(out).strip()
 
 
 def _format_stream_visible_text(text: str) -> str:

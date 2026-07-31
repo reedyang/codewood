@@ -51,6 +51,35 @@ describe("HistoryRoundDetailView", () => {
     expect(screen.getByText("先给用户一段说明")).toBeTruthy();
   });
 
+  it("renders the visible reply between thought and tool steps when all three are present", () => {
+    // Regression: a round carrying thinking + a visible reply + tool steps must
+    // show the reply after the thought block and before the tool steps (it was
+    // previously dropped entirely when tools were present).
+    render(
+      <HistoryRoundDetailView
+        round={{
+          waitSeconds: 9,
+          thinking: "hidden reasoning",
+          text: "我先为您寻找并读取 `helloworld.py` 的内容。",
+          tools: "\uE004• Read hello.py\uE005",
+        }}
+      />,
+    );
+
+    const answer = screen.getByText((content) =>
+      content.includes("我先为您寻找并读取"),
+    );
+    const thought = screen.getByText("Thought for 9s");
+    const tool = screen.getByText("Read hello.py");
+    expect(answer).toBeTruthy();
+    expect(
+      thought.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      answer.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
   it("does not auto-scroll expanded thinking to the bottom", () => {
     const scrollTopSets: number[] = [];
     const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
