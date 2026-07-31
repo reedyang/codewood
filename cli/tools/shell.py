@@ -200,6 +200,12 @@ _EL_RE = re.compile(r"\x1b\[\d*K")
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
+# How long to wait for the pipe-reader thread to fully drain process output
+# before closing the command-output block. The reader terminates on EOF once
+# the process tree exits, so this normally returns in milliseconds; the cap
+# only bounds the wait when a grandchild keeps an inherited pipe handle open.
+_SHELL_DRAIN_TIMEOUT = 15.0
+
 
 def _should_flush_pending_cha_at_eof(ch: str) -> bool:
     """Whether a buffered single-char ConPTY frame should survive EOF.
@@ -1312,10 +1318,7 @@ def action_shell_command(
                     # Stop direct stream echo immediately after process exit to
                     # prevent delayed raw chunks from appearing in later turns.
                     allow_realtime_echo.clear()
-                    t_out.join(timeout=1.0)
-                    # Give readers a brief extra window to capture residual bytes
-                    # without writing them directly to the terminal.
-                    t_out.join(timeout=0.2)
+                    t_out.join(timeout=_SHELL_DRAIN_TIMEOUT)
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
                     out = _collapse_cr_output(out)
@@ -1643,8 +1646,14 @@ def action_shell_command(
                             agent._suppress_next_prompt_chat_reload_once = True
                         except Exception:
                             pass
-                    t_out.join(timeout=1.0)
-                    t_out.join(timeout=0.2)
+                    # Fully drain the pipe before closing the command-output
+                    # block. A short join timeout can leave the reader mid-drain
+                    # for large outputs, so its residual chunks stream into
+                    # later rounds and render as orphaned raw text in the GUI.
+                    # The reader terminates on EOF once the process tree exits,
+                    # so this normally returns immediately; the cap only guards
+                    # against a stuck inherited pipe handle.
+                    t_out.join(timeout=_SHELL_DRAIN_TIMEOUT)
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
                     out = _collapse_cr_output(out)

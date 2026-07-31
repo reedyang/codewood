@@ -2678,17 +2678,6 @@ export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
       continue;
     }
     if (isLiveToolRound(round)) {
-      const previousToolRound = toolRounds[toolRounds.length - 1];
-      const roundIsRunning = round.waitEndedAt === null;
-      const previousSettled = Boolean(
-        previousToolRound && previousToolRound.waitEndedAt !== null,
-      );
-      // Keep the currently-running tool round separate from earlier settled
-      // tool batches so its spinner / Working state is computed only from the
-      // current round, not polluted by visible output from previous rounds.
-      if (roundIsRunning && previousSettled) {
-        flushTools();
-      }
       toolRounds.push(round);
       continue;
     }

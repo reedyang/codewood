@@ -479,6 +479,112 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("keeps command-output continuation chunks in the round with the open cmd block", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Run command", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\uE004• Ran run_all_tests.py\uE005", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n\uE000Framework: pytest", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      // The model round closes while the command is still streaming.
+      apiMock.emit({
+        event: "round_end",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n[gw15] [ 66%] PASSED test_one", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n[gw15] [100%] PASSED test_two\uE001", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(1);
+      const steps = turns[0].rounds[0].segments.filter((s) => s.kind === "step");
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.text).toBe(
+        "\uE004• Ran run_all_tests.py\uE005\n\uE000Framework: pytest\n[gw15] [ 66%] PASSED test_one\n[gw15] [100%] PASSED test_two\uE001",
+      );
+    });
+  });
+
+  it("folds late cmd-output chunks into the previous open block across a new round_start", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Run command", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\uE004• Ran run_all_tests.py\uE005", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n\uE000Framework: pytest", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_end",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      // A new model round opens while the command output is still draining.
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n[gw15] PASSED\uE001", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(1);
+      const steps = turns[0].rounds[0].segments.filter((s) => s.kind === "step");
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.text).toBe(
+        "\uE004• Ran run_all_tests.py\uE005\n\uE000Framework: pytest\n[gw15] PASSED\uE001",
+      );
+    });
+  });
+
   it("applies a failed tool prompt repaint while the turn is still running", async () => {
     render(
       <AppProvider>
