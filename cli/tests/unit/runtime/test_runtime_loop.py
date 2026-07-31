@@ -48,6 +48,7 @@ from cli.runtime.runtime_loop import (
     _take_pending_stream_history_reload_request,
     _update_latest_assistant_clean_content,
     _warn_loop_ended_with_pending_plan,
+    _strip_channel_thought_markers,
 )
 
 
@@ -2731,6 +2732,51 @@ class ReloadTimePlanChooserTests(unittest.TestCase):
         )
         agent._queued_user_input = "already queued"
         self.assertIsNone(_maybe_offer_plan_execution_choice_on_prompt(agent))
+
+
+class StripChannelThoughtMarkersTests(unittest.TestCase):
+    def test_strips_leading_channel_block_keeps_trailing_visible(self):
+        self.assertEqual(
+            _strip_channel_thought_markers("<|channel>thought\ntest message<channel|>visible"),
+            "visible",
+        )
+
+    def test_strips_trailing_channel_block_keeps_leading_visible(self):
+        # Regression: the reasoning block appended AFTER the visible prose must
+        # not wipe out the prose (the old logic kept only text after the closer).
+        self.assertEqual(
+            _strip_channel_thought_markers(
+                "首先执行第一步：添加“爱丽丝梦游仙境”。\n\n<|channel>thought\n<channel|>"
+            ),
+            "首先执行第一步：添加“爱丽丝梦游仙境”。",
+        )
+
+    def test_strips_channel_block_from_middle(self):
+        self.assertEqual(
+            _strip_channel_thought_markers("a<|channel>thought x<channel|>b"),
+            "ab",
+        )
+
+    def test_keeps_plain_text_without_markers(self):
+        self.assertEqual(_strip_channel_thought_markers("hello world"), "hello world")
+
+    def test_all_markers_yields_empty(self):
+        self.assertEqual(
+            _strip_channel_thought_markers("<|channel>thought\n<channel|>"),
+            "",
+        )
+
+    def test_unclosed_opener_keeps_text_before_it(self):
+        self.assertEqual(
+            _strip_channel_thought_markers("visible text<|channel>thought never closed"),
+            "visible text",
+        )
+
+    def test_multiple_channel_blocks_all_stripped(self):
+        self.assertEqual(
+            _strip_channel_thought_markers("a<|channel>thought 1<channel|>b<|channel>thought 2<channel|>c"),
+            "abc",
+        )
 
 
 if __name__ == "__main__":

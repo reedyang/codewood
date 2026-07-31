@@ -2090,24 +2090,27 @@ export function HistoryRoundDetailView({
   ) : null;
 
   if (hasToolShell) {
-    if (toolCount === 0) {
-      return (
-        <>
-          {thinkingNode}
-          <div className="turn-round">
-            <div className="activity-centered">
-              <StepsView text={toolText} />
-            </div>
+    // A round can carry thinking + a visible reply + tool steps (e.g. the model
+    // explains the next action, then calls the tool). The visible reply must be
+    // rendered after the thinking block and before the tool steps — previously
+    // it was dropped entirely whenever tools were present, so reloading a chat
+    // showed "Thought → tool call" with the answer text missing.
+    const toolBlock = (
+      <div className="turn-round">
+        {toolCount === 0 ? (
+          <div className="activity-centered">
+            <StepsView text={toolText} />
           </div>
-        </>
-      );
-    }
+        ) : (
+          <StepsView text={toolText} />
+        )}
+      </div>
+    );
     return (
       <>
         {thinkingNode}
-        <div className="turn-round">
-          <StepsView text={toolText} />
-        </div>
+        {textNode}
+        {toolBlock}
       </>
     );
   }
