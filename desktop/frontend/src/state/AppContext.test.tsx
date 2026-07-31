@@ -1485,4 +1485,82 @@ describe("AppContext thinking rounds", () => {
       expect(turns).toHaveLength(0);
     });
   });
+
+  it("keeps a background chat's tool description and streaming output in its own bucket when switching back mid-stream", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          { id: "chat-1", name: "Chat 1", active: true, running: false },
+          { id: "chat-2", name: "Chat 2", active: false, running: false },
+        ],
+      }),
+    );
+    render(
+      <AppProvider>
+        <BusySwitchProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Chat-1 starts a turn and a shell tool call; the tool description arrives.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "运行 timeout 10", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: {
+          text: "\uE004• Ran shell timeout 10\uE005",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+    });
+
+    // Switch to chat-2 BEFORE the countdown starts streaming.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "switch to chat 2" }));
+    });
+
+    // The countdown streams while chat-1 is in the background. It must still
+    // accumulate in chat-1's bucket so the tool block stays intact.
+    act(() => {
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n\uE0009\uE001", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n\uE0008\uE001", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // Switch back to chat-1: the full tool block (description + output) is intact.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "switch back to chat 1" }));
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("busy-switch-view").textContent || "{}") as {
+        activeChatId: string;
+        turns: Turn[];
+      };
+      expect(view.activeChatId).toBe("chat-1");
+      expect(view.turns).toHaveLength(1);
+      const stepText = view.turns[0].rounds
+        .flatMap((r) => r.segments)
+        .filter((s) => s.kind === "step")
+        .map((s) => s.text)
+        .join("");
+      expect(stepText).toContain("Ran shell timeout 10");
+      expect(stepText).toContain("9");
+      expect(stepText).toContain("8");
+    });
+  });
 });
