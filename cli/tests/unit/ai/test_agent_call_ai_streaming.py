@@ -7,6 +7,7 @@ if "ollama" not in sys.modules:
     sys.modules["ollama"] = fake_ollama
 
 from cli.agent import Agent
+from cli.ai.ai_provider_clients import AIResult
 
 
 class _FakeOrchestrator:
@@ -22,7 +23,7 @@ class _FakeOrchestrator:
 
     def call(self, *, call_ctx):
         self.last_call_ctx = call_ctx
-        return "ok"
+        return AIResult(text="ok")
 
 
 class AgentCallAiStreamingTests(unittest.TestCase):

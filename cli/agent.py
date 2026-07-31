@@ -1,3 +1,4 @@
+from .ai.ai_provider_clients import AIResult
 import os
 import sys
 import io
@@ -6421,23 +6422,38 @@ class Agent:
         def _fallback_title(text: str) -> str:
             t = re.sub(r"\s+", " ", str(text or "").strip())
             t = t.strip(" \"'`[](){}")
-            if len(t) > 64:
-                t = t[:64]
             if len(t) < 2:
                 return "New Chat"
-            return t
+            if len(t) <= 32:
+                return t
+            # If cutting in the middle of an ASCII word, extend to word end
+            if len(t) > 32:
+                prev = t[31]
+                nxt = t[32]
+                if prev.isascii() and nxt.isascii() and prev.isalpha() and nxt.isalpha():
+                    rest = t[32:]
+                    space = rest.find(' ')
+                    if space == -1:
+                        return t
+                    return t[:32 + space]
+            return t[:32]
 
         try:
-            prompt = (
-                "You are a chat title generator. Output only the title text with no explanation.\n"
-                "Task: Generate a short title from the user's first message using the same language as the message.\n"
-                "Requirements: 4-64 characters; no trailing punctuation; avoid words like 'Chat/session/title/first message'.\n"
-                "If the message is very short, extract a concise intent phrase.\n\n"
-                f"<user_first_message>\n{first_user}\n</user_first_message>"
+            from .ai.ai_provider_clients import AICallContext
+            _call_ctx = AICallContext(
+                user_input=(
+                    "You are a chat title generator. Output only the title text with no explanation.\n"
+                    "Task: Generate a short title from the user's first message using the same language as the message.\n"
+                    "Requirements: 4-64 characters; no trailing punctuation; avoid words like 'Chat/session/title/first message'.\n"
+                    "If the message is very short, extract a concise intent phrase.\n\n"
+                    f"<user_first_message>\n{first_user}\n</user_first_message>"
+                ),
+                session_summary_mode=True,
             )
-            title = self.call_ai(prompt, context="", stream=False, session_summary_mode=True)
-            t = title if isinstance(title, str) else ""
-            t = t.strip().replace("\n", " ")
+            result = self._call_orchestrator(_call_ctx)
+            t = result.text.strip().replace("\n", " ")
+            if result.error_code:
+                t = ""
             t = re.sub(r"\s+", " ", t).strip(" \"'`[](){}")
             if any(bad in t for bad in ("first message", "title", "session", "Chat", "chat")):
                 t = ""
@@ -7363,22 +7379,24 @@ class Agent:
         # Resolve the model from the calling thread's session (per-chat),
         # falling back to the shared globals, so concurrent chat loops each send
         # their own provider/model rather than whichever chat last activated.
+        result = self._call_orchestrator(call_ctx)
+        if isinstance(result, AIResult):
+            return result.text
+        return result
+    def _call_orchestrator(self, call_ctx: AICallContext) -> Any:
         prov, mname, mparams, mconf = self._session_model_for_call()
         lock = getattr(self, "_model_call_lock", None)
+        def _do_call():
+            self.ai_orchestrator.context.provider = prov
+            self.ai_orchestrator.context.model_name = mname
+            self.ai_orchestrator.context.model_params = mparams
+            self.ai_orchestrator.context.openai_conf = mconf
+            self.ai_orchestrator.context.work_directory = str(self.work_directory)
+            return self.ai_orchestrator.call(call_ctx=call_ctx)
         if lock is None:
-            self.ai_orchestrator.context.provider = prov
-            self.ai_orchestrator.context.model_name = mname
-            self.ai_orchestrator.context.model_params = mparams
-            self.ai_orchestrator.context.openai_conf = mconf
-            self.ai_orchestrator.context.work_directory = str(self.work_directory)
-            return self.ai_orchestrator.call(call_ctx=call_ctx)
+            return _do_call()
         with lock:
-            self.ai_orchestrator.context.provider = prov
-            self.ai_orchestrator.context.model_name = mname
-            self.ai_orchestrator.context.model_params = mparams
-            self.ai_orchestrator.context.openai_conf = mconf
-            self.ai_orchestrator.context.work_directory = str(self.work_directory)
-            return self.ai_orchestrator.call(call_ctx=call_ctx)
+            return _do_call()
 
     def _ephemeral_path_key(self, path: Path) -> str:
         try:

@@ -302,6 +302,22 @@ def _extract_thinking_from_text(text: Any) -> str:
     return sanitizer.get_thinking().strip()
 
 
+class AIModelCallError(Exception):
+    def __init__(self, message: str, error_code: str = "API_ERROR"):
+        self.message = message
+        self.error_code = error_code
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class AIResult:
+    text: str = ""
+    error_code: Optional[str] = None
+
+    def is_error(self) -> bool:
+        return self.error_code is not None
+
+
 @dataclass(frozen=True)
 class AICallContext:
     user_input: str
