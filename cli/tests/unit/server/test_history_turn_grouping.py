@@ -106,6 +106,9 @@ class _FakeAgent:
     def _parse_conversation_interrupted_history_content(self, content):
         return None
 
+    def _parse_model_call_error_history_content(self, content):
+        return None
+
     def _parse_direct_shell_result_history_content(self, content):
         return None
 

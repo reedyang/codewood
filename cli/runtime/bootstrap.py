@@ -307,6 +307,7 @@ def setup_model_ai_stack(
             regular_message_builder=agent._build_regular_task_messages,
             ollama_importer=ollama_importer,
             ephemeral_notice_writer=agent.add_ephemeral_screen_notice,
+            model_error_history_writer=agent._record_model_call_error_history,
             workspace_root=str(getattr(agent, "workspace_root", "") or ""),
             self_repo_root=str(getattr(agent, "_self_repo_root", "") or ""),
             display_language=getattr(agent, "display_language", "en") or "en",
