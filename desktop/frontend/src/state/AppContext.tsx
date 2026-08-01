@@ -750,17 +750,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         | undefined;
       return selected?.model;
     })();
-    const shouldFollowSelectedChat =
-      Boolean(activeChatId) &&
-      (
-        selectedWorkspaceId !== (state.workspace.id ?? "") ||
-        activeChatId !== (state.activeChatId ?? "")
-      );
+    // The displayed model always follows the focused chat's recorded model
+    // when one exists. This is the authoritative per-chat truth (the backend's
+    // ``model.current`` is itself derived from the same chat record), and it
+    // keeps the composer consistent even when a state event for a busy/streaming
+    // chat is stale or dropped; only when the chat has no recorded model do we
+    // fall back to the backend's current selector.
     const currentModel =
       optimisticModel?.current ??
-      (shouldFollowSelectedChat && selectedChatModel
-        ? selectedChatModel
-        : state.model.current);
+      (selectedChatModel || state.model.current);
     const currentReasoningEffort =
       optimisticModel?.reasoningEffort !== undefined
         ? optimisticModel.reasoningEffort
@@ -2181,9 +2179,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (next && stateForFocused) {
             if (isStreamingChat) {
               // During streaming, only apply chat list updates (e.g. auto-
-              // generated name) and plan changes (e.g. from update_plan) to
-              // avoid disrupting turn content accumulation with a full state
-              // replacement.
+              // generated name), plan changes (e.g. from update_plan), and the
+              // model + dashboard snapshots (a model switch / focus switch while
+              // the chat streams must still update the composer selector and the
+              // cache/output stats — dropping them leaves the UI showing a stale
+              // model or another chat's numbers). Full state replacement is
+              // avoided to keep from disrupting turn content accumulation.
               setState((prev) => {
                 if (!prev) return prev;
                 const merged: any = { ...prev };
@@ -2195,6 +2196,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 }
                 if (next.plan) {
                   merged.plan = next.plan;
+                }
+                if (next.model) {
+                  merged.model = next.model;
+                }
+                if (next.cacheStats !== undefined) {
+                  merged.cacheStats = next.cacheStats;
+                }
+                if (next.tokenStats !== undefined) {
+                  merged.tokenStats = next.tokenStats;
+                }
+                if (next.contextUsage !== undefined) {
+                  merged.contextUsage = next.contextUsage;
                 }
                 return merged;
               });

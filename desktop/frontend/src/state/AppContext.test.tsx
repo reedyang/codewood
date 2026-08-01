@@ -346,6 +346,20 @@ function HealthSendProbe() {
   );
 }
 
+function StreamingStateMergeProbe() {
+  const { state } = useApp();
+  return (
+    <pre data-testid="stream-state">
+      {JSON.stringify({
+        model: state?.model?.current,
+        reasoningEffort: state?.model?.reasoningEffort,
+        cacheStats: state?.cacheStats,
+        tokenStats: state?.tokenStats,
+      })}
+    </pre>
+  );
+}
+
 describe("AppContext thinking rounds", () => {
   beforeEach(() => {
     apiMock.reset();
@@ -2043,6 +2057,88 @@ describe("AppContext thinking rounds", () => {
         boolean
       >;
       expect(view["ws-1\u0000chat-1"]).toBeUndefined();
+    });
+  });
+
+  it("applies model + dashboard stats from a state event while the chat is streaming", async () => {
+    render(
+      <AppProvider>
+        <StreamingStateMergeProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Chat-1 starts streaming a turn.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Working", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // A state event for the streaming chat (e.g. a model switch or a select_chat
+    // focus echo) must still update the composer selector + dashboard stats even
+    // though only chats/plan are fully merged to protect segment accumulation.
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{
+              index: 0,
+              id: "chat-1",
+              name: "Chat 1",
+              messageCount: 0,
+              active: true,
+              running: true,
+              archived: false,
+              planMode: false,
+              model: "provider/model-b",
+            }],
+            activeChatId: "chat-1",
+            model: {
+              current: "provider/model-b",
+              available: ["provider/model", "provider/model-b"],
+              ready: true,
+              reasoningEffort: "high",
+              reasoningEfforts: ["low", "high"],
+            },
+            cacheStats: {
+              totalTokens: 120,
+              hitTokens: 80,
+              missTokens: 40,
+              hitRate: 66.7,
+              model: "model-b",
+              supported: true,
+              hasBreakdown: true,
+            },
+            tokenStats: {
+              outputTokens: 500,
+              reasoningTokens: 100,
+              hasOutputTokens: true,
+              hasReasoningTokens: true,
+              includesReasoning: false,
+            },
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("stream-state").textContent || "{}") as {
+        model: string;
+        reasoningEffort: string;
+        cacheStats: AppState["cacheStats"];
+        tokenStats: AppState["tokenStats"];
+      };
+      expect(view.model).toBe("provider/model-b");
+      expect(view.reasoningEffort).toBe("high");
+      expect(view.cacheStats?.totalTokens).toBe(120);
+      expect(view.cacheStats?.supported).toBe(true);
+      expect(view.tokenStats?.outputTokens).toBe(500);
     });
   });
 });

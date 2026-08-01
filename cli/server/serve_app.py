@@ -1041,18 +1041,59 @@ def _safe_active_plan(agent: Any) -> Dict[str, Any]:
     return {"plan": steps, "explanation": explanation}
 
 
+def _stats_source_for_active_chat(agent: Any) -> tuple:
+    """Return ``(agent_key, hist)`` for the GUI's FOCUSED (active) chat.
+
+    The dashboard must describe the chat the user is currently viewing, not the
+    agent's ambient session. After a focus switch onto a chat whose agent loop
+    is still running (busy), ``select_chat`` only moves the focus pointer — it
+    does NOT rebind the calling thread's session, so ``agent.conversation_history``
+    (and the shared ``provider``/``model_name`` globals) still belong to the
+    previously activated chat. Aggregating from those would surface another
+    chat's model + numbers on the focused chat's dashboard.
+
+    The authoritative per-chat model and history live on the active chat's
+    persisted record. The in-memory ``conversation_history`` is preferred only
+    when the calling thread is bound to that exact chat (e.g. the focused chat's
+    own loop emitting a ``round_end``), so live in-progress round stats are kept.
+    """
+    try:
+        cid = _primary_active_chat_id(agent)
+        if not cid:
+            return "", []
+        chat = agent._find_chat_by_id(cid)
+        if not isinstance(chat, dict):
+            return "", []
+        provider = str(chat.get("model_provider") or "").strip()
+        model_name = str(chat.get("model_name") or "").strip()
+        agent_key = f"{provider}/{model_name}" if provider and model_name else ""
+        hist = list(chat.get("messages") or [])
+        try:
+            sess_key = str(agent._current_session_chat_key() or "")
+            active_key = str(agent._session_registry_key(cid) or "")
+            if sess_key and sess_key == active_key:
+                live = list(getattr(agent, "conversation_history", None) or [])
+                if live:
+                    hist = live
+        except Exception:
+            pass
+        return agent_key, hist
+    except Exception:
+        return "", []
+
+
 def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
     """Aggregate cache-hit statistics for the active chat's current model.
 
-    Scans conversation_history for messages sent with the same model name,
-    summing recorded prompt_cache_hit_tokens and prompt_cache_miss_tokens.
-    When the API only provides root-level input_tokens (no cache breakdown),
-    those are accumulated as totalTokens with hasBreakdown=False.
-    Falls back to the persisted chat record when conversation_history is empty.
+    Scans the focused chat's messages (from its persisted record, or its live
+    session when the calling thread is bound to it) for messages sent with the
+    chat's recorded model, summing recorded prompt_cache_hit_tokens and
+    prompt_cache_miss_tokens. When the API only provides root-level
+    input_tokens (no cache breakdown), those are accumulated as totalTokens
+    with hasBreakdown=False.
     """
-    provider = str(getattr(agent, "provider", "") or "").strip()
-    model_name = str(getattr(agent, "model_name", "") or "").strip()
-    agent_key = f"{provider}/{model_name}" if provider and model_name else ""
+    agent_key, hist = _stats_source_for_active_chat(agent)
+    model_name = agent_key.rsplit("/", 1)[-1] if "/" in agent_key else agent_key
     result: Dict[str, Any] = {
         "totalTokens": 0,
         "hitTokens": 0,
@@ -1062,14 +1103,8 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
         "supported": False,
         "hasBreakdown": True,
     }
-    if not model_name:
+    if not agent_key:
         return result
-    hist = list(getattr(agent, "conversation_history", None) or [])
-    if not hist:
-        cid = _primary_active_chat_id(agent)
-        chat = agent._find_chat_by_id(cid) if cid else None
-        if isinstance(chat, dict):
-            hist = list(chat.get("messages") or [])
 
     total_hit = 0
     total_miss = 0
@@ -1100,15 +1135,13 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
 def _compute_chat_token_stats(agent: Any) -> Dict[str, Any]:
     """Aggregate output/reasoning token stats for the active chat's current model.
 
-    Scans messages for ``_output_tokens`` and ``_reasoning_tokens`` fields,
-    summing them per model. When ``_token_count_includes_reasoning`` is True
-    (e.g. DeepSeek), the effective output tokens = ``_output_tokens`` -
-    ``_reasoning_tokens``. Falls back to the persisted chat record when
-    conversation_history is empty.
+    Scans the focused chat's messages (from its persisted record, or its live
+    session when the calling thread is bound to it) for ``_output_tokens`` and
+    ``_reasoning_tokens`` fields, summing them per model. When
+    ``_token_count_includes_reasoning`` is True (e.g. DeepSeek), the effective
+    output tokens = ``_output_tokens`` - ``_reasoning_tokens``.
     """
-    provider = str(getattr(agent, "provider", "") or "").strip()
-    model_name = str(getattr(agent, "model_name", "") or "").strip()
-    agent_key = f"{provider}/{model_name}" if provider and model_name else ""
+    agent_key, hist = _stats_source_for_active_chat(agent)
     result: Dict[str, Any] = {
         "outputTokens": 0,
         "reasoningTokens": 0,
@@ -1116,17 +1149,8 @@ def _compute_chat_token_stats(agent: Any) -> Dict[str, Any]:
         "hasReasoningTokens": False,
         "includesReasoning": False,
     }
-    if not model_name:
+    if not agent_key:
         return result
-    hist = list(getattr(agent, "conversation_history", None) or [])
-    if not hist:
-        cid = _primary_active_chat_id(agent)
-        try:
-            chat = agent._find_chat_by_id(cid) if cid else None
-            if isinstance(chat, dict):
-                hist = list(chat.get("messages") or [])
-        except Exception:
-            pass
 
     total_output = 0
     total_reasoning = 0
