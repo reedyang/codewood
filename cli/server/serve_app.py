@@ -148,6 +148,121 @@ def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
     return out
 
 
+# ---- File-change payload sizing ----------------------------------------
+# A chat's ``file_changes.json`` sidecar can reach tens of MB (every diff row
+# of every apply_patch ever made). Bundling the full merged content into the
+# GUI ``state`` snapshot was the dominant cost of opening *any* chat in a
+# workspace with many chats: every ``_build_state`` re-merged every chat's
+# sidecar and shipped a state event many MB large, which the frontend had to
+# JSON-parse and re-render on every open. The GUI only ever renders these
+# diffs lazily per turn, so we keep the sidecar intact on disk (undo/reapply
+# still read the full store) but cap what gets serialized to the frontend.
+_FC_MAX_FILES = 300
+_FC_MAX_PATCH_ROWS_PER_FILE = 400
+_FC_TRUNCATED_KEY = "truncated"
+
+
+def _truncate_file_changes(payload: Any) -> Any:
+    """Cap the diff rows/files in a (merged) file-change summary.
+
+    Accepts a single summary dict or a list of summaries (the shape the
+    ``state``/history endpoints use). Totals (``totalFiles``/``totalAdded``/
+    ``totalDeleted`` and per-file line counts) are computed over the FULL
+    change set and kept accurate; only the ``patch`` row arrays (used for the
+    on-demand diff viewer) and the ``files`` list are trimmed, and a
+    ``truncated`` flag is set so clients know a summary was capped.
+    """
+    summaries = payload if isinstance(payload, list) else [payload]
+    truncated = False
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        files = summary.get("files")
+        if not isinstance(files, list):
+            continue
+        if len(files) > _FC_MAX_FILES:
+            truncated = True
+            summary["files"] = files[:_FC_MAX_FILES]
+        for f in summary["files"]:
+            if not isinstance(f, dict):
+                continue
+            patch = f.get("patch")
+            if isinstance(patch, list) and len(patch) > _FC_MAX_PATCH_ROWS_PER_FILE:
+                truncated = True
+                f["patch"] = patch[:_FC_MAX_PATCH_ROWS_PER_FILE]
+    if truncated:
+        for summary in summaries:
+            if isinstance(summary, dict):
+                summary[_FC_TRUNCATED_KEY] = True
+    return payload
+
+
+def _load_file_changes_store(agent: Any, scope_key: str, data_dir: Any) -> Dict[str, Any]:
+    """Load a chat's ``file_changes.json`` sidecar into a ref-keyed store dict.
+
+    Handles the new (dict keyed by hashcode ref) and legacy (list or single
+    summary) on-disk formats. Returns ``{}`` when the sidecar is missing or
+    unreadable so callers can cache the "nothing" result and avoid re-reading.
+    """
+    store: Dict[str, Any] = {}
+    if data_dir is None:
+        return store
+    path = Path(str(data_dir)) / "file_changes.json"
+    if not path.exists() or not path.is_file():
+        return store
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except Exception:
+        return store
+    if isinstance(raw, dict):
+        first_val = next(iter(raw.values()), None)
+        if isinstance(first_val, dict) and "ref" in first_val:
+            store = raw
+        elif raw.get("totalFiles", 0) > 0:
+            store["_legacy"] = raw
+    elif isinstance(raw, list):
+        store["_legacy"] = raw
+    if store and agent is not None:
+        try:
+            fc_map = dict(getattr(agent, "_file_changes_by_chat", {}) or {})
+            fc_map[scope_key] = store
+            setattr(agent, "_file_changes_by_chat", fc_map)
+        except Exception:
+            pass
+    return store
+
+
+def _ensure_scope_file_changes_loaded(agent: Any, scope_key: str) -> None:
+    """Best-effort disk fallback for the structured-turn builder.
+
+    ``scope_key`` is the workspace-qualified composite (``ws::chat`` or bare
+    ``chat``) that keys the in-memory sidecar store. If it is not cached yet,
+    resolve the chat's side-data dir and load its ``file_changes.json`` so
+    ``[FILE_CHANGE_REF]`` markers resolve even on paths that skipped the
+    explicit ``_ensure_chat_file_changes_loaded`` warm-up.
+    """
+    if not scope_key:
+        return
+    try:
+        fc_map = dict(getattr(agent, "_file_changes_by_chat", {}) or {})
+        if scope_key in fc_map:
+            return
+    except Exception:
+        return
+    try:
+        mgr = getattr(agent, "_chat_state_manager", None)
+        if mgr is None:
+            return
+        cid = scope_key.split("::", 1)[1] if "::" in scope_key else scope_key
+        data_dir = mgr.chat_data_dir_for_chat(cid)
+    except Exception:
+        return
+    if data_dir is None:
+        return
+    _load_file_changes_store(agent, scope_key, data_dir)
+
+
 def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     """Group the active chat's history into GUI turns of ordered model rounds.
 
@@ -332,7 +447,6 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             if content.startswith("[FILE_CHANGE_REF:"):
                 _ref = content[len("[FILE_CHANGE_REF:"):].rstrip("]")
                 if _ref:
-                    _fc_store = getattr(agent, "_file_changes_by_chat", {}) or {}
                     # The bound session key is already the workspace-qualified
                     # composite (``workspace_id::chat_id``) that the sidecar store
                     # is keyed by, so a same-id chat in another workspace can't
@@ -341,12 +455,16 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                         _scope_key = str(agent._current_session_chat_key() or "")
                     except Exception:
                         _scope_key = str(getattr(agent, "active_chat_id", "") or "")
+                    _ensure_scope_file_changes_loaded(agent, _scope_key)
+                    _fc_store = getattr(agent, "_file_changes_by_chat", {}) or {}
+                    if not isinstance(_fc_store, dict):
+                        _fc_store = {}
                     _chat_store = _fc_store.get(_scope_key, {})
                     if isinstance(_chat_store, dict):
                         _fc = _chat_store.get(_ref)
                         if isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
                             if current:
-                                current["fileChanges"] = _fc
+                                current["fileChanges"] = _truncate_file_changes(dict(_fc))
             continue
         if role == "assistant":
             # A recorded request_user_input selection: render it as a left-side
@@ -682,7 +800,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                         for i, turn in enumerate(turns):
                             _fc = _disk[i] if i < len(_disk) else None
                             if isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
-                                turn["fileChanges"] = _fc
+                                turn["fileChanges"] = _truncate_file_changes(dict(_fc))
                     elif isinstance(_disk, dict):
                         _fc_store = _disk
             if isinstance(_fc_store, dict):
@@ -695,7 +813,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                             None
                         )
                         if _fc and isinstance(_fc, dict) and _fc.get("totalFiles", 0) > 0:
-                            turn["fileChanges"] = _fc
+                            turn["fileChanges"] = _truncate_file_changes(dict(_fc))
     except Exception:
         pass
     return turns
@@ -1308,123 +1426,12 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
                     "_recordFile": str(c.get("_record_file") or ""),
                 }
             )
-        # Attach per-chat file-change summaries (now a dict keyed by hashcode
-        # ref).  Prefer the in-memory cache (set by _gui_file_changes hook);
-        # fall back to disk sidecar so persisted data survives restarts.
-        _fc_map: Dict[str, Any] = getattr(agent, "_file_changes_by_chat", {}) or {}
-        _fc_mgr = getattr(agent, "_chat_state_manager", None)
-        def _merge_by_file(summaries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            """Merge multiple summaries, combining patches per file path."""
-            _by_file: Dict[str, Dict[str, Any]] = {}
-            _file_order: List[str] = []
-            for _s in summaries:
-                if not isinstance(_s, dict):
-                    continue
-                for _f in (_s.get("files") or []):
-                    _fp = str(_f.get("filePath") or "")
-                    _patch = _f.get("patch")
-                    _ct = _f.get("changeType", "modify")
-                    if _fp not in _by_file:
-                        _by_file[_fp] = {
-                            "filePath": _fp,
-                            "changeType": _ct,
-                            "addedLines": 0,
-                            "deletedLines": 0,
-                            "patch": [],
-                        }
-                        _file_order.append(_fp)
-                    _m = _by_file[_fp]
-                    if _ct == "delete":
-                        _m["addedLines"] += _f.get("addedLines", 0)
-                        _m["deletedLines"] += _f.get("deletedLines", 0)
-                    elif isinstance(_patch, list):
-                        _m["patch"].extend(_patch)
-                        for _r in _patch:
-                            if not isinstance(_r, dict):
-                                continue
-                            _t = _r.get("type")
-                            if _t == "add":
-                                _m["addedLines"] += 1
-                            elif _t == "del":
-                                _m["deletedLines"] += 1
-                            elif _t == "change":
-                                _m["addedLines"] += 1
-                                _m["deletedLines"] += 1
-                    _m["changeType"] = _ct if _ct == "delete" else _m["changeType"]
-                    _bp = _f.get("backupPath")
-                    if _bp:
-                        _m["backupPath"] = _bp
-            _files = [_by_file[_fp] for _fp in _file_order]
-            _undone = set()
-            _ref = None
-            for _s in summaries:
-                if isinstance(_s, dict):
-                    _r = _s.get("ref")
-                    if _r:
-                        _ref = _r
-                    for _uf in (_s.get("undoneFiles") or []):
-                        _undone.add(str(_uf))
-            _merged: Dict[str, Any] = {
-                "totalFiles": len(_files),
-                "totalAdded": sum(_f["addedLines"] for _f in _files),
-                "totalDeleted": sum(_f["deletedLines"] for _f in _files),
-                "files": _files,
-            }
-            if _undone:
-                _merged["undoneFiles"] = list(_undone)
-            if _ref:
-                _merged["ref"] = _ref
-            return [_merged]
-        for _ch in chats:
-            _ch_id = str(_ch.get("id") or "")
-            if not _ch_id:
-                continue
-            # The in-memory sidecar store is keyed by the workspace-qualified
-            # composite so a same-id chat in another workspace can't pull the
-            # wrong record.
-            _fc_key = ServeApp._file_changes_scope_key(_ch_id, _ws_id)
-            if _fc_key in _fc_map:
-                # Convert the dict (keyed by hashcode ref) to an array of
-                # summaries, then merge by file path so every file shows
-                # cumulative changes across all turns.
-                _raw_list = list(_fc_map[_fc_key].values())
-                _ch["fileChanges"] = _merge_by_file(_raw_list)
-            elif _fc_mgr is not None:
-                try:
-                    _rec = str(_ch.get("_recordFile") or "")
-                    _data_dir = _fc_mgr.chat_data_dir(_rec) if _rec else None
-                    _disk_path = (_data_dir / "file_changes.json") if _data_dir else None
-                    if _disk_path is not None and _disk_path.exists():
-                        import json as _json
-                        with open(_disk_path, "r", encoding="utf-8") as _fh:
-                            _disk_fc = _json.load(_fh)
-                        # New format: dict keyed by hashcode ref
-                        # Old format: list of summaries or single dict
-                        _fc_store: dict = {}
-                        if isinstance(_disk_fc, dict):
-                            _first_val = next(iter(_disk_fc.values()), None)
-                            if isinstance(_first_val, dict) and "ref" in _first_val:
-                                _fc_store = _disk_fc
-                            elif _disk_fc.get("totalFiles", 0) > 0:
-                                _fc_store["_legacy"] = _disk_fc
-                        elif isinstance(_disk_fc, list):
-                            _fc_store["_legacy"] = _disk_fc
-                        if _fc_store:
-                            # Convert to array, merge by file path
-                            if "_legacy" in _fc_store:
-                                _legacy = _fc_store["_legacy"]
-                                if isinstance(_legacy, list):
-                                    _raw_list = _legacy
-                                else:
-                                    _raw_list = [_legacy]
-                            else:
-                                _raw_list = list(_fc_store.values())
-                            _ch["fileChanges"] = _merge_by_file(_raw_list)
-                            _fc_map[_fc_key] = _fc_store
-                except Exception:
-                    pass
-        if _fc_map:
-            setattr(agent, "_file_changes_by_chat", _fc_map)
+        # Per-chat file-change summaries are intentionally NOT bundled into the
+        # ``state`` snapshot anymore: with many chats their merged diff rows made
+        # every state event tens of MB, and the GUI only renders diffs lazily per
+        # turn. The sidecars are instead loaded per chat on demand (see
+        # ``ServeApp._ensure_chat_file_changes_loaded`` / ``chat_history``) and
+        # capped when serialized (see ``_truncate_file_changes``).
     except Exception:
         pass
 
@@ -2399,6 +2406,9 @@ class ServeApp:
                                     target["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                     if str(target.get("id") or "") == agent.active_chat_id:
                                         agent.active_chat_name = new_name
+                                    _mark_dirty = getattr(agent, "_mark_chat_dirty", None)
+                                    if callable(_mark_dirty):
+                                        _mark_dirty(str(target.get("id") or ""))
                                     agent._save_chat_state()
                         except Exception:
                             pass
@@ -2548,6 +2558,9 @@ class ServeApp:
                     return False
                 agent._apply_chat_model_from_entry(target, persist_if_missing=True)
                 agent._switch_model_by_selector(selector)
+                _mark_dirty = getattr(agent, "_mark_chat_dirty", None)
+                if callable(_mark_dirty):
+                    _mark_dirty(cid)
                 try:
                     agent._save_chat_state()
                 except Exception:
@@ -2599,6 +2612,9 @@ class ServeApp:
                     return False
                 agent._apply_chat_model_from_entry(target, persist_if_missing=True)
                 agent._set_reasoning_effort(str(reasoning or "").strip())
+                _mark_dirty = getattr(agent, "_mark_chat_dirty", None)
+                if callable(_mark_dirty):
+                    _mark_dirty(cid)
                 try:
                     agent._save_chat_state()
                 except Exception:
@@ -2863,6 +2879,14 @@ class ServeApp:
                             print_history=False,
                             persist=False,
                         )
+                except Exception:
+                    pass
+            # Lazily load this chat's file_changes.json sidecar so the
+            # [FILE_CHANGE_REF] markers in the history resolve to real diff
+            # summaries — done per chat, only for the chat being opened.
+            if focus_chat:
+                try:
+                    self._ensure_chat_file_changes_loaded(focus_chat, wsid)
                 except Exception:
                     pass
             with self._session_scope_for_chat(focus_chat, wsid):
@@ -3422,6 +3446,33 @@ class ServeApp:
             return None
         stem = record_file[:-len(".json")] if record_file.endswith(".json") else record_file
         return Path(cfg) / "chats" / "data" / stem
+
+    def _ensure_chat_file_changes_loaded(self, chat_id: str, workspace_id: str = "") -> None:
+        """Lazily load one chat's ``file_changes.json`` sidecar into memory.
+
+        The ``state`` snapshot no longer bundles every chat's file changes, so
+        the per-turn ``[FILE_CHANGE_REF]`` resolution in ``_build_structured_turns``
+        must pull a chat's sidecar on demand when that chat is opened. The loaded
+        store is cached in ``agent._file_changes_by_chat`` so repeat ``/chat-history``
+        calls and undo/reapply reads hit memory instead of re-parsing the file.
+        """
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return
+        scope_key = ServeApp._file_changes_scope_key(cid, workspace_id)
+        try:
+            fc_map = dict(getattr(self.agent, "_file_changes_by_chat", {}) or {})
+            if scope_key in fc_map:
+                return
+        except Exception:
+            return
+        try:
+            data_dir = self._chat_data_dir_for(cid, workspace_id)
+        except Exception:
+            data_dir = None
+        if data_dir is None:
+            return
+        _load_file_changes_store(self.agent, scope_key, data_dir)
 
     def save_pasted_image(
         self, chat_id: str, data_url: str, workspace_id: str = ""
@@ -6735,7 +6786,10 @@ class ServeApp:
             except Exception:
                 pass
             _fc_logger.debug(f"[file_changes] broadcasting: ref={_hash} files={summary.get('totalFiles')}")
-            self.broadcaster.publish("file_changes", self._route(**summary))
+            self.broadcaster.publish(
+                "file_changes",
+                self._route(**_truncate_file_changes(dict(summary))),
+            )
         self.agent._gui_file_changes = _on_file_changes  # type: ignore[attr-defined]
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps

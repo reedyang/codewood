@@ -350,8 +350,6 @@ interface AppContextValue {
   exitSubAgentSession: () => void;
   /** Sub-agent session ID pending auto-expand when returning to the main chat ("" = none). */
   pendingExpandSubAgentId: string;
-  /** File changes by chat key for displaying file modification summaries (array of per-turn summaries). */
-  fileChangesByChat: Record<string, FileChangeSummary[]>;
 }
 
 interface OptimisticModelState {
@@ -577,10 +575,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const subAgentCacheRef = useRef<Record<string, SubAgentSession>>({});
   const subAgentThinkingStartRef = useRef<Record<string, number>>({});
   const [pendingExpandSubAgentId, setPendingExpandSubAgentId] = useState<string>("");
-  
-  // File changes state for displaying file modification summaries (array per chat)
-  const [fileChangesByChat, setFileChangesByChat] = useState<Record<string, FileChangeSummary[]>>({});
-  const fileChangesByChatRef = useRef<Record<string, FileChangeSummary[]>>({});
 
   // Helper: apply a sub-agent session update from SSE handlers. Always updates
   // the live ref and cache; only pushes to React state when the user is viewing.
@@ -597,9 +591,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     draftWorkspaceIdRef.current = draftWorkspaceId;
   }, [draftWorkspaceId]);
-  useEffect(() => {
-    fileChangesByChatRef.current = fileChangesByChat;
-  }, [fileChangesByChat]);
   const nextIdRef = useRef(1);
   const seededExpandRef = useRef(false);
   const themeInitRef = useRef(false);
@@ -2611,12 +2602,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
               newTurns[newTurns.length - 1] = lastTurn;
               return { ...prev, [eventKey]: newTurns };
             });
-            // Also cache per-chat as a list so each turn's changes are preserved
-            setFileChangesByChat((prev) => {
-              const existing = prev[eventKey] || [];
-              const next = [...existing, fileChangesData];
-              return { ...prev, [eventKey]: next };
-            });
           }
           break;
         }
@@ -2634,24 +2619,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((value) => {
         setState(value);
         setConnected(true);
-        // Hydrate fileChangesByChat from persisted per-chat summaries (now a list).
+        // Hydrate pending inputs from persisted state. On restart the auto-send
+        // flag stays false so the user must manually trigger the queue.
         if (value.chats) {
           const wsId = String(value.workspace?.id ?? activeWorkspaceId ?? "");
-          const hydrated: Record<string, FileChangeSummary[]> = {};
           const hydratedInputs: Record<string, string[]> = {};
           for (const ch of value.chats) {
-            // ch.fileChanges is now a FileChangeSummary[] from the backend
-            if (ch.fileChanges && Array.isArray(ch.fileChanges) && ch.fileChanges.length > 0) {
-              hydrated[chatKey(wsId, ch.id)] = ch.fileChanges;
-            }
-            // Hydrate pending inputs from persisted state. On restart the auto-send
-            // flag stays false so the user must manually trigger the queue.
             if (ch.pendingInputs && Array.isArray(ch.pendingInputs) && ch.pendingInputs.length > 0) {
               hydratedInputs[chatKey(wsId, ch.id)] = ch.pendingInputs;
             }
-          }
-          if (Object.keys(hydrated).length > 0) {
-            setFileChangesByChat((prev) => ({ ...prev, ...hydrated }));
           }
           if (Object.keys(hydratedInputs).length > 0) {
             setPendingInputsByChat((prev) => ({ ...prev, ...hydratedInputs }));
@@ -4088,7 +4064,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     enterSubAgentSession,
     exitSubAgentSession,
     pendingExpandSubAgentId,
-    fileChangesByChat,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

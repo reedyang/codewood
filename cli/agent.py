@@ -1192,6 +1192,14 @@ class Agent:
     def _save_chat_state(self) -> None:
         self._chat_state_manager.save_chat_state()
 
+    def _mark_chat_dirty(self, chat_id: str) -> None:
+        """Record that a chat's in-memory record changed and must be re-written
+        on the next save (even if it is not the active/running chat)."""
+        try:
+            self._chat_state_manager.mark_chat_dirty(chat_id)
+        except Exception:
+            pass
+
     def _chat_entries(self) -> List[Dict[str, Any]]:
         return self._chat_state_manager.chat_entries()
 
