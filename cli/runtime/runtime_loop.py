@@ -5078,7 +5078,20 @@ def run_agent_loop(agent: Any):
                                         # rounds were already emitted inline.
                                         _explore_completed = rendered[-1]
                                         if bool(getattr(self, "_gui_plain_stream", False)):
-                                            print(str(_explore_completed).rstrip("\n"))
+                                            # Replace the live "• Exploring ..." prompt
+                                            # step in place with the completed row so the
+                                            # transcript never shows a stale running line
+                                            # beside the finished one (the frontend's
+                                            # tool_feedback_repaint handler repaints the
+                                            # last step segment).
+                                            _repaint = getattr(self, "_gui_tool_feedback_repaint", None)
+                                            if callable(_repaint):
+                                                try:
+                                                    _repaint(str(_explore_completed).rstrip("\n"))
+                                                except Exception:
+                                                    print(str(_explore_completed).rstrip("\n"))
+                                            else:
+                                                print(str(_explore_completed).rstrip("\n"))
                                             break
                                         clean = _explore_completed.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "").replace("\ue000", "").replace("\ue001", "").replace("\ue006", "").replace("\ue007", "")
                                         if sys.stdout.isatty():
