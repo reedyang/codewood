@@ -665,6 +665,53 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("repaints the running explore step into the completed row in place", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Analyze sub-agent architecture", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: {
+          text: "\uE004• Exploring sub-agent architecture...\uE005",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+      apiMock.emit({
+        event: "tool_feedback_repaint",
+        data: {
+          text: "\uE004• Explored sub-agent architecture for 41.3s\uE005",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(1);
+      expect(turns[0].rounds[0].segments).toHaveLength(1);
+      const text = turns[0].rounds[0].segments[0]?.text || "";
+      expect(text).toContain("Explored sub-agent architecture for 41.3s");
+      expect(text).not.toContain("Exploring");
+    });
+  });
+
   it("exposes an optimistic active workspace/chat without mutating the raw backend state", async () => {
     render(
       <AppProvider>

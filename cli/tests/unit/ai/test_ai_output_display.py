@@ -409,6 +409,19 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertIn("Exploring sub-agent architecture...", line)
         self.assertNotIn("(subagent=explore", line)
 
+    def test_format_explore_running_line_bolds_only_the_verb(self):
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: s
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: f"[B]{text}[/B]"):
+            line = self.agent._format_tool_call_feedback_line(
+                "run_subagent",
+                {"subagent": "explore", "topic": "sub-agent architecture"},
+                failed=False,
+            )
+        self.assertIn("[B]Exploring[/B]", line)
+        self.assertNotIn("[B] sub-agent architecture[/B]", line)
+        self.assertNotIn("sub-agent architecture[/B]", line)
+
     def test_explore_completed_label_includes_truncated_topic(self):
         long_topic = "x" * 90
 

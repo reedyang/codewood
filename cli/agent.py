@@ -2693,6 +2693,15 @@ class Agent:
                 f"{bullet} {_ansi_bold(translate('status.ran', self._ui_language()))} ",
                 summary,
             )
+        # Explore running state reads as "Exploring <topic>..."; only the
+        # action verb is bold, the topic stays regular (mirroring how the
+        # completed row bolds just its first word).
+        if (
+            name == "run_subagent"
+            and str(args.get("subagent") or "").strip().lower() == "explore"
+            and not bool(failed)
+        ):
+            return self._format_explore_running_feedback_line(bullet, args)
         # Every other tool gets a natural-language action label (no "Ran"
         # prefix), e.g. "Apply patch (path=...)", and the special "Create file"
         # phrasing when apply_patch is used to add a brand-new file.
@@ -2700,6 +2709,31 @@ class Agent:
         return self._format_wrapped_command_feedback_line(
             f"{bullet} {_ansi_bold(label)} ",
             detail,
+        )
+
+    def _format_explore_running_feedback_line(
+        self,
+        bullet: str,
+        args: Dict[str, Any],
+    ) -> str:
+        """Format the "Exploring <topic>..." running line with only the verb bold.
+
+        ``_explore_running_label`` produces ``"Exploring {topic}..."``; the topic
+        is lifted out so it renders in the regular (non-bold) command-text slot.
+        """
+        running_text = self._explore_running_label(args)
+        topic = self._explore_topic_label(args)
+        if topic and topic in running_text:
+            head, tail = running_text.split(topic, 1)
+            bold_prefix = head.rstrip()
+            rest = head[len(bold_prefix):] + topic + tail
+            return self._format_wrapped_command_feedback_line(
+                f"{bullet} ",
+                f"{_ansi_bold(bold_prefix)}{rest}",
+            )
+        return self._format_wrapped_command_feedback_line(
+            f"{bullet} ",
+            _ansi_bold(running_text),
         )
 
     def _is_apply_patch_add_file(self, args: Dict[str, Any]) -> bool:
