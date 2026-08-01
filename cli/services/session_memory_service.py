@@ -231,14 +231,18 @@ def _assistant_model_view(msg: Dict[str, Any]) -> Dict[str, Any]:
     return view
 
 
-def _assistant_display_view(msg: Dict[str, Any]) -> Dict[str, Any]:
+def _assistant_display_view(msg: Dict[str, Any], synthesize_plan_payload: bool = True) -> Dict[str, Any]:
     """Flatten a reply block for GUI/TUI rendering:
 
     * content is the cleaned visible text (joined content nodes) — hidden
       markers never reach the renderers;
     * ``_thinking`` covers ALL reasoning nodes (native + content-derived);
-    * ``tool_calls`` covers all tool-call nodes; a tool-only block synthesizes
-      the JSON plan payload into ``content`` so existing plan renderers work.
+    * ``tool_calls`` covers all tool-call nodes; a tool-only block optionally
+      synthesizes the JSON plan payload into ``content`` so existing plan
+      renderers (main chat) work. Callers that render content as plain text
+      (e.g. the sub-agent session viewer, which draws tool steps from
+      ``tool_rounds``) pass ``synthesize_plan_payload=False`` so the raw
+      ``tool_calls`` JSON never leaks into the display.
     """
     if not _is_reply_block(msg):
         return msg
@@ -260,7 +264,7 @@ def _assistant_display_view(msg: Dict[str, Any]) -> Dict[str, Any]:
         elif kind == "tool_call" and isinstance(data, dict):
             tool_calls.append(data)
     view: Dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
-    if not view["content"] and tool_calls:
+    if synthesize_plan_payload and not view["content"] and tool_calls:
         plan_text = _tool_calls_plan_payload(tool_calls)
         if plan_text:
             view["content"] = plan_text
