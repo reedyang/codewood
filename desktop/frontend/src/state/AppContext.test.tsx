@@ -192,6 +192,30 @@ function HistoryReloadProbe() {
   );
 }
 
+function UnreadProbe() {
+  const { state, unreadChatIds, workspaceChats, switchToChat, refreshWorkspaceChats } = useApp();
+  return (
+    <>
+      <button onClick={() => { void switchToChat("chat-1", "ws-1"); }}>
+        open chat 1
+      </button>
+      <button onClick={() => { void switchToChat("chat-2", "ws-1"); }}>
+        open chat 2
+      </button>
+      <button onClick={() => { void switchToChat("chat-1", "ws-2"); }}>
+        open ws2 chat
+      </button>
+      <button onClick={() => { void refreshWorkspaceChats("ws-1"); }}>
+        refresh ws-1
+      </button>
+      <pre data-testid="unread-view">{JSON.stringify(unreadChatIds)}</pre>
+      <pre data-testid="unread-state">{JSON.stringify(state?.chats)}</pre>
+      <pre data-testid="unread-wschats">{JSON.stringify(workspaceChats)}</pre>
+      <pre data-testid="unread-active">{JSON.stringify(state?.workspace?.id)}</pre>
+    </>
+  );
+}
+
 function DeleteChatProbe() {
   const { state, activeChats, deleteChat } = useApp();
   return (
@@ -1608,6 +1632,417 @@ describe("AppContext thinking rounds", () => {
       expect(stepText).toContain("Ran shell timeout 10");
       expect(stepText).toContain("9");
       expect(stepText).toContain("8");
+    });
+  });
+
+  it("shows an unread dot for a chat whose background turn finished, then clears it on open", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          {
+            index: 0,
+            id: "chat-1",
+            name: "Chat 1",
+            messageCount: 1,
+            active: true,
+            running: false,
+            archived: false,
+            planMode: false,
+          },
+          {
+            index: 1,
+            id: "chat-2",
+            name: "Chat 2",
+            messageCount: 2,
+            active: false,
+            running: false,
+            archived: false,
+            planMode: false,
+          },
+        ],
+        activeChatId: "chat-1",
+      }),
+    );
+    render(
+      <AppProvider>
+        <UnreadProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // chat-1 is focused; a background turn in chat-2 finishes and the backend
+    // marks chat-2 unread in the idle snapshot.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-2",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [
+              {
+                index: 0,
+                id: "chat-1",
+                name: "Chat 1",
+                messageCount: 1,
+                active: true,
+                running: false,
+                archived: false,
+                planMode: false,
+              },
+              {
+                index: 1,
+                id: "chat-2",
+                name: "Chat 2",
+                messageCount: 2,
+                active: false,
+                running: false,
+                archived: false,
+                planMode: false,
+                hasUnread: true,
+              },
+            ],
+            activeChatId: "chat-1",
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("unread-view").textContent || "{}") as Record<
+        string,
+        boolean
+      >;
+      expect(view["ws-1\u0000chat-2"]).toBe(true);
+      expect(view["ws-1\u0000chat-1"]).toBeUndefined();
+    });
+
+    // Opening the chat clears the persisted flag via select_chat's state echo.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "open chat 2" }));
+    });
+
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [
+              {
+                index: 0,
+                id: "chat-1",
+                name: "Chat 1",
+                messageCount: 1,
+                active: false,
+                running: false,
+                archived: false,
+                planMode: false,
+              },
+              {
+                index: 1,
+                id: "chat-2",
+                name: "Chat 2",
+                messageCount: 2,
+                active: true,
+                running: false,
+                archived: false,
+                planMode: false,
+                hasUnread: false,
+              },
+            ],
+            activeChatId: "chat-2",
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("unread-view").textContent || "{}") as Record<
+        string,
+        boolean
+      >;
+      expect(view["ws-1\u0000chat-2"]).toBeUndefined();
+    });
+  });
+
+  it("never shows an unread dot on the chat currently being viewed, even if a snapshot claims it", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          {
+            index: 0,
+            id: "chat-1",
+            name: "Chat 1",
+            messageCount: 1,
+            active: true,
+            running: false,
+            archived: false,
+            planMode: false,
+          },
+          {
+            index: 1,
+            id: "chat-2",
+            name: "Chat 2",
+            messageCount: 2,
+            active: false,
+            running: false,
+            archived: false,
+            planMode: false,
+          },
+        ],
+        activeChatId: "chat-1",
+      }),
+    );
+    render(
+      <AppProvider>
+        <UnreadProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // A stale/spurious snapshot claims the VIEWED chat (chat-1) is unread. The
+    // frontend must override it — the user is looking at that chat.
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [
+              {
+                index: 0,
+                id: "chat-1",
+                name: "Chat 1",
+                messageCount: 1,
+                active: true,
+                running: false,
+                archived: false,
+                planMode: false,
+                hasUnread: true,
+              },
+              {
+                index: 1,
+                id: "chat-2",
+                name: "Chat 2",
+                messageCount: 2,
+                active: false,
+                running: false,
+                archived: false,
+                planMode: false,
+              },
+            ],
+            activeChatId: "chat-1",
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("unread-view").textContent || "{}") as Record<
+        string,
+        boolean
+      >;
+      expect(view["ws-1\u0000chat-1"]).toBeUndefined();
+    });
+  });
+
+  it("does not let a stale refresh resurrect a cleared unread dot", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [
+          {
+            index: 0,
+            id: "chat-1",
+            name: "Chat 1",
+            messageCount: 1,
+            active: true,
+            running: false,
+            archived: false,
+            planMode: false,
+          },
+          {
+            index: 1,
+            id: "chat-2",
+            name: "Chat 2",
+            messageCount: 2,
+            active: false,
+            running: false,
+            archived: false,
+            planMode: false,
+          },
+        ],
+        activeChatId: "chat-1",
+      }),
+    );
+    // A refresh response built BEFORE the user opened the chat still claims it
+    // unread — this is the stale value the race delivers.
+    apiMock.listWorkspaceChats.mockResolvedValue([
+      { id: "chat-1", name: "Chat 1", hasUnread: true },
+      { id: "chat-2", name: "Chat 2", hasUnread: false },
+    ]);
+    render(
+      <AppProvider>
+        <UnreadProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // The user opened chat-1 (cleared) and is now viewing it. A late refresh of
+    // the ACTIVE workspace arrives; it must NOT overwrite the cleared flag.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "refresh ws-1" }));
+    });
+
+    await waitFor(() => {
+      const ws = JSON.parse(screen.getByTestId("unread-wschats").textContent || "{}") as Record<
+        string,
+        { id: string; hasUnread?: boolean }[]
+      >;
+      const chat1 = (ws["ws-1"] ?? []).find((c) => c.id === "chat-1");
+      expect(chat1?.hasUnread).not.toBe(true);
+    });
+    const view = JSON.parse(screen.getByTestId("unread-view").textContent || "{}") as Record<
+      string,
+      boolean
+    >;
+    expect(view["ws-1\u0000chat-1"]).toBeUndefined();
+  });
+
+  it("cleared unread stays cleared across a workspace round-trip", async () => {
+    // ws-2 is active; ws-1's chat-1 completed in the background (hasUnread=true).
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        workspace: {
+          id: "ws-2",
+          name: "Workspace B",
+          root: "D:/workspace-b",
+          workDirectory: "D:/workspace-b",
+        },
+        workspaces: [
+          { id: "ws-1", name: "Workspace", root: "D:/workspace", active: false, isDefault: false },
+          { id: "ws-2", name: "Workspace B", root: "D:/workspace-b", active: true, isDefault: false },
+        ],
+        chats: [
+          {
+            index: 0,
+            id: "chat-1",
+            name: "Ws2 Chat",
+            messageCount: 1,
+            active: true,
+            running: false,
+            archived: false,
+            planMode: false,
+          },
+        ],
+        activeChatId: "chat-1",
+      }),
+    );
+    render(
+      <AppProvider>
+        <UnreadProbe />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Background completion in ws-1 refreshes its (non-active) cache with unread.
+    apiMock.listWorkspaceChats.mockResolvedValue([
+      { id: "chat-1", name: "Chat 1", hasUnread: true },
+    ]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "refresh ws-1" }));
+    });
+    await waitFor(() => {
+      const ws = JSON.parse(screen.getByTestId("unread-wschats").textContent || "{}") as Record<
+        string,
+        { id: string; hasUnread?: boolean }[]
+      >;
+      expect((ws["ws-1"] ?? []).find((c) => c.id === "chat-1")?.hasUnread).toBe(true);
+    });
+
+    // Switch to ws-1 chat-1 (clears it), then a stale refresh arrives while ws-1
+    // is ACTIVE — it must not resurrect the dot.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "open chat 1" }));
+    });
+    // Backend select_chat echoes the cleared snapshot for ws-1.
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          workspaceId: "ws-1",
+          state: buildState({
+            workspace: {
+              id: "ws-1",
+              name: "Workspace",
+              root: "D:/workspace",
+              workDirectory: "D:/workspace",
+            },
+            chats: [
+              {
+                index: 0,
+                id: "chat-1",
+                name: "Chat 1",
+                messageCount: 1,
+                active: true,
+                running: false,
+                archived: false,
+                planMode: false,
+                hasUnread: false,
+              },
+            ],
+            activeChatId: "chat-1",
+          }),
+        },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "refresh ws-1" }));
+    });
+
+    // Switch back to ws-2: ws-1 becomes non-active; the dot must stay cleared.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "open ws2 chat" }));
+    });
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          workspaceId: "ws-2",
+          state: buildState({
+            workspace: {
+              id: "ws-2",
+              name: "Workspace B",
+              root: "D:/workspace-b",
+              workDirectory: "D:/workspace-b",
+            },
+            chats: [
+              {
+                index: 0,
+                id: "chat-1",
+                name: "Ws2 Chat",
+                messageCount: 1,
+                active: true,
+                running: false,
+                archived: false,
+                planMode: false,
+              },
+            ],
+            activeChatId: "chat-1",
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("unread-view").textContent || "{}") as Record<
+        string,
+        boolean
+      >;
+      expect(view["ws-1\u0000chat-1"]).toBeUndefined();
     });
   });
 });

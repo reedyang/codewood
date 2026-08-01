@@ -628,6 +628,10 @@ class ChatStateManager:
             entry["pending_inputs"] = [str(x) for x in pending_inputs if str(x).strip()]
         else:
             entry["pending_inputs"] = []
+        # Preserve the GUI unread flag (blue dot) through validation so a
+        # disk refresh (disk-newer-wins) does not silently clear it.
+        if "has_unread" in raw and isinstance(raw.get("has_unread"), bool):
+            entry["has_unread"] = raw["has_unread"]
         return entry
 
     def default_chat_state(self) -> Dict[str, Any]:
@@ -719,6 +723,54 @@ class ChatStateManager:
                 if not rf:
                     continue
                 last_written[rf] = str(chat.get("updated_at") or "")
+        except Exception:
+            pass
+
+    def set_chat_unread(self, chat_id: str, unread: bool) -> None:
+        """Persist the GUI unread flag (blue dot) for a chat.
+
+        The flag is stored on the chat record and in the ``chats.json`` index
+        (``has_unread``), so it survives restarts. It is the source of truth
+        for the sidebar's unread dot: set to ``True`` when a task finishes in
+        a chat the user is not viewing, ``False`` when the chat is opened.
+        Honors the thread-local persistence override, so a background loop
+        thread can mark a chat in ITS OWN workspace unread without switching
+        focus. No-op (no write) when the value is unchanged.
+        """
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return
+        target = bool(unread)
+        changed = False
+        try:
+            with self._active_chat_state_lock():
+                chats = self._active_chat_state().get("chats")
+                if not isinstance(chats, list):
+                    return
+                for chat in chats:
+                    if not isinstance(chat, dict):
+                        continue
+                    if str(chat.get("id") or "") == cid:
+                        if bool(chat.get("has_unread", False)) != target:
+                            chat["has_unread"] = target
+                            changed = True
+                        break
+        except Exception:
+            return
+        if not changed:
+            return
+        try:
+            try:
+                logger.debug(
+                    "set_chat_unread chat=%s -> %s (workspace=%s records_dir=%s)",
+                    cid, target,
+                    getattr(self._agent, "workspace_id", "?"),
+                    self.chat_records_dir(),
+                )
+            except Exception:
+                pass
+            self.mark_chat_dirty(cid)
+            self.save_chat_state()
         except Exception:
             pass
 
@@ -819,6 +871,7 @@ class ChatStateManager:
                     "record_file": record_file,
                     "archived": bool(chat.get("archived", False)),
                     "first_user_message_at": str(chat.get("first_user_message_at") or ""),
+                    "has_unread": bool(chat.get("has_unread", False)),
                 }
 
             for chat in chats:
@@ -1203,6 +1256,11 @@ class ChatStateManager:
                 first_user_msg_at = str(index_entry.get("first_user_message_at") or "").strip()
                 if first_user_msg_at:
                     chat["first_user_message_at"] = first_user_msg_at
+                # has_unread is stored in both the record file and the index;
+                # merge the index copy so legacy records missing the field
+                # still restore the flag across a restart.
+                if "has_unread" in index_entry and isinstance(index_entry.get("has_unread"), bool):
+                    chat["has_unread"] = index_entry["has_unread"]
                 chats.append(chat)
             if not chats:
                 # Empty chat list is valid (new workspace with no chats).
@@ -1256,6 +1314,13 @@ class ChatStateManager:
                 print_history=False,
                 persist=False,
             )
+            # The active chat is being displayed on load, so any unread flag it
+            # carried over from a previous session no longer applies. Other
+            # chats keep theirs (persistent blue dots until opened).
+            try:
+                self.set_chat_unread(active, False)
+            except Exception:
+                pass
         except Exception as e:
             logger.exception(
                 "load_chat_state failed for %s; resetting chat state. total_chats=%d, active=%s, error=%s",
@@ -1406,6 +1471,10 @@ class ChatStateManager:
                 if isinstance(entry, dict) and str(entry.get("id") or "") == cid:
                     # Preserve archived from the old entry (stored only in index)
                     refreshed["archived"] = bool(entry.get("archived", False))
+                    # Legacy records may predate has_unread; keep the in-memory
+                    # flag (restored from the index) if the disk record lacks it.
+                    if "has_unread" not in refreshed:
+                        refreshed["has_unread"] = bool(entry.get("has_unread", False))
                     chats[idx] = refreshed
                     # Memory now matches disk for this chat — clear its dirty
                     # flag and record the freshly-read timestamp so the next

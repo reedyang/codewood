@@ -65,6 +65,8 @@ interface ChatRow {
    *  Used as a durable busy signal that survives focus changes/reloads, in
    *  addition to the transient SSE-driven ``busyByChat`` flags. */
   running?: boolean;
+  /** Server-persisted unread flag (a task finished while user was elsewhere). */
+  hasUnread?: boolean;
 }
 
 export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onOpenSettings: () => void }) {

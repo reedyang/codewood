@@ -1376,6 +1376,79 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             self.assertNotIn("context_input_tokens", entry)
             self.assertNotIn("context_window", entry)
 
+    def _read_chat_record(self, workspace: Path, chat_id: str) -> dict:
+        index = _read_chat_index(workspace)
+        entry = next(c for c in index["chats"] if c["id"] == chat_id)
+        return json.loads(
+            (workspace / "chats" / entry["record_file"]).read_text(encoding="utf-8")
+        )
+
+    def test_set_chat_unread_persists_to_record_and_index(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            c1 = manager.new_chat_entry("chat-1", name="One")
+            c2 = manager.new_chat_entry("chat-2", name="Two")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-1",
+                "chats": [c1, c2],
+            }
+            manager.save_chat_state()
+
+            self.assertFalse(bool(manager.find_chat_by_id("chat-2").get("has_unread", False)))
+
+            manager.set_chat_unread("chat-2", True)
+
+            self.assertTrue(bool(manager.find_chat_by_id("chat-2").get("has_unread", False)))
+            index = _read_chat_index(workspace)
+            entry = next(c for c in index["chats"] if c["id"] == "chat-2")
+            self.assertTrue(bool(entry.get("has_unread", False)))
+            record = self._read_chat_record(workspace, "chat-2")
+            self.assertTrue(bool(record.get("has_unread", False)))
+
+            # Clearing is persisted too.
+            manager.set_chat_unread("chat-2", False)
+            self.assertFalse(bool(manager.find_chat_by_id("chat-2").get("has_unread", False)))
+            record = self._read_chat_record(workspace, "chat-2")
+            self.assertFalse(bool(record.get("has_unread", False)))
+
+    def test_set_chat_unread_restores_across_restart(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            c1 = manager.new_chat_entry("chat-1", name="One")
+            c2 = manager.new_chat_entry("chat-2", name="Two")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-1",
+                "chats": [c1, c2],
+            }
+            manager.save_chat_state()
+            manager.set_chat_unread("chat-2", True)
+
+            # Simulate a restart: a fresh agent + manager over the same files.
+            agent2 = _FakeAgent(workspace)
+            agent2.workspace_id = "ws-1"
+            manager2 = ChatStateManager(agent2, "chats.json")
+            manager2.load_chat_state(create_default_chat=False)
+
+            # chat-2's unread flag survives the restart (persistent blue dot).
+            self.assertTrue(bool(manager2.find_chat_by_id("chat-2").get("has_unread", False)))
+            # The chat being displayed on load (chat-1, the active chat) is
+            # cleared — it is being viewed, so no dot.
+            self.assertFalse(bool(manager2.find_chat_by_id("chat-1").get("has_unread", False)))
+
 
 if __name__ == "__main__":
     unittest.main()

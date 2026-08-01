@@ -1200,6 +1200,19 @@ class Agent:
         except Exception:
             pass
 
+    def _set_chat_unread(self, chat_id: str, unread: bool) -> None:
+        """Persist a chat's GUI unread flag (blue dot) to its record + index.
+
+        Set ``True`` when a task finishes in a chat the user is not viewing,
+        ``False`` when the chat is opened. Honors the calling thread's
+        workspace persistence override so a background loop can flag its own
+        workspace's chat.
+        """
+        try:
+            self._chat_state_manager.set_chat_unread(chat_id, unread)
+        except Exception:
+            pass
+
     def _chat_entries(self) -> List[Dict[str, Any]]:
         return self._chat_state_manager.chat_entries()
 
