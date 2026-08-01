@@ -7500,7 +7500,10 @@ def _make_handler(app: ServeApp):
                         if not isinstance(_m, dict):
                             continue
                         if str(_m.get("role") or "").strip().lower() == "assistant":
-                            _m = _assistant_display_view(_m)
+                            # The sub-agent viewer renders tool steps from
+                            # ``tool_rounds``/``tool_calls``; never synthesize the
+                            # raw tool_calls JSON into content (would leak).
+                            _m = _assistant_display_view(_m, synthesize_plan_payload=False)
                         _session_messages_out.append(_m)
                     _session_out["messages"] = _session_messages_out
                     for _m in _session_out.get("messages", []) or []:
