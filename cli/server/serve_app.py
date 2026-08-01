@@ -27,7 +27,6 @@ import logging
 import os
 import queue
 import re
-import logging
 import secrets
 import subprocess
 import sys
@@ -38,10 +37,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
-
-from ..config.app_info import get_app_logger_root
-
-logger = logging.getLogger(f"{get_app_logger_root()}.server")
 
 from ..core.console_utils import (
     GUI_FORCE_PROMPT_PREFIX,
@@ -2018,14 +2013,6 @@ class ServeApp:
                 and not left_busy
             )
             unread = (not focused) and (not just_left)
-            try:
-                logger.debug(
-                    "mark_completed_chat_unread chat=%s rt_ws=%s focused_ws=%s "
-                    "background=%s focus_key=%r left_at=%.2f left_busy=%s -> unread=%s",
-                    cid, rt_ws, focused_ws, background, current, left_at, left_busy, unread,
-                )
-            except Exception:
-                pass
             setter = getattr(self.agent, "_set_chat_unread", None)
             if callable(setter):
                 setter(cid, unread)

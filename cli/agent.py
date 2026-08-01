@@ -6804,7 +6804,14 @@ class Agent:
                 pass
 
     def _refresh_workspace_runtime(self, create_default_chat: bool = True) -> None:
-        self._shutdown_workspace_services(wait=True)
+        # Don't block the switch on the previous workspace's memory worker.
+        # shutdown(wait=True) waits for an in-flight indexing task (e.g. one
+        # triggered by a just-sent message) which can take seconds; the old
+        # service's storage is per-workspace and it will finish its current
+        # task and exit in the background, while the target workspace gets a
+        # fresh service. Only the agent's final shutdown (or workspace storage
+        # migration) waits.
+        self._shutdown_workspace_services(wait=False)
         self._cleanup_workspace_shell_stashes_if_needed()
         self._ensure_workspace_dirs()
         self.history_manager = HistoryManager(str(self.workspace_config_dir), language=getattr(self, "display_language", "en") or "en")

@@ -760,15 +760,6 @@ class ChatStateManager:
         if not changed:
             return
         try:
-            try:
-                logger.debug(
-                    "set_chat_unread chat=%s -> %s (workspace=%s records_dir=%s)",
-                    cid, target,
-                    getattr(self._agent, "workspace_id", "?"),
-                    self.chat_records_dir(),
-                )
-            except Exception:
-                pass
             self.mark_chat_dirty(cid)
             self.save_chat_state()
         except Exception:
