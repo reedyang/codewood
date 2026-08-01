@@ -472,10 +472,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pendingAutoSendByChatRef.current = pendingAutoSendByChat;
   }, [pendingInputsByChat, pendingAutoSendByChat]);
   // Chats whose turn finished while the user was looking at a different chat.
-  // They stay flagged as unread (blue dot in the sidebar) until opened.
-  const [unreadChatIds, setUnreadChatIds] = useState<Record<string, boolean>>(
-    {},
-  );
+  // They stay flagged as unread (blue dot in the sidebar) until opened. The
+  // flag is persisted by the backend (``hasUnread`` on the chat summary) and
+  // set only when a task completes in a non-viewed chat, so we DERIVE this set
+  // from the server snapshot instead of computing it from SSE event timing —
+  // the old heuristic could flag a chat the user was watching when a late idle
+  // event arrived after they had already switched away. Keyed by the
+  // workspace-qualified composite (same convention as ``busyByChat``).
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [confirmRequestByChat, setConfirmRequestByChat] = useState<
@@ -496,6 +499,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     workspaceChatsRef.current = workspaceChats;
   }, [workspaceChats]);
+  // Unread blue dots, derived from the backend-persisted ``hasUnread`` flags
+  // on the active workspace's state snapshot and the per-workspace chat cache.
+  // The ACTIVE workspace is sourced ONLY from ``state.chats`` (authoritative);
+  // its ``workspaceChats`` copy is a mirrored cache that a late
+  // refreshWorkspaceChats response could overwrite with a stale ``true``, which
+  // would otherwise resurrect a dot the user already cleared. Other workspaces
+  // have no live snapshot, so they keep using the cache.
+  const unreadChatIds = useMemo<Record<string, boolean>>(() => {
+    const map: Record<string, boolean> = {};
+    const activeWsId = state?.workspace?.id ?? "";
+    if (state && activeWsId && Array.isArray(state.chats)) {
+      for (const ch of state.chats) {
+        if (ch && ch.hasUnread) {
+          map[chatKey(activeWsId, ch.id)] = true;
+        }
+      }
+    }
+    for (const [wsId, list] of Object.entries(workspaceChats)) {
+      if (wsId === activeWsId) {
+        continue;
+      }
+      for (const ch of list) {
+        if (ch && ch.hasUnread) {
+          map[chatKey(wsId, ch.id)] = true;
+        }
+      }
+    }
+    return map;
+  }, [state, workspaceChats]);
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialPage, setSettingsInitialPage] = useState<string | null>(null);
@@ -605,7 +637,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // events during a streaming turn can be blocked (prevents React re-render
   // side effects from disrupting in-progress content accumulation).
   const streamingKeyRef = useRef<string>("");
-  const leftBusyChatAtRef = useRef<Record<string, number>>({});
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -662,29 +693,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const selectedChatId =
     focusOverride?.chatId ?? optimisticChatFocus?.chatId ?? state?.activeChatId ?? "";
   const activeChatId = selectedChatId;
-  const activeChatWsId = selectedWorkspaceId;
   useEffect(() => {
-    const prevKey = activeChatIdRef.current
-      ? chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current)
-      : "";
     activeChatIdRef.current = activeChatId;
-    const key = chatKey(activeChatWsId, activeChatId);
-    if (key) {
-      setUnreadChatIds((prev) =>
-        prev[key]
-          ? Object.fromEntries(
-              Object.entries(prev).filter(([id]) => id !== key),
-            )
-          : prev,
-      );
-    }
-    // Track when the user navigates away from a busy chat. If the turn
-    // completes shortly afterward, the idle-event race will skip the unread
-    // marker — the user already saw the completion.
-    if (prevKey && prevKey !== key && busyByChatRef.current[prevKey]) {
-      leftBusyChatAtRef.current[prevKey] = Date.now();
-    }
-  }, [activeChatId, activeChatWsId]);
+  }, [activeChatId]);
 
   // Auto-show the todo dock only when the plan content actually changes
   // (a new plan was generated) within the same chat.  Comparing a hash of
@@ -1958,6 +1969,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
         chatId?: string;
         workspaceId?: string;
       };
+      // The chat the user is currently viewing can never be unread. The backend
+      // may race a stale completion snapshot past select_chat's clear (or a
+      // spurious mark could ride an internal-command idle), so force the viewed
+      // chat's hasUnread to false on any incoming snapshot — the frontend knows
+      // what the user is looking at and wins here.
+      const clearViewedUnread = (
+        snap: AppState | null | undefined,
+      ): AppState | null | undefined => {
+        if (!snap) {
+          return snap;
+        }
+        const chats = snap.chats;
+        if (!Array.isArray(chats)) {
+          return snap;
+        }
+        const viewedKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+        if (!viewedKey) {
+          return snap;
+        }
+        const wsId = String(snap.workspace?.id || "");
+        let changed = false;
+        const mapped = chats.map((c) => {
+          if (c && c.hasUnread && chatKey(wsId, String(c.id || "")) === viewedKey) {
+            changed = true;
+            return { ...c, hasUnread: false };
+          }
+          return c;
+        });
+        return changed ? { ...snap, chats: mapped } : snap;
+      };
       // Every per-chat event carries the id of the chat it belongs to. We must
       // NOT fall back to the focused chat: with several chats running in
       // parallel that would mis-route a background chat's turn/output (and the
@@ -1990,7 +2031,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "idle": {
           const rawNext = data.state;
           clearOptimisticModelOverrideIfAcknowledged(rawNext);
-          const next = applyOptimisticModelOverride(rawNext);
+          const next = clearViewedUnread(applyOptimisticModelOverride(rawNext));
           const idleForFocused =
             !eventWsId || !activeWsId ||
             (pendingWs
@@ -2065,24 +2106,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!stillRunning) {
             endActiveTurn(eventKey);
             setBusyForChat(eventKey, false);
-            // A turn that finishes in a chat the user isn't currently viewing
-            // (different chat, or a chat in another workspace) leaves an unread
-            // marker until they open it. The unread set is keyed by the
-            // workspace-qualified bucket so it can't bleed across workspaces.
-            // Skip the marker if the user *just* left the chat while it was
-            // busy — the idle event may arrive a tick after they switched away,
-            // even though they were watching when the last output arrived.
-            const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
-            const leftAgo =
-              leftBusyChatAtRef.current[eventKey] ?? 0;
-            const wasWatching =
-              leftAgo > 0 && Date.now() - leftAgo < 3000;
-            if (eventKey && eventKey !== focusedKey && !wasWatching) {
-              setUnreadChatIds((prev) =>
-                prev[eventKey] ? prev : { ...prev, [eventKey]: true },
-              );
+            // The unread blue-dot flag is decided by the BACKEND when the turn
+            // finishes: a chat that completed while the user was elsewhere gets
+            // ``hasUnread`` set (persisted), the viewed chat gets it cleared.
+            // The sidebar derives its dots from the server snapshot, so a late
+            // idle event can no longer falsely flag a chat the user watched
+            // complete. When a BACKGROUND workspace's chat finished, refresh
+            // that workspace's list so its persisted flag reaches the sidebar.
+            if (!idleForFocused && eventWsId) {
+              refreshWorkspaceChatsRef.current?.(eventWsId);
             }
-            delete leftBusyChatAtRef.current[eventKey];
+            const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
             // When the focused chat's turn finishes, reload its history from
             // the server so the GUI always reflects the full persisted content
             // — even when live-streaming events were partially lost.
@@ -2136,7 +2170,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // effects that can disrupt segment accumulation).
           const rawNext = data.state;
           clearOptimisticModelOverrideIfAcknowledged(rawNext);
-          const next = applyOptimisticModelOverride(rawNext);
+          const next = clearViewedUnread(applyOptimisticModelOverride(rawNext));
           const isStreamingChat = !!streamingKeyRef.current &&
             eventKey === streamingKeyRef.current;
           const stateForFocused =
@@ -2174,7 +2208,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           startTurn(String(data.text ?? ""), eventKey);
           setBusyForChat(eventKey, true);
           streamingKeyRef.current = eventKey;
-          delete leftBusyChatAtRef.current[eventKey];
           break;
         }
         case "round_start": {
@@ -3210,6 +3243,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         activeSubAgentSessionRef.current = null;
       }
       const prevKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      const prevWsId = activeWorkspaceIdRef.current;
       const targetWsId = workspaceId || activeWorkspaceIdRef.current;
       const targetChatName = (() => {
         const activeWsId = stateRef.current?.workspace.id ?? "";
@@ -3244,7 +3278,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // When switching to a different workspace, record the target so the
       // subsequent idle/state SSE event from that workspace can bypass the
       // background-event guard (stateRef still has the old workspace ID).
-      if (workspaceId && workspaceId !== activeWorkspaceIdRef.current) {
+      // Compare against the workspace we were on BEFORE this switch — the ref
+      // was already advanced to the target above.
+      if (workspaceId && workspaceId !== prevWsId) {
         pendingFocusWsIdRef.current = workspaceId;
       }
       const ok = await client.selectChat(chatId, workspaceId);
@@ -3495,10 +3531,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshWorkspaceChats = useCallback(
     async (id: string) => {
       const chats = await client.listWorkspaceChats(id);
+      // The ACTIVE workspace's list is authoritative from ``state.chats`` (the
+      // mirror effect keeps ``workspaceChats[activeWsId]`` in sync). A refresh
+      // response may have been built BEFORE a select_chat cleared a chat's
+      // unread, so letting it overwrite the cache would resurrect a cleared
+      // dot the moment this workspace becomes non-active again. Skip the
+      // active workspace; its live snapshot always wins.
+      if (id === activeWorkspaceIdRef.current) {
+        return;
+      }
       setWorkspaceChats((prev) => ({ ...prev, [id]: chats }));
     },
     [client],
   );
+  // Stable ref so the SSE idle handler (which closes over an old render) can
+  // re-fetch a background workspace's list when one of its chats finishes.
+  const refreshWorkspaceChatsRef = useRef<(id: string) => void>(() => {});
+  useEffect(() => {
+    refreshWorkspaceChatsRef.current = (id: string) => {
+      void refreshWorkspaceChats(id);
+    };
+  }, [refreshWorkspaceChats]);
 
   const toggleChatArchive = useCallback(
     async (key: string) => {

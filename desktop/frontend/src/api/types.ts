@@ -60,6 +60,10 @@ export interface ChatSummary {
   planMode?: boolean;
   /** Whether the chat has been archived (hidden from the sidebar). */
   archived?: boolean;
+  /** True when a task finished in this chat while the user wasn't viewing it.
+   *  Persisted server-side (``has_unread`` in the chat record + chats.json
+   *  index); the sidebar shows it as the blue dot until the chat is opened. */
+  hasUnread?: boolean;
   /** Pending input queue: messages typed while the model was busy, waiting to be sent. */
   pendingInputs?: string[];
 }
@@ -70,6 +74,7 @@ export interface WorkspaceChatSummary {
   name: string;
   updatedAt?: string;
   archived?: boolean;
+  hasUnread?: boolean;
 }
 
 /** General-runtime settings exposed by the GUI's General settings page. */

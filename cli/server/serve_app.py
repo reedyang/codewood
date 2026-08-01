@@ -27,6 +27,7 @@ import logging
 import os
 import queue
 import re
+import logging
 import secrets
 import subprocess
 import sys
@@ -37,6 +38,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
+
+from ..config.app_info import get_app_logger_root
+
+logger = logging.getLogger(f"{get_app_logger_root()}.server")
 
 from ..core.console_utils import (
     GUI_FORCE_PROMPT_PREFIX,
@@ -143,6 +148,7 @@ def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
                 "name": str(c.get("name") or ""),
                 "updatedAt": str(c.get("updated_at") or ""),
                 "archived": bool(c.get("archived", False)),
+                "hasUnread": bool(c.get("has_unread", False)),
             }
         )
     return out
@@ -1420,6 +1426,11 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
                     # of defaulting every chat to Agent.
                     "planMode": _chat_mode_is_plan(c),
                     "archived": bool(c.get("archived", False)),
+                    # True when a task finished in this chat while the user was
+                    # not viewing it. Persisted in the chat record + chats.json
+                    # index (``has_unread``); the sidebar shows it as the blue
+                    # dot until the chat is opened (select_chat clears it).
+                    "hasUnread": bool(c.get("has_unread", False)),
                     "pendingInputs": [str(x) for x in (c.get("pending_inputs") or []) if str(x).strip()],
                     # Private: keep the on-disk record file stem so side-data
                     # (file_changes.json) can be resolved without find_chat_by_id.
@@ -1677,6 +1688,19 @@ class ServeApp:
         # workspace keeps using the agent globals and is not cached here.
         self._ws_persist_ctx: Dict[str, Dict[str, Any]] = {}
         self._ws_persist_lock = threading.Lock()
+        # GUI focus tracking for the unread blue-dot logic. ``_focus_key`` is
+        # the workspace-qualified chat the user last opened (via select_chat);
+        # ``_focus_left_at`` records when the user switched AWAY from each chat
+        # (monotonic seconds) and ``_focus_left_busy`` whether that chat's task
+        # was still running at the moment they left. A turn that finishes right
+        # after the user switched away is only suppressed as "they were
+        # watching" when the chat was ALREADY idle when they left — if its task
+        # was still running, the completion genuinely happened in the background
+        # and is flagged unread.
+        self._focus_key = ""
+        self._focus_left_at: Dict[str, float] = {}
+        self._focus_left_busy: Dict[str, bool] = {}
+        self._focus_track_lock = threading.Lock()
         self._bridge: Optional["_OutputBridge"] = None
         # Let the chat-state saver know which chats this process owns a
         # live runtime for, so a cross-process merge-on-save never skips
@@ -1885,6 +1909,134 @@ class ServeApp:
         return _build_state_inner(self.agent,
             workspace_id=rt.workspace_id if rt is not None else "")
 
+    def _chat_is_busy_key(self, key: str) -> bool:
+        """True iff the runtime identified by a workspace-qualified key is busy.
+
+        ``key`` is the same composite ``_runtime_key`` produces (and the
+        ``_focus_key`` marker uses), so a focus-leave snapshot can look up the
+        chat being left directly without re-splitting the key.
+        """
+        if not key:
+            return False
+        try:
+            with self._runtimes_lock:
+                rt = self._runtimes.get(key)
+            return bool(rt is not None and rt.busy.is_set())
+        except Exception:
+            return False
+
+    def _track_focus(self, chat_id: str, workspace_id: str = "") -> None:
+        """Record that the GUI user opened ``chat_id`` (and left the previous one).
+
+        Drives the unread decision's "just left a busy chat" window: when the
+        user switches away from a chat, its leave time AND whether its task was
+        still running are snapshotted here. A turn that finishes a moment later
+        is only suppressed as "the user was watching" when the chat was ALREADY
+        idle when they left; if the task was still running, the completion is a
+        genuine background one and the chat is flagged unread. Only explicit
+        user opens (select_chat) move the focus marker; backend-internal
+        ``_activate_chat`` calls (e.g. chat-history reads) never do.
+        """
+        key = self._runtime_key(chat_id, workspace_id)
+        if not key:
+            return
+        with self._focus_track_lock:
+            prev_key = self._focus_key
+            now = time.monotonic()
+            if prev_key and prev_key != key:
+                self._focus_left_at[prev_key] = now
+            self._focus_key = key
+        if prev_key and prev_key != key:
+            # Snapshot whether the chat we just left had a task still running;
+            # the unread decision uses this to tell "user watched it finish"
+            # (chat idle at leave) from "genuine background completion" (chat
+            # still busy at leave).
+            try:
+                prev_busy = self._chat_is_busy_key(prev_key)
+            except Exception:
+                prev_busy = False
+            with self._focus_track_lock:
+                self._focus_left_busy[prev_key] = prev_busy
+
+    def _mark_completed_chat_unread(self, rt: Optional["_ChatRuntime"]) -> None:
+        """Set/clear the persistent unread flag when a chat's turn finishes.
+
+        The chat whose loop just returned to waiting for input is ``rt``. It is
+        "background" (unread) when it is NOT the chat the GUI user is currently
+        viewing: either a different chat in the focused workspace, or any chat
+        in a non-focused workspace (a loop thread whose workspace differs from
+        the focused one runs with a thread-local persistence override, so the
+        flag is written into ITS OWN workspace's index). Finishing while the
+        user is viewing the chat clears any stale flag. The flag is decided
+        here, at turn end, so late/duplicate idle events can never re-mark a
+        chat the user already saw complete — including the case where the user
+        switched away a moment before the loop thread got to run (the
+        ``just_left`` window below only fires when the chat was already idle at
+        leave time, i.e. the user had actually watched it finish).
+        """
+        if rt is None:
+            return
+        cid = str(getattr(rt, "chat_id", "") or "").strip()
+        if not cid:
+            return
+        try:
+            rt_ws = str(getattr(rt, "workspace_id", "") or "").strip()
+            focused_ws = str(getattr(self.agent, "workspace_id", "") or "").strip()
+            # A chat in a non-focused workspace is by definition not being
+            # viewed. Otherwise the chat is "focused" when it matches the chat
+            # the GUI user last opened (select_chat), falling back to the
+            # workspace index's active chat before any user switch has happened
+            # (startup). Using the user-driven marker instead of the raw index
+            # keeps the decision immune to backend-internal _activate_chat
+            # calls (chat-history reads) transiently moving the active pointer.
+            background = bool(rt_ws) and rt_ws != focused_ws
+            key = self._runtime_key(cid, rt_ws)
+            lock = getattr(self, "_focus_track_lock", None)
+            if lock is not None:
+                with lock:
+                    current = str(getattr(self, "_focus_key", "") or "")
+                    left_at = float(getattr(self, "_focus_left_at", {}).get(key, 0.0) or 0.0)
+                    left_busy = bool(getattr(self, "_focus_left_busy", {}).get(key, False))
+            else:
+                current = str(getattr(self, "_focus_key", "") or "")
+                left_at = float(getattr(self, "_focus_left_at", {}).get(key, 0.0) or 0.0)
+                left_busy = bool(getattr(self, "_focus_left_busy", {}).get(key, False))
+            if background:
+                focused = False
+            elif current:
+                focused = key == current
+            else:
+                focused = cid == _primary_active_chat_id(self.agent)
+            # The user was watching the completion only if they left this chat
+            # very recently (a few seconds) AND its task was ALREADY done when
+            # they left — otherwise the task was still running and the finish is
+            # a genuine background completion. Mirrors the legacy frontend
+            # ``wasWatching`` heuristic, now decided server-side and persisted.
+            just_left = (
+                left_at > 0
+                and (time.monotonic() - left_at) < 3.0
+                and not left_busy
+            )
+            unread = (not focused) and (not just_left)
+            try:
+                logger.debug(
+                    "mark_completed_chat_unread chat=%s rt_ws=%s focused_ws=%s "
+                    "background=%s focus_key=%r left_at=%.2f left_busy=%s -> unread=%s",
+                    cid, rt_ws, focused_ws, background, current, left_at, left_busy, unread,
+                )
+            except Exception:
+                pass
+            setter = getattr(self.agent, "_set_chat_unread", None)
+            if callable(setter):
+                setter(cid, unread)
+            else:
+                manager = getattr(self.agent, "_chat_state_manager", None)
+                setter2 = getattr(manager, "set_chat_unread", None)
+                if callable(setter2):
+                    setter2(cid, unread)
+        except Exception:
+            pass
+
     def _input_provider(self) -> str:
         """Replacement for ``agent._get_user_input_with_history``.
 
@@ -1893,9 +2045,32 @@ class ServeApp:
         chat's id.
         """
         rt = self._runtime_for_thread()
-        self._record_turn_elapsed(rt)
-        if rt is not None:
+        # A turn has just finished only when the runtime was marked busy — the
+        # loop also calls this once at spawn and after every park, when there
+        # is no turn to account for. Decide the unread flag immediately (before
+        # any slower post-turn work such as the elapsed-time summary), so the
+        # user's focus at completion time is still accurate: waiting longer
+        # would let them switch to another chat and falsely flag this one.
+        was_busy = rt is not None and rt.busy.is_set()
+        if was_busy:
             rt.busy.clear()
+            # Only a GENUINE model turn leaves an unread marker. The loop also
+            # returns here after GUI-internal commands (rename, edit, fork,
+            # execution-policy, and drained request_user_input prompts), which
+            # set ``busy`` but produce no new task output — marking those would
+            # surface spurious blue dots on chats with no real activity.
+            # ``turn_record_pending`` is exactly the "this was a real user
+            # prompt" flag the elapsed-time recorder uses for the same reason.
+            pending = bool(getattr(rt, "turn_record_pending", False))
+            started = getattr(rt, "turn_started_at", None) is not None
+            if pending and started:
+                # If the chat that ran is NOT the one the user is currently
+                # viewing, leave a persistent unread flag (blue dot) on it —
+                # decided deterministically here, at the moment the turn ends,
+                # instead of by a frontend heuristic that raced with focus
+                # switches. Opening the chat (select_chat) clears the flag.
+                self._mark_completed_chat_unread(rt)
+        self._record_turn_elapsed(rt)
         self.broadcaster.publish(
             "idle", self._route(state=self._state_for_loop_thread())
         )
@@ -3021,6 +3196,9 @@ class ServeApp:
                     rid = str(target.get("id") or "") if target else ""
                 if not rid:
                     return False
+                track = getattr(self, "_track_focus", None)
+                if callable(track):
+                    track(rid, wsid)
                 if self._chat_is_busy(rid):
                     with agent._chat_state_lock:
                         agent._chat_state["active"] = rid
@@ -3047,6 +3225,21 @@ class ServeApp:
                             save()
                     except Exception:
                         pass
+                # The user opened this chat — its unread blue dot is cleared.
+                # Done for both the busy (focus-only) and idle (full activate)
+                # branches; the next state broadcast carries the cleared flag.
+                try:
+                    setter = getattr(agent, "_set_chat_unread", None)
+                    if callable(setter):
+                        setter(rid, False)
+                    else:
+                        manager = getattr(agent, "_chat_state_manager", None)
+                        if manager is not None:
+                            mset = getattr(manager, "set_chat_unread", None)
+                            if callable(mset):
+                                mset(rid, False)
+                except Exception:
+                    pass
         except Exception:
             return False
         threading.Thread(
@@ -6041,6 +6234,7 @@ class ServeApp:
                             "name": str(c.get("name") or ""),
                             "updatedAt": str(c.get("updated_at") or ""),
                             "archived": bool(c.get("archived", False)),
+                            "hasUnread": bool(c.get("has_unread", False)),
                         }
                     )
             except Exception:
