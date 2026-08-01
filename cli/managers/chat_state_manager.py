@@ -14,6 +14,12 @@ from ..core.localization import translate
 
 logger = logging.getLogger("codewood.chat_state")
 
+# ``updated_at`` is a top-level record field serialized near the start of the
+# file (before ``messages``), so the save-time disk-newer-wins check for
+# unchanged chats can read just the header instead of parsing the whole JSON.
+_UPDATED_AT_HEAD_RE = re.compile(r'"updated_at"\s*:\s*"([^"]+)"')
+_UPDATED_AT_HEAD_BYTES = 1024
+
 
 def _safe_replace(src: Path, dst: Path) -> None:
     """Replace *dst* with *src*, retrying on Windows transient locks."""
@@ -467,6 +473,7 @@ class ChatStateManager:
         # the chat record. The in-memory snapshot (``_last_context_*``) rebuilt
         # from the message history on activate is authoritative, so a new chat
         # starts with no usage fields and the GUI falls back to that snapshot.
+        self.mark_chat_dirty(chat_id)
         return {
             "id": chat_id,
             "name": name,
@@ -650,6 +657,71 @@ class ChatStateManager:
         except Exception:
             pass
 
+    # ---- per-chat dirty tracking -----------------------------------------
+    # ``save_chat_state`` used to re-read + re-serialize EVERY chat record on
+    # every save (disk-newer-wins timestamp check + serialized-text compare),
+    # which scaled linearly with the total chat history bytes and made chat
+    # switching slow in workspaces with many/large chats. We now skip the
+    # expensive read/serialize/write for chats that are unchanged since the
+    # last time we loaded or wrote them, tracking dirtiness per chat. Keys are
+    # scoped by the workspace's records dir so same-id chats in different
+    # workspaces never share a dirty flag.
+
+    def _dirty_scope(self) -> str:
+        try:
+            return str(self.chat_records_dir().resolve())
+        except Exception:
+            return "default"
+
+    def _dirty_key(self, chat_id: str) -> str:
+        cid = str(chat_id or "").strip()
+        return f"{self._dirty_scope()}::{cid}" if cid else ""
+
+    def _dirty_ids(self) -> set:
+        ids = getattr(self._agent, "_chat_dirty_ids", None)
+        if not isinstance(ids, set):
+            ids = set()
+            self._agent._chat_dirty_ids = ids
+        return ids
+
+    def mark_chat_dirty(self, chat_id: str) -> None:
+        key = self._dirty_key(chat_id)
+        if key:
+            self._dirty_ids().add(key)
+
+    def clear_chat_dirty(self, chat_id: str) -> None:
+        key = self._dirty_key(chat_id)
+        if key:
+            self._dirty_ids().discard(key)
+
+    def reset_chat_dirty(self) -> None:
+        self._agent._chat_dirty_ids = set()
+
+    def _seed_last_written_from_chats(self, chats: Any) -> None:
+        """Record that freshly loaded chat records match their on-disk state.
+
+        After ``load_chat_state`` / ``load_chat_state_snapshot`` the in-memory
+        entries are byte-for-byte what is on disk, so a subsequent save can
+        skip them entirely (no disk read, no serialization, no write) unless
+        they are explicitly marked dirty or become active/running.
+        """
+        try:
+            last_written = getattr(self._agent, "_last_saved_chat_updated_at", None)
+            if not isinstance(last_written, dict):
+                last_written = {}
+                self._agent._last_saved_chat_updated_at = last_written
+            if not isinstance(chats, list):
+                return
+            for chat in chats:
+                if not isinstance(chat, dict):
+                    continue
+                rf = str(chat.get("_record_file") or "").strip()
+                if not rf:
+                    continue
+                last_written[rf] = str(chat.get("updated_at") or "")
+        except Exception:
+            pass
+
     def save_chat_state(self) -> None:
         # Serialize all writers under the agent's reentrant chat-state lock.
         # When several chat loops run concurrently they each persist their own
@@ -726,6 +798,29 @@ class ChatStateManager:
             index_chats = []
             current_record_paths = set()
             index_dirty = False
+            # Dirty/clean tracking: only chats whose record actually changed
+            # get the expensive disk-read + serialize + write treatment.
+            last_written = getattr(self._agent, "_last_saved_chat_updated_at", None)
+            if not isinstance(last_written, dict):
+                last_written = {}
+                self._agent._last_saved_chat_updated_at = last_written
+            dirty_keys = self._dirty_ids()
+            dirty_scope = self._dirty_scope()
+
+            def _index_entry() -> Dict[str, Any]:
+                return {
+                    "id": cid,
+                    "name": str(chat.get("name") or "New Chat"),
+                    "name_source": str(chat.get("name_source") or "default"),
+                    "created_at": str(chat.get("created_at") or ""),
+                    "updated_at": str(chat.get("updated_at") or ""),
+                    "model_provider": str(chat.get("model_provider") or ""),
+                    "model_name": str(chat.get("model_name") or ""),
+                    "record_file": record_file,
+                    "archived": bool(chat.get("archived", False)),
+                    "first_user_message_at": str(chat.get("first_user_message_at") or ""),
+                }
+
             for chat in chats:
                 if not isinstance(chat, dict):
                     continue
@@ -736,6 +831,60 @@ class ChatStateManager:
                 record_path = self._resolve_chat_record_path(record_file)
                 current_record_paths.add(record_path.resolve())
                 record_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Fast path: a chat we have loaded/written and not mutated since
+                # needs no disk read, serialization, or write on this save. Only
+                # chats that are active/running, explicitly dirty, missing on
+                # disk, or whose ``updated_at`` moved since our last load/write
+                # go through the full per-record handling below. This keeps a
+                # save's cost proportional to the chats that actually changed
+                # instead of the workspace's total chat history size.
+                needs_full = (
+                    cid in actively_running_ids
+                    or cid == active
+                    or f"{dirty_scope}::{cid}" in dirty_keys
+                    or not record_path.exists()
+                    or str(chat.get("updated_at") or "") != last_written.get(record_path.name, "")
+                )
+                if not needs_full:
+                    # Cheap disk-newer-wins check for a clean chat: read only
+                    # the record header (``updated_at`` is near the top) instead
+                    # of parsing the whole JSON. If a peer process wrote a
+                    # strictly newer record we refresh our in-memory copy the
+                    # same way the full path does; otherwise there is nothing to
+                    # write, so we skip the serialization and I/O entirely. This
+                    # keeps a save's cost proportional to the chats that actually
+                    # changed rather than the workspace's total history size.
+                    _disk_ts = 0.0
+                    _disk_upd = ""
+                    try:
+                        with open(record_path, "r", encoding="utf-8") as f:
+                            _head = f.read(_UPDATED_AT_HEAD_BYTES)
+                        _m = _UPDATED_AT_HEAD_RE.search(_head)
+                        if _m:
+                            _disk_upd = _m.group(1).strip()
+                            _disk_ts = self._parse_record_timestamp(_disk_upd)
+                    except Exception:
+                        _disk_ts = 0.0
+                        _disk_upd = ""
+                    _mem_ts = self._parse_record_timestamp(chat.get("updated_at"))
+                    if _disk_ts > _mem_ts:
+                        try:
+                            with open(record_path, "r", encoding="utf-8") as f:
+                                _disk_raw = json.load(f)
+                            if isinstance(_disk_raw, dict) and str(_disk_raw.get("id") or "") == cid:
+                                _preserved_archived = bool(chat.get("archived", False))
+                                _refreshed = self._validate_chat_entry(_disk_raw)
+                                _refreshed["archived"] = _preserved_archived
+                                _refreshed["_record_file"] = record_file
+                                chat.clear()
+                                chat.update(_refreshed)
+                                last_written[record_path.name] = _disk_upd
+                                dirty_keys.discard(f"{dirty_scope}::{cid}")
+                        except Exception:
+                            pass
+                    index_chats.append(_index_entry())
+                    continue
 
                 # For a chat this process does not own, prefer a newer
                 # on-disk record (written by a peer process) over our
@@ -763,22 +912,13 @@ class ChatStateManager:
                                 chat.update(refreshed)
                             except Exception:
                                 pass
-                            index_chats.append(
-                                {
-                                    "id": cid,
-                                    "name": str(chat.get("name") or "New Chat"),
-                                    "name_source": str(chat.get("name_source") or "default"),
-                                    "created_at": str(chat.get("created_at") or ""),
-                                    "updated_at": str(chat.get("updated_at") or ""),
-                                    "model_provider": str(chat.get("model_provider") or ""),
-                                    "model_name": str(chat.get("model_name") or ""),
-                                    "record_file": record_file,
-                                    "archived": bool(chat.get("archived", False)),
-                                }
-                            )
+                            last_written[record_path.name] = str(chat.get("updated_at") or "")
+                            dirty_keys.discard(f"{dirty_scope}::{cid}")
+                            index_chats.append(_index_entry())
                             continue
 
                 if write_record:
+                    _record_ok = True
                     record_payload = {
                         k: v for k, v in chat.items()
                         if (not str(k).startswith("_") or k == "_tool_rounds_raw")
@@ -788,6 +928,7 @@ class ChatStateManager:
                     # index. A mismatch means the in-memory dict was cross-contaminated
                     # and writing it would permanently corrupt the record file.
                     if str(record_payload.get("id") or "").strip() != cid:
+                        _record_ok = False
                         logger.error(
                             "save_chat_state: refusing to write %s — record id=%r != chat_id=%r. "
                             "Cross-contamination prevented; index entry preserved from memory. "
@@ -822,6 +963,7 @@ class ChatStateManager:
                                         first_user_at = str(m.get("created_at") or "").strip()
                                         break
                                 if first_user_at and first_user_at != anchored:
+                                    _record_ok = False
                                     logger.error(
                                         "save_chat_state: refusing to write %s — "
                                         "first user msg timestamp (%s) != "
@@ -859,20 +1001,12 @@ class ChatStateManager:
                                     f.write(new_text)
                                 _safe_replace(tmp_path, record_path)
                                 index_dirty = True
-                index_chats.append(
-                    {
-                        "id": cid,
-                        "name": str(chat.get("name") or "New Chat"),
-                        "name_source": str(chat.get("name_source") or "default"),
-                        "created_at": str(chat.get("created_at") or ""),
-                        "updated_at": str(chat.get("updated_at") or ""),
-                        "model_provider": str(chat.get("model_provider") or ""),
-                        "model_name": str(chat.get("model_name") or ""),
-                        "record_file": record_file,
-                        "archived": bool(chat.get("archived", False)),
-                        "first_user_message_at": str(chat.get("first_user_message_at") or ""),
-                    }
-                )
+                # The record now reflects the in-memory chat (written or already
+                # identical on disk); mark it clean so the next save skips it.
+                if _record_ok:
+                    last_written[record_path.name] = str(chat.get("updated_at") or "")
+                    dirty_keys.discard(f"{dirty_scope}::{cid}")
+                index_chats.append(_index_entry())
 
             # Detect chat additions/deletions or active-chat changes even when
             # no record was rewritten: the index must be updated.
@@ -1008,6 +1142,7 @@ class ChatStateManager:
         self._agent._startup_chat_state_warning = ""
         try:
             if not p.exists():
+                self.reset_chat_dirty()
                 if create_default_chat:
                     self._agent._chat_state = self.default_chat_state()
                     self._agent._last_saved_index_count = len(self._agent._chat_state.get("chats", []))
@@ -1106,6 +1241,10 @@ class ChatStateManager:
             self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": active, "chats": chats}
             self._agent._last_saved_index_count = len(chats)
             self._agent._last_saved_active = active
+            # Freshly loaded records match disk; seed clean-tracking so the next
+            # save only touches the active/running chat.
+            self.reset_chat_dirty()
+            self._seed_last_written_from_chats(chats)
             # Drop any orphan chat side-data directories whose chat record is
             # gone (e.g. a chat deleted by a peer process) so pasted images and
             # preview sidecars never outlive their chat.
@@ -1128,6 +1267,7 @@ class ChatStateManager:
             self._agent._startup_chat_state_warning = (
                 f"⚠️ Failed to read chat state; it has been reset to the default session: {e}"
             )
+            self.reset_chat_dirty()
             self._agent._chat_state = self.default_chat_state()
             self.activate_chat(
                 self._agent._chat_state["active"],
@@ -1200,6 +1340,9 @@ class ChatStateManager:
                 not active or not any(str(c.get("id") or "") == active for c in chats)
             ):
                 active = str(chats[0].get("id") or "")
+            # Freshly loaded snapshot records match disk, so background-workspace
+            # saves can skip them unless marked dirty.
+            self._seed_last_written_from_chats(chats)
             return {
                 "version": CHAT_STATE_VERSION,
                 "active": active,
@@ -1264,6 +1407,18 @@ class ChatStateManager:
                     # Preserve archived from the old entry (stored only in index)
                     refreshed["archived"] = bool(entry.get("archived", False))
                     chats[idx] = refreshed
+                    # Memory now matches disk for this chat — clear its dirty
+                    # flag and record the freshly-read timestamp so the next
+                    # save skips it (unless it is active/running).
+                    try:
+                        last_written = getattr(self._agent, "_last_saved_chat_updated_at", None)
+                        if not isinstance(last_written, dict):
+                            last_written = {}
+                            self._agent._last_saved_chat_updated_at = last_written
+                        last_written[record_file] = str(refreshed.get("updated_at") or "")
+                    except Exception:
+                        pass
+                    self.clear_chat_dirty(cid)
                     return True
         return False
 
@@ -1399,6 +1554,7 @@ class ChatStateManager:
                 return
             if msgs:
                 chat["updated_at"] = self._now_text()
+        self.mark_chat_dirty(self._agent.active_chat_id)
         self.save_chat_state()
         self._notify_gui_context_usage_changed()
 
@@ -1421,6 +1577,7 @@ class ChatStateManager:
             if not chat:
                 return False
             chat["pending_inputs"] = [str(x) for x in inputs if str(x).strip()]
+            self.mark_chat_dirty(cid)
             self.save_chat_state()
             return True
 
@@ -1442,6 +1599,7 @@ class ChatStateManager:
                 # next runtime refresh recomputes it from the (now empty) history.
                 self._agent._last_context_usage_percent = 0
                 self._agent._last_context_input_tokens = 0
+            self.mark_chat_dirty(cid)
             self.save_chat_state()
             self._notify_gui_context_usage_changed()
             return True
@@ -1505,6 +1663,7 @@ class ChatStateManager:
                 return True
             chat["mode"] = new_mode
             chat["updated_at"] = self._now_text()
+            self.mark_chat_dirty(cid)
             try:
                 self.save_chat_state()
             except Exception:

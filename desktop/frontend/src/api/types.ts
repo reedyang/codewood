@@ -60,8 +60,6 @@ export interface ChatSummary {
   planMode?: boolean;
   /** Whether the chat has been archived (hidden from the sidebar). */
   archived?: boolean;
-  /** Per-chat file-change summaries (list of per-turn summaries, survives restarts via getState). */
-  fileChanges?: FileChangeSummary[];
   /** Pending input queue: messages typed while the model was busy, waiting to be sent. */
   pendingInputs?: string[];
 }
