@@ -3835,10 +3835,130 @@ class ServeApp:
         except Exception:
             return {"ok": False, "error": "save failed"}
 
-    def read_chat_image(self, path: str) -> Optional[tuple]:
+    # Draft (pre-chat) attachments -------------------------------------------
+    # Pasting an image or dropping a file while the GUI is composing a brand
+    # new chat (draft mode) must NOT materialize a chat yet. Files are staged
+    # under the workspace cache dir instead, then moved into the chat's data
+    # dir when the user actually sends (see ``materialize_draft_attachments``).
+
+    def _draft_attachment_dir(self, workspace_id: str = "") -> Optional[Path]:
+        """Resolve the cache dir that stages draft attachments for a workspace."""
+        try:
+            cfg = self._workspace_config_dir_for(str(workspace_id or "").strip())
+            if cfg is None:
+                cfg = Path(str(getattr(self.agent, "workspace_config_dir", "") or ""))
+            if not str(cfg):
+                return None
+            return (cfg / "cache" / "draft-attachments").resolve()
+        except Exception:
+            return None
+
+    def save_draft_attachment(
+        self, workspace_id: str, data_url: str, file_name: str = ""
+    ) -> Dict[str, Any]:
+        """Validate + persist a pasted image or dropped file into the workspace
+        cache dir. No chat is created — the GUI stages attachments here while
+        composing a brand-new chat. Returns ``{ok, path, name}`` or
+        ``{ok: False, error}``."""
+        import base64
+        import os
+        import re
+
+        m = re.match(
+            r"^data:([a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,(.+)$",
+            str(data_url or ""),
+            re.DOTALL,
+        )
+        if not m:
+            return {"ok": False, "error": "invalid data url"}
+        mime = m.group(1).lower()
+        ext = self._DROPPED_FILE_EXT.get(mime) or self._PASTE_IMAGE_EXT.get(mime)
+        if not ext:
+            # Fall back to the source file's extension.
+            base = os.path.basename(str(file_name or ""))
+            _, dot_ext = os.path.splitext(base)
+            ext = (dot_ext.lstrip(".") or "").lower() or "bin"
+        try:
+            raw = base64.b64decode(m.group(2), validate=True)
+        except Exception:
+            return {"ok": False, "error": "invalid base64"}
+        if not raw:
+            return {"ok": False, "error": "empty file"}
+        if len(raw) > 50 * 1024 * 1024:
+            return {"ok": False, "error": "file too large"}
+        try:
+            stage_dir = self._draft_attachment_dir(workspace_id)
+            if stage_dir is None:
+                return {"ok": False, "error": "unknown workspace"}
+            import secrets
+
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            orig_base = os.path.basename(str(file_name or ""))
+            if orig_base:
+                stem, orig_ext = os.path.splitext(orig_base)
+                name = f"{stem}_{secrets.token_hex(4)}{orig_ext or ('.' + ext)}"
+            else:
+                name = f"draft_{secrets.token_hex(8)}.{ext}"
+            target = stage_dir / name
+            target.write_bytes(raw)
+            return {"ok": True, "path": str(target.resolve()), "name": name}
+        except Exception:
+            return {"ok": False, "error": "save failed"}
+
+    def materialize_draft_attachments(
+        self, chat_id: str, workspace_id: str, paths: Any
+    ) -> Dict[str, Any]:
+        """Move staged draft attachments (under the workspace cache
+        ``draft-attachments`` dir) into the chat's side-data dir. Paths that
+        don't live in the staging dir are returned unchanged. Returns
+        ``{ok, mapping: {old_path: new_path}}``."""
+        import shutil
+
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return {"ok": False, "error": "missing chatId"}
+        data_dir = self._chat_data_dir_for(cid, workspace_id)
+        if data_dir is None:
+            return {"ok": False, "error": "unknown chat"}
+        stage_dir = self._draft_attachment_dir(workspace_id)
+        if stage_dir is None:
+            return {"ok": False, "error": "unknown workspace"}
+        stage_dir_res = stage_dir.resolve()
+        mapping: Dict[str, str] = {}
+        if not isinstance(paths, list):
+            paths = []
+        try:
+            for p in paths:
+                old = str(p or "").strip()
+                if not old:
+                    continue
+                src = Path(old).resolve()
+                try:
+                    src.relative_to(stage_dir_res)
+                except ValueError:
+                    mapping[old] = old
+                    continue
+                if not src.is_file():
+                    mapping[old] = old
+                    continue
+                data_dir.mkdir(parents=True, exist_ok=True)
+                dest = data_dir / src.name
+                if dest.exists():
+                    import secrets
+
+                    dest = data_dir / f"{src.stem}_{secrets.token_hex(4)}{src.suffix}"
+                shutil.move(str(src), str(dest))
+                mapping[old] = str(dest.resolve())
+            return {"ok": True, "mapping": mapping}
+        except Exception:
+            return {"ok": False, "error": "move failed"}
+
+    def read_chat_image(self, path: str, workspace_id: str = "") -> Optional[tuple]:
         """Return ``(bytes, content_type)`` for a pasted image, but ONLY when
-        ``path`` resolves to a file inside the chats/data directory. Returns
-        ``None`` otherwise (path traversal / not found)."""
+        ``path`` resolves to a file inside the chats/data directory OR inside
+        the workspace cache ``draft-attachments`` dir (draft-mode previews
+        before a chat exists). Returns ``None`` otherwise (path traversal /
+        not found)."""
         try:
             mgr = getattr(self.agent, "_chat_state_manager", None)
             if mgr is None:
@@ -3846,11 +3966,22 @@ class ServeApp:
             records_dir = mgr.chat_records_dir()
             data_root = (records_dir / "data").resolve()
             target = Path(str(path or "")).resolve()
-            # Containment check: target must live under chats/data.
+            # Containment check: target must live under chats/data, or under
+            # the workspace cache draft-attachments dir.
+            under_data = False
             try:
                 target.relative_to(data_root)
+                under_data = True
             except ValueError:
-                return None
+                pass
+            if not under_data:
+                stage = self._draft_attachment_dir(workspace_id)
+                if stage is None:
+                    return None
+                try:
+                    target.relative_to(stage)
+                except ValueError:
+                    return None
             if not target.exists() or not target.is_file():
                 return None
             ext = target.suffix.lower().lstrip(".")
@@ -7357,7 +7488,8 @@ def _make_handler(app: ServeApp):
             if path == "/chat-image":
                 vals = query.get("path") or []
                 img_path = str(vals[0]) if vals else ""
-                result = app.read_chat_image(img_path)
+                ws_vals = query.get("workspaceId") or []
+                result = app.read_chat_image(img_path, str(ws_vals[0]) if ws_vals else "")
                 if result is None:
                     self._send_json(404, {"error": "not found"})
                 else:
@@ -7407,6 +7539,8 @@ def _make_handler(app: ServeApp):
             # default 1 MiB JSON cap; allow a larger body only for that route.
             if path == "/paste-image":
                 max_body = ServeApp._PASTE_IMAGE_MAX_BYTES * 2 + 65536
+            elif path == "/save-draft-attachment":
+                max_body = 50 * 1024 * 1024 * 2 + 65536
             elif path == "/save-dropped-file":
                 max_body = 50 * 1024 * 1024 * 2 + 65536
             elif path == "/browser-preview-html":
@@ -7478,6 +7612,24 @@ def _make_handler(app: ServeApp):
                     self._send_json(413, {"error": "file too large"})
                     return
                 result = app.save_dropped_file(chat_id, data_url, file_name, workspace_id)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/save-draft-attachment":
+                workspace_id = str(body.get("workspaceId") or "")[:256]
+                data_url = str(body.get("dataUrl") or "")
+                file_name = str(body.get("fileName") or "")[:256]
+                max_url_len = 50 * 1024 * 1024 * 2
+                if len(data_url) > max_url_len:
+                    self._send_json(413, {"error": "file too large"})
+                    return
+                result = app.save_draft_attachment(workspace_id, data_url, file_name)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/materialize-draft-attachments":
+                chat_id = str(body.get("chatId") or "")[:256]
+                workspace_id = str(body.get("workspaceId") or "")[:256]
+                paths = body.get("paths")
+                result = app.materialize_draft_attachments(chat_id, workspace_id, paths)
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/browser-result":
