@@ -180,6 +180,40 @@ function DraftCreateProbe() {
   );
 }
 
+function DraftModelPreserveProbe() {
+  const { state, newChat, setModel, setReasoning, setDraftHasContent } =
+    useApp();
+  return (
+    <>
+      <button
+        onClick={() => {
+          void newChat("ws-1");
+        }}
+      >
+        enter draft
+      </button>
+      <button
+        onClick={() => {
+          void setModel("openai/family/model/v2");
+        }}
+      >
+        select draft model
+      </button>
+      <button
+        onClick={() => {
+          void setReasoning("high");
+        }}
+      >
+        select draft reasoning
+      </button>
+      <button onClick={() => setDraftHasContent(true)}>mark draft content</button>
+      <pre data-testid="draft-model-state">
+        {JSON.stringify(state?.model)}
+      </pre>
+    </>
+  );
+}
+
 function HistoryReloadProbe() {
   const { state, selectWorkspace } = useApp();
   return (
@@ -870,6 +904,118 @@ describe("AppContext thinking rounds", () => {
       expect(apiMock.sendInput).not.toHaveBeenCalled();
       // Local state is updated optimistically.
       expect(state.model.current).toBe("openai/family/model/v2");
+    });
+  });
+
+  it("keeps the draft model/reasoning when re-entering a draft that still has content", async () => {
+    render(
+      <AppProvider>
+        <DraftModelPreserveProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    // Choose a model + reasoning effort for the draft (not sent yet).
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "select draft model" }));
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "select draft reasoning" }),
+      );
+    });
+    // The user typed content into the draft composer (reported by ChatView).
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "mark draft content" }));
+    });
+
+    // Simulate the backend applying the model of the chat the user switched to
+    // (its idle/state snapshot overwrites the optimistic draft model display).
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            model: {
+              current: "provider/model",
+              available: ["provider/model", "openai/family/model/v2"],
+              ready: true,
+              reasoningEffort: "",
+              reasoningEfforts: [],
+            },
+          }),
+        },
+      });
+    });
+
+    // Click New Chat again to return to the existing draft.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await waitFor(() => {
+      const model = JSON.parse(
+        screen.getByTestId("draft-model-state").textContent || "{}",
+      ) as { current: string; reasoningEffort: string };
+      expect(model.current).toBe("openai/family/model/v2");
+      expect(model.reasoningEffort).toBe("high");
+    });
+  });
+
+  it("resets the draft model/reasoning for a fresh draft with no content", async () => {
+    render(
+      <AppProvider>
+        <DraftModelPreserveProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    // Pick a model but never type anything.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "select draft model" }));
+    });
+
+    act(() => {
+      apiMock.emit({
+        event: "state",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            model: {
+              current: "provider/model",
+              available: ["provider/model", "openai/family/model/v2"],
+              ready: true,
+              reasoningEffort: "",
+              reasoningEfforts: [],
+            },
+          }),
+        },
+      });
+    });
+
+    // A fresh New Chat with no draft content resets to inherit the last chat.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await waitFor(() => {
+      const model = JSON.parse(
+        screen.getByTestId("draft-model-state").textContent || "{}",
+      ) as { current: string; reasoningEffort: string };
+      expect(model.current).toBe("provider/model");
     });
   });
 

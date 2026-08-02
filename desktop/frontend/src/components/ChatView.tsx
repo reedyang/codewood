@@ -1016,6 +1016,7 @@ export function ChatView() {
     draftMode,
     draftWorkspaceId,
     setDraftWorkspace,
+    setDraftHasContent,
     askMoreInfo,
     answerAskMoreInfo,
     confirmRequest,
@@ -1084,6 +1085,22 @@ export function ChatView() {
       return { ...prev, [draftKey]: next };
     });
   };
+  // Report to AppContext whether the draft composer holds any content (typed
+  // text, file attachments, or pasted images) so ``newChat`` can preserve the
+  // draft's model/reasoning when the user returns to an existing draft after
+  // switching chats. The check targets the synthetic draft bucket directly —
+  // not the currently-active key — so it stays accurate even while another
+  // chat is focused.
+  const draftSegments = segmentsByChat[DRAFT_KEY] ?? [];
+  const draftImages = imageAttachmentsByChat[DRAFT_KEY] ?? [];
+  const draftHasContent = draftSegments.length > 0 || draftImages.length > 0;
+  useEffect(() => {
+    setDraftHasContent(draftHasContent);
+    return () => {
+      // ChatView unmounted: the local draft state is gone, nothing to preserve.
+      setDraftHasContent(false);
+    };
+  }, [draftHasContent, setDraftHasContent]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
   // Whether the transcript should auto-stick to the bottom on live updates.

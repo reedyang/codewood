@@ -260,6 +260,8 @@ interface AppContextValue {
   draftWorkspaceId: string;
   /** Choose the workspace the pending draft chat will be created in. */
   setDraftWorkspace: (workspaceId: string) => void;
+  /** Report whether the draft composer currently holds content (text/attachments). */
+  setDraftHasContent: (has: boolean) => void;
   /** Delete a chat (may leave the workspace chat-less, entering compose mode). */
   deleteChat: (chatId: string, workspaceId?: string) => Promise<void>;
   forkChat: (index: number) => Promise<void>;
@@ -593,11 +595,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Reasoning effort the user chose while in draft (compose) mode, applied
   // when the chat is materialized on first send. ``""`` means "inherit".
   const draftReasoningRef = useRef<string>("");
+  // Whether the pending draft (compose) session currently holds any typed
+  // content (text segments or attachments). Kept in a ref (no rendering
+  // impact) and reported by ChatView so ``newChat`` can distinguish "returning
+  // to an existing draft" (preserve its model/reasoning) from "starting a
+  // fresh draft" (reset to inherit from the last chat).
+  const draftHasContentRef = useRef(false);
   // Reset the pending draft model/reasoning when leaving draft mode so they
   // never leak into a later compose session.
   const resetDraftSelectionRef = useCallback(() => {
     draftModelRef.current = "";
     draftReasoningRef.current = "";
+  }, []);
+  // ChatView reports whether the draft composer holds any content so ``newChat``
+  // can decide whether a re-entered draft is a fresh session.
+  const setDraftHasContent = useCallback((has: boolean) => {
+    draftHasContentRef.current = has;
+  }, []);
+  // Apply the draft session's selected model/reasoning to the local model
+  // state (mirrors materializeDraftChat's application). When ``clear`` is true
+  // the refs are also reset so the selection is consumed exactly once.
+  const applyDraftSelectionToState = useCallback((clear: boolean) => {
+    const draftModel = draftModelRef.current;
+    const draftReasoning = draftReasoningRef.current;
+    if (clear) {
+      draftModelRef.current = "";
+      draftReasoningRef.current = "";
+    }
+    if (!draftModel && !draftReasoning) {
+      return;
+    }
+    setState((prev) => {
+      if (!prev) return prev;
+      let nextModel = { ...prev.model };
+      if (draftModel) {
+        const patch = buildModelChangePatch(draftModel, prev.model);
+        nextModel = {
+          ...nextModel,
+          current: draftModel,
+          ...(patch
+            ? {
+                reasoningEfforts: patch.reasoningEfforts,
+                reasoningEffort: patch.reasoningEffort,
+              }
+            : {}),
+        };
+      }
+      if (draftReasoning) {
+        nextModel = { ...nextModel, reasoningEffort: draftReasoning };
+      }
+      return { ...prev, model: nextModel };
+    });
   }, []);
   // Sub-agent session viewer state
   const [activeSubAgentSession, setActiveSubAgentSession] = useState<SubAgentSession | null>(null);
@@ -1065,38 +1113,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDraftMode(false);
     setDraftWorkspaceId("");
     // The backend already applied the model atomically (passed in newChat body).
-    const pendingModel = draftModelRef.current;
-    if (pendingModel) {
-      draftModelRef.current = "";
-      setState((prev) => {
-        if (!prev) return prev;
-        const patch = buildModelChangePatch(pendingModel, prev.model);
-        return {
-          ...prev,
-          model: {
-            ...prev.model,
-            current: pendingModel,
-            ...(patch
-              ? {
-                  reasoningEfforts: patch.reasoningEfforts,
-                  reasoningEffort: patch.reasoningEffort,
-                }
-              : {}),
-          },
-        };
-      });
-    }
-    // Apply the reasoning effort the user chose while in draft mode, if any.
-    const pendingReasoning = draftReasoningRef.current;
-    if (pendingReasoning) {
-      draftReasoningRef.current = "";
-      setState((prev) => {
-        if (!prev) return prev;
-        return { ...prev, model: { ...prev.model, reasoningEffort: pendingReasoning } };
-      });
-    }
+    // Mirror it locally and consume the draft selections.
+    applyDraftSelectionToState(true);
     return { chatId: newId, workspaceId: targetWsId };
-  }, [client]);
+  }, [client, applyDraftSelectionToState]);
 
   const pasteImage = useCallback(
     async (dataUrl: string) => {
@@ -3363,8 +3383,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
       setDraftWorkspaceId(wsId);
       setDraftMode(true);
-      // Clear any selection left over from a previous draft session.
-      resetDraftSelectionRef();
+      // Returning to a draft that still holds content (e.g. the user typed a
+      // message, switched to another chat, then clicked New Chat again) must
+      // keep the model/reasoning they chose for it, alongside the content.
+      // Only a genuinely fresh draft resets to "inherit from last chat".
+      if (draftHasContentRef.current) {
+        // Re-apply the preserved selection to local state so the composer
+        // shows it again (state.model currently reflects the chat we left).
+        applyDraftSelectionToState(false);
+      } else {
+        // Clear any selection left over from a previous draft session.
+        resetDraftSelectionRef();
+      }
       historyChatRef.current = "\u0000";
       setHistoryTurns([]);
       setHistoryStart(0);
@@ -3374,7 +3404,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return { ...prev, contextUsage: undefined, plan: undefined, cacheStats: undefined, tokenStats: undefined };
       });
     },
-    [state?.workspace.id],
+    [state?.workspace.id, applyDraftSelectionToState],
   );
 
   // Pick the target workspace for the pending draft chat (compose mode only).
@@ -4053,6 +4083,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     draftMode,
     draftWorkspaceId,
     setDraftWorkspace,
+    setDraftHasContent,
     deleteChat,
     forkChat,
     editChat,
