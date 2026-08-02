@@ -2120,6 +2120,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
             if (isStreamingChat && !stillRunning) {
               streamingKeyRef.current = "";
             }
+          } else if (next && idleForFocused) {
+            // The focused chat is STILL streaming: a full state replacement
+            // would clobber its live turns and disrupt content accumulation,
+            // but the snapshot may carry fresh UI-only preferences (background
+            // image / opacity, theme, language, console options, execution
+            // policy) changed via the settings pages while the task runs.
+            // Merge just those fields so e.g. a background image chosen during
+            // a task still appears (and its opacity slider enables) without
+            // touching the running turn's state.
+            setState((prev) => {
+              if (!prev) return next;
+              return {
+                ...prev,
+                ...(next.background !== undefined
+                  ? { background: next.background }
+                  : {}),
+                ...(next.theme !== undefined ? { theme: next.theme } : {}),
+                ...(next.language !== undefined
+                  ? { language: next.language }
+                  : {}),
+                ...(next.uiPrefs !== undefined
+                  ? { uiPrefs: next.uiPrefs }
+                  : {}),
+                ...(next.consoleOptions !== undefined
+                  ? { consoleOptions: next.consoleOptions }
+                  : {}),
+                ...(next.executionPolicy !== undefined
+                  ? { executionPolicy: next.executionPolicy }
+                  : {}),
+              };
+            });
           }
           if (!stillRunning) {
             endActiveTurn(eventKey);
