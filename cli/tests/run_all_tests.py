@@ -27,7 +27,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from cli.config.app_info import get_app_env_var
 
 
-DEFAULT_EXCLUDED_FILES = ()
+# Tests excluded from the default suite.  The shell interactive-timeout
+# watchdog tests wait on real wall-clock time (idle detection), so they are
+# skipped here; run them directly via unittest.
+DEFAULT_EXCLUDED_FILES = ("cli/tests/unit/shell/test_shell_interactive_timeout.py",)
 _AUTO_ACCEPT_ELICITATION_ENV = get_app_env_var("AUTO_ACCEPT_ELICITATION")
 
 

@@ -207,6 +207,16 @@ _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_widt
 _SHELL_DRAIN_TIMEOUT = 15.0
 
 
+# Non-interactive shell execution attaches no stdin, so an interactive command
+# (REPL, wizard, pager, editor, ...) blocks forever waiting for keys.  If the
+# process stays silent for ``_SHELL_INTERACTIVE_IDLE_TIMEOUT`` seconds it is
+# treated as blocked on interactive input and auto-terminated so the shell tool
+# returns instead of spinning.  ``_SHELL_MAX_TOTAL_TIMEOUT`` is an absolute
+# safety cap so a hung process can never keep a turn alive indefinitely.
+_SHELL_INTERACTIVE_IDLE_TIMEOUT = 30.0
+_SHELL_MAX_TOTAL_TIMEOUT = 900.0
+
+
 def _should_flush_pending_cha_at_eof(ch: str) -> bool:
     """Whether a buffered single-char ConPTY frame should survive EOF.
 
@@ -471,6 +481,76 @@ if _WINPTY_PTYPROCESS is not None:
             self._pty.kill()
         def terminate(self):
             self._pty.terminate(force=True)
+
+
+def _wait_for_process_exit_or_interactive_timeout(
+    process: Any,
+    agent: Any,
+    activity_state: Dict[str, Any],
+    idle_timeout: Optional[float] = None,
+    max_total_timeout: Optional[float] = None,
+) -> Tuple[int, bool]:
+    """Wait for ``process`` to exit, auto-terminating it when it goes silent.
+
+    Non-interactive shell execution attaches no stdin, so an interactive
+    command (a REPL, ``npm init``, a pager, an editor, ...) blocks forever
+    waiting for keys.  Detect that signature — no output for ``idle_timeout``
+    seconds — and kill the whole process tree so the tool returns instead of
+    spinning.  ``max_total_timeout`` bounds the wait unconditionally so a hung
+    process can never keep a turn alive forever.
+
+    ``activity_state`` is a shared dict whose ``last_activity`` key is refreshed
+    by the pipe-reader thread every time the process produces output.
+
+    Returns ``(returncode, timed_out)`` where ``timed_out`` is True when the
+    process had to be auto-terminated.
+    """
+    if idle_timeout is None:
+        idle_timeout = _SHELL_INTERACTIVE_IDLE_TIMEOUT
+    if max_total_timeout is None:
+        max_total_timeout = _SHELL_MAX_TOTAL_TIMEOUT
+    poller = getattr(process, "poll", None)
+    if not callable(poller):
+        # Legacy process object without poll(): fall back to blocking wait().
+        try:
+            return int(process.wait() or 0), False
+        except Exception:
+            return -1, False
+    start = time.time()
+    while True:
+        try:
+            code = poller()
+        except Exception:
+            code = None
+        if code is not None:
+            return int(code or 0), False
+        now = time.time()
+        last_activity = float(activity_state.get("last_activity") or start)
+        if (now - last_activity) >= idle_timeout:
+            break
+        if (now - start) >= max_total_timeout:
+            break
+        time.sleep(0.1)
+    terminator = getattr(agent, "_terminate_single_process_tree", None)
+    if callable(terminator):
+        try:
+            terminator(process)
+        except Exception:
+            pass
+    try:
+        code = process.wait(timeout=_SHELL_DRAIN_TIMEOUT)
+    except Exception:
+        code = None
+    if code is None:
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            code = process.poll()
+        except Exception:
+            code = None
+    return int(code if code is not None else -1), True
 
 
 def _resolve_shell_execution_cwd(agent: Any) -> Path:
@@ -1202,6 +1282,7 @@ def action_shell_command(
         # Global policy: all shell/script execution is non-interactive.
         interactive = False
         return_code = -1
+        timed_out = False
         out = ""
         displayed_out = ""
         aborted_by_user = False
@@ -1360,6 +1441,7 @@ def action_shell_command(
                 stdout_chunks: List[str] = []
                 stdout_completed_lines: List[str] = []
                 stdout_pending_line_state: Dict[str, str] = {"text": ""}
+                activity_state: Dict[str, Any] = {"last_activity": time.time()}
                 stream_chunks_lock = threading.Lock()
                 create_streams = getattr(agent, "_create_direct_shell_output_streams", None)
                 process_ref: Dict[str, Any] = {"process": None}
@@ -1534,6 +1616,7 @@ def action_shell_command(
                                 break
                             text_chunk = decoder.decode(chunk, final=False)
                             if text_chunk:
+                                activity_state["last_activity"] = time.time()
                                 with stream_chunks_lock:
                                     bucket.append(text_chunk)
                                     _append_completed_output_lines(
@@ -1553,6 +1636,7 @@ def action_shell_command(
                                 _write_display_chunk(text_chunk)
                         tail = decoder.decode(b"", final=True)
                         if tail:
+                            activity_state["last_activity"] = time.time()
                             with stream_chunks_lock:
                                 bucket.append(tail)
                                 _append_completed_output_lines(
@@ -1652,7 +1736,11 @@ def action_shell_command(
                         daemon=True,
                     )
                     t_out.start()
-                    return_code = process.wait()
+                    return_code, timed_out = _wait_for_process_exit_or_interactive_timeout(
+                        process,
+                        agent,
+                        activity_state,
+                    )
                     consume_abort = getattr(agent, "_consume_process_aborted", None)
                     if callable(consume_abort):
                         aborted_by_user = bool(consume_abort(process))
@@ -1675,6 +1763,15 @@ def action_shell_command(
                     out = _collapse_cr_output(out)
                     if aborted_by_user:
                         out = str(out) + ("command aborted by user\n")
+                    if timed_out:
+                        out = str(out) + (
+                            "\n⚠️ Command was auto-terminated: it produced no output "
+                            f"for {int(_SHELL_INTERACTIVE_IDLE_TIMEOUT)}s and was "
+                            "treated as an interactive prompt waiting for input. "
+                            "Supply the input non-interactively (e.g. flags, a "
+                            "script, piped stdin) or use the interactive console "
+                            "if a human must operate it.\n"
+                        )
                 finally:
                     try:
                         unreg_proc = getattr(agent, "_unregister_interruptible_process", None)
@@ -1806,6 +1903,7 @@ def action_shell_command(
             base_out: Dict[str, Any] = {
                 "output": _shell_rendered,
                 "return_code": return_code,
+                "timed_out": bool(timed_out),
                 "interactive": interactive,
                 "aborted_by_user": bool(aborted_by_user),
                 "display_output": replay_out_text,
@@ -2138,6 +2236,18 @@ def action_shell_command(
                 except OSError:
                     pass
 
+        if timed_out:
+            return {
+                "success": False,
+                "error": rg_error or (
+                    "Command was auto-terminated: it produced no output for "
+                    f"{int(_SHELL_INTERACTIVE_IDLE_TIMEOUT)}s and was treated as "
+                    "an interactive prompt waiting for input. Supply the input "
+                    "non-interactively (flags, a script, piped stdin) or use the "
+                    "interactive console if a human must operate it."
+                ),
+                **base_out,
+            }
         if return_code == 0:
             register_outputs_from_shell_command(agent, command)
             if agent._is_workspace_skill_path(execution_cwd):
