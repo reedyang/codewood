@@ -69,22 +69,22 @@ _READ_ONLY_COMMAND_PATTERNS: List[re.Pattern] = [
         r"^(help|man|info)(\s|$)",
         r"^--?(help|h|\?)(\s|$)",
         # --- read-only git subcommands ----------------------------------
-        r"^git\s+status(\s|$)",
-        r"^git\s+log\s",
-        r"^git\s+diff\s",
-        r"^git\s+show\s",
-        r"^git\s+branch(\s|$)",
-        r"^git\s+tag(\s|$)",
-        r"^git\s+remote(\s|$)",
-        r"^git\s+stash\s+list(\s|$)",
-        r"^git\s+rev-parse\s",
-        r"^git\s+config\s",
-        r"^git\s+describe(\s|$)",
-        r"^git\s+ls-files(\s|$)",
-        r"^git\s+ls-tree\s",
-        r"^git\s+blame\s",
-        r"^git\s+shortlog(\s|$)",
-        r"^git\s+--version(\s|$)",
+        r"^git(\s+--no-pager)?\s+status(\s|$)",
+        r"^git(\s+--no-pager)?\s+log\s",
+        r"^git(\s+--no-pager)?\s+diff\s",
+        r"^git(\s+--no-pager)?\s+show\s",
+        r"^git(\s+--no-pager)?\s+branch(\s|$)",
+        r"^git(\s+--no-pager)?\s+tag(\s|$)",
+        r"^git(\s+--no-pager)?\s+remote(\s|$)",
+        r"^git(\s+--no-pager)?\s+stash\s+list(\s|$)",
+        r"^git(\s+--no-pager)?\s+rev-parse\s",
+        r"^git(\s+--no-pager)?\s+config\s",
+        r"^git(\s+--no-pager)?\s+describe(\s|$)",
+        r"^git(\s+--no-pager)?\s+ls-files(\s|$)",
+        r"^git(\s+--no-pager)?\s+ls-tree\s",
+        r"^git(\s+--no-pager)?\s+blame\s",
+        r"^git(\s+--no-pager)?\s+shortlog(\s|$)",
+        r"^git(\s+--no-pager)?\s+--version(\s|$)",
         # --- network diagnostics / system info --------------------------
         r"^(ping|pathping|tracert|traceroute|netstat|nslookup|dig)(\.exe)?(\s|$)",
         r"^(ipconfig|ifconfig|arp|nbtstat|getmac|systeminfo|tasklist)(\.exe)?(\s|$)",
@@ -1103,6 +1103,7 @@ def action_shell_command(
     command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
     command = enforce_workspace_rg_for_shell_command(agent, command)
     command = tune_7z_output_for_piped_terminal(command, agent)
+    command = _enforce_git_no_pager_for_shell_command(command)
     enforce_res = _enforce_windows_powershell_command_prefix(command)
     if not enforce_res.get("ok", False):
         return {"success": False, "error": str(enforce_res.get("error", "PowerShell command format is invalid"))}
@@ -3071,6 +3072,105 @@ def _rewrite_shell_command_head_executable(
     if os.name == "nt":
         return call_prefix + subprocess.list2cmdline(parts)
     return call_prefix + shlex.join(parts)
+
+
+# git subcommands that may spawn the interactive pager (less / more) for
+# long output.  Rewriting them with ``--no-pager`` keeps non-interactive
+# shell execution from blocking on a pager prompt and returns the full output.
+_GIT_PAGER_SUBCOMMANDS: Set[str] = {
+    "show", "diff", "log", "grep", "blame", "annotate", "whatchanged",
+    "shortlog", "reflog", "stash", "branch", "tag", "remote", "help",
+    "notes", "fsck", "instaweb", "lfs",
+}
+
+# git global options that consume a separate value token (skip over the
+# value when locating the subcommand).
+_GIT_GLOBAL_OPT_WITH_VALUE: Set[str] = {
+    "-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace",
+    "--shallow-file", "--super-prefix", "--config-env", "--object-format",
+}
+
+
+def _git_subcommand_index(parts: List[str]) -> Optional[int]:
+    """Index of the first git subcommand token, skipping global options."""
+    i = 1
+    while i < len(parts):
+        tok = parts[i]
+        if tok == "--":
+            return i + 1 if i + 1 < len(parts) else None
+        if tok.startswith("-"):
+            name = tok.split("=", 1)[0]
+            if name in _GIT_GLOBAL_OPT_WITH_VALUE and "=" not in tok:
+                i += 2
+            else:
+                i += 1
+            continue
+        return i
+    return None
+
+
+def _enforce_git_no_pager_for_shell_command(command: str) -> str:
+    """Rewrite ``git <subcommand>`` commands that may spawn a pager into
+    ``git --no-pager <subcommand>`` so non-interactive shell execution
+    returns the full output instead of blocking on an interactive pager."""
+    import subprocess
+
+    s = str(command or "").strip()
+    if not s:
+        return command
+    call_prefix = ""
+    if s.lower().startswith("call "):
+        call_prefix = "call "
+        s = s[5:].strip()
+    parts = _split_shell_like(s)
+    if not parts:
+        return command
+    if len(parts) == 1:
+        unwrapped_single = _strip_wrapping_quotes(parts[0])
+        if unwrapped_single and unwrapped_single != parts[0]:
+            reparsed = _split_shell_like(unwrapped_single)
+            if len(reparsed) > 1:
+                s = unwrapped_single
+                parts = reparsed
+    base0 = _token_exe_base(_strip_wrapping_quotes(parts[0]))
+
+    if base0 in ("powershell", "pwsh"):
+        payload = _find_option_value(parts, ("-command", "-c", "/c"))
+        if payload is not None:
+            inner_re = _enforce_git_no_pager_for_shell_command(payload)
+            if inner_re != payload:
+                new_parts = list(parts)
+                for i in range(1, len(new_parts) - 1):
+                    if new_parts[i].lower() in ("-command", "-c", "/c"):
+                        new_parts[i + 1] = inner_re
+                        break
+                if os.name == "nt":
+                    return call_prefix + subprocess.list2cmdline(new_parts)
+                return call_prefix + shlex.join(new_parts)
+
+    if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
+        inner = " ".join(parts[2:])
+        inner_re = _enforce_git_no_pager_for_shell_command(inner)
+        if inner_re != inner:
+            if os.name == "nt":
+                return call_prefix + subprocess.list2cmdline([parts[0], parts[1], inner_re])
+            return f"{call_prefix}{parts[0]} {parts[1]} {inner_re}"
+
+    if base0 != "git":
+        return command
+    sub_idx = _git_subcommand_index(parts)
+    if sub_idx is None:
+        return command
+    sub = _strip_wrapping_quotes(parts[sub_idx]).lower()
+    if sub not in _GIT_PAGER_SUBCOMMANDS:
+        return command
+    for tok in parts[1:sub_idx]:
+        if _strip_wrapping_quotes(tok).lower() == "--no-pager":
+            return command
+    new_parts = [parts[0], "--no-pager", *parts[1:]]
+    if os.name == "nt":
+        return call_prefix + subprocess.list2cmdline(new_parts)
+    return call_prefix + shlex.join(new_parts)
 
 
 def enforce_workspace_rg_for_shell_command(agent: Any, command: str) -> str:
