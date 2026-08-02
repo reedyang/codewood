@@ -13,6 +13,8 @@ const apiMock = vi.hoisted(() => {
   const listWorkspaceChats = vi.fn(async () => []);
   const newChat = vi.fn(async () => "chat-2");
   const pasteImage = vi.fn(async () => ({ path: "D:/workspace-b/.codewood/chats/data/record-chat-2/img.png", name: "img.png" }));
+  const saveDraftAttachment = vi.fn(async () => ({ path: "D:/workspace-b/.codewood/cache/draft-attachments/img.png", name: "img.png" }));
+  const materializeDraftAttachments = vi.fn(async () => ({}));
   const selectChat = vi.fn(async () => true);
   const sendInput = vi.fn(async () => undefined);
   const setChatModel = vi.fn(async () => true);
@@ -26,6 +28,8 @@ const apiMock = vi.hoisted(() => {
     listWorkspaceChats,
     newChat,
     pasteImage,
+    saveDraftAttachment,
+    materializeDraftAttachments,
     selectChat,
     sendInput,
     setChatModel,
@@ -46,6 +50,8 @@ const apiMock = vi.hoisted(() => {
       listWorkspaceChats.mockClear();
       newChat.mockClear();
       pasteImage.mockClear();
+      saveDraftAttachment.mockClear();
+      materializeDraftAttachments.mockClear();
       selectChat.mockClear();
       sendInput.mockClear();
       setChatModel.mockClear();
@@ -64,6 +70,8 @@ vi.mock("../api/client", () => ({
     listWorkspaceChats = apiMock.listWorkspaceChats;
     newChat = apiMock.newChat;
     pasteImage = apiMock.pasteImage;
+    saveDraftAttachment = apiMock.saveDraftAttachment;
+    materializeDraftAttachments = apiMock.materializeDraftAttachments;
     selectChat = apiMock.selectChat;
     sendInput = apiMock.sendInput;
     setChatModel = apiMock.setChatModel;
@@ -865,7 +873,7 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
-  it("materializes the target workspace chat before uploading a pasted image in draft mode", async () => {
+  it("stages a pasted image in the workspace cache without materializing the chat in draft mode", async () => {
     render(
       <AppProvider>
         <DraftCreateProbe />
@@ -883,10 +891,11 @@ describe("AppContext thinking rounds", () => {
     });
 
     await waitFor(() => {
-      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2", "", "");
-      expect(apiMock.pasteImage).toHaveBeenCalledWith(
-        "chat-2",
+      expect(apiMock.newChat).not.toHaveBeenCalled();
+      expect(apiMock.pasteImage).not.toHaveBeenCalled();
+      expect(apiMock.saveDraftAttachment).toHaveBeenCalledWith(
         "data:image/png;base64,AAAA",
+        "",
         "ws-2",
       );
     });

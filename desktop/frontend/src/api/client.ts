@@ -388,10 +388,66 @@ export class ApiClient {
     }
   }
 
+  /** Stage a pasted image or dropped file into the workspace cache dir while
+   *  composing a brand-new chat (draft mode). No chat is created. Returns
+   *  ``{path, name}`` or ``null`` on failure. */
+  async saveDraftAttachment(
+    dataUrl: string,
+    fileName = "",
+    workspaceId = "",
+  ): Promise<{ path: string; name: string } | null> {
+    try {
+      const res = await fetch(`${this.base}/save-draft-attachment`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ dataUrl, fileName, workspaceId }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        ok?: boolean;
+        path?: string;
+        name?: string;
+      };
+      if (!data.ok || !data.path) return null;
+      return { path: data.path, name: data.name ?? "" };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Move staged draft attachments from the workspace cache into the chat's
+   *  side-data dir. Returns a mapping of old -> new absolute paths, or null. */
+  async materializeDraftAttachments(
+    chatId: string,
+    paths: string[],
+    workspaceId = "",
+  ): Promise<Record<string, string> | null> {
+    try {
+      const res = await fetch(`${this.base}/materialize-draft-attachments`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, paths, workspaceId }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        ok?: boolean;
+        mapping?: Record<string, string>;
+      };
+      if (!data.ok || !data.mapping) return null;
+      return data.mapping;
+    } catch {
+      return null;
+    }
+  }
+
   /** Absolute URL serving a pasted image by its on-disk path (token-gated;
-   *  backend validates the path lives under the chats/data dir). */
-  chatImageUrl(path: string): string {
+   *  backend validates the path lives under the chats/data dir or the
+   *  workspace cache draft-attachments dir). */
+  chatImageUrl(path: string, workspaceId = ""): string {
     const params = new URLSearchParams({ token: this.token, path });
+    if (workspaceId) {
+      params.set("workspaceId", workspaceId);
+    }
     return `${this.base}/chat-image?${params.toString()}`;
   }
 

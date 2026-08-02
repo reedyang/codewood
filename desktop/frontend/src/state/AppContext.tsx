@@ -51,6 +51,7 @@ import {
   saveRightPanelPrefs,
   type RightPanelTabId,
 } from "./rightPanelTabs";
+import { IMG_CLOSE, IMG_OPEN } from "../utils/imageRefs";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -182,7 +183,7 @@ interface AppContextValue {
     dataUrl: string,
     fileName: string,
   ) => Promise<{ path: string; name: string } | null>;
-  chatImageUrl: (path: string) => string;
+  chatImageUrl: (path: string, workspaceId?: string) => string;
   mcpIconUrl: (server: string, icon: string) => string;
   subscribeBrowserCommand: (
     handler: (cmd: Record<string, unknown>) => void,
@@ -1120,6 +1121,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const pasteImage = useCallback(
     async (dataUrl: string) => {
+      if (draftModeRef.current) {
+        // Composing a brand-new chat: stage the bitmap in the workspace cache
+        // WITHOUT materializing a chat yet. It moves into the chat's data dir
+        // when the user actually sends (see sendInput's draft branch).
+        const wsId =
+          draftWorkspaceIdRef.current || activeWorkspaceIdRef.current;
+        return client.saveDraftAttachment(dataUrl, "", wsId);
+      }
       const target = await materializeDraftChat();
       if (!target?.chatId) {
         return null;
@@ -1131,6 +1140,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const saveDroppedFile = useCallback(
     async (dataUrl: string, fileName: string) => {
+      if (draftModeRef.current) {
+        // Same staging behavior as pasteImage: no chat is created yet.
+        const wsId =
+          draftWorkspaceIdRef.current || activeWorkspaceIdRef.current;
+        return client.saveDraftAttachment(dataUrl, fileName, wsId);
+      }
       const target = await materializeDraftChat();
       if (!target?.chatId) {
         return null;
@@ -1141,7 +1156,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const chatImageUrl = useCallback(
-    (path: string) => client.chatImageUrl(path),
+    (path: string, workspaceId?: string) => {
+      // Draft attachments live under the workspace cache; pass the target
+      // workspace so the backend can resolve (and validate) that dir.
+      const wsId =
+        workspaceId ||
+        draftWorkspaceIdRef.current ||
+        activeWorkspaceIdRef.current;
+      return client.chatImageUrl(path, wsId);
+    },
     [client],
   );
 
@@ -2793,6 +2816,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return next;
   }, []);
 
+  // When a draft chat is materialized on first send, any staged attachments
+  // (workspace cache ``draft-attachments``) must move into the new chat's
+  // side-data dir, and every path reference inside the message (the file
+  // ATTACH envelope + the image-ref tokens) must be rewritten to the new
+  // location so the model still resolves them with ``read``.
+  const migrateDraftAttachmentPaths = useCallback(
+    async (text: string, chatId: string, wsId: string): Promise<string> => {
+      const attachRe = /\uE100ATTACH:([^\uE100\uE101\r\n]+)\uE101/g;
+      const imgRe = new RegExp(
+        `${IMG_OPEN}([^${IMG_OPEN}${IMG_CLOSE}\\r\\n]+)${IMG_CLOSE}`,
+        "g",
+      );
+      const paths: string[] = [];
+      const seen = new Set<string>();
+      const collect = (m: RegExpExecArray | null) => {
+        if (m && m[1] && !seen.has(m[1])) {
+          seen.add(m[1]);
+          paths.push(m[1]);
+        }
+      };
+      let m: RegExpExecArray | null;
+      attachRe.lastIndex = 0;
+      while ((m = attachRe.exec(text))) collect(m);
+      imgRe.lastIndex = 0;
+      while ((m = imgRe.exec(text))) collect(m);
+      if (paths.length === 0) {
+        return text;
+      }
+      const mapping = await client.materializeDraftAttachments(
+        chatId,
+        paths,
+        wsId,
+      );
+      if (!mapping) {
+        return text;
+      }
+      let out = text;
+      for (const [oldPath, newPath] of Object.entries(mapping)) {
+        if (oldPath === newPath) continue;
+        out = out
+          .split(`\uE100ATTACH:${oldPath}\uE101`)
+          .join(`\uE100ATTACH:${newPath}\uE101`);
+        out = out
+          .split(`${IMG_OPEN}${oldPath}${IMG_CLOSE}`)
+          .join(`${IMG_OPEN}${newPath}${IMG_CLOSE}`);
+      }
+      return out;
+    },
+    [client],
+  );
+
   const sendInput = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -2820,9 +2894,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         targetChatId = target.chatId;
         targetWsId = target.workspaceId;
-        startOptimisticTurn(trimmed, chatKey(targetWsId, targetChatId));
+        // Move staged draft attachments into the new chat's data dir and
+        // rewrite their paths inside the message before sending.
+        const finalText = await migrateDraftAttachmentPaths(
+          trimmed,
+          targetChatId,
+          targetWsId,
+        );
+        startOptimisticTurn(finalText, chatKey(targetWsId, targetChatId));
         setBusyForChat(chatKey(targetWsId, targetChatId), true);
-        await client.sendInput(trimmed, true, targetChatId, targetWsId);
+        await client.sendInput(finalText, true, targetChatId, targetWsId);
         return;
       }
       const key = chatKey(targetWsId, targetChatId);
@@ -2854,7 +2935,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await pendingModelConfigRef.current;
       await client.sendInput(trimmed, true, targetChatId, targetWsId);
     },
-    [client, materializeDraftChat, startOptimisticTurn, setBusyForChat, persistPendingInputs],
+    [client, materializeDraftChat, migrateDraftAttachmentPaths, startOptimisticTurn, setBusyForChat, persistPendingInputs],
   );
 
   const startPendingInputs = useCallback(async () => {
