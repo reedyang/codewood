@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useApp } from "../state/AppContext";
 
 interface HoverTooltipProps {
   /** Tooltip body. May span multiple lines. */
@@ -21,6 +22,7 @@ export function HoverTooltip({ content, children, delayMs = 400, className }: Ho
   const timerRef = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ left: 0, top: 0 });
+  const { zoomLevel } = useApp();
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -41,6 +43,11 @@ export function HoverTooltip({ content, children, delayMs = 400, className }: Ho
 
   // Position the tooltip relative to the trigger once it is rendered (we need
   // its measured size to keep it inside the viewport).
+  // The app zooms by scaling .window-root (transform: scale(zoomLevel)), and a
+  // CSS transform turns position:fixed descendants into fixed-positioning
+  // relative to that scaled box in UNSCALED coordinates. getBoundingClientRect
+  // and the viewport clamp below are in scaled viewport pixels, so only the
+  // final placement is converted back into the local frame.
   useLayoutEffect(() => {
     if (!open) {
       return;
@@ -63,8 +70,8 @@ export function HoverTooltip({ content, children, delayMs = 400, className }: Ho
       left = Math.max(4, window.innerWidth - tipRect.width - 4);
     }
     left = Math.max(4, left);
-    setPos({ left, top });
-  }, [open, content]);
+    setPos({ left: left / zoomLevel, top: top / zoomLevel });
+  }, [open, content, zoomLevel]);
 
   return (
     <div
