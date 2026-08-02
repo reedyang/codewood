@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from cli.server.serve_app import _cap_patch_rows, _truncate_file_changes
 from cli.server.serve_app import ServeApp
 
 
@@ -76,6 +77,74 @@ class FileChangesCompatTests(unittest.TestCase):
             self.assertIsNotNone(record)
             self.assertEqual(record["changeType"], "modify")
             self.assertEqual(record["filePath"], "D:/workspace/demo.txt")
+
+
+class FileChangesTruncationTests(unittest.TestCase):
+    def _full_file_diff(self, total_lines: int, add_at: int, add_count: int) -> list:
+        """Build a full-file DiffRow[] like FileChangeTracker.get_summary
+        produces: context rows for every line plus add rows at *add_at*."""
+        rows = []
+        for i in range(1, total_lines + 1):
+            if add_at <= i < add_at + add_count:
+                rows.append({
+                    "type": "add",
+                    "oldNo": None,
+                    "newNo": i,
+                    "oldText": "",
+                    "newText": f"new line {i}",
+                })
+            else:
+                old_no = i if i < add_at else i - add_count
+                rows.append({
+                    "type": "context",
+                    "oldNo": old_no,
+                    "newNo": i,
+                    "oldText": f"line {old_no}",
+                    "newText": f"line {i}",
+                })
+        return rows
+
+    def test_truncate_keeps_change_rows_beyond_head_cap(self):
+        # A 4208-row full-file diff whose only edits sit at line 1074+.
+        # The old head-slice (first 400 rows) dropped every add row, so the
+        # expanded diff showed no modifications at all.
+        patch = self._full_file_diff(total_lines=4208, add_at=1074, add_count=8)
+        summary = {
+            "totalFiles": 1,
+            "totalAdded": 8,
+            "totalDeleted": 0,
+            "files": [
+                {
+                    "filePath": "D:/workspace/shell.py",
+                    "changeType": "modify",
+                    "addedLines": 8,
+                    "deletedLines": 0,
+                    "patch": patch,
+                }
+            ],
+        }
+
+        out = _truncate_file_changes(dict(summary))
+        kept = out["files"][0]["patch"]
+
+        self.assertLessEqual(len(kept), 400)
+        self.assertTrue(out.get("truncated"))
+        adds = [r for r in kept if r.get("type") == "add"]
+        self.assertEqual(len(adds), 8)
+        self.assertEqual([r.get("newNo") for r in adds], list(range(1074, 1082)))
+
+    def test_cap_patch_rows_short_patch_untouched(self):
+        rows = [{"type": "context", "oldNo": 1, "newNo": 1, "oldText": "a", "newText": "a"}]
+        self.assertEqual(_cap_patch_rows(rows, 400), rows)
+
+    def test_cap_patch_rows_many_changes_keeps_first_budget(self):
+        rows = [
+            {"type": "add", "oldNo": None, "newNo": i, "oldText": "", "newText": f"x{i}"}
+            for i in range(1, 501)
+        ]
+        capped = _cap_patch_rows(rows, 400)
+        self.assertEqual(len(capped), 400)
+        self.assertTrue(all(r.get("type") == "add" for r in capped))
 
 
 if __name__ == "__main__":

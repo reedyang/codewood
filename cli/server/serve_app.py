@@ -163,6 +163,63 @@ _FC_MAX_PATCH_ROWS_PER_FILE = 400
 _FC_TRUNCATED_KEY = "truncated"
 
 
+def _cap_patch_rows(
+    rows: List[Dict[str, Any]],
+    max_rows: int,
+) -> List[Dict[str, Any]]:
+    """Cap a file's ``patch`` row list to *max_rows* without losing changes.
+
+    ``FileChangeTracker.get_summary`` builds full-file diffs (every
+    unchanged line becomes a ``context`` row), so a naive head-slice can
+    cut off the actual add/del rows whenever the edit sits past the cap —
+    the on-demand diff viewer then shows no modifications at all.  Keep
+    every change row and fill the remaining budget with the context rows
+    nearest to a change, so the rendered diff still frames the edits.
+    """
+    if len(rows) <= max_rows:
+        return rows
+
+    change_kinds = {"add", "del", "change"}
+    change_idx = [
+        i
+        for i, r in enumerate(rows)
+        if isinstance(r, dict) and r.get("type") in change_kinds
+    ]
+    if not change_idx:
+        return rows[:max_rows]
+    if len(change_idx) >= max_rows:
+        return [rows[i] for i in change_idx[:max_rows]]
+
+    keep = set(change_idx)
+    budget = max_rows - len(change_idx)
+
+    # Distance from each row index to the nearest change row.
+    n = len(rows)
+    dist = [n] * n
+    last = -(10**9)
+    for i in range(n):
+        if i in keep:
+            last = i
+        dist[i] = i - last
+    last = 10**9
+    for i in range(n - 1, -1, -1):
+        if i in keep:
+            last = i
+        dist[i] = min(dist[i], last - i)
+
+    # Prefer context rows closest to a change (ties broken by index) so the
+    # surviving rows frame every hunk instead of only the file's head.
+    candidates = [i for i in range(n) if i not in keep]
+    candidates.sort(key=lambda i: (dist[i], i))
+    for i in candidates:
+        if budget <= 0:
+            break
+        keep.add(i)
+        budget -= 1
+
+    return [rows[i] for i in sorted(keep)]
+
+
 def _truncate_file_changes(payload: Any) -> Any:
     """Cap the diff rows/files in a (merged) file-change summary.
 
@@ -190,7 +247,7 @@ def _truncate_file_changes(payload: Any) -> Any:
             patch = f.get("patch")
             if isinstance(patch, list) and len(patch) > _FC_MAX_PATCH_ROWS_PER_FILE:
                 truncated = True
-                f["patch"] = patch[:_FC_MAX_PATCH_ROWS_PER_FILE]
+                f["patch"] = _cap_patch_rows(patch, _FC_MAX_PATCH_ROWS_PER_FILE)
     if truncated:
         for summary in summaries:
             if isinstance(summary, dict):
