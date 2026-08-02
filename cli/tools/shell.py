@@ -2857,8 +2857,6 @@ def ensure_absolute_script_for_shell_cwd(agent: Any, command: str) -> str:
     except ValueError:
         return command
     new_cmd = rewrite_shell_command_script_arg_to_abs(agent, command, invoked.resolve())
-    if new_cmd != command:
-        print("ℹ️ Shell cwd is the work directory; workspace script path has been expanded to an absolute path.")
     return new_cmd
 
 
