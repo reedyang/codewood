@@ -2213,7 +2213,7 @@ function TranscriptMinimap({
   loadOlderHistory: () => void;
   historyLoading: boolean;
 }) {
-  const { t } = useApp();
+  const { t, zoomLevel } = useApp();
   const minimapRef = useRef<HTMLDivElement | null>(null);
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [visible, setVisible] = useState(false);
@@ -2424,18 +2424,22 @@ function TranscriptMinimap({
     if (hoveredIdx === null) return null;
     const rect = minimapRef.current?.getBoundingClientRect();
     if (!rect) return null;
-    const lineCenterY = getLineTop(hoveredIdx) + lineHeight / 2;
+    // Same zoom-frame conversion as ContextMenu: getBoundingClientRect and the
+    // viewport clamps below are in scaled viewport pixels while the fixed
+    // tooltip lives in the unscaled local frame of .window-root, so only the
+    // final placement is divided by the zoom factor.
+    const lineCenterY = (getLineTop(hoveredIdx) + lineHeight / 2) * zoomLevel;
     const tooltipY = Math.min(
       Math.max(rect.top + lineCenterY - 30, 8),
       window.innerHeight - 120,
     );
-    const tooltipX = rect.right + MINIMAP_LINE_MAX;
+    const tooltipX = rect.right + MINIMAP_LINE_MAX * zoomLevel;
 
     // Unloaded line: show loading or nothing
     if (hoveredIdx < unloadedCount) {
       if (historyLoading) {
         return (
-          <div className="minimap-tooltip" style={{ top: tooltipY, left: tooltipX, position: 'fixed' }}>
+          <div className="minimap-tooltip" style={{ top: tooltipY / zoomLevel, left: tooltipX / zoomLevel, position: 'fixed' }}>
             <div className="minimap-tooltip-answer">{t('minimap.loading')}</div>
           </div>
         );
@@ -2448,7 +2452,7 @@ function TranscriptMinimap({
       return null;
     }
     return (
-      <div className="minimap-tooltip" style={{ top: tooltipY, left: tooltipX, position: 'fixed' }}>
+      <div className="minimap-tooltip" style={{ top: tooltipY / zoomLevel, left: tooltipX / zoomLevel, position: 'fixed' }}>
         {preview.userText && (
           <div className="minimap-tooltip-user">
             {preview.userText.slice(0, 80)}{preview.userText.length > 80 ? '…' : ''}
@@ -3039,7 +3043,7 @@ function ModelMenu({
   onSelectModel: (selector: string) => void;
   onSelectReasoning: (level: string) => void;
 }) {
-  const { t } = useApp();
+  const { t, zoomLevel } = useApp();
   const [open, setOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   // Fixed-position coordinates so the flyout escapes the parent menu's
@@ -3079,14 +3083,15 @@ function ModelMenu({
     const el = flyoutRef.current;
     if (!el) return;
     const margin = 8;
-    const height = el.offsetHeight;
+    // offsetHeight is in the unscaled local frame; viewport clamps are scaled.
+    const height = el.offsetHeight * zoomLevel;
     const maxTop = window.innerHeight - height - margin;
     const clampedTop = Math.max(margin, Math.min(flyoutPos.top, maxTop));
     if (clampedTop !== flyoutPos.top) {
       setFlyoutPos((prev) => (prev ? { ...prev, top: clampedTop } : prev));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flyoutOpen, flyoutPos?.top, flyoutPos?.left]);
+  }, [flyoutOpen, flyoutPos?.top, flyoutPos?.left, zoomLevel]);
 
   const supported = new Set(reasoningEfforts.map((l) => l.toLowerCase()));
   const selectedLower = reasoningEffort.toLowerCase();
@@ -3102,6 +3107,10 @@ function ModelMenu({
   const FLYOUT_WIDTH = 220;
   const FLYOUT_GAP = 4;
   // Decide which side the flyout opens on based on available viewport space.
+  // Same zoom-frame conversion as ContextMenu: rects and viewport clamps are
+  // in scaled viewport pixels while the fixed flyout lives in the unscaled
+  // local frame of .window-root, so only the final placement is divided by
+  // the zoom factor.
   const openFlyout = () => {
     const el = entryRef.current;
     if (!el) {
@@ -3110,12 +3119,14 @@ function ModelMenu({
     }
     const rect = el.getBoundingClientRect();
     const spaceRight = window.innerWidth - rect.right;
+    const flyoutW = FLYOUT_WIDTH * zoomLevel;
+    const gap = FLYOUT_GAP * zoomLevel;
     const side: "right" | "left" =
-      spaceRight < FLYOUT_WIDTH + FLYOUT_GAP && rect.left > spaceRight ? "left" : "right";
+      spaceRight < flyoutW + gap && rect.left > spaceRight ? "left" : "right";
     const left =
       side === "right"
-        ? rect.right + FLYOUT_GAP
-        : rect.left - FLYOUT_GAP - FLYOUT_WIDTH;
+        ? rect.right + gap
+        : rect.left - gap - flyoutW;
     cancelClose();
     setFlyoutPos({ side, left, top: rect.top });
     setFlyoutOpen(true);
@@ -3201,8 +3212,8 @@ function ModelMenu({
                   ref={flyoutRef}
                   className={`model-flyout ${flyoutPos.side}`}
                   style={{
-                    left: flyoutPos.left,
-                    top: flyoutPos.top,
+                    left: flyoutPos.left / zoomLevel,
+                    top: flyoutPos.top / zoomLevel,
                     width: FLYOUT_WIDTH,
                   }}
                   onMouseEnter={cancelClose}
