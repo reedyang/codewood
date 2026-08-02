@@ -1130,7 +1130,11 @@ def action_shell_command(
     _all_delete_targets_in_cache = False
     try:
         if _is_potential_delete_command(command):
-            _delete_targets_pre = _extract_delete_file_paths(command, execution_cwd)
+            # include_missing: safety classification must work even when the
+            # cache is empty or the target file was already removed.
+            _delete_targets_pre = _extract_delete_file_paths(
+                command, execution_cwd, include_missing=True
+            )
             if _delete_targets_pre:
                 _delete_target_strs = {str(t) for t in _delete_targets_pre}
                 _tracker_pre = getattr(agent, "file_change_tracker", None)
@@ -3508,6 +3512,26 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
 # File-deletion detection helpers
 # ---------------------------------------------------------------------------
 
+# Split a command line into segments at shell command separators so that path
+# extraction only inspects the actual delete command(s) instead of swallowing
+# unrelated arguments of later commands (e.g. ``del x && python -m pytest
+# tests/`` must not treat ``tests/`` as a deletion target).
+_DELETE_CMD_SEGMENT_RE = re.compile(
+    r"(?:\s*(?:&&|\|\||;|\|)\s*|(?<!\S)&(?!\S)|\r?\n)"
+)
+
+# Unwrap a ``cmd /c "<command>"`` wrapper (common on Windows) so inner delete
+# commands are still recognized despite the quote before the keyword.
+_WIN_CMD_C_WRAPPER_RE = re.compile(
+    r"(?is)^\s*cmd(?:\.exe)?\s+/[ck]\s+[\"']?(?P<payload>.*?)[\"']?\s*$"
+)
+
+# PowerShell ``-EncodedCommand <base64>`` (UTF-16-LE) payloads produced by the
+# Windows compat normalizer for multiline scripts.
+_WIN_POWERSHELL_ENCODED_RE = re.compile(
+    r"(?is)-EncodedCommand\s+([A-Za-z0-9+/=]+)"
+)
+
 # Patterns that indicate a command may delete files.
 # Group 1 captures the command keyword; group 2 captures the rest.
 _DELETE_CMD_PATTERNS = [
@@ -3530,24 +3554,44 @@ def _is_potential_delete_command(command: str) -> bool:
     if not command:
         return False
     lowered = command.strip().lower()
-    for keyword in ("rm ", "rm\t", "del ", "del\t", "erase ", "erase\t",
-                    "remove-item ", "remove-item\t", "unlink ", "unlink\t",
-                    "rmdir ", "rd "):
+    keywords = (
+        "rm ", "rm\t", "del ", "del\t", "erase ", "erase\t",
+        "remove-item ", "remove-item\t", "unlink ", "unlink\t",
+        "rmdir ", "rd ",
+    )
+    for keyword in keywords:
         if keyword in lowered:
             return True
     # Also match PowerShell encoded commands that may contain Remove-Item
     if "remove-item" in lowered:
         return True
+    # Decode ``-EncodedCommand`` payloads so delete keywords inside them are
+    # still detected (the base64 blob itself contains no keywords).
+    if "-encodedcommand" in lowered:
+        enc_match = _WIN_POWERSHELL_ENCODED_RE.search(command)
+        if enc_match:
+            try:
+                decoded = base64.b64decode(enc_match.group(1)).decode("utf-16-le")
+            except Exception:
+                decoded = ""
+            dl = decoded.lower()
+            if any(k in dl for k in keywords) or "remove-item" in dl:
+                return True
     return False
 
 
-def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
+def _extract_delete_file_paths(
+    command: str, cwd: Path, include_missing: bool = False
+) -> List[Path]:
     """Parse *command* for file paths that are likely deletion targets.
 
     Handles plain shell commands and PowerShell ``-Command`` wrappers.
     Resolves relative paths against *cwd* and returns paths that currently
     exist as regular files.  When a directory is targeted (e.g. ``rm -rf
     dir/``), all files under that directory are collected recursively.
+    With *include_missing* the resolved target paths are appended even when
+    they do not exist (useful for safety classification, e.g. deciding
+    whether a cleanup command only touches the disposable workspace cache).
     """
     if not command:
         return []
@@ -3564,11 +3608,31 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
         if payload:
             cmd_stripped = payload
 
+    # Unwrap a ``cmd /c "..."`` wrapper (common on Windows) so inner delete
+    # commands are still recognized.
+    cmd_c_match = _WIN_CMD_C_WRAPPER_RE.match(cmd_stripped)
+    if cmd_c_match:
+        payload = cmd_c_match.group("payload").strip()
+        if len(payload) >= 2 and payload[0] == payload[-1] and payload[0] in ('"', "'"):
+            payload = payload[1:-1]
+        if payload:
+            cmd_stripped = payload
+
     # Try each delete-command pattern against both the original command and
     # any unwrapped PowerShell payload.
     candidates = [cmd_stripped]
     if cmd_stripped != command.strip():
         candidates.append(command.strip())
+    # Also decode ``-EncodedCommand`` payloads (multiline PowerShell scripts
+    # rewritten by the compat normalizer).
+    enc_match = _WIN_POWERSHELL_ENCODED_RE.search(command)
+    if enc_match:
+        try:
+            decoded = base64.b64decode(enc_match.group(1)).decode("utf-16-le")
+        except Exception:
+            decoded = ""
+        if decoded.strip() and decoded.strip() not in candidates:
+            candidates.append(decoded.strip())
 
     def _collect_file(p: Path) -> None:
         """Add *p* to paths if it is a regular file that isn't already
@@ -3581,18 +3645,32 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
                 for entry in p.rglob("*"):
                     if entry.is_file() and entry not in paths:
                         paths.append(entry)
+                if include_missing and p not in paths:
+                    paths.append(p)
         except (OSError, PermissionError):
             pass
 
     for candidate in candidates:
-        for pattern in _DELETE_CMD_PATTERNS:
-            m = pattern.search(candidate)
+        # Only inspect the delete command segments: arguments of commands
+        # chained after ``&&`` / ``;`` / ``|`` are not deletion targets.
+        for segment in _DELETE_CMD_SEGMENT_RE.split(candidate):
+            segment = segment.strip()
+            if not segment:
+                continue
+            m = _DELETE_CMD_PATTERNS[0].search(segment)
+            if not m:
+                # Fall back to the other patterns (rm/unlink/Remove-Item/...).
+                for pattern in _DELETE_CMD_PATTERNS[1:]:
+                    m = pattern.search(segment)
+                    if m:
+                        break
             if not m:
                 continue
             rest = m.group(3) or ""
             # Split the rest by whitespace to get individual path tokens.
             # shlex may fail on mismatched quotes (e.g. when a trailing
             # quote from a PowerShell -Command wrapper leaks in).
+            raw_tokens = rest.split() if rest else []
             try:
                 tokens = shlex.split(rest) if rest else []
             except ValueError:
@@ -3625,13 +3703,20 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
                 if "*" in token or "?" in token:
                     parent = p.parent if not token.startswith("*") else cwd
                     glob_pattern = p.name if not token.startswith("*") else token
+                    matched_any = False
                     try:
                         for matched in parent.glob(glob_pattern):
                             _collect_file(matched)
+                            matched_any = True
                     except Exception:
                         pass
+                    if include_missing and not matched_any and token in raw_tokens:
+                        if p not in paths:
+                            paths.append(p)
                 else:
                     _collect_file(p)
+                    if include_missing and token in raw_tokens and p not in paths:
+                        paths.append(p)
 
     # Filter to only files within the workspace (or at least under cwd)
     workspace_paths = []

@@ -613,6 +613,65 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             entries = result.get("_shell_diff_entries") or []
             self.assertTrue(any(e.get("changeType") == "delete" for e in entries))
 
+    def test_compound_delete_cache_and_pytest_skips_confirmation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            cache_dir = root / ".codewood" / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / "scratch.tmp"
+            cache_file.write_text("data", encoding="utf-8")
+
+            agent = _DummyAgent()
+            agent.workspace_root = root
+            agent.work_directory = root
+            agent._get_path_policy = lambda: _CacheAwarePolicy(cache_dir)
+            agent.file_change_tracker = _FakeChangeTracker()
+
+            with patch("subprocess.Popen", side_effect=_delete_file_popen(cache_file)), patch(
+                "cli.tools.shell._git_repo_root", return_value=None,
+            ), patch(
+                "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+            ):
+                result = action_shell_command(
+                    agent,
+                    f"cd {root} && del {cache_file.as_posix()} && python -m pytest tests/unit -q",
+                    confirmed=False, interactive=True, input_data=None,
+                )
+
+            # ``tests/unit`` after ``&&`` must NOT be treated as a delete target,
+            # so the whole command still counts as cache-only and skips approval.
+            self.assertEqual(agent.prompt_calls, [])
+            self.assertTrue(result.get("success", False))
+            self.assertEqual(agent.file_change_tracker.records, [])
+
+    def test_cmd_c_wrapped_rm_under_workspace_cache_skips_confirmation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            cache_dir = root / ".codewood" / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / "scratch.tmp"
+            cache_file.write_text("data", encoding="utf-8")
+
+            agent = _DummyAgent()
+            agent.workspace_root = root
+            agent.work_directory = root
+            agent._get_path_policy = lambda: _CacheAwarePolicy(cache_dir)
+            agent.file_change_tracker = _FakeChangeTracker()
+
+            with patch("subprocess.Popen", side_effect=_delete_file_popen(cache_file)), patch(
+                "cli.tools.shell._git_repo_root", return_value=None,
+            ), patch(
+                "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+            ):
+                result = action_shell_command(
+                    agent, f"cmd /c \"rm -rf {cache_dir.as_posix()}\"",
+                    confirmed=False, interactive=True, input_data=None,
+                )
+
+            self.assertEqual(agent.prompt_calls, [])
+            self.assertTrue(result.get("success", False))
+            self.assertEqual(agent.file_change_tracker.records, [])
+
     def test_moderate_mode_manual_confirm_ignores_allowlist(self):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
