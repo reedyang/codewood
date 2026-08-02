@@ -186,6 +186,60 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(entry.get("model_provider"), "openai")
             self.assertEqual(entry.get("model_name"), "gpt-4.1")
 
+    def test_new_chat_entry_inherits_last_chat_reasoning_level(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 1,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Latest",
+                        "updated_at": "2026-01-02 10:00:00",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "reasoning_level": "high",
+                    },
+                    {
+                        "id": "chat-0",
+                        "name": "Older",
+                        "updated_at": "2026-01-01 10:00:00",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "reasoning_level": "",
+                    },
+                ],
+            }
+            entry = manager.new_chat_entry("chat-2", "Demo")
+            self.assertEqual(entry.get("model_provider"), "openai")
+            self.assertEqual(entry.get("model_name"), "gpt-4.1")
+            # A fresh chat inherits the last used chat's reasoning effort,
+            # mirroring the model inheritance (GUI draft "inherit" semantics).
+            self.assertEqual(entry.get("reasoning_level"), "high")
+
+    def test_new_chat_entry_reasoning_empty_when_last_chat_has_none(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 1,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Latest",
+                        "updated_at": "2026-01-02 10:00:00",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "reasoning_level": "",
+                    },
+                ],
+            }
+            entry = manager.new_chat_entry("chat-2", "Demo")
+            self.assertEqual(entry.get("reasoning_level"), "")
+
     def test_activate_chat_backfills_missing_model_and_calls_apply(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))
