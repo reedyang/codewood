@@ -2356,9 +2356,8 @@ class ServeApp:
     def _diagnose_server_health(self) -> None:
         """Emit a diagnostic snapshot to the server log for ``/server-health``.
 
-        Only reachable with ``CODEWOOD_DEBUG=1`` (see ``submit_input``). The
-        dump covers the things you want when the GUI shows "Working…" for a
-        long time with no new output:
+        The dump covers the things you want when the GUI shows "Working…" for
+        a long time with no new output:
 
         * a full stack trace of every live thread (where is each one stuck?);
         * SSE client connections and how backed up each client's event queue
@@ -2506,14 +2505,11 @@ class ServeApp:
         workspace_id: str = "",
     ) -> None:
         line = str(text or "")
-        # Debug-only diagnostic hook: with CODEWOOD_DEBUG=1, ``/server-health``
-        # dumps thread stacks and connection state to the server log. It is
-        # swallowed entirely — never queued, never sent to the model, and never
-        # persisted — so it can be fired even while a turn looks stuck.
-        if (
-            os.environ.get("CODEWOOD_DEBUG") == "1"
-            and line.strip() == "/server-health"
-        ):
+        # Diagnostic hook: ``/server-health`` dumps thread stacks and
+        # connection state to the server log. It is swallowed entirely —
+        # never queued, never sent to the model, and never persisted — so it
+        # can be fired even while a turn looks stuck.
+        if line.strip() == "/server-health":
             self._diagnose_server_health()
             return
         # Validate the (workspace_id, chat_id) pair so a same-id chat in the
