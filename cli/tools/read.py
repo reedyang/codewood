@@ -53,6 +53,28 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
         _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".ico"}
         if abs_path.suffix.lower() in _IMAGE_EXTS:
             _call_desc = f"Read {_rel}"
+            _multimodal_checker = getattr(agent, "_multimodal_enabled_for_current_model", None)
+            if callable(_multimodal_checker) and not _multimodal_checker():
+                _subagent_hint = ""
+                try:
+                    _subagent_names = {
+                        str(getattr(r, "name", "") or "").strip().lower()
+                        for r in (getattr(agent, "subagents", None) or [])
+                    }
+                    if "image-analyzer" in _subagent_names:
+                        _subagent_hint = " (e.g. image-analyzer)"
+                except Exception:
+                    _subagent_hint = ""
+                return {
+                    "success": False,
+                    "error": (
+                        f"Cannot read image '{path}': the current model does not support image input "
+                        "(multimodal disabled). If image analysis is required, check whether a multimodal "
+                        f"sub-agent{_subagent_hint} is available and delegate the image to it."
+                    ),
+                    "file": str(abs_path),
+                    "call": _call_desc,
+                }
             image_task_context = f"Image file path: {str(abs_path)}"
             image_user_prompt = prompt if prompt else "Please read this image and describe its contents."
             analysis = agent.call_ai(
@@ -63,7 +85,13 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
                 record_history_override=False,
             )
             # Record user prompt as internal-only for API cache prefix matching.
-            agent._append_chat_message("user", image_user_prompt, _internal=True, api_content=image_user_prompt)
+            agent._append_chat_message(
+                "user",
+                image_user_prompt,
+                _internal=True,
+                api_content=image_user_prompt,
+                exclude_from_model_context=True,
+            )
             return {"success": True, "content": str(analysis or ""), "file": str(abs_path), "call": _call_desc}
 
         # ---------- text files ----------
