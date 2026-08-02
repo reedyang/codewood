@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from cli.server.serve_app import ServeApp
 
@@ -40,6 +41,49 @@ def _stub(
             app._focus_left_busy[key] = left_busy
     app._focus_track_lock = threading.Lock()
     return app
+
+
+class _FakeBroadcaster:
+    def publish(self, *args, **kwargs):
+        pass
+
+
+class _NewChatFakeAgent:
+    """Minimal agent surface exercised by ``ServeApp.new_chat``."""
+
+    def __init__(self, workspace_id: str = "ws-1"):
+        self.workspace_id = workspace_id
+        self.active_chat_id = ""
+        self._chat_state_lock = threading.Lock()
+        self._chat_state: dict = {"active": ""}
+        self._entries: list = []
+        self.activated: list = []
+        self.calls: list = []
+        self._next = 0
+
+    def _next_chat_id(self) -> str:
+        self._next += 1
+        return f"chat-{self._next}"
+
+    def _new_chat_entry(self, cid: str, name: str = "New Chat") -> dict:
+        return {"id": cid, "name": name}
+
+    def _chat_entries(self) -> list:
+        return self._entries
+
+    def _save_chat_state(self) -> None:
+        pass
+
+    def _activate_chat(self, cid: str, **kwargs) -> None:
+        self.activated.append(cid)
+        self._chat_state["active"] = cid
+        self.active_chat_id = cid
+
+    def _current_session_chat_key(self) -> str:
+        return ""
+
+    def _set_chat_unread(self, chat_id: str, unread: bool) -> None:
+        self.calls.append((chat_id, bool(unread)))
 
 
 class ServeAppUnreadMarkingTests(unittest.TestCase):
@@ -134,6 +178,58 @@ class ServeAppUnreadMarkingTests(unittest.TestCase):
         self.assertIn("ws-1::chat-1", app._focus_left_busy)
         self.assertFalse(app._focus_left_busy["ws-1::chat-1"])
         self.assertNotIn("ws-1::chat-2", app._focus_left_at)
+
+    def test_new_chat_records_focus_so_first_completion_is_viewed(self):
+        # GUI draft flow: the user previously opened chat-1, then materialized
+        # a new chat (new_chat) and sent its first message. The new chat must
+        # be recorded as the focused chat so its completion while the user is
+        # viewing it is NOT flagged unread (regression: the focus marker kept
+        # pointing at chat-1 and the brand-new chat got a persistent blue dot).
+        agent = _NewChatFakeAgent()
+        app = ServeApp.__new__(ServeApp)
+        app.agent = agent
+        app._runtimes = {}
+        app._runtimes_lock = threading.Lock()
+        app._focus_key = "ws-1::chat-1"
+        app._focus_left_at = {}
+        app._focus_left_busy = {}
+        app._focus_track_lock = threading.Lock()
+        app._ws_persist_lock = threading.Lock()
+        app.broadcaster = _FakeBroadcaster()
+        app._route = lambda **kw: kw
+        with patch("cli.server.serve_app._build_state", return_value={}):
+            cid = app.new_chat("", "", "")
+        self.assertEqual(cid, "chat-1")
+        self.assertEqual(app._focus_key, "ws-1::chat-1")
+        # The user watched the new chat's first turn complete -> not unread.
+        app._mark_completed_chat_unread(_Runtime("chat-1", "ws-1"))
+        self.assertEqual(agent.calls, [("chat-1", False)])
+
+    def test_new_chat_focus_marks_background_completion_unread(self):
+        # After materializing the new chat, the user switches away WHILE its
+        # task is still running; the completion is a genuine background one and
+        # must still be flagged unread.
+        agent = _NewChatFakeAgent()
+        app = ServeApp.__new__(ServeApp)
+        app.agent = agent
+        app._runtimes = {}
+        app._runtimes_lock = threading.Lock()
+        app._focus_key = "ws-1::chat-1"
+        app._focus_left_at = {}
+        app._focus_left_busy = {}
+        app._focus_track_lock = threading.Lock()
+        app._ws_persist_lock = threading.Lock()
+        app.broadcaster = _FakeBroadcaster()
+        app._route = lambda **kw: kw
+        with patch("cli.server.serve_app._build_state", return_value={}):
+            cid = app.new_chat("", "", "")
+        # User switches to chat-2 while the new chat is still running.
+        app._track_focus("chat-2", "ws-1")
+        with app._focus_track_lock:
+            app._focus_left_busy["ws-1::chat-1"] = True
+            app._focus_left_at["ws-1::chat-1"] = time.monotonic() - 1.0
+        app._mark_completed_chat_unread(_Runtime(cid, "ws-1"))
+        self.assertEqual(agent.calls, [("chat-1", True)])
 
 
 if __name__ == "__main__":

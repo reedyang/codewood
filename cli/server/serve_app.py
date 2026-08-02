@@ -6051,6 +6051,17 @@ class ServeApp:
                 agent._activate_chat(
                     cid, announce=False, clear_screen=False, print_history=False
                 )
+                # The GUI user is now composing in this new chat, so record it
+                # as the focused chat (mirrors select_chat). Without this the
+                # focus marker still points at the previously opened chat and
+                # the new chat's first completed turn is misclassified as a
+                # background completion, leaving a persistent unread dot on a
+                # chat the user watched finish.
+                track = getattr(self, "_track_focus", None)
+                if callable(track):
+                    # ``None`` (not ``""``) makes _runtime_key fall back to the
+                    # agent's current workspace, matching how runtimes resolve it.
+                    track(cid, wsid or None)
                 # Snapshot the state while the lock is held so a concurrent
                 # background load_chat_state can't replace agent._chat_state
                 # with stale data before we publish the idle event.
