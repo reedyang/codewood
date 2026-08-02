@@ -91,7 +91,7 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
 
     agent._ephemeral_script_paths = set()
     agent._ai_created_path_keys = set()
-    agent.file_change_tracker = FileChangeTracker()
+    agent.file_change_tracker = FileChangeTracker(path_policy=PathPolicy(agent))
     agent._last_auto_removed_ephemeral = None
     agent._mcp_pending_user_input = {}
     agent._force_current_input_as_requirement_once = False
