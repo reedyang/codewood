@@ -572,22 +572,50 @@ class LLMContextManager:
         # tool_call_ids don't all have corresponding tool responses in the
         # final message list (e.g. user cancelled mid-batch, leaving an
         # orphaned tool_call_id).  Without this the provider returns 400.
-        all_tcids: Set[str] = set()
+        # The pairing must be symmetric: a ``role: tool`` message whose
+        # ``tool_call_id`` matches no assistant ``tool_calls`` entry is an
+        # orphan and is dropped (otherwise the provider rejects the batch
+        # with "Messages with role 'tool' must be a response to a preceding
+        # message with 'tool_calls'"), and assistant ``tool_calls`` are
+        # trimmed to the calls that actually have a response so no dangling
+        # call id is left behind.
+        assistant_tcids: Set[str] = set()
+        tool_tcids: Set[str] = set()
+        for _m in working:
+            _role = str(_m.get("role") or "").strip().lower()
+            if _role == "assistant":
+                _tcs = _m.get("tool_calls")
+                if isinstance(_tcs, list):
+                    for _c in _tcs:
+                        if isinstance(_c, dict):
+                            _cid = str(_c.get("id") or "").strip()
+                            if _cid:
+                                assistant_tcids.add(_cid)
+            elif _role == "tool":
+                _tid = str(_m.get("tool_call_id") or "").strip()
+                if _tid:
+                    tool_tcids.add(_tid)
+        filtered: List[Dict[str, Any]] = []
         for _m in working:
             if str(_m.get("role") or "").strip().lower() == "tool":
                 _tid = str(_m.get("tool_call_id") or "").strip()
-                if _tid:
-                    all_tcids.add(_tid)
+                if _tid and _tid not in assistant_tcids:
+                    continue
+            filtered.append(_m)
+        working = filtered
         for _m in working:
             if str(_m.get("role") or "").strip().lower() == "assistant":
                 _tcs = _m.get("tool_calls")
                 if isinstance(_tcs, list) and _tcs:
-                    _ids = [
-                        str(c.get("id") or "")
-                        for c in _tcs
-                        if isinstance(c, dict)
+                    _kept = [
+                        _c
+                        for _c in _tcs
+                        if isinstance(_c, dict)
+                        and str(_c.get("id") or "").strip() in tool_tcids
                     ]
-                    if not all((i or "").strip() in all_tcids for i in _ids):
+                    if _kept:
+                        _m["tool_calls"] = _kept
+                    else:
                         del _m["tool_calls"]
         return working, stats
 
