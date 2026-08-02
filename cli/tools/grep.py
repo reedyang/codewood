@@ -40,6 +40,18 @@ def action_grep(
             search_dir = ws_root / path
         search_dir = search_dir.resolve()
 
+        globs: List[str] = []
+        if include:
+            globs.append(include)
+
+        # A file path may be passed directly (e.g. to narrow the search to one
+        # file). ripgrep rejects a file as the search root / cwd on Windows
+        # ("The directory name is invalid"), so search the file's parent
+        # directory and restrict the glob to the file's name.
+        if search_dir.is_file():
+            globs.append(search_dir.name)
+            search_dir = search_dir.parent
+
         if not search_dir.exists():
             return {"success": False, "error": f"Directory not found: {path}"}
 
@@ -55,8 +67,9 @@ def action_grep(
             "--no-messages",
         ]
 
-        if include:
-            cmd.extend(["--glob", include])
+        if globs:
+            for glob in globs:
+                cmd.extend(["--glob", glob])
 
         if limit and limit > 0:
             cmd.extend(["-m", str(limit)])
@@ -149,7 +162,9 @@ class GrepTool(BaseTool):
             },
             "path": {
                 "type": "string",
-                "description": "Directory to search in (relative path from workspace root). Defaults to the workspace root.",
+                "description": "Directory or file to search (relative path from workspace root). "
+                "When a file is given, the search is restricted to that file. "
+                "Defaults to the workspace root.",
             },
             "include": {
                 "type": "string",
