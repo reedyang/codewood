@@ -130,6 +130,18 @@ function TurnsProbe() {
   return <pre data-testid="turns">{JSON.stringify(turns)}</pre>;
 }
 
+function HistoryTurnsProbe() {
+  const { historyTurns, turns } = useApp();
+  return (
+    <pre data-testid="history-and-turns">
+      {JSON.stringify({
+        history: historyTurns.map((h) => h.userText),
+        live: turns.map((t) => ({ userText: t.userText, endedAt: t.endedAt })),
+      })}
+    </pre>
+  );
+}
+
 function DraftCreateProbe() {
   const {
     state,
@@ -1714,6 +1726,167 @@ describe("AppContext thinking rounds", () => {
     await waitFor(() => {
       const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
       expect(turns).toHaveLength(0);
+    });
+  });
+
+  it("keeps the completed task visible when a pending message starts before the history reload lands", async () => {
+    // The mount-time history load resolves immediately; the idle-triggered
+    // reload is deferred so we can land a NEW turn's ``turn_start`` before its
+    // response is applied (the pending-queue auto-send race).
+    const deferred: Array<(page: unknown) => void> = [];
+    apiMock.getChatHistory
+      .mockImplementationOnce(async () => ({ turns: [], start: 0, total: 0 }))
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            deferred.push(resolve);
+          }),
+      );
+    render(
+      <AppProvider>
+        <HistoryTurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Task A streams and finishes (idle with running=false), which triggers the
+    // deferred history reload.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "step A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        live: Array<{ userText: string }>;
+      };
+      expect(view.live).toHaveLength(1);
+    });
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+
+    // Pending task B starts streaming BEFORE the reload response arrives. The
+    // reload response only carries task A (B's user message is not persisted
+    // yet) — task A must stay visible via history, and B keeps streaming live.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task B", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        live: Array<{ userText: string }>;
+      };
+      expect(view.live).toHaveLength(2);
+    });
+
+    await act(async () => {
+      deferred[0]?.({
+        turns: [
+          {
+            userText: "task A",
+            rounds: [{ waitSeconds: 1, text: "answer A", tools: "" }],
+          },
+        ],
+        start: 0,
+        total: 1,
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        history: Array<string | undefined>;
+        live: Array<{ userText: string }>;
+      };
+      expect(view.history).toEqual(["task A"]);
+      expect(view.live.map((l) => l.userText)).toEqual(["task B"]);
+    });
+  });
+
+  it("keeps settled live turns when the reload response is empty (persistence race)", async () => {
+    const deferred: Array<(page: unknown) => void> = [];
+    apiMock.getChatHistory
+      .mockImplementationOnce(async () => ({ turns: [], start: 0, total: 0 }))
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            deferred.push(resolve);
+          }),
+      );
+    render(
+      <AppProvider>
+        <HistoryTurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "step A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        live: Array<{ userText: string }>;
+      };
+      expect(view.live).toHaveLength(1);
+    });
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task B", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // The reload response is an empty page (task A's disk flush hasn't landed
+    // yet). The settled live turn A must NOT be dropped — it stays visible
+    // alongside the streaming task B until the next reload reconciles it.
+    await act(async () => {
+      deferred[0]?.({ turns: [], start: 0, total: 0 });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        history: Array<string | undefined>;
+        live: Array<{ userText: string }>;
+      };
+      expect(view.history).toEqual([]);
+      expect(view.live.map((l) => l.userText)).toEqual(["task A", "task B"]);
     });
   });
 

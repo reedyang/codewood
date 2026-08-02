@@ -3054,6 +3054,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // Like ``dropSettledLiveTurns`` but only drops settled turns whose user text
+  // is already represented in the just-fetched history page. Settled turns that
+  // are MISSING from the page are kept so a completed task never vanishes from
+  // the transcript: the page can be stale when the reload's response races the
+  // persistence flush, or when a NEWER turn started streaming before the
+  // response arrived (e.g. an auto-sent pending message right after the
+  // previous turn's idle event). The next history reload reconciles them.
+  const dropSettledLiveTurnsNotInHistory = useCallback(
+    (chatId: string, pageTurns: Array<{ userText?: string }>) => {
+      const kept = new Set(
+        pageTurns.map((t) => String(t.userText || "")),
+      );
+      setTurnsByChat((prev) => {
+        const list = prev[chatId];
+        if (!list || list.length === 0) {
+          return prev;
+        }
+        const filtered = list.filter(
+          (tt) =>
+            tt.endedAt === null ||
+            !kept.has(String(tt.userText || "")),
+        );
+        if (filtered.length === list.length) {
+          return prev;
+        }
+        const next = { ...prev };
+        if (filtered.length === 0) {
+          delete next[chatId];
+        } else {
+          next[chatId] = filtered;
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
   const INITIAL_HISTORY = 12;
   const HISTORY_PAGE = 8;
 
@@ -3102,15 +3139,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // An in-progress turn is streaming for this chat (or an optimistic
           // first-message turn just opened for a freshly materialized draft
           // chat). It is not yet fully persisted, so keep the live turn and,
-          // when the persisted page already carries its trailing duplicate,
+          // when the persisted page already carries its trailing duplicate
+          // (the user message of the SAME in-progress turn, no answer yet),
           // drop that tail. A brand-new chat has no persisted history yet
           // (empty page) — keep the live turn untouched so the optimistically
           // echoed user message survives this reload instead of being cleared.
-          const settledMerged = [...(page.turns.length > 0 ? page.turns.slice(0, -1) : page.turns)];
-          setHistoryTurns(settledMerged);
+          //
+          // IMPORTANT: only drop the tail when it really IS that duplicate.
+          // The reload may race a NEW turn's start: the idle event that
+          // triggered this fetch belongs to the PREVIOUS turn, and the new
+          // turn (e.g. an auto-sent pending message) can begin streaming
+          // before the response arrives. In that case the trailing persisted
+          // turn is the COMPLETED previous turn, not the streaming one —
+          // dropping it (and then dropping the settled live turns) would erase
+          // the completed task's user message and steps from the transcript
+          // until the next chat switch.
+          const activeUserTexts = new Set(
+            live
+              .filter((tt) => tt.endedAt === null)
+              .map((tt) => tt.userText || ""),
+          );
+          const tail = page.turns[page.turns.length - 1];
+          const tailIsStreamingDuplicate =
+            !!tail &&
+            activeUserTexts.has(String(tail.userText || "")) &&
+            (!Array.isArray(tail.rounds) || tail.rounds.length === 0);
+          const keptTurns = tailIsStreamingDuplicate
+            ? page.turns.slice(0, -1)
+            : page.turns;
+          setHistoryTurns(keptTurns);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
-          dropSettledLiveTurns(key);
+          dropSettledLiveTurnsNotInHistory(key, keptTurns);
         } else if (hasSettledLive && page.turns.length === 0) {
           // A background turn finished in this chat while it was unfocused —
           // its full output is captured in the live bucket — but the persisted
@@ -3124,17 +3184,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } else {
           // All turns are settled — the backend's structured-turn builder
           // already attaches fileChanges to each turn via [FILE_CHANGE_REF]
-          // messages in the conversation history.
+          // messages in the conversation history. Settled live turns are only
+          // dropped when the page actually represents them (a stale page from
+          // a persistence race must leave them visible instead of blanking a
+          // just-finished task).
           setHistoryTurns(page.turns);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
-          clearLiveTurns(key);
+          dropSettledLiveTurnsNotInHistory(key, page.turns);
         }
       } finally {
         setHistoryLoading(false);
       }
     },
-    [client, clearLiveTurns, dropSettledLiveTurns],
+    [client, dropSettledLiveTurnsNotInHistory],
   );
 
   // Keep a stable ref to the latest loadChatHistory so the SSE idle handler
