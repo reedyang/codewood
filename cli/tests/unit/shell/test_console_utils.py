@@ -7,6 +7,7 @@ from cli.core.console_utils import _ansi_blue
 from cli.core.console_utils import _ansi_green
 from cli.core.console_utils import _format_elapsed_minutes_seconds
 from cli.core.console_utils import _render_working_status_line
+from cli.core.console_utils import escape_gui_sentinels
 
 
 def _force_color_env() -> dict:
@@ -87,6 +88,25 @@ class ConsoleUtilsTests(unittest.TestCase):
 
         self.assertIn("作中... (1m 5s • 按 Esc 中断)", line)
         self.assertIn("按 Esc 中断", line)
+
+    def test_escape_gui_sentinels_replaces_private_use_chars(self):
+        self.assertEqual(
+            escape_gui_sentinels("a\ue000b\ue001c\ue004d\ue005e"),
+            "a\\uE000b\\uE001c\\uE004d\\uE005e",
+        )
+
+    def test_escape_gui_sentinels_leaves_plain_text_and_ansi_untouched(self):
+        text = "line1\n\x1b[31m+ \x1b[0m Grep rest"
+        self.assertEqual(escape_gui_sentinels(text), text)
+
+    def test_escape_gui_sentinels_handles_empty_and_all_sentinels(self):
+        self.assertEqual(escape_gui_sentinels(""), "")
+        all_sentinels = "".join(chr(0xE000 + i) for i in range(0x10))
+        escaped = escape_gui_sentinels(all_sentinels)
+        self.assertNotIn("\ue000", escaped)
+        self.assertNotIn("\ue009", escaped)
+        self.assertIn("\\uE000", escaped)
+        self.assertIn("\\uE009", escaped)
 
 
 if __name__ == "__main__":

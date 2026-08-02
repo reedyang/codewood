@@ -43,6 +43,7 @@ from ..core.console_utils import (
     GUI_CMD_OUTPUT_END,
     GUI_SUBAGENT_SESSION_BEGIN,
     GUI_SUBAGENT_SESSION_END,
+    escape_gui_sentinels,
 )
 
 
@@ -340,7 +341,7 @@ def _render_subagent_tool_round(
                     output_text = json.dumps(data, ensure_ascii=False, default=str)
                 except Exception:
                     output_text = ""
-    return f"{prompt}\n{GUI_CMD_OUTPUT_BEGIN}{output_text}{GUI_CMD_OUTPUT_END}"
+    return f"{prompt}\n{GUI_CMD_OUTPUT_BEGIN}{escape_gui_sentinels(output_text)}{GUI_CMD_OUTPUT_END}"
 
 
 # Keys that carry metadata rather than user-facing tool output.

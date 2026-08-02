@@ -54,6 +54,31 @@ GUI_FORCE_PROMPT_PREFIX = "\ue002"
 GUI_INTERNAL_COMMAND_PREFIX = "\ue003"
 
 
+def escape_gui_sentinels(text: str) -> str:
+    """Replace private-use GUI sentinel characters inside tool output with
+    visible escapes so they cannot be misinterpreted as structural markers by
+    the desktop GUI step parser.
+
+    Tool output can legitimately echo the same private-use characters used as
+    GUI sentinels (e.g. a test failure diff that prints a sentinel-wrapped
+    round string). If those characters were left raw inside a sentinel-wrapped
+    payload, the frontend ``splitSteps`` parser would terminate the block early
+    and the remaining output would leak outside the tool-call description.
+    Escaping them to ``\\uE000``-style literal text keeps the payload
+    parseable while still showing the original character's identity.
+    """
+    if not text:
+        return text
+    out: list = []
+    for ch in text:
+        code = ord(ch)
+        if 0xE000 <= code <= 0xE009:
+            out.append("\\uE%03X" % (code - 0xE000))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
     """
     Decode shell stdout/stderr: prefer UTF-8, else system locale.

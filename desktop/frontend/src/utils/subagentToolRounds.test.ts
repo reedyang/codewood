@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildFallbackToolRound,
   buildFallbackToolRoundFromCall,
   buildFallbackToolRoundsFromRaw,
   getSubAgentMessageToolRounds,
@@ -54,6 +55,39 @@ describe("subagentToolRounds", () => {
 
     expect(round).toContain("Grep");
     expect(round).toContain("desktop/frontend/src/state/AppContext.tsx");
+  });
+
+  it("escapes sentinel characters inside tool output so the block stays closed", () => {
+    const round = buildFallbackToolRoundsFromRaw([
+      {
+        tool: "shell",
+        args: { command: "npx vitest run x.test.ts" },
+        output: "line1\n\uE004• Grep \u001b[0m x\uE005\n\uE0001: match\uE001\nrest",
+      },
+    ], { lang: "en" })[0];
+
+    // The payload sentinels must be escaped so the parser sees exactly one
+    // output-begin and one output-end marker (the wrapper's own).
+    expect(round.split("\uE000").length - 1).toBe(1);
+    expect(round.split("\uE001").length - 1).toBe(1);
+    expect(round).toContain("\\uE004");
+    expect(round).toContain("\\uE005");
+    expect(round).toContain("\\uE000");
+    expect(round).toContain("\\uE001");
+    expect(round).toContain("line1");
+    expect(round).toContain("rest");
+  });
+
+  it("escapes sentinels in the error fallback text too", () => {
+    const round = buildFallbackToolRound(
+      "shell",
+      { command: "echo hi" },
+      "",
+      "",
+      { lang: "en", errText: "boom \uE001 boom" },
+    );
+    expect(round.split("\uE001").length - 1).toBe(1);
+    expect(round).toContain("boom \\uE001 boom");
   });
 
   it("prefers structured raw rounds over bare tool call names", () => {

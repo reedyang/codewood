@@ -11,6 +11,20 @@ const CMD_PROMPT_BEGIN = "\uE004";
 const CMD_PROMPT_END = "\uE005";
 const ANSI_RESET = "\u001b[0m";
 
+/** Replace private-use GUI sentinel characters inside tool output with visible
+ *  escapes so they cannot be misinterpreted as structural markers by the step
+ *  parser in Steps.tsx. Tool output can legitimately echo the same characters
+ *  (e.g. a test failure diff that prints a sentinel-wrapped round string);
+ *  leaving them raw inside a sentinel-wrapped payload would terminate the
+ *  output block early and leak the rest outside the tool-call description. */
+function escapeGuiSentinels(text: string): string {
+  if (!text) return text;
+  return text.replace(/[\uE000-\uE009]/g, (ch) => {
+    const code = ch.codePointAt(0)! - 0xe000;
+    return `\\uE${code.toString(16).toUpperCase().padStart(3, "0")}`;
+  });
+}
+
 function ansiRgb(text: string, r: number, g: number, b: number): string {
   return `\u001b[38;2;${r};${g};${b}m${text}${ANSI_RESET}`;
 }
@@ -236,9 +250,9 @@ export function buildFallbackToolRound(
   const detail = isShell ? highlightShellCommand(String(args.command || "").trim()) : formatToolDetail(name, args);
   let round = `${CMD_PROMPT_BEGIN}${bullet} ${label}${detail ? ` ${detail}` : ""}${CMD_PROMPT_END}`;
   if (output) {
-    round += `\n${CMD_OUTPUT_BEGIN}${output}${CMD_OUTPUT_END}`;
+    round += `\n${CMD_OUTPUT_BEGIN}${escapeGuiSentinels(output)}${CMD_OUTPUT_END}`;
   } else if (options?.errText) {
-    round += `\n${CMD_OUTPUT_BEGIN}${options.errText}${CMD_OUTPUT_END}`;
+    round += `\n${CMD_OUTPUT_BEGIN}${escapeGuiSentinels(options.errText)}${CMD_OUTPUT_END}`;
   }
   if (marker) {
     round += `\n${marker}`;
