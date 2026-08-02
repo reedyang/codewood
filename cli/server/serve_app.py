@@ -1692,6 +1692,7 @@ class _ChatRuntime:
         "thread",
         "turn_started_at",
         "turn_record_pending",
+        "idle_since",
     )
 
     def __init__(
@@ -1716,6 +1717,10 @@ class _ChatRuntime:
         # persisted to this chat's history and survives a reload.
         self.turn_started_at: Optional[float] = None
         self.turn_record_pending = False
+        # Monotonic timestamp of when the last turn finished (busy cleared),
+        # so the /chat-history handler can skip a disk roll-back while the
+        # just-finished turn's persistence flush may still be in flight.
+        self.idle_since: Optional[float] = None
 
 
 class ServeApp:
@@ -1873,6 +1878,34 @@ class ServeApp:
             with self._runtimes_lock:
                 rt = self._runtimes.get(key)
             return bool(rt is not None and rt.busy.is_set())
+        except Exception:
+            return False
+
+    def _chat_runtime_recently_finished(
+        self, chat_id: str, workspace_id: Optional[str] = None,
+    ) -> bool:
+        """True when THIS process owns a runtime for the chat and its last
+        turn finished within the recent window.
+
+        The idle SSE event that follows a finished turn triggers an immediate
+        frontend history reload.  At that instant the in-memory session is the
+        complete, authoritative state, while the disk record may still lag the
+        final persistence flush; refreshing from disk then would roll the
+        conversation back and the reload would surface a truncated transcript.
+        A long-parked runtime (window elapsed) is refreshable again so peer
+        process amendments (e.g. a TUI persisting a ``request_user_input``
+        prompt) are still picked up, matching ``_owned_runtime_chat_ids``.
+        """
+        try:
+            key = self._runtime_key(chat_id, workspace_id)
+            with self._runtimes_lock:
+                rt = self._runtimes.get(key)
+            if rt is None:
+                return False
+            idle_since = getattr(rt, "idle_since", None)
+            if not idle_since:
+                return False
+            return (time.monotonic() - idle_since) < 3.0
         except Exception:
             return False
 
@@ -2122,6 +2155,12 @@ class ServeApp:
         was_busy = rt is not None and rt.busy.is_set()
         if was_busy:
             rt.busy.clear()
+            # Remember when this turn finished so the /chat-history handler
+            # can tell a JUST-finished turn (in-memory session is complete
+            # and authoritative while the disk record may still lag the
+            # final persistence flush) from a long-parked runtime (disk is
+            # authoritative for peer-process amendments).
+            rt.idle_since = time.monotonic()
             # Only a GENUINE model turn leaves an unread marker. The loop also
             # returns here after GUI-internal commands (rename, edit, fork,
             # execution-policy, and drained request_user_input prompts), which
@@ -2151,6 +2190,7 @@ class ServeApp:
             # Shutdown sentinel: ask the loop to exit cleanly.
             return "/exit"
         rt.busy.set()
+        rt.idle_since = None
         rt.turn_started_at = time.monotonic()
         # Install this loop thread's per-workspace persistence override for the
         # whole turn. We MUST install it even though this chat is (usually)
@@ -3101,10 +3141,22 @@ class ServeApp:
             # switch/reload. Only refresh when the requested workspace matches
             # the focused one (the common case) — a background workspace's
             # record lives under its own index and would not resolve here.
+            #
+            # EXCEPTION: a turn that JUST finished in this process keeps its
+            # in-memory session authoritative for a short window. The idle SSE
+            # event triggers an immediate history reload, and the disk record
+            # may still lag the final persistence flush — rolling the session
+            # back to disk there would make the reload surface a truncated
+            # transcript (the task's messages vanish until the chat is
+            # clicked again, when the flush has landed). A long-parked
+            # runtime (window elapsed) is refreshable again.
             is_busy = self._chat_is_busy(focus_chat, wsid or None)
+            recent_finish = self._chat_runtime_recently_finished(
+                focus_chat, wsid or None,
+            )
             current_ws = str(getattr(self.agent, "workspace_id", "") or "").strip()
             same_ws = (not wsid) or (wsid == current_ws)
-            if focus_chat and not is_busy and same_ws:
+            if focus_chat and not is_busy and not recent_finish and same_ws:
                 try:
                     refresh = getattr(self.agent, "_refresh_chat_record_from_disk", None)
                     if callable(refresh):
