@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useApp } from "../state/AppContext";
 
 export interface MenuItem {
   id: string;
@@ -17,7 +18,15 @@ interface ContextMenuProps {
 
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState({ left: x, top: y });
+  // The app zooms by scaling .window-root (transform: scale(zoomLevel)), and a
+  // CSS transform turns position:fixed descendants into fixed-positioning
+  // relative to that scaled box in UNSCALED coordinates. clientX/clientY are
+  // viewport (scaled) pixels, so they must be divided by the zoom factor to
+  // land on the clicked point. The viewport-clamp below stays in viewport
+  // pixels (the measured rect is already scaled) and only the final placement
+  // is converted back into the local frame.
+  const { zoomLevel } = useApp();
+  const [pos, setPos] = useState({ left: x / zoomLevel, top: y / zoomLevel });
 
   // Keep the menu fully inside the viewport.
   useLayoutEffect(() => {
@@ -34,8 +43,8 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     if (top + rect.height > window.innerHeight) {
       top = Math.max(4, window.innerHeight - rect.height - 4);
     }
-    setPos({ left, top });
-  }, [x, y]);
+    setPos({ left: left / zoomLevel, top: top / zoomLevel });
+  }, [x, y, zoomLevel]);
 
   useEffect(() => {
     const onPointer = (e: MouseEvent) => {
