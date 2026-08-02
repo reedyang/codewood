@@ -545,13 +545,17 @@ class HostApi:
         prev = self._pre_vertical_max_geometry
         if prev is None:
             return
-        x, y, w, h = prev
+        _, prev_y, _, prev_h = prev
+        # Restore only the vertical state: the pre-maximize top edge and
+        # height. Keep the current width (and horizontal position) so a
+        # width adjustment made while vertically maximized is preserved.
+        cur_x, _cur_y, cur_w, _cur_h = _get_window_geometry(window)
         try:
-            window.resize(w, h)
+            window.resize(cur_w, prev_h)
         except Exception:
             pass
         try:
-            window.move(x, y)
+            window.move(cur_x, prev_y)
         except Exception:
             pass
         if self._overlay is not None:
