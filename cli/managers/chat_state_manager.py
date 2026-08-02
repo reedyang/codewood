@@ -479,23 +479,24 @@ class ChatStateManager:
         except Exception:
             pass
 
-    def _last_used_chat_model(self) -> Tuple[str, str]:
-        """Return ("provider", "model_name") of the workspace's latest chat.
+    def _last_used_chat_model(self) -> Tuple[str, str, str]:
+        """Return ("provider", "model_name", "reasoning_level") of the workspace's latest chat.
 
         Picks the chat with the most recent ``updated_at`` that has a model
         recorded, so a freshly created chat inherits the user's last selection.
-        Returns ("", "") when no existing chat carries a model.
+        Returns ("", "", "") when no existing chat carries a model.
         """
         try:
             state = getattr(self._agent, "_chat_state", None)
             chats = (state or {}).get("chats") if isinstance(state, dict) else None
             if not isinstance(chats, list):
-                return "", ""
+                return "", "", ""
         except Exception:
-            return "", ""
+            return "", "", ""
         best_key = ""
         best_provider = ""
         best_model = ""
+        best_reasoning = ""
         for c in chats:
             if not isinstance(c, dict):
                 continue
@@ -508,14 +509,15 @@ class ChatStateManager:
                 best_key = key
                 best_provider = provider
                 best_model = model_name
-        return best_provider, best_model
+                best_reasoning = str(c.get("reasoning_level") or "").strip()
+        return best_provider, best_model, best_reasoning
 
     def new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
         now = self._now_text()
         # A new chat defaults to the model used by the most recently updated chat
         # in this workspace, so it inherits the user's last choice rather than the
         # shared global agent selection (which a concurrent chat may have changed).
-        provider, model_name = self._last_used_chat_model()
+        provider, model_name, reasoning_level = self._last_used_chat_model()
         if not provider or not model_name:
             provider = str(getattr(self._agent, "provider", "") or "").strip()
             model_name = str(getattr(self._agent, "model_name", "") or "").strip()
@@ -537,7 +539,7 @@ class ChatStateManager:
             "updated_at": now,
             "model_provider": provider,
             "model_name": model_name,
-            "reasoning_level": "",
+            "reasoning_level": reasoning_level,
             "mode": mode,
             "messages": [],
             "pending_inputs": [],
