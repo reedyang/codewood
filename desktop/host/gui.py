@@ -859,6 +859,7 @@ def main() -> int:
         min_size=(960, 640),
         frameless=True,
         easy_drag=False,
+        text_select=True,
         js_api=host_api,
     )
 
