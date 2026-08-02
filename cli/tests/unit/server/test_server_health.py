@@ -59,18 +59,7 @@ def _rich_app():
 
 
 class ServerHealthSubmitInputTests(unittest.TestCase):
-    def setUp(self):
-        self._env = os.environ.get("CODEWOOD_DEBUG")
-        os.environ["CODEWOOD_DEBUG"] = "1"
-        self.addCleanup(self._restore_env)
-
-    def _restore_env(self):
-        if self._env is None:
-            os.environ.pop("CODEWOOD_DEBUG", None)
-        else:
-            os.environ["CODEWOOD_DEBUG"] = self._env
-
-    def test_server_health_is_swallowed_when_debug_enabled(self):
+    def test_server_health_is_swallowed(self):
         app = _bind_app(agent=Mock(), broadcaster=Mock())
         spawn = Mock()
         with patch(
@@ -94,15 +83,18 @@ class ServerHealthSubmitInputTests(unittest.TestCase):
         diagnose.assert_called_once()
         spawn.assert_not_called()
 
-    def test_server_health_still_queued_without_debug_env(self):
+    def test_server_health_swallowed_without_debug_env(self):
         os.environ.pop("CODEWOOD_DEBUG", None)
         app = _bind_app(agent=Mock(), broadcaster=Mock())
         spawn = Mock()
         with patch(
+            "cli.server.serve_app.ServeApp._diagnose_server_health"
+        ) as diagnose, patch(
             "cli.server.serve_app.ServeApp._get_or_spawn_runtime", spawn
         ):
             app.submit_input("/server-health", chat_id="chat-1")
-        spawn.assert_called_once()
+        diagnose.assert_called_once()
+        spawn.assert_not_called()
 
     def test_other_messages_ignored_by_diagnostic(self):
         app = _bind_app(agent=Mock(), broadcaster=Mock())

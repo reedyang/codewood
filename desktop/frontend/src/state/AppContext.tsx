@@ -2768,9 +2768,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!trimmed) {
         return;
       }
-      // Debug diagnostic command: send straight to the server (no optimistic
-      // turn, no pending-queue buffering) so it reaches the backend even while
-      // the chat is busy/stuck. The server only acts on it with CODEWOOD_DEBUG=1.
+      // Diagnostic command: send straight to the server (no optimistic turn,
+      // no pending-queue buffering) so it reaches the backend even while the
+      // chat is busy/stuck. The server always handles it as a health dump.
       if (trimmed === "/server-health") {
         await client.sendInput(
           trimmed,
