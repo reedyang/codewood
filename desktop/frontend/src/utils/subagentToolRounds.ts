@@ -179,6 +179,17 @@ function formatToolDetail(toolName: string, args: Record<string, unknown>): stri
   if (name === "read") {
     return formatReadDetail(args);
   }
+  if (name === "grep") {
+    const path = String(args.path || "").trim();
+    const include = String(args.include || "").trim();
+    if (path && include) {
+      const sep = /^[\\/]/.test(include) ? "" : "/";
+      return highlightPath(`${path}${sep}${include}`);
+    }
+    if (path) return highlightPath(path);
+    if (include) return highlightPath(include);
+    return "";
+  }
   if (name === "project_context_search") {
     const query = String(args.query || "").trim();
     return query ? `: "${query}"` : "";
