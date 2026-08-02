@@ -49,6 +49,61 @@ def _safe_replace(src: Path, dst: Path) -> None:
             pass
 
 
+def _message_created_at_seq(messages: Any) -> List[str]:
+    """Extract the ``created_at`` sequence from a persisted message list.
+
+    Non-dict entries and missing/empty timestamps map to ``""`` so callers
+    can treat them as wildcards (legacy records may predate ``created_at``).
+    """
+    if not isinstance(messages, list):
+        return []
+    out: List[str] = []
+    for m in messages:
+        if isinstance(m, dict):
+            out.append(str(m.get("created_at") or "").strip())
+        else:
+            out.append("")
+    return out
+
+
+def _message_timestamp_diffs(disk_messages: Any, new_messages: Any) -> Tuple[int, int]:
+    """Return ``(first_mismatch_index, mismatch_count)`` comparing the
+    ``created_at`` sequences of the on-disk and new message lists.
+
+    Comparison is positional over the shared prefix length; missing timestamps
+    on either side act as wildcards so legacy records that predate
+    ``created_at`` never count as a mismatch. ``first_mismatch_index`` is
+    ``-1`` when every shared position matches.
+    """
+    disk_seq = _message_created_at_seq(disk_messages)
+    new_seq = _message_created_at_seq(new_messages)
+    first = -1
+    count = 0
+    for idx, (disk_ts, new_ts) in enumerate(zip(disk_seq, new_seq)):
+        if disk_ts and new_ts and disk_ts != new_ts:
+            if first < 0:
+                first = idx
+            count += 1
+    return first, count
+
+
+def _message_timestamp_sequence_allowed(disk_messages: Any, new_messages: Any) -> bool:
+    """Whether the new message sequence is a valid evolution of the on-disk one.
+
+    Allowed: equal sequences (content may have been edited in place, e.g.
+    pseudo-tool-call retries, thinking injection or plan updates, all of which
+    keep ``created_at`` unchanged); append (old is a prefix of new); truncate
+    to the latest N messages / full clear (new is a prefix of old); and at most
+    ONE shared-position timestamp difference, which is how an authoritative
+    in-flight turn or an owned active chat overwrites a peer's edit of the
+    same message. A larger divergence means the in-memory chat was likely
+    loaded from another workspace's same-id chat (whole-content replacement)
+    and must not be written.
+    """
+    _first, count = _message_timestamp_diffs(disk_messages, new_messages)
+    return count <= 1
+
+
 CHAT_STATE_VERSION = 1
 
 _PLAN_STATUSES = ("pending", "in_progress", "completed")
@@ -1032,19 +1087,71 @@ class ChatStateManager:
                             # Avoids needless I/O and prevents rewriting identical records.
                             new_text = json.dumps(record_payload, ensure_ascii=False, indent=2) + "\n"
                             skip_write = False
+                            existing = None
                             if record_path.exists():
                                 try:
                                     existing = record_path.read_text(encoding="utf-8")
                                     if existing == new_text:
                                         skip_write = True
                                 except Exception:
-                                    pass
+                                    existing = None
                             if not skip_write:
-                                tmp_path = record_path.with_name(record_path.name + ".tmp")
-                                with open(tmp_path, "w", encoding="utf-8") as f:
-                                    f.write(new_text)
-                                _safe_replace(tmp_path, record_path)
-                                index_dirty = True
+                                # Guard: the messages being written must be a
+                                # valid ``created_at`` evolution of the on-disk
+                                # record (append / truncate-latest-N / equal
+                                # sequences; at most one shared-position
+                                # timestamp difference is tolerated for a
+                                # concurrent edit of the same message by an
+                                # authoritative in-flight/owned chat). A
+                                # larger divergence means the in-memory chat
+                                # was likely loaded from another workspace's
+                                # same-id chat, so overwriting would
+                                # permanently clobber this
+                                # record — refuse and log with a stack trace.
+                                # Missing timestamps on disk act as wildcards
+                                # so legacy records never false-positive.
+                                if existing is not None:
+                                    disk_msgs = None
+                                    try:
+                                        disk_raw_for_check = json.loads(existing)
+                                        if isinstance(disk_raw_for_check, dict):
+                                            disk_msgs = disk_raw_for_check.get("messages")
+                                    except Exception:
+                                        disk_msgs = None
+                                    if disk_msgs is not None:
+                                        new_msgs = record_payload.get("messages")
+                                        mismatch_idx, mismatch_count = _message_timestamp_diffs(disk_msgs, new_msgs)
+                                        if mismatch_count > 1:
+                                            _record_ok = False
+                                            disk_seq = _message_created_at_seq(disk_msgs)
+                                            new_seq = _message_created_at_seq(new_msgs)
+                                            logger.error(
+                                                "save_chat_state: refusing to write %s — "
+                                                "message created_at sequence diverges at "
+                                                "index %d (%d mismatched positions) vs "
+                                                "on-disk record. Possible cross-workspace "
+                                                "chat contamination. "
+                                                "chat=%s active_chat_id=%s workspace=%s "
+                                                "ws_root=%s records_dir=%s disk_msg_count=%d "
+                                                "new_msg_count=%d disk_ts=%r new_ts=%r "
+                                                "payload_name=%r\n%s",
+                                                record_path.name, mismatch_idx, mismatch_count, cid,
+                                                getattr(self._agent, "active_chat_id", "?"),
+                                                getattr(self._agent, "workspace_id", "?"),
+                                                getattr(self._agent, "workspace_root", "?"),
+                                                self.chat_records_dir(),
+                                                len(disk_seq), len(new_seq),
+                                                disk_seq[mismatch_idx] if mismatch_idx < len(disk_seq) else "",
+                                                new_seq[mismatch_idx] if mismatch_idx < len(new_seq) else "",
+                                                str(record_payload.get("name") or ""),
+                                                "".join(traceback.format_stack()),
+                                            )
+                                if _record_ok:
+                                    tmp_path = record_path.with_name(record_path.name + ".tmp")
+                                    with open(tmp_path, "w", encoding="utf-8") as f:
+                                        f.write(new_text)
+                                    _safe_replace(tmp_path, record_path)
+                                    index_dirty = True
                 # The record now reflects the in-memory chat (written or already
                 # identical on disk); mark it clean so the next save skips it.
                 if _record_ok:

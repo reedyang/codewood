@@ -1449,6 +1449,267 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             # cleared — it is being viewed, so no dot.
             self.assertFalse(bool(manager2.find_chat_by_id("chat-1").get("has_unread", False)))
 
+    def test_message_timestamp_sequence_edges(self):
+        from cli.managers.chat_state_manager import (
+            _message_timestamp_diffs as diffs,
+            _message_timestamp_sequence_allowed as allowed,
+        )
+
+        def msg(ts):
+            return {"role": "user", "content": "x", "created_at": ts}
+
+        # Identical / append / truncate / full-clear / first-create sequences.
+        self.assertTrue(allowed([msg("t1")], [msg("t1")]))
+        self.assertTrue(allowed([msg("t1")], [msg("t1"), msg("t2")]))
+        self.assertTrue(allowed([msg("t1"), msg("t2")], [msg("t1")]))
+        self.assertTrue(allowed([msg("t1")], []))
+        self.assertTrue(allowed([], [msg("t1")]))
+        # A single shared-position difference (one message concurrently edited
+        # by an authoritative in-flight/owned chat) is tolerated.
+        self.assertTrue(allowed([msg("t1"), msg("t2")], [msg("t1"), msg("t9")]))
+        self.assertTrue(allowed([msg("t1"), msg("t2"), msg("t3")], [msg("t1"), msg("t9"), msg("t3")]))
+        # Two or more diverging positions (whole-content replacement from
+        # another workspace's same-id chat) are refused.
+        self.assertFalse(allowed([msg("t1"), msg("t2")], [msg("t9"), msg("t8")]))
+        # Reordered entries diverge at the first position.
+        self.assertEqual(diffs([msg("t1"), msg("t2")], [msg("t2"), msg("t1")]), (0, 2))
+        # Missing disk timestamp acts as a wildcard (legacy record).
+        self.assertTrue(allowed([{"role": "user", "content": "legacy"}], [msg("t1")]))
+        # Same-second appends are still a prefix.
+        self.assertTrue(allowed([msg("t1")], [msg("t1"), msg("t1")]))
+        # Non-list inputs are treated as empty sequences.
+        self.assertTrue(allowed(None, [msg("t1")]))
+        self.assertTrue(allowed([msg("t1")], None))
+        self.assertEqual(diffs(None, [msg("t1")]), (-1, 0))
+
+    def test_save_refuses_cross_workspace_timestamp_replacement(self):
+        # A chat whose in-memory messages were replaced by another workspace's
+        # same-id chat carries a divergent created_at sequence. The save must
+        # refuse to overwrite the on-disk record — even though the id check
+        # and the first_user_message_at anchor check pass, because the anchor
+        # was refreshed from the contaminated content — and log an error with
+        # a stack trace.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [
+                            {"role": "user", "content": "real msg", "created_at": "2026-06-18 09:10:00"},
+                            {"role": "assistant", "content": "real reply", "created_at": "2026-06-18 09:20:00"},
+                        ],
+                    )
+                ],
+            }
+            agent.active_chat_id = "chat-a"
+            manager.save_chat_state()
+
+            # Simulate cross-workspace contamination: the in-memory chat now
+            # holds another workspace's messages. The first-user anchor is
+            # refreshed from the contaminated content (like sync_active_chat
+            # does), so the existing anchor guard cannot catch it — only the
+            # timestamp-sequence guard can.
+            chat_a = manager.find_chat_by_id("chat-a")
+            chat_a["messages"] = [
+                {"role": "user", "content": "foreign", "created_at": "2026-06-18 10:00:00"},
+                {"role": "assistant", "content": "foreign reply", "created_at": "2026-06-18 10:01:00"},
+            ]
+            chat_a["first_user_message_at"] = "2026-06-18 10:00:00"
+            chat_a["updated_at"] = "2026-06-18 09:30:00"
+
+            with self.assertLogs("codewood.chat_state", level="ERROR") as cm:
+                manager.save_chat_state()
+
+            # The on-disk record must still hold the original message.
+            record = _read_first_chat_record(workspace)
+            contents = [m.get("content") for m in (record.get("messages") or [])]
+            self.assertEqual(contents, ["real msg", "real reply"])
+            self.assertTrue(any("created_at sequence diverges" in line for line in cm.output))
+
+    def test_save_allows_appended_messages_with_newer_timestamps(self):
+        # Appending new messages (old sequence is a prefix of the new one) is
+        # the normal save path and must always be written.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"}],
+                    )
+                ],
+            }
+            agent.active_chat_id = "chat-a"
+            manager.save_chat_state()
+
+            chat_a = manager.find_chat_by_id("chat-a")
+            chat_a["messages"].append(
+                {"role": "assistant", "content": "reply", "created_at": "2026-06-18 09:20:00"}
+            )
+            chat_a["updated_at"] = "2026-06-18 09:20:00"
+            manager.save_chat_state()
+
+            record = _read_first_chat_record(workspace)
+            contents = [m.get("content") for m in (record.get("messages") or [])]
+            self.assertEqual(contents, ["hello", "reply"])
+
+    def test_save_allows_truncation_of_latest_messages(self):
+        # Removing the latest N messages (new sequence is a prefix of the
+        # old) is a legitimate save (e.g. clear-chat / undo), not a sign of
+        # cross-workspace contamination.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [
+                            {"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"},
+                            {"role": "assistant", "content": "reply", "created_at": "2026-06-18 09:20:00"},
+                        ],
+                    )
+                ],
+            }
+            agent.active_chat_id = "chat-a"
+            manager.save_chat_state()
+
+            chat_a = manager.find_chat_by_id("chat-a")
+            chat_a["messages"] = [
+                {"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"}
+            ]
+            chat_a["updated_at"] = "2026-06-18 09:25:00"
+            manager.save_chat_state()
+
+            record = _read_first_chat_record(workspace)
+            contents = [m.get("content") for m in (record.get("messages") or [])]
+            self.assertEqual(contents, ["hello"])
+
+    def test_save_allows_in_place_edit_with_unchanged_timestamps(self):
+        # Edits that keep created_at stable (pseudo-tool-call retries,
+        # thinking injection, plan updates) must not be rejected: the guard
+        # compares the timestamp sequence, never the message content.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [
+                            {"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"},
+                            {"role": "assistant", "content": "v1", "created_at": "2026-06-18 09:20:00"},
+                        ],
+                    )
+                ],
+            }
+            agent.active_chat_id = "chat-a"
+            manager.save_chat_state()
+
+            chat_a = manager.find_chat_by_id("chat-a")
+            chat_a["messages"][1]["content"] = "v2"
+            chat_a["updated_at"] = "2026-06-18 09:25:00"
+            manager.save_chat_state()
+
+            record = _read_first_chat_record(workspace)
+            contents = [m.get("content") for m in (record.get("messages") or [])]
+            self.assertEqual(contents, ["hello", "v2"])
+
+    def test_save_tolerates_legacy_records_missing_created_at(self):
+        # Records that predate created_at have no timestamps on disk. The
+        # sync assigns fresh ones in memory; the guard must treat the missing
+        # disk timestamp as a wildcard instead of refusing the save.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "legacy"}],
+                    )
+                ],
+            }
+            agent.active_chat_id = "chat-a"
+            manager.save_chat_state()
+
+            chat_a = manager.find_chat_by_id("chat-a")
+            chat_a["messages"] = [
+                {"role": "user", "content": "legacy", "created_at": "2026-06-18 09:10:00"},
+                {"role": "assistant", "content": "new", "created_at": "2026-06-18 09:20:00"},
+            ]
+            chat_a["updated_at"] = "2026-06-18 09:20:00"
+            manager.save_chat_state()
+
+            record = _read_first_chat_record(workspace)
+            contents = [m.get("content") for m in (record.get("messages") or [])]
+            self.assertEqual(contents, ["legacy", "new"])
+
+    def test_save_allows_full_clear_of_messages(self):
+        # clear_chat_context empties the message list; the new (empty)
+        # sequence is a prefix of the old one and must be written.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"}],
+                    )
+                ],
+            }
+            agent.active_chat_id = "chat-a"
+            manager.save_chat_state()
+
+            chat_a = manager.find_chat_by_id("chat-a")
+            chat_a["messages"] = []
+            chat_a.pop("first_user_message_at", None)
+            chat_a["updated_at"] = "2026-06-18 09:30:00"
+            manager.save_chat_state()
+
+            record = _read_first_chat_record(workspace)
+            self.assertEqual(record.get("messages") or [], [])
+
 
 if __name__ == "__main__":
     unittest.main()
