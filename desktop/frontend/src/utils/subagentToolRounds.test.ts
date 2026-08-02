@@ -38,6 +38,24 @@ describe("subagentToolRounds", () => {
     expect(round).toContain("[limit=50]");
   });
 
+  it("shows the searched files (include) in the grep fallback round detail", () => {
+    const round = buildFallbackToolRoundsFromRaw([
+      {
+        tool: "grep",
+        args: {
+          limit: 80,
+          path: "desktop/frontend/src/state",
+          pattern: "newChat|draftMode",
+          include: "AppContext.tsx",
+        },
+        output: "1: match",
+      },
+    ], { lang: "en" })[0];
+
+    expect(round).toContain("Grep");
+    expect(round).toContain("desktop/frontend/src/state/AppContext.tsx");
+  });
+
   it("prefers structured raw rounds over bare tool call names", () => {
     const rounds = getSubAgentMessageToolRounds({
       role: "assistant",

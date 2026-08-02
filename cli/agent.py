@@ -2817,9 +2817,16 @@ class Agent:
             pat = str(a.get("pattern") or "").strip()
             label = translate("tool.label.grep", self._ui_language())
             sp = str(a.get("path") or "").strip()
+            inc = str(a.get("include") or "").strip()
             detail = pat
             if sp and sp != ".":
                 detail = f"{pat} in {sp}"
+            if inc:
+                if sp and sp != ".":
+                    sep = "" if inc.startswith(("/", "\\")) else "/"
+                    detail = f"{detail}{sep}{inc}"
+                else:
+                    detail = f"{pat} in {inc}"
             return (label, detail)
         if name == "glob":
             pat = str(a.get("pattern") or "").strip()
