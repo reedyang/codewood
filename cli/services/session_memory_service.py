@@ -709,7 +709,7 @@ class SessionMemoryService:
         self._start_token_counter_warmup()
         return None
 
-    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None, reply_records: Optional[List[Dict[str, Any]]] = None) -> None:
+    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None, reply_records: Optional[List[Dict[str, Any]]] = None, exclude_from_model_context: Optional[bool] = None) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant", "tool"):
             return
@@ -749,6 +749,8 @@ class SessionMemoryService:
             message["_context_suffix"] = str(context_suffix)
         if _internal:
             message["_internal"] = True
+        if exclude_from_model_context:
+            message["exclude_from_model_context"] = True
         if isinstance(api_content, str) and api_content:
             message["_api_content"] = api_content
         if isinstance(thinking, str) and thinking:
