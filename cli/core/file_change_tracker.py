@@ -40,10 +40,23 @@ class FileChangeRecord:
 class FileChangeTracker:
     """Central manager for tracking all file changes during a session."""
 
-    def __init__(self, session_id: Optional[str] = None):
+    def __init__(self, session_id: Optional[str] = None, path_policy: Optional[Any] = None):
         self.session_id = session_id
         self._changes: List[FileChangeRecord] = []
         self._files_before: Dict[str, str] = {}  # cache for content before changes
+        # Optional PathPolicy used to decide whether a path lives under the
+        # workspace cache directory.  Changes under the cache are disposable
+        # and must not surface in the file-change list.
+        self._path_policy = path_policy
+
+    def _is_ignored_cache_path(self, file_path: str) -> bool:
+        """True iff ``file_path`` lives under the workspace cache directory."""
+        if self._path_policy is None:
+            return False
+        try:
+            return self._path_policy.is_workspace_cache_path(Path(file_path))
+        except Exception:
+            return False
 
     def record_change(
         self,
@@ -54,8 +67,12 @@ class FileChangeTracker:
         content_after: Optional[str] = None,
         patch: Optional[List[Dict[str, Any]]] = None,
         backup_path: Optional[str] = None,
-    ) -> FileChangeRecord:
+    ) -> Optional[FileChangeRecord]:
         """Record a file change."""
+        # Changes under the workspace cache directory are disposable and never
+        # recorded in the file-change list.
+        if self._is_ignored_cache_path(file_path):
+            return None
         # Calculate line changes
         added_lines = 0
         deleted_lines = 0
@@ -110,8 +127,12 @@ class FileChangeTracker:
         source: str,
         content_before: str,
         backup_path: Optional[str] = None,
-    ) -> FileChangeRecord:
+    ) -> Optional[FileChangeRecord]:
         """Record a file deletion with the pre-deletion content."""
+        # Changes under the workspace cache directory are disposable and never
+        # recorded in the file-change list.
+        if self._is_ignored_cache_path(file_path):
+            return None
         deleted_lines = len(content_before.splitlines())
         record = FileChangeRecord(
             file_path=file_path,

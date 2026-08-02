@@ -2022,9 +2022,18 @@ def action_shell_command(
                 _new_before_filter = len(_new)
                 _modified_before_filter = len(_modified)
                 _ws_deleted_before_filter = len(_ws_deleted)
-                _new = [p for p in _new if p in _cmd_paths]
-                _modified = [p for p in _modified if p in _cmd_paths]
-                _ws_deleted = [p for p in _ws_deleted if p in _cmd_paths]
+                _new = [
+                    p for p in _new
+                    if p in _cmd_paths and not policy.is_workspace_cache_path(Path(p))
+                ]
+                _modified = [
+                    p for p in _modified
+                    if p in _cmd_paths and not policy.is_workspace_cache_path(Path(p))
+                ]
+                _ws_deleted = [
+                    p for p in _ws_deleted
+                    if p in _cmd_paths and not policy.is_workspace_cache_path(Path(p))
+                ]
                 _log.info("cmd_paths filter: new %d→%d modified %d→%d ws_deleted %d→%d",
                           _new_before_filter, len(_new),
                           _modified_before_filter, len(_modified),
