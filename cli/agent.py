@@ -89,6 +89,7 @@ from .core.console_utils import (
     _ansi_yellow,
     _ansi_green,
     _ansi_rgb,
+    escape_gui_sentinels,
 )
 from .core.console_title import restore_app_console_title
 from .core.localization import translate
@@ -1916,7 +1917,7 @@ class Agent:
                                         },
                                         ensure_ascii=False,
                                     )
-                                    print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
+                                    print(f"{GUI_DIFF_BEGIN}{escape_gui_sentinels(payload)}{GUI_DIFF_END}")
                                 else:
                                     # GUI-only settle marker: this replay path
                                     # is entered after the tool has already
@@ -1932,7 +1933,7 @@ class Agent:
                                     if output:
                                         print(
                                             f"{GUI_CMD_OUTPUT_BEGIN}"
-                                            f"{output}{GUI_CMD_OUTPUT_END}"
+                                            f"{escape_gui_sentinels(output)}{GUI_CMD_OUTPUT_END}"
                                         )
                             except Exception:
                                 pass
@@ -3851,7 +3852,7 @@ class Agent:
         if round_output:
             tool_round = (
                 f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
-                f"{round_output}{GUI_CMD_OUTPUT_END}"
+                f"{escape_gui_sentinels(round_output)}{GUI_CMD_OUTPUT_END}"
             )
         pending = list(getattr(self, "_accumulated_tool_rounds", None) or [])
         pending.append(tool_round)
@@ -4131,7 +4132,7 @@ class Agent:
                     # GUI mode: wrap in sentinel for expandable block
                     tool_round = (
                         f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
-                        f"{output}{GUI_CMD_OUTPUT_END}"
+                        f"{escape_gui_sentinels(str(output))}{GUI_CMD_OUTPUT_END}"
                     )
             else:
                 err_text = item.get("error")
@@ -4141,7 +4142,7 @@ class Agent:
                     else:
                         tool_round = (
                             f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
-                            f"{err_text}{GUI_CMD_OUTPUT_END}"
+                            f"{escape_gui_sentinels(str(err_text))}{GUI_CMD_OUTPUT_END}"
                         )
             marker = item.get("marker")
             if marker:
@@ -4186,7 +4187,7 @@ class Agent:
             else:
                 import json as _json
                 payload = _json.dumps(preview, ensure_ascii=False)
-                tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}"
+                tool_round = f"{tool_round}\n{GUI_DIFF_BEGIN}{escape_gui_sentinels(payload)}{GUI_DIFF_END}"
         return tool_round
 
     def _render_diff_rows_as_text(self, diff_rows: List[Dict[str, Any]]) -> List[str]:
@@ -4915,7 +4916,7 @@ class Agent:
                 return 0
             self._notify_first_text()
             try:
-                self._base_stream.write(text)
+                self._base_stream.write(escape_gui_sentinels(text))
                 self._base_stream.flush()
             except Exception:
                 pass

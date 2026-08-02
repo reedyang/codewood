@@ -25,7 +25,7 @@ from ..config.startup_tips import (
     get_random_startup_tip_entry,
 )
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
-from ..core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END, GUI_DIFF_BEGIN, GUI_DIFF_END, GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
+from ..core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END, GUI_DIFF_BEGIN, GUI_DIFF_END, GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END, escape_gui_sentinels
 
 from ..core.text_output_renderer import (
     format_assistant_display_response,
@@ -4697,7 +4697,7 @@ def run_agent_loop(agent: Any):
                                 )
                                 _output_tail = (
                                     f"{GUI_CMD_OUTPUT_BEGIN}"
-                                    f"{full_prompt}{GUI_CMD_OUTPUT_END}"
+                                    f"{escape_gui_sentinels(full_prompt)}{GUI_CMD_OUTPUT_END}"
                                 )
                                 print(_output_tail)
                             except Exception:
