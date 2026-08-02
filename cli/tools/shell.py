@@ -1236,39 +1236,19 @@ def action_shell_command(
         _before_file_list = _snapshot_workspace_file_list(execution_cwd)
 
     _repo_root = _git_repo_root(execution_cwd) if not _skip_file_monitoring else None
-    # Snapshot untracked file content before stash so we have a fallback
-    # source for before-content comparison.
-    _untracked_snapshot: Dict[str, str] = {}
-    if _repo_root is not None:
-        try:
-            result = _subprocess_mod.run(
-                ["git", "-C", str(_repo_root), "ls-files", "--others", "--exclude-standard"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    abs_path = (_repo_root / line).resolve()
-                    try:
-                        _untracked_snapshot[str(abs_path)] = abs_path.read_text(
-                            encoding="utf-8", errors="replace",
-                        )
-                    except Exception:
-                        pass
-            _log.info("untracked files snapshot: %d files", len(_untracked_snapshot))
-        except Exception as e:
-            _log.info("ls-files error: %s", e)
-    # Push a temporary git stash to capture the pre-execution state.
-    # Immediately apply it back so files stay on disk for the shell command.
-    _stash_hash: Optional[str] = None
-    if not _skip_file_monitoring and _repo_root is not None:
-        _stash_hash = _git_stash_push(execution_cwd)
-    if _repo_root:
-        _log.info("repo_root=%s stash_hash=%s skip_monitor=%s", _repo_root, _stash_hash, _skip_file_monitoring)
-    if _stash_hash:
-        _git_stash_apply(execution_cwd, _stash_hash)
+    # Snapshot the contents git cannot recover after the command overwrites
+    # them (untracked files, tracked files with unstaged modifications, and
+    # command-referenced paths) so real diffs can be built afterwards.
+    # This replaces the previous git-stash round-trip, which could leave the
+    # working tree in a conflicted state (3-way merge conflicts) whenever a
+    # file had both staged and unstaged changes.
+    _before_content_snapshot: Dict[str, str] = {}
+    if not _skip_file_monitoring:
+        _before_content_snapshot = _snapshot_workspace_before_content(
+            command, execution_cwd, _repo_root,
+        )
+        _log.info("before-content snapshot: %d files repo_root=%s skip_monitor=%s",
+                  len(_before_content_snapshot), _repo_root, _skip_file_monitoring)
 
     try:
         run_env = os.environ.copy()
@@ -2047,17 +2027,15 @@ def action_shell_command(
                         _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
                     except Exception:
                         continue
-                    # If the file was untracked before the shell ran, git stash
-                    # (--include-untracked) may have stored its original content.
-                    # Try to retrieve it so we can show a real diff instead of
-                    # marking the whole file as added.
+                    # If the file existed before the shell ran (e.g. it was
+                    # untracked or had unstaged changes), its original content
+                    # is in the before-content snapshot.  Fall back to git
+                    # (index → HEAD) for clean tracked files so we can show a
+                    # real diff instead of marking the whole file as added.
                     _new_before: Optional[str] = None
-                    if _repo_root is not None:
-                        _new_before = _git_content_before_via_stash(_repo_root, _path_str, _stash_hash)
-                    if _new_before is None:
-                        _new_before = _untracked_snapshot.get(_path_str)
-                    if _new_before is None:
-                        _new_before = _untracked_snapshot.get(_path_str)
+                    _new_before = _before_content_snapshot.get(_path_str)
+                    if _new_before is None and _repo_root is not None:
+                        _new_before = _git_content_before(_repo_root, _path_str)
                     if _new_before is not None:
                         _diff_rows_new = _build_real_diff_rows(_new_before, _content)
                         _change_type = "modify"
@@ -2095,10 +2073,9 @@ def action_shell_command(
                     if _is_binary:
                         _before_binary: Optional[str] = None
                         _backups_dir_mod: Optional[Path] = None
-                        if _repo_root is not None:
-                            _before_binary = _git_content_before_via_stash(_repo_root, _path_str, _stash_hash)
-                        if _before_binary is None:
-                            _before_binary = _untracked_snapshot.get(_path_str)
+                        _before_binary = _before_content_snapshot.get(_path_str)
+                        if _before_binary is None and _repo_root is not None:
+                            _before_binary = _git_content_before(_repo_root, _path_str)
                         # Normalize line endings for comparison — git may
                         # convert CRLF↔LF during stash/apply.
                         if _before_binary is not None and _before_binary.replace("\r\n", "\n").replace("\r", "\n") == _content.replace("\r\n", "\n").replace("\r", "\n"):
@@ -2127,14 +2104,12 @@ def action_shell_command(
                                 backup_path=_backup_name,
                             )
                     else:
-                        # Try git stash to get pre-execution content.
+                        # Get pre-execution content from the before-content
+                        # snapshot, falling back to git (index → HEAD).
                         _before_for_diff: Optional[str] = None
-                        if _repo_root is not None:
-                            _before_for_diff = _git_content_before_via_stash(_repo_root, _path_str, _stash_hash)
-                        if _before_for_diff is None:
-                            _before_for_diff = _untracked_snapshot.get(_path_str)
-                        if _before_for_diff is None:
-                            _before_for_diff = _untracked_snapshot.get(_path_str)
+                        _before_for_diff = _before_content_snapshot.get(_path_str)
+                        if _before_for_diff is None and _repo_root is not None:
+                            _before_for_diff = _git_content_before(_repo_root, _path_str)
                         if _before_for_diff is not None:
                             _diff_rows = _build_real_diff_rows(_before_for_diff, _content)
                             _cb = _before_for_diff
@@ -2174,12 +2149,11 @@ def action_shell_command(
                     if _path_str in _delete_snapshots:
                         continue
                     _ws_del_before: Optional[str] = None
-                    if _repo_root is not None:
-                        _ws_del_before = _git_content_before_via_stash(
-                            _repo_root, _path_str, _stash_hash,
+                    _ws_del_before = _before_content_snapshot.get(_path_str)
+                    if _ws_del_before is None and _repo_root is not None:
+                        _ws_del_before = _git_content_before(
+                            _repo_root, _path_str,
                         )
-                    if _ws_del_before is None:
-                        _ws_del_before = _untracked_snapshot.get(_path_str)
                     if _ws_del_before is None:
                         _ws_del_before = ""
                     _ws_del_backup: Optional[str] = None
@@ -2238,10 +2212,6 @@ def action_shell_command(
                 except Exception:
                     pass
 
-            # Restore the pre-execution stash so the working tree returns
-            # to its original state (unstaged changes come back).
-            if _stash_hash and not _skip_file_monitoring:
-                _git_stash_restore(execution_cwd, _stash_hash)
         finally:
             _stop_status_ticker()
             if merge_path:
@@ -3774,6 +3744,94 @@ def _snapshot_workspace_file_list(cwd: Path) -> Dict[str, Tuple[float, int]]:
     return snapshot
 
 
+def _snapshot_workspace_before_content(
+    command: str,
+    execution_cwd: Path,
+    repo_root: Optional[Path],
+) -> Dict[str, str]:
+    """Snapshot file contents that git cannot recover after a shell command
+    overwrites them.
+
+    The previous implementation captured this state via a temporary
+    ``git stash push --keep-index`` round-trip, which could leave the working
+    tree in a conflicted state (3-way merge conflicts in files that had both
+    staged and unstaged changes).  Reading the contents up-front avoids any
+    repository mutation and guarantees the pre-execution bytes are available
+    for diff construction.
+
+    The following files are captured:
+
+    1. untracked files (``git ls-files --others``) -- git has no other copy
+       of these.
+    2. tracked files with unstaged modifications (``git diff --name-only``)
+       -- the unstaged portion is not recoverable from the index or HEAD.
+    3. existing files explicitly referenced by the command (covers non-git
+       workspaces and files that are clean in git but may still be rewritten
+       by the command).
+
+    Returns ``{abs_path_str: content}``.  Individual read failures are
+    skipped silently.
+    """
+    snapshot: Dict[str, str] = {}
+
+    def _read_if_file(abs_path: Path) -> None:
+        key = str(abs_path)
+        if key in snapshot:
+            return
+        try:
+            if abs_path.is_file():
+                snapshot[key] = abs_path.read_text(
+                    encoding="utf-8", errors="replace",
+                )
+        except Exception:
+            pass
+
+    if repo_root is not None:
+        # Untracked files: git has no pre-execution copy of these.
+        try:
+            result = _subprocess_mod.run(
+                ["git", "-C", str(repo_root), "ls-files", "--others",
+                 "--exclude-standard", "-z"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split("\0"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    _read_if_file((repo_root / line).resolve())
+        except Exception as e:
+            _log.info("ls-files error: %s", e)
+        # Tracked files with unstaged modifications.
+        try:
+            result = _subprocess_mod.run(
+                ["git", "-C", str(repo_root), "-c", "core.quotepath=false",
+                 "diff", "--name-only", "-z"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split("\0"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    _read_if_file((repo_root / line).resolve())
+        except Exception as e:
+            _log.info("git diff --name-only error: %s", e)
+
+    # Command-referenced existing files: covers non-git workspaces.
+    try:
+        cmd_paths = _extract_command_file_paths(command, execution_cwd)
+        cmd_paths = expand_command_file_paths(
+            command, execution_cwd, cmd_paths,
+        )
+        for p in cmd_paths:
+            _read_if_file(Path(p))
+    except Exception as e:
+        _log.info("command path snapshot error: %s", e)
+
+    return snapshot
+
+
 def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
     """Extract absolute file paths that are referenced in a shell command.
 
@@ -4042,105 +4100,6 @@ def _is_binary_file(file_path: str) -> bool:
         return False
 
 
-def _git_stash_push(cwd: Path) -> Optional[str]:
-    """Push a temporary stash to capture the pre-execution working-tree
-    state.  Returns the stash hash on success, or None on failure.
-
-    Uses ``--keep-index`` so staged changes stay in the index and working
-    tree; unstaged and untracked changes go into the stash.
-    """
-    def _top_stash_hash() -> Optional[str]:
-        try:
-            result = _subprocess_mod.run(
-                ["git", "-C", str(cwd), "rev-parse", "--verify", "refs/stash"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except Exception as e:
-            _log.info("stash top hash lookup error: %s", e)
-        return None
-
-    try:
-        before_hash = _top_stash_hash()
-        result = _subprocess_mod.run(
-            ["git", "-C", str(cwd), "stash", "push", "--keep-index",
-             "--include-untracked", "-m", "codewood_shell_pre"],
-            capture_output=True, text=True,
-            timeout=30,
-        )
-        ok = result.returncode == 0
-        if not ok:
-            _log.info("stash push failed: rc=%d stdout=%s stderr=%s",
-                      result.returncode, result.stdout.strip()[:200], result.stderr.strip()[:200])
-            return None
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        if "No local changes to save" in stdout or "No local changes to save" in stderr:
-            return None
-        # Resolve the stash hash so we reference the exact stash entry,
-        # not stash@{0} which could shift if the shell creates its own.
-        after_hash = _top_stash_hash()
-        if after_hash and after_hash != before_hash:
-            return after_hash
-        _log.info(
-            "stash push produced no new entry: before=%s after=%s stdout=%s stderr=%s",
-            before_hash,
-            after_hash,
-            stdout[:200],
-            stderr[:200],
-        )
-        return None
-    except Exception as e:
-        _log.info("stash push error: %s", e)
-        return None
-
-
-def _git_stash_apply(cwd: Path, stash_hash: str) -> None:
-    """Apply the temporary stash back to the working tree without dropping
-    it, so the shell command sees the original files."""
-    try:
-        _subprocess_mod.run(
-            ["git", "-C", str(cwd), "stash", "apply", stash_hash],
-            capture_output=True, text=True,
-            timeout=30,
-        )
-    except Exception:
-        pass
-
-
-def _git_stash_ref_for_hash(cwd: Path, stash_hash: str) -> Optional[str]:
-    """Return the current stash ref (for example ``stash@{0}``) that points
-    at *stash_hash*, or ``None`` when no matching stash entry exists."""
-    try:
-        result = _subprocess_mod.run(
-            ["git", "-C", str(cwd), "stash", "list", "--format=%H %gd"],
-            capture_output=True, text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            _log.info(
-                "stash list for ref lookup failed: rc=%d stdout=%s stderr=%s",
-                result.returncode,
-                (result.stdout or "").strip()[:200],
-                (result.stderr or "").strip()[:200],
-            )
-            return None
-        for line in (result.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                current_hash, current_ref = line.split(None, 1)
-            except ValueError:
-                continue
-            if current_hash == stash_hash:
-                return current_ref.strip()
-    except Exception as e:
-        _log.info("stash ref lookup error: %s", e)
-    return None
-
-
 def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
     """Delete stale ``codewood_shell_pre`` stashes for the git repo at *cwd*.
 
@@ -4204,32 +4163,6 @@ def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
         return {"checked": True, "repo_root": str(repo_root), "removed": 0, "failed": ["exception"]}
 
 
-def _git_stash_restore(cwd: Path, stash_hash: str) -> None:
-    """Drop the temporary stash now that its before-content has been used
-    for diffs."""
-    try:
-        stash_ref = _git_stash_ref_for_hash(cwd, stash_hash)
-        if not stash_ref:
-            _log.info("stash drop skipped; hash not found in stash list: %s", stash_hash)
-            return
-        result = _subprocess_mod.run(
-            ["git", "-C", str(cwd), "stash", "drop", stash_ref],
-            capture_output=True, text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            _log.info(
-                "stash drop failed: stash=%s ref=%s rc=%d stdout=%s stderr=%s",
-                stash_hash,
-                stash_ref,
-                result.returncode,
-                (result.stdout or "").strip()[:200],
-                (result.stderr or "").strip()[:200],
-            )
-    except Exception:
-        pass
-
-
 def _git_repo_root(cwd: Path) -> Optional[Path]:
     """Return the git repository root for *cwd*, or None."""
     try:
@@ -4245,15 +4178,18 @@ def _git_repo_root(cwd: Path) -> Optional[Path]:
     return None
 
 
-def _git_content_before_via_stash(
-    repo_root: Path, file_path: str, stash_hash: Optional[str] = None,
+def _git_content_before(
+    repo_root: Path, file_path: str,
 ) -> Optional[str]:
-    """Return the pre-execution content of *file_path*.
+    """Return the pre-execution content of *file_path* from git.
 
     Resolution order:
-    1. ``<stash_hash>:<rel>`` -- unstaged + untracked changes
-    2. ``:<rel>``              -- staged (index) version
-    3. ``HEAD:<rel>``          -- last commit
+    1. ``:<rel>`` -- staged (index) version
+    2. ``HEAD:<rel>`` -- last commit
+
+    Callers consult the on-disk before-content snapshot
+    (``_snapshot_workspace_before_content``) first; this is the git fallback
+    for files that were clean before the command ran.
 
     Captures raw bytes from git and decodes as UTF-8.
     """
@@ -4264,7 +4200,6 @@ def _git_content_before_via_stash(
         _log.warning("path resolve failed: file=%s repo=%s err=%s", file_path, repo_root, e)
         return None
     for _git_ref, _label in [
-        *([(f"{stash_hash}:{rel_str}", "stash")] if stash_hash else []),
         (f":{rel_str}", "index"),
         (f"HEAD:{rel_str}", "HEAD"),
     ]:
