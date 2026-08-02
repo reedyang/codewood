@@ -1046,6 +1046,7 @@ def action_shell_command(
     execution_cwd = _resolve_shell_execution_cwd(agent)
     _delete_snapshots: Dict[str, str] = {}
     _all_delete_targets_self_created = False
+    _all_delete_targets_in_cache = False
     try:
         if _is_potential_delete_command(command):
             _delete_targets_pre = _extract_delete_file_paths(command, execution_cwd)
@@ -1065,6 +1066,19 @@ def action_shell_command(
                             for t in _delete_target_strs
                         )
                     )
+                # Deleting files under the workspace cache directory is always
+                # safe (cache is disposable) — skip the confirmation prompt.
+                _all_delete_targets_in_cache = all(
+                    policy.is_workspace_cache_path(t) for t in _delete_targets_pre
+                ) and bool(_delete_targets_pre)
+                # Cache files are disposable: exclude them from snapshotting /
+                # backup / change-list tracking so a cache cleanup never
+                # surfaces as a recorded file change (or a recoverable backup).
+                _delete_targets_pre = [
+                    t
+                    for t in _delete_targets_pre
+                    if not policy.is_workspace_cache_path(t)
+                ]
                 _delete_snapshots = _snapshot_files_content(_delete_targets_pre)
     except Exception:
         pass
@@ -1087,7 +1101,9 @@ def action_shell_command(
     )
     # Auto-skip approval when the command only deletes files that the model
     # itself created during the current task.
-    if should_prompt_confirm and _all_delete_targets_self_created:
+    if should_prompt_confirm and (
+        _all_delete_targets_self_created or _all_delete_targets_in_cache
+    ):
         should_prompt_confirm = False
     if should_prompt_confirm:
         # The selection/inline confirmation UI renders the command on its own
@@ -3373,6 +3389,14 @@ def _extract_delete_file_paths(command: str, cwd: Path) -> List[Path]:
                 tokens = shlex.split(rest) if rest else []
             except ValueError:
                 tokens = rest.split()
+            if os.name == "nt" and rest:
+                # POSIX shlex treats backslashes as escapes, which mangles
+                # Windows drive paths (``C:\x`` -> ``C:x``). Add a plain
+                # whitespace split so backslash paths survive; duplicates are
+                # skipped downstream (``_collect_file`` dedupes exact paths).
+                tokens = list(tokens) + [
+                    t for t in rest.split() if t not in tokens
+                ]
             for token in tokens:
                 # Skip flags/options
                 if token.startswith("-") or token.startswith("/"):

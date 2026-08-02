@@ -63,6 +63,24 @@ class PathPolicyShellGuardTests(unittest.TestCase):
         self.assertFalse(decision.get("allowed"))
         self.assertIn("Blocked shell command", str(decision.get("error") or ""))
 
+    def test_is_workspace_cache_path_detects_cache_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            agent = _DummyAgent(
+                work_directory=root,
+                workspace_root=root,
+                self_repo_root=root / "codewood",
+            )
+            policy = PathPolicy(agent)
+            cache_dir = root / ".codewood" / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / "scratch.tmp"
+            cache_file.write_text("data", encoding="utf-8")
+
+            self.assertTrue(policy.is_workspace_cache_path(cache_file))
+            self.assertFalse(policy.is_workspace_cache_path(root / "src" / "main.py"))
+            self.assertEqual(policy.workspace_cache_root(), cache_dir.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

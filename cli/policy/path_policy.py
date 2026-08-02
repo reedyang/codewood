@@ -63,6 +63,16 @@ class PathPolicy:
         except Exception:
             return False
 
+    def workspace_cache_root(self) -> Path:
+        return (self.agent.workspace_config_dir / "cache").resolve()
+
+    def is_workspace_cache_path(self, path: Path) -> bool:
+        """True iff ``path`` lives under the workspace cache directory."""
+        try:
+            return self.is_path_under(path.resolve(), self.workspace_cache_root())
+        except Exception:
+            return False
+
     def is_app_protected_path(self, path: Path) -> bool:
         if self.is_workspace_skill_path(path):
             return False

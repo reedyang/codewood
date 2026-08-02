@@ -1,4 +1,5 @@
 ﻿import unittest
+import os
 import tempfile
 import subprocess
 from pathlib import Path
@@ -16,6 +17,35 @@ from cli.services.execution_policy_service import freedom_auto_confirm
 class _Policy:
     def can_run_shell_in_workdir(self, **_kwargs):
         return {"allowed": True}
+
+
+class _CacheAwarePolicy(_Policy):
+    def __init__(self, cache_root: Path):
+        self._cache_root = cache_root
+
+    def is_workspace_cache_path(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(self._cache_root.resolve())
+            return True
+        except Exception:
+            return False
+
+
+class _FakeChangeTracker:
+    def __init__(self):
+        self.records = []
+
+    def record_delete(self, **kwargs):
+        self.records.append(("delete", kwargs))
+
+    def record_change(self, **kwargs):
+        self.records.append(("change", kwargs))
+
+    def cancel_create_for_deleted_file(self, _path):
+        pass
+
+    def get_changes(self):
+        return []
 
 
 class _DummyAgent:
@@ -157,6 +187,19 @@ class _FakePopenResult:
 
     def wait(self):
         return self._return_code
+
+
+def _delete_file_popen(file_path: Path):
+    """Popen mock whose \"command\" really removes *file_path*."""
+
+    def _popen(*_args, **_kwargs):
+        try:
+            Path(file_path).unlink()
+        except OSError:
+            pass
+        return _FakePopenResult("ok\n")
+
+    return _popen
 
 
 class _FakeCompleted:
@@ -462,6 +505,97 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(popen_mock.call_args.kwargs.get("cwd"), str(agent.workspace_root))
+
+    def test_rm_under_workspace_cache_skips_confirmation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            cache_dir = root / ".codewood" / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / "scratch.tmp"
+            cache_file.write_text("data", encoding="utf-8")
+
+            agent = _DummyAgent()
+            agent.workspace_root = root
+            agent.work_directory = root
+            agent._get_path_policy = lambda: _CacheAwarePolicy(cache_dir)
+            agent.file_change_tracker = _FakeChangeTracker()
+
+            with patch("subprocess.Popen", side_effect=_delete_file_popen(cache_file)), patch(
+                "cli.tools.shell._git_repo_root", return_value=None,
+            ), patch(
+                "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+            ):
+                result = action_shell_command(
+                    agent, f"rm -f {cache_file.as_posix()}", confirmed=False,
+                    interactive=True, input_data=None,
+                )
+
+            self.assertEqual(agent.prompt_calls, [])
+            self.assertTrue(result.get("success", False))
+            self.assertNotIn("_shell_diff_entries", result)
+            self.assertEqual(agent.file_change_tracker.records, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows backslash paths only")
+    def test_rm_under_workspace_cache_with_backslash_path_skips_confirmation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            cache_dir = root / ".codewood" / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / "scratch.tmp"
+            cache_file.write_text("data", encoding="utf-8")
+
+            agent = _DummyAgent()
+            agent.workspace_root = root
+            agent.work_directory = root
+            agent._get_path_policy = lambda: _CacheAwarePolicy(cache_dir)
+            agent.file_change_tracker = _FakeChangeTracker()
+
+            with patch("subprocess.Popen", side_effect=_delete_file_popen(cache_file)), patch(
+                "cli.tools.shell._git_repo_root", return_value=None,
+            ), patch(
+                "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+            ):
+                result = action_shell_command(
+                    agent, f"rm -f {cache_file}", confirmed=False,
+                    interactive=True, input_data=None,
+                )
+
+            self.assertEqual(agent.prompt_calls, [])
+            self.assertTrue(result.get("success", False))
+            self.assertNotIn("_shell_diff_entries", result)
+            self.assertEqual(agent.file_change_tracker.records, [])
+
+    def test_rm_outside_workspace_cache_still_confirms(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            cache_dir = root / ".codewood" / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            outside = root / "important.txt"
+            outside.write_text("data", encoding="utf-8")
+
+            agent = _DummyAgent()
+            agent.workspace_root = root
+            agent.work_directory = root
+            agent._get_path_policy = lambda: _CacheAwarePolicy(cache_dir)
+            agent.file_change_tracker = _FakeChangeTracker()
+            agent.prompt_result = True
+
+            with patch("subprocess.Popen", side_effect=_delete_file_popen(outside)), patch(
+                "cli.tools.shell._git_repo_root", return_value=None,
+            ), patch(
+                "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+            ):
+                result = action_shell_command(
+                    agent, f"rm -f {outside}", confirmed=False,
+                    interactive=True, input_data=None,
+                )
+
+            self.assertEqual(len(agent.prompt_calls), 1)
+            self.assertTrue(result.get("success", False))
+            # Non-cache deletions are still tracked and surfaced.
+            self.assertEqual(agent.file_change_tracker.records[0][0], "delete")
+            entries = result.get("_shell_diff_entries") or []
+            self.assertTrue(any(e.get("changeType") == "delete" for e in entries))
 
     def test_moderate_mode_manual_confirm_ignores_allowlist(self):
         agent = _DummyAgent()
