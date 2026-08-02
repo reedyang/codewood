@@ -313,6 +313,52 @@ def _pywebview_window_hwnd(window) -> int | None:
         return None
 
 
+def _enable_taskbar_minimize_win32(hwnd: int) -> None:
+    """Let the taskbar button minimize/restore the frameless main window.
+
+    pywebview builds frameless windows with ``FormBorderStyle.None``, whose
+    Win32 style lacks ``WS_MINIMIZEBOX``. The shell minimizes a foreground
+    window via ``WM_SYSCOMMAND``/``SC_MINIMIZE``, which ``DefWindowProc`` only
+    honors when that style bit is present — so clicking the taskbar icon does
+    nothing. Add ``WS_MINIMIZEBOX`` (and ``WS_MAXIMIZEBOX``) to the live
+    window style after the native window exists. Best-effort: failures are
+    swallowed so a styling hiccup never breaks the app.
+    """
+    if sys.platform != "win32" or not hwnd:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        GWL_STYLE = -16
+        WS_MINIMIZEBOX = 0x00020000
+        WS_MAXIMIZEBOX = 0x00010000
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        SWP_FRAMECHANGED = 0x0020
+
+        get_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
+        set_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+
+        style = get_long(wintypes.HWND(hwnd), GWL_STYLE)
+        style |= WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+        set_long(wintypes.HWND(hwnd), GWL_STYLE, style)
+        user32.SetWindowPos(
+            wintypes.HWND(hwnd),
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
+    except Exception:
+        pass
+
+
 class HostApi:
     """Bridge exposed to the frontend as ``window.pywebview.api``.
 
@@ -865,6 +911,16 @@ def main() -> int:
 
     overlay = BrowserOverlay(webview, window, enabled=_overlay_browser_enabled())
     host_api.attach_overlay(overlay)
+
+    if sys.platform == "win32":
+
+        def _on_shown(*_args: object) -> None:
+            _enable_taskbar_minimize_win32(_pywebview_window_hwnd(window))
+
+        try:
+            window.events.shown += _on_shown
+        except Exception:
+            pass
 
     def _on_closing() -> None:
         try:
