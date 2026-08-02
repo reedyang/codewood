@@ -506,6 +506,22 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertEqual(popen_mock.call_args.kwargs.get("cwd"), str(agent.workspace_root))
 
+    def test_action_shell_command_adds_no_pager_to_git_diff(self):
+        agent = _DummyAgent()
+
+        with patch("subprocess.Popen", return_value=_FakePopen()) as popen_mock, patch(
+            "cli.tools.shell._git_repo_root", return_value=None,
+        ), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+        ):
+            result = action_shell_command(
+                agent, "git diff HEAD", confirmed=False, interactive=False, input_data=None,
+            )
+
+        self.assertTrue(result.get("success", False))
+        cmd = popen_mock.call_args.args[0] if popen_mock.call_args.args else popen_mock.call_args.kwargs.get("command")
+        self.assertIn("git --no-pager diff HEAD", str(cmd))
+
     def test_rm_under_workspace_cache_skips_confirmation(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()

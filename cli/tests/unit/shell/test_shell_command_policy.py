@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 from cli.tools.shell import _enforce_windows_powershell_command_prefix
 from cli.tools.shell import _normalize_windows_powershell_command_for_compat
+from cli.tools.shell import _enforce_git_no_pager_for_shell_command
 from cli.tools.shell import enforce_workspace_rg_for_shell_command
+from cli.tools.shell import _is_read_only_command
 from cli.tools.shell import normalize_shell_command_for_summary
 
 
@@ -142,6 +144,75 @@ class ShellCommandPolicyTests(unittest.TestCase):
         )
         with patch("cli.tools.shell.os.name", "posix"):
             self.assertEqual(_normalize_windows_powershell_command_for_compat(cmd), cmd)
+
+    def test_git_diff_gets_no_pager_flag(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command("git diff HEAD")
+        self.assertEqual(rewritten, "git --no-pager diff HEAD")
+
+    def test_git_show_gets_no_pager_flag(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command("git show HEAD~1")
+        self.assertEqual(rewritten, "git --no-pager show HEAD~1")
+
+    def test_git_log_gets_no_pager_flag(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command("git log --oneline -5")
+        self.assertEqual(rewritten, "git --no-pager log --oneline -5")
+
+    def test_git_stash_show_gets_no_pager_flag(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command("git stash show -p")
+        self.assertEqual(rewritten, "git --no-pager stash show -p")
+
+    def test_existing_no_pager_is_not_duplicated(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command("git --no-pager diff HEAD")
+        self.assertEqual(rewritten, "git --no-pager diff HEAD")
+
+    def test_non_pager_subcommands_are_left_alone(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            self.assertEqual(
+                _enforce_git_no_pager_for_shell_command("git commit -m fix"),
+                "git commit -m fix",
+            )
+            self.assertEqual(
+                _enforce_git_no_pager_for_shell_command("git add ."),
+                "git add .",
+            )
+            self.assertEqual(
+                _enforce_git_no_pager_for_shell_command("git push origin main"),
+                "git push origin main",
+            )
+
+    def test_git_exe_variant_gets_no_pager_flag(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command("git.exe diff HEAD")
+        self.assertEqual(rewritten, "git.exe --no-pager diff HEAD")
+
+    def test_global_option_value_is_skipped_when_finding_subcommand(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command("git -C repo diff HEAD")
+        self.assertEqual(rewritten, "git --no-pager -C repo diff HEAD")
+
+    def test_powershell_wrapped_git_diff_gets_no_pager_flag(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command(
+                'powershell -ExecutionPolicy Bypass -Command "git diff HEAD"'
+            )
+        self.assertIn("git --no-pager diff HEAD", rewritten)
+
+    def test_cmd_wrapped_git_diff_gets_no_pager_flag(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _enforce_git_no_pager_for_shell_command(
+                'cmd /c "git diff HEAD"'
+            )
+        self.assertIn("git --no-pager diff HEAD", rewritten)
+
+    def test_no_pager_git_diff_still_read_only(self):
+        self.assertTrue(_is_read_only_command("git --no-pager diff HEAD"))
+        self.assertTrue(_is_read_only_command("git --no-pager log --oneline"))
+        self.assertTrue(_is_read_only_command("git --no-pager status"))
 
 
 if __name__ == "__main__":
