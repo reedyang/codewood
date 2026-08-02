@@ -3947,16 +3947,25 @@ class Agent:
                         continue
                     if str(earlier.get("role") or "").strip().lower() == "tool":
                         paired += 1
-                if not found_assistant:
-                    return "call_0"
-                idx = paired
-                if idx < len(tcs):
-                    call = tcs[idx]
-                    if isinstance(call, dict):
-                        cid = str(call.get("id") or "")
-                        if cid.strip():
-                            return cid.strip()
-                return f"call_{idx}"
+                if found_assistant:
+                    idx = paired
+                    if idx < len(tcs):
+                        call = tcs[idx]
+                        if isinstance(call, dict):
+                            cid = str(call.get("id") or "")
+                            if cid.strip():
+                                return cid.strip()
+                    return f"call_{idx}"
+                # The issuing assistant message is no longer in
+                # ``conversation_history`` by identity: a concurrent chat
+                # switch/reload (e.g. activity in another workspace
+                # re-activating this session) re-created the message dicts
+                # mid-batch. Emitting a bogus ``call_0`` here would orphan
+                # this tool result (no matching ``tool_call`` on the preceding
+                # assistant message) and the provider rejects the whole batch
+                # with 400. Fall through to the content-based scan below,
+                # which re-locates the issuing assistant from the actual
+                # history instead of object identity.
             # Issuing assistant has no tool_calls on record: walk past it to the
             # nearest earlier assistant that does (defensive; normally the
             # issuing message is retrofitted with tool_calls before results run).
