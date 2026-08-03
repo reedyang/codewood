@@ -2194,6 +2194,10 @@ def action_shell_command(
             if _shell_diff_entries:
                 base_out["_shell_diff_entries"] = _shell_diff_entries
                 # Emit GUI diff blocks for live rendering (GUI mode only).
+                # In GUI serve mode sys.stdout is the SSE output bridge, so the
+                # write below already reaches the frontend. Re-emitting via
+                # _gui_tool_output_emit would publish each preview twice and
+                # duplicate the diff blocks in the expanded tool call.
                 try:
                     _is_gui = bool(getattr(agent, "_gui_no_wrap", False))
                     if _is_gui:
@@ -2201,14 +2205,6 @@ def action_shell_command(
                             _payload = json.dumps(_entry, ensure_ascii=False)
                             sys.stdout.write(f"{GUI_DIFF_BEGIN}{_payload}{GUI_DIFF_END}")
                             sys.stdout.flush()
-                        # Also emit via the agent's direct SSE hook so the
-                        # blocks arrive in a single contiguous stream.
-                        _emit_direct = getattr(agent, "_gui_tool_output_emit", None)
-                        if callable(_emit_direct):
-                            _emit_direct("".join(
-                                f"{GUI_DIFF_BEGIN}{json.dumps(e, ensure_ascii=False)}{GUI_DIFF_END}"
-                                for e in _shell_diff_entries
-                            ))
                 except Exception:
                     pass
 
