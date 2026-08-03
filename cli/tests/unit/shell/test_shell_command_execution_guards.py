@@ -1,4 +1,5 @@
 ﻿import unittest
+import io
 import os
 import tempfile
 import subprocess
@@ -12,6 +13,7 @@ from cli.core.security.command_security import shell_command_in_allowlist
 from cli.core.security.command_security import shell_executable_allowlist_key
 from cli.core.security.command_security import shell_script_allowlist_key
 from cli.services.execution_policy_service import freedom_auto_confirm
+from cli.core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
 
 
 class _Policy:
@@ -612,6 +614,49 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             self.assertEqual(agent.file_change_tracker.records[0][0], "delete")
             entries = result.get("_shell_diff_entries") or []
             self.assertTrue(any(e.get("changeType") == "delete" for e in entries))
+
+    def test_gui_mode_emits_each_diff_block_exactly_once(self):
+        """GUI serve mode must not double-publish shell diff previews.
+
+        Regression test: shell diff blocks were written to sys.stdout AND
+        re-emitted via _gui_tool_output_emit. In GUI serve mode sys.stdout is
+        the SSE output bridge, so the frontend received two identical diff
+        blocks and rendered duplicate previews for a deleted file.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            target = root / "test_read.py"
+            target.write_text("def test_read():\n    pass\n", encoding="utf-8")
+
+            agent = _DummyAgent()
+            agent.workspace_root = root
+            agent.work_directory = root
+            agent._get_path_policy = lambda: _CacheAwarePolicy(root / ".codewood" / "cache")
+            agent._gui_no_wrap = True
+            agent.file_change_tracker = _FakeChangeTracker()
+            emit_calls: list = []
+            agent._gui_tool_output_emit = emit_calls.append
+
+            with patch("sys.stdout", new=io.StringIO()) as stdout_mock, patch(
+                "subprocess.Popen", side_effect=_delete_file_popen(target),
+            ), patch(
+                "cli.tools.shell._git_repo_root", return_value=None,
+            ), patch(
+                "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+            ):
+                result = action_shell_command(
+                    agent, f"del {target}", confirmed=False,
+                    interactive=True, input_data=None,
+                )
+
+            self.assertTrue(result.get("success", False))
+            entries = result.get("_shell_diff_entries") or []
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].get("changeType"), "delete")
+            stdout_text = stdout_mock.getvalue()
+            self.assertEqual(stdout_text.count(GUI_DIFF_BEGIN), 1)
+            self.assertEqual(stdout_text.count(GUI_DIFF_END), 1)
+            self.assertEqual(emit_calls, [])
 
     def test_compound_delete_cache_and_pytest_skips_confirmation(self):
         with tempfile.TemporaryDirectory() as td:
