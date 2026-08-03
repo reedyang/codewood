@@ -786,7 +786,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("A2", joined)
         self.assertNotIn("B1-pending", joined)
 
-    def test_context_eligible_history_keeps_internal_interrupted_marker(self):
+    def test_context_eligible_history_excludes_internal_interrupted_marker(self):
         agent = _FakeAgent()
         interrupted = agent._build_conversation_interrupted_history_content(
             interrupted_kind="task",
@@ -819,7 +819,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("A1", joined)
         self.assertIn("A2", joined)
         self.assertFalse(any(str(x.get("content") or "") == "B1-pending" for x in filtered))
-        self.assertIn("[CONVERSATION_INTERRUPTED]", joined)
+        # The interrupted marker must not leak into the model context: the next
+        # user message carries no info about the previously cancelled task.
+        self.assertNotIn("[CONVERSATION_INTERRUPTED]", joined)
 
     def test_mark_latest_unanswered_user_message_for_cancel_marks_global_tail(self):
         agent = _FakeAgent()
@@ -948,7 +950,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("executed_success=true", history_joined)
         self.assertIn("interrupted_by_user=false", history_joined)
 
-    def test_regular_task_messages_include_recent_interrupted_task_context(self):
+    def test_regular_task_messages_omit_recent_interrupted_task_context(self):
         agent = _FakeAgent()
         agent.conversation_history = [
             {"role": "user", "content": "Please continue fixing the build"},
@@ -964,8 +966,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("Continue")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
-        self.assertIn("[Session interruption event]", history_joined)
-        self.assertIn("The most recent task execution was interrupted by the user (ESC)", str(messages[-1]["content"]))
+        self.assertNotIn("[Session interruption event]", history_joined)
+        self.assertNotIn("The most recent task execution was interrupted by the user (ESC)", str(messages[-1]["content"]))
+        self.assertNotIn("Fix the build script", str(messages[-1]["content"]))
 
     def test_internal_slash_history_is_excluded_from_model_context_and_requirement(self):
         agent = _FakeAgent()
@@ -1027,8 +1030,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         messages, _ = svc.build_regular_task_messages("New task: implement feature B")
         user_block = messages[-1]["content"]
-        self.assertIn("Recently cancelled task: Old task: fix module A", user_block)
-        self.assertIn("do not proactively resume or redo the cancelled task", user_block)
+        self.assertNotIn("Recently cancelled task: Old task: fix module A", user_block)
+        self.assertNotIn("do not proactively resume or redo the cancelled task", user_block)
         self.assertFalse(bool(getattr(agent, "_force_current_input_as_requirement_once", True)))
 
     def test_degradation_adds_history_summary_before_full_drop(self):

@@ -1486,16 +1486,6 @@ class LLMContextManager:
         if mem_context:
             current_input = mem_context.strip() + "\n" + current_input
             injected_suffix_parts.append(mem_context.strip())
-        if force_new_requirement:
-            cancelled_block = (
-                "[Cancelled task] The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
-                "unless the user explicitly asks to continue.\n\n"
-            )
-            last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
-            if last_cancelled_task:
-                cancelled_block += f"Recently cancelled task: {last_cancelled_task}\n"
-            current_input += cancelled_block
-            injected_suffix_parts.append(cancelled_block.strip())
         if self.agent.operation_results:
             pass
         if context:
@@ -1557,14 +1547,6 @@ class LLMContextManager:
                 mem_context2 = mem_context
                 if mem_context2:
                     current_input2 = mem_context2.strip() + "\n" + current_input2
-                if force_new_requirement:
-                    last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
-                    current_input2 += (
-                        "4) The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
-                        "unless the user explicitly asks to continue.\n\n"
-                    )
-                    if last_cancelled_task:
-                        current_input2 += f"Recently cancelled task: {last_cancelled_task}\n"
                 if interruption_line:
                     current_input2 += f"Most recent interruption status: {interruption_line}\n"
                 if self.agent.operation_results:

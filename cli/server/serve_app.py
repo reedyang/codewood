@@ -613,6 +613,15 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     continue
             except Exception:
                 pass
+            # The "task interrupted" banner is TUI-only: the GUI intentionally
+            # does not render an Interrupted message after a task is cancelled,
+            # so the marker is dropped from the structured turn payload while
+            # staying in history for the TUI replay.
+            try:
+                if agent._parse_conversation_interrupted_history_content(content) is not None:
+                    continue
+            except Exception:
+                pass
 
         # New-format role:tool messages.
         if role == "tool":
@@ -763,16 +772,11 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round["tools"] = "\n".join(tool_rounds) + "\n"
         else:
             rendered = _render_step(idx, msg)
-            # Conversation-interrupted banners are rendered as a separate
-            # field so the frontend can display them outside the collapsible
-            # "Worked for" section — they are status messages, not tool steps.
-            is_interrupted = agent._parse_conversation_interrupted_history_content(content)
-            if is_interrupted is not None:
-                if current_round is None or current_round.get("text") or current_round.get("interrupted"):
-                    current_round = _new_round(turn, wait)
-                current_round["interrupted"] = strip_ansi(rendered)
-            elif agent._parse_model_call_error_history_content(content) is not None:
-                model_error_payload = agent._parse_model_call_error_history_content(content)
+            # Model-call-error banners are rendered as a separate field so the
+            # frontend can display them outside the collapsible "Worked for"
+            # section — they are status messages, not tool steps.
+            model_error_payload = agent._parse_model_call_error_history_content(content)
+            if model_error_payload is not None:
                 error_message = str((model_error_payload or {}).get("error_message") or "").strip()
                 if not error_message:
                     error_message = rendered.strip()
