@@ -1689,7 +1689,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } else {
           segments.push({ id: nextIdRef.current++, kind, text });
         }
-        rounds[roundIndex] = { ...round, segments };
+        const mergedRound = { ...round, segments };
+        // A tool round's output is fully streamed the moment its
+        // command-output block closes (CMD_OUTPUT_END). Settle the round
+        // immediately so the GUI stops the tool spinner and flips to the
+        // "Working..." wait indicator right away — instead of staying
+        // "running" until the backend's round_end, which for shell only
+        // arrives after heavy post-processing (workspace file-diff
+        // detection) has completed. The block-close check keeps the spinner
+        // running for the whole command execution, matching the
+        // "spin stops while shell command are still not done" fix.
+        if (
+          kind === "step" &&
+          mergedRound.waitEndedAt === null &&
+          roundHasOpenCmdBlock(round) &&
+          !roundHasOpenCmdBlock(mergedRound)
+        ) {
+          mergedRound.waitEndedAt = Date.now();
+        }
+        rounds[roundIndex] = mergedRound;
         next[next.length - 1] = { ...turn, rounds };
         return { ...prev, [chatId]: next };
       });
