@@ -1169,6 +1169,132 @@ def _normalize_windows_powershell_command_for_compat(command: str) -> str:
     return f"powershell -ExecutionPolicy Bypass -EncodedCommand {encoded}"
 
 
+# Tools whose non-executable arguments are patterns / pathspecs where a ``/``
+# is significant and must not be rewritten to ``\`` (which would change the
+# pattern semantics or be treated as an escape character).
+_WINDOWS_EXE_ONLY_TOOLS = {
+    "rg",
+    "grep",
+    "egrep",
+    "fgrep",
+    "findstr",
+    "ag",
+    "ack",
+    "ripgrep",
+    "sed",
+    "awk",
+    "perl",
+    "git",
+}
+
+# Looks like a Windows filename (``name.ext``) — a strong file-path signal.
+_WINDOWS_PATH_EXTENSION_RE = re.compile(r"(?i)\.[a-z0-9]{1,8}$")
+# ``C:/...`` / ``c:\...`` style absolute paths.
+_WINDOWS_DRIVE_PREFIX_RE = re.compile(r"^[a-z]:")
+# Glob / regex metacharacters that would change meaning if a ``/`` inside
+# the token were rewritten to ``\`` (``src/**/*.ts``, ``foo/bar.py$`` ...).
+_WINDOWS_PATH_SKIP_CHARS_RE = re.compile(r"[*?\[\]{}()|^$+]")
+
+
+def _convert_windows_path_token(tok: str, *, is_exe: bool) -> str:
+    """Rewrite ``/`` separators in a single shell token on Windows.
+
+    Returns the token unchanged when it is not a safe file-path candidate:
+    URLs, git refs / scp-style remotes, option flags (``-x`` / ``/x``),
+    globs and regex-looking tokens are all left alone.  ``is_exe`` marks the
+    first token (the executable), which cmd.exe cannot resolve with ``/``.
+    """
+    if "/" not in tok:
+        return tok
+    quote = ""
+    inner = tok
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
+        quote = tok[0]
+        inner = tok[1:-1]
+    if not inner or "/" not in inner:
+        return tok
+    if "://" in inner or "@" in inner:
+        return tok
+    if inner.startswith("-") or inner.startswith("/"):
+        return tok
+    if _WINDOWS_PATH_SKIP_CHARS_RE.search(inner):
+        return tok
+    # ``foo\/bar`` is an escaped slash in a regex, not a path.
+    if "\\/" in inner:
+        return tok
+    if not is_exe:
+        looks_like_path = (
+            inner.startswith(".")
+            or inner.startswith("~")
+            or bool(_WINDOWS_DRIVE_PREFIX_RE.match(inner))
+            or bool(_WINDOWS_PATH_EXTENSION_RE.search(inner))
+        )
+        if not looks_like_path:
+            return tok
+    converted = inner.replace("/", "\\")
+    if quote:
+        return quote + converted + quote
+    return converted
+
+
+def _normalize_windows_shell_path_separators(command: str) -> str:
+    """Convert ``/`` path separators to ``\\`` in a Windows shell command.
+
+    cmd.exe cannot resolve an executable whose path uses ``/``
+    (``.venv-windows/Scripts/python.exe`` fails with ``'.venv-windows' is not
+    recognized``) and treats ``/`` inside arguments of its built-ins as
+    switches (``del cli/tests/x.txt`` → ``Invalid switch - "tests"``).
+
+    Only path-like tokens are rewritten; URLs, option flags, git refs,
+    glob/regex-looking tokens, PowerShell payloads and commands whose
+    arguments are patterns/pathspecs (``rg``, ``grep``, ``git`` ...) are left
+    untouched.  No-op on non-Windows hosts.
+    """
+    if os.name != "nt":
+        return command
+    s = str(command or "").strip()
+    if not s:
+        return command
+    # PowerShell resolves ``/`` paths natively and an ``-EncodedCommand``
+    # base64 blob may legitimately contain ``/`` — skip the whole invocation.
+    if re.match(r"(?is)^(?:powershell|pwsh)(?:\.exe)?(?:\s|$)", s):
+        return command
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        peeled = s[1:-1].strip()
+        if re.match(r"(?i)^powershell(?:\.exe)?\b", peeled):
+            return command
+    call_prefix = ""
+    if s.lower().startswith("call "):
+        call_prefix = "call "
+        s = s[5:].strip()
+    parts = _split_shell_like(s)
+    if not parts:
+        return command
+    base0 = _token_exe_base(_strip_wrapping_quotes(parts[0]))
+    if base0 == "cmd" and len(parts) >= 3 and parts[1].lower() in ("/c", "/k"):
+        inner_raw = " ".join(parts[2:])
+        inner = _strip_wrapping_quotes(inner_raw)
+        if inner != inner_raw:
+            inner = _strip_wrapping_quotes(inner)
+        inner_norm = _normalize_windows_shell_path_separators(inner)
+        if inner_norm == inner:
+            return command
+        import subprocess
+
+        return call_prefix + subprocess.list2cmdline([parts[0], parts[1], inner_norm])
+    exe_only = base0 in _WINDOWS_EXE_ONLY_TOOLS
+    new_parts = [
+        _convert_windows_path_token(tok, is_exe=(i == 0))
+        if (i == 0 or not exe_only)
+        else tok
+        for i, tok in enumerate(parts)
+    ]
+    rebuilt = " ".join(new_parts)
+    if rebuilt == s:
+        return command
+    return call_prefix + rebuilt
+
+
 def action_shell_command(
     agent: Any,
     command: str,
@@ -1192,6 +1318,7 @@ def action_shell_command(
     if manual_confirm_from_ai:
         agent._manual_confirm_required_shell_once = False
     command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
+    command = _normalize_windows_shell_path_separators(command)
     command = enforce_workspace_rg_for_shell_command(agent, command)
     command = tune_7z_output_for_piped_terminal(command, agent)
     command = _enforce_git_no_pager_for_shell_command(command)
