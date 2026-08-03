@@ -542,6 +542,11 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     )
                     sel_round = _new_round(turn, wait)
                     sel_round["selection"] = strip_ansi(str(ami_answer))
+                    # Make the answer a hard boundary.  Otherwise the next
+                    # tool plan keeps appending to the earlier Ask round,
+                    # while this selection remains after it in the round
+                    # list and is rendered below that next tool call.
+                    current_round = sel_round
                 if ts is not None:
                     prev_ts = ts
                 continue
@@ -7174,6 +7179,10 @@ class ServeApp:
         self.agent._gui_tool_output_emit = lambda text: self.broadcaster.publish(  # type: ignore[attr-defined]
             "output",
             self._route(text=str(text or "")),
+        )
+        self.agent._gui_request_user_input_answer_emit = lambda answer: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "request_user_input_answer",
+            self._route(answer=str(answer or "")),
         )
         # Hook for file change events: emits a summary of all file changes
         # at the end of a task.  Each summary is stored in file_changes.json
