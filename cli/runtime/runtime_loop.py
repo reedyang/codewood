@@ -4988,6 +4988,40 @@ def run_agent_loop(agent: Any):
                                 recorder(supplement_text)
                         except Exception:
                             pass
+                        # Reflect the user's choice inside the pending
+                        # request_user_input tool call: rewrite its expandable
+                        # output block (options + selection) and stream the
+                        # updated block plus a "你的回答：xxx" line to the GUI
+                        # live transcript.
+                        try:
+                            _updater = getattr(
+                                self,
+                                "_update_request_user_input_tool_round_with_answer",
+                                None,
+                            )
+                            if callable(_updater):
+                                _new_block = _updater(
+                                    q, options_list, supplement_text
+                                )
+                                if _new_block:
+                                    _gui_emit = getattr(
+                                        self, "_gui_tool_output_emit", None
+                                    )
+                                    if callable(_gui_emit):
+                                        _gui_emit(_new_block)
+                                        from ..core.localization import translate as _tl
+                                        _lang_fn = getattr(self, "_ui_language", None)
+                                        _lang = (
+                                            _lang_fn()
+                                            if callable(_lang_fn)
+                                            else (getattr(self, "display_language", None) or "en")
+                                        )
+                                        _answer_line = (
+                                            f"{_tl('tool.answer_line', _lang)}{supplement_text}"
+                                        )
+                                        _gui_emit(f"\n{_answer_line}")
+                        except Exception:
+                            pass
                         next_input = (
                             f"[User supplement]\n{supplement_text}\n\n"
                             "Continue handling the original request together with this supplement using standard tools; "

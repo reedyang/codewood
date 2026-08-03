@@ -480,6 +480,27 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Read "))
         self.assertIn("<H>a.txt</H>", line)
 
+    def test_format_tool_call_feedback_line_request_user_input_shows_question(self):
+        # The clarifying question rides on the tool call line itself so the
+        # transcript reads "Ask: <question>" instead of a bare tool name.
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
+            line = self.agent._format_tool_call_feedback_line(
+                "request_user_input",
+                {"question": "Which env?", "options": ["Prod", "Stg"]},
+                failed=False,
+            )
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ask:"))
+        self.assertIn("<H>Which env?</H>", line)
+
+    def test_extract_tool_result_output_request_user_input_lists_options(self):
+        out = self.agent._extract_tool_result_output(
+            "request_user_input",
+            {"question": "Which env?", "options": ["Prod", "Stg", ""]},
+        )
+        self.assertEqual(out, "1. Prod\n2. Stg")
+
     def test_format_direct_shell_command_feedback_line_uses_shared_highlighter(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"

@@ -2850,6 +2850,15 @@ class Agent:
             return (label, "")
         if name == "run_subagent" and str(a.get("subagent") or "").strip().lower() == "explore":
             return (self._explore_running_label(a), "")
+        if name == "request_user_input":
+            # The clarifying prompt reads as "Ask: <question>" so the tool call
+            # line itself carries the question the user is being asked.
+            label = translate(
+                "tool.label.request_user_input",
+                self._ui_language(),
+                fallback="Ask",
+            )
+            return (f"{label}:", str(a.get("question") or "").strip())
         if name.startswith("mcp__"):
             parts = name.split("__", 2)
             if len(parts) == 3:
@@ -3600,6 +3609,19 @@ class Agent:
             # field; serialize its candidate list into a readable block so
             # history reload can expand the raw results.
             return Agent._format_project_context_output(t, r)
+        if t == "request_user_input":
+            # Render the clarifying question's option list as the expandable
+            # output block (the user's selection is appended by the runtime
+            # loop once the answer arrives — see
+            # ``_update_request_user_input_tool_round_with_answer``).
+            lines: List[str] = []
+            raw_options = r.get("options")
+            if isinstance(raw_options, list):
+                for i, opt in enumerate(raw_options):
+                    s = str(opt or "").strip()
+                    if s:
+                        lines.append(f"{i + 1}. {s}")
+            return "\n".join(lines) if lines else str(r.get("message") or "")
         out = str(r.get("output") or "")
         if not out:
             out = str(r.get("content") or "")
@@ -3867,7 +3889,11 @@ class Agent:
                 # rendering (output visible even when collapsed, two copies
                 # when expanded).
                 gui_mode = bool(getattr(self, "_gui_no_wrap", False))
-                skip_live_emit = (t == "shell" and gui_mode)
+                # request_user_input streams its final block (options + the
+                # user's selection) only after the answer arrives — emitting
+                # the interim options-only block here would leave a stale copy
+                # in the live transcript when the updated block is streamed.
+                skip_live_emit = (t == "shell" and gui_mode) or t == "request_user_input"
                 try:
                     if not skip_live_emit:
                         emit_live(live_suffix)
@@ -4569,6 +4595,71 @@ class Agent:
             self.conversation_history.append(msg)
         except Exception:
             pass
+
+    def _update_request_user_input_tool_round_with_answer(
+        self,
+        question: str,
+        options: List[str],
+        answer: str,
+    ) -> str:
+        """Rewrite the pending ``request_user_input`` tool round's expandable
+        output block so it carries the options plus the user's selection.
+
+        Returns the new ``{GUI_CMD_OUTPUT_BEGIN}...{GUI_CMD_OUTPUT_END}``
+        suffix (or ``""`` when there is nothing to update). The caller streams
+        the suffix to the GUI live transcript; the rewritten
+        ``_accumulated_tool_rounds`` / ``_accumulated_tool_rounds_raw`` are
+        what get flushed into the persisted history, so a reload shows the
+        same options + selection inside the tool call.
+        """
+        answer = str(answer or "").strip()
+        if not answer:
+            return ""
+        lines: List[str] = []
+        for i, opt in enumerate(options or []):
+            s = str(opt or "").strip()
+            if s:
+                lines.append(f"{i + 1}. {s}")
+        lang = self._ui_language()
+        lines.append(
+            f"{translate('tool.answer_line', lang, fallback='Your answer: ')}{answer}"
+        )
+        body = "\n".join(lines)
+        new_block = f"{GUI_CMD_OUTPUT_BEGIN}{escape_gui_sentinels(body)}{GUI_CMD_OUTPUT_END}"
+
+        raws = list(getattr(self, "_accumulated_tool_rounds_raw", None) or [])
+        rounds = list(getattr(self, "_accumulated_tool_rounds", None) or [])
+        target_idx = -1
+        for i in range(len(raws) - 1, -1, -1):
+            entry = raws[i]
+            if (
+                isinstance(entry, dict)
+                and str(entry.get("tool") or "").strip().lower() == "request_user_input"
+            ):
+                target_idx = i
+                break
+        if target_idx < 0:
+            # Defensive fallback for sessions recorded before structured raw
+            # entries existed: match the last accumulated round that mentions
+            # this question.
+            q = str(question or "").strip()
+            for i in range(len(rounds) - 1, -1, -1):
+                if q and q in str(rounds[i] or ""):
+                    target_idx = i
+                    break
+        if 0 <= target_idx < len(rounds):
+            base = str(rounds[target_idx] or "")
+            cut = base.find(GUI_CMD_OUTPUT_BEGIN)
+            if cut >= 0:
+                base = base[:cut]
+            rounds[target_idx] = f"{base}{new_block}"
+            self._accumulated_tool_rounds = rounds
+        if 0 <= target_idx < len(raws):
+            raw_entry = dict(raws[target_idx])
+            raw_entry["output"] = body
+            raws[target_idx] = raw_entry
+            self._accumulated_tool_rounds_raw = raws
+        return new_block
 
     def _build_internal_slash_user_history_content(self, raw_user_command: str) -> str:
         cmd = str(raw_user_command or "").strip()

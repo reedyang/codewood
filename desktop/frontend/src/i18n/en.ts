@@ -389,6 +389,7 @@ export const en: Dict = {
   "askMoreInfo.submit": "Send",
   "askMoreInfo.cancel": "Cancel",
   "askMoreInfo.selectedLabel": "Selected:",
+  "askMoreInfo.answerLabel": "Your answer:",
 
   "common.cancel": "Cancel",
   "common.ok": "OK",

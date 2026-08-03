@@ -51,6 +51,54 @@ class AskMoreInfoAnswerHistoryTests(unittest.TestCase):
         self.agent._record_request_user_input_answer_history("   ")
         self.assertEqual(self.agent.conversation_history, [])
 
+    def _seed_accumulated_round(self):
+        from cli.core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END
+
+        self.agent._accumulated_tool_rounds = [
+            (
+                "\x1b[92m•\x1b[0m Ask: Which env? "
+                f"{GUI_CMD_OUTPUT_BEGIN}1. Prod\n2. Stg{GUI_CMD_OUTPUT_END}"
+            )
+        ]
+        self.agent._accumulated_tool_rounds_raw = [
+            {
+                "tool": "request_user_input",
+                "args": {"question": "Which env?", "options": ["Prod", "Stg"]},
+                "output": "1. Prod\n2. Stg",
+            }
+        ]
+
+    def test_update_round_with_answer_appends_selection_line(self):
+        self._seed_accumulated_round()
+        from cli.core.console_utils import GUI_CMD_OUTPUT_BEGIN, GUI_CMD_OUTPUT_END
+
+        block = self.agent._update_request_user_input_tool_round_with_answer(
+            "Which env?", ["Prod", "Stg"], "Stg"
+        )
+        self.assertIn(GUI_CMD_OUTPUT_BEGIN, block)
+        self.assertIn(GUI_CMD_OUTPUT_END, block)
+        self.assertIn("1. Prod", block)
+        self.assertIn("2. Stg", block)
+        self.assertIn("Your answer: Stg", block)
+        # The rewritten round and the raw entry both carry options + selection.
+        self.assertIn(
+            "Your answer: Stg",
+            self.agent._accumulated_tool_rounds[0],
+        )
+        self.assertIn(
+            "Your answer: Stg",
+            self.agent._accumulated_tool_rounds_raw[0]["output"],
+        )
+
+    def test_update_round_returns_empty_for_blank_answer(self):
+        self._seed_accumulated_round()
+        self.assertEqual(
+            self.agent._update_request_user_input_tool_round_with_answer(
+                "Which env?", ["Prod", "Stg"], "   "
+            ),
+            "",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

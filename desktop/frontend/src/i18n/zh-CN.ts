@@ -382,6 +382,7 @@ export const zhCN: Dict = {
   "askMoreInfo.submit": "发送",
   "askMoreInfo.cancel": "取消",
   "askMoreInfo.selectedLabel": "已选：",
+  "askMoreInfo.answerLabel": "你的回答：",
 
   "common.cancel": "取消",
   "common.ok": "确定",
