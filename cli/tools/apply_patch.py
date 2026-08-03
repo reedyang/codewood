@@ -865,6 +865,13 @@ def action_apply_unified_patch(
                         backup_path=backup_name,
                     )
                     tracker.cancel_create_for_deleted_file(str(resolved))
+                    try:
+                        from ..services.execution_policy_service import (
+                            freedom_remove_user_script_review_cache_entry,
+                        )
+                        freedom_remove_user_script_review_cache_entry(agent, resolved)
+                    except Exception:
+                        pass
                     _fc_logger.debug(f"[file_changes] recorded delete for {resolved}")
                 else:
                     tracker.record_patch_change(

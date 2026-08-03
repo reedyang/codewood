@@ -1,4 +1,5 @@
-﻿import re
+﻿import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,7 @@ class _DummyAgent:
         self.workspace_config_dir = work_directory
         self.execution_policy = "confirmation"
         self._ai_created_path_keys = set()
+        self._freedom_script_review_entries = {}
         self.preview_segments_calls: List[List[Dict[str, Any]]] = []
         self.prompt_calls = 0
 
@@ -57,7 +59,7 @@ class _DummyAgent:
         return True
 
     def _ephemeral_path_key(self, resolved: Path) -> str:
-        return str(resolved)
+        return str(resolved.resolve())
 
     def _reload_skills_if_workspace_skill_changed(self, _paths: List[Path]) -> None:
         return None
@@ -218,6 +220,39 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertEqual(summary["totalFiles"], 1)
             self.assertEqual(summary["files"][0]["changeType"], "delete")
             self.assertEqual(summary["files"][0]["deletedLines"], 1)
+
+    def test_apply_patch_delete_clears_freedom_review_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "tool.py"
+            target.write_text("print(1)\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+            tracker = FileChangeTracker()
+            agent.file_change_tracker = tracker
+            key = agent._ephemeral_path_key(target)
+            agent._freedom_script_review_entries[key] = {
+                "script_sha256": "abc",
+                "command_sha256": "def",
+                "skip_confirm": True,
+                "reason": "safe",
+                "updated_at": "2026-01-01T00:00:00",
+            }
+
+            patch = (
+                "--- a/tool.py\n"
+                "+++ /dev/null\n"
+                "@@ -1,1 +0,0 @@\n"
+                "-print(1)\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertFalse(target.exists())
+            self.assertNotIn(key, agent._freedom_script_review_entries)
+            cache_file = root / "freedom_script_review_cache.json"
+            self.assertTrue(cache_file.exists())
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+            self.assertNotIn(key, payload.get("entries", {}))
 
     def test_apply_patch_delete_all_lines_without_markers_keeps_empty_file(self):
         with tempfile.TemporaryDirectory() as td:
