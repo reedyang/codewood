@@ -326,5 +326,43 @@ class ReadOnlyGitCommandTests(unittest.TestCase):
         self.assertFalse(_is_read_only_command("git status | grep x"))
 
 
+class ReadOnlyTestAndTypecheckCommandTests(unittest.TestCase):
+    def test_npx_vitest_run_is_read_only(self):
+        for cmd in [
+            "npx vitest run",
+            "npx vitest run --coverage",
+            "npx --yes vitest run src/foo.test.ts",
+            "npx vitest run --reporter=json",
+        ]:
+            self.assertTrue(_is_read_only_command(cmd), cmd)
+
+    def test_npx_tsc_is_read_only(self):
+        for cmd in [
+            "npx tsc",
+            "npx tsc --noEmit",
+            "npx tsc -p tsconfig.json",
+            "npx --yes tsc --noEmit -p tsconfig.json",
+        ]:
+            self.assertTrue(_is_read_only_command(cmd), cmd)
+
+    def test_python_test_runners_are_read_only(self):
+        for cmd in [
+            "python -m pytest",
+            "python -m pytest tests/unit -q",
+            "python3 -m pytest -x",
+            "py -m pytest tests",
+            "python -m unittest",
+            "python -m unittest discover -s tests",
+            "python3 -m unittest tests.test_foo",
+            "pytest",
+            "pytest tests/unit -q",
+        ]:
+            self.assertTrue(_is_read_only_command(cmd), cmd)
+
+    def test_redirect_or_pipe_still_disqualifies(self):
+        self.assertFalse(_is_read_only_command("npx vitest run > out.txt"))
+        self.assertFalse(_is_read_only_command("pytest | tee log.txt"))
+
+
 if __name__ == "__main__":
     unittest.main()
