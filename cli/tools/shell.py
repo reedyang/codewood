@@ -1962,6 +1962,13 @@ def action_shell_command(
                                     backup_path=_backup_name,
                                 )
                                 _tracker.cancel_create_for_deleted_file(_path_str)
+                            try:
+                                from ..services.execution_policy_service import (
+                                    freedom_remove_user_script_review_cache_entry,
+                                )
+                                freedom_remove_user_script_review_cache_entry(agent, _p)
+                            except Exception:
+                                pass
                             _del_rows = _build_all_del_diff_rows(_content)
                             _del_entry: Dict[str, Any] = {
                                 "file": _path_str,
@@ -2177,6 +2184,15 @@ def action_shell_command(
                             backup_path=_ws_del_backup,
                         )
                         _tracker2.cancel_create_for_deleted_file(_path_str)
+                    try:
+                        from ..services.execution_policy_service import (
+                            freedom_remove_user_script_review_cache_entry,
+                        )
+                        freedom_remove_user_script_review_cache_entry(
+                            agent, Path(_path_str)
+                        )
+                    except Exception:
+                        pass
                     _ws_del_entry: Dict[str, Any] = {
                         "file": _path_str,
                         "changeType": "delete",

@@ -139,6 +139,38 @@ def freedom_save_user_script_review_cache(
     save_freedom_script_review_cache(agent)
 
 
+def freedom_remove_user_script_review_cache_entry(agent: Any, path: Path) -> bool:
+    """Drop the cached combined-review entry for a script file that was
+    detected as deleted, so a re-created file gets a fresh review.  Several
+    candidate key forms are matched because ``Path.resolve()`` on Windows may
+    expand 8.3 short names to long names (and vice versa) depending on whether
+    the file still exists when the key is computed."""
+    candidates: set = set()
+    try:
+        candidates.add(agent._ephemeral_path_key(path))
+    except Exception:
+        pass
+    try:
+        candidates.add(os.path.normcase(str(path.resolve())))
+    except Exception:
+        pass
+    try:
+        candidates.add(os.path.normcase(os.path.abspath(str(path))))
+    except Exception:
+        candidates.add(os.path.normcase(str(path)))
+    removed = False
+    for key in list(agent._freedom_script_review_entries.keys()):
+        if os.path.normcase(key) in candidates:
+            agent._freedom_script_review_entries.pop(key, None)
+            removed = True
+    if removed:
+        try:
+            return save_freedom_script_review_cache(agent)
+        except Exception:
+            return False
+    return False
+
+
 def normalize_path_allowlist_key(p: Path) -> str:
     return command_security.normalize_path_allowlist_key(p)
 
