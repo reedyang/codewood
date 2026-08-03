@@ -3174,20 +3174,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // response arrived (e.g. an auto-sent pending message right after the
   // previous turn's idle event). The next history reload reconciles them.
   const dropSettledLiveTurnsNotInHistory = useCallback(
-    (chatId: string, pageTurns: Array<{ userText?: string }>) => {
+    (chatId: string, pageTurns: Array<{ userText?: string; timestamp?: string }>) => {
       const kept = new Set(
-        pageTurns.map((t) => String(t.userText || "")),
+        pageTurns.map((t) => String(t.userText || "").trim()),
       );
       setTurnsByChat((prev) => {
         const list = prev[chatId];
         if (!list || list.length === 0) {
           return prev;
         }
-        const filtered = list.filter(
-          (tt) =>
-            tt.endedAt === null ||
-            !kept.has(String(tt.userText || "")),
-        );
+        const filtered = list.filter((tt) => {
+          if (tt.endedAt === null) {
+            return true;
+          }
+          // Placeholder turns created by early tool output have no user text
+          // and nothing to pin to history — drop them once settled.
+          if (!String(tt.userText || "").trim()) {
+            return false;
+          }
+          // Persisted copies may normalize whitespace / line endings, so match
+          // on the trimmed user text: a settled turn that is already archived
+          // must be dropped instead of lingering at the tail (which reorders
+          // the transcript around newer history turns).
+          if (kept.has(String(tt.userText || "").trim())) {
+            return false;
+          }
+          return true;
+        });
         if (filtered.length === list.length) {
           return prev;
         }

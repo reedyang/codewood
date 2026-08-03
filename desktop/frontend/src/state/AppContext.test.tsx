@@ -1899,6 +1899,81 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("drops a settled live turn whose archived copy normalized whitespace (interrupt ordering)", async () => {
+    // After an interrupted task, a settled live turn can linger at the tail when
+    // the persisted copy normalized its userText (e.g. trailing whitespace), so
+    // the exact-match drop missed it and the transcript re-ordered the newest
+    // history turns BEFORE the stale live turn. Trimmed matching must drop it.
+    apiMock.getChatHistory.mockResolvedValue({
+      turns: [
+        {
+          userText: "上上次消息A",
+          timestamp: "2026-08-03 12:00:00",
+          rounds: [{ waitSeconds: 1, text: "回复A", tools: "", selection: "", thinking: "", compactNoticeTitle: "", compactNoticeBody: "", interrupted: "", modelError: "" }],
+        },
+        {
+          userText: "上次消息B ",
+          timestamp: "2026-08-03 12:03:00",
+          rounds: [{ waitSeconds: 1, text: "", tools: "", selection: "", thinking: "", compactNoticeTitle: "", compactNoticeBody: "", interrupted: "", modelError: "" }],
+        },
+        {
+          userText: "最新消息C",
+          timestamp: "2026-08-03 12:05:00",
+          rounds: [{ waitSeconds: 1, text: "回复C", tools: "", selection: "", thinking: "", compactNoticeTitle: "", compactNoticeBody: "", interrupted: "", modelError: "" }],
+        },
+      ],
+      start: 0,
+      total: 3,
+    });
+    render(
+      <AppProvider>
+        <HistoryTurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // B streams as a live turn, then finishes with an idle event.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "上次消息B", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "step B", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        live: Array<{ userText: string }>;
+      };
+      expect(view.live.map((l) => l.userText)).toEqual(["上次消息B"]);
+    });
+
+    await act(async () => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        history: Array<string | undefined>;
+        live: Array<{ userText: string }>;
+      };
+      expect(view.history).toEqual(["上上次消息A", "上次消息B ", "最新消息C"]);
+      expect(view.live.map((l) => l.userText)).toEqual([]);
+    });
+  });
+
   it("keeps a background chat's tool description and streaming output in its own bucket when switching back mid-stream", async () => {
     apiMock.getState.mockResolvedValue(
       buildState({
