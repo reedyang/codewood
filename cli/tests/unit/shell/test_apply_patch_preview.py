@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from cli.core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
 from cli.tools.apply_patch import ApplyPatchTool, action_apply_unified_patch
 from cli.core.change_preview_formatter import ChangePreviewFormatter
+from cli.core.file_change_tracker import FileChangeTracker
 
 
 class _DummyPolicy:
@@ -152,6 +153,157 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertTrue(result.get("success"), result.get("error"))
             self.assertTrue(target.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts Collection\n\n## System Prompt (Full)\n")
+
+    def test_apply_patch_deletes_file_from_git_dev_null_patch(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "obsolete.py"
+            target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = (
+                "--- a/obsolete.py\n"
+                "+++ /dev/null\n"
+                "@@ -1,3 +0,0 @@\n"
+                "-line1\n"
+                "-line2\n"
+                "-line3\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertTrue(result.get("deleted"))
+            self.assertFalse(target.exists())
+            self.assertIn("Successfully deleted file", result.get("message", ""))
+
+    def test_apply_patch_deletes_file_with_zero_new_side_hunk(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "legacy.txt"
+            target.write_text("a\nb\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = "@@ -1,2 +0,0 @@\n-a\n-b\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertTrue(result.get("deleted"))
+            self.assertFalse(target.exists())
+
+    def test_apply_patch_delete_records_file_change(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "notes.txt"
+            target.write_text("keep me\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+            tracker = FileChangeTracker()
+            agent.file_change_tracker = tracker
+
+            patch = (
+                "--- a/notes.txt\n"
+                "+++ /dev/null\n"
+                "@@ -1,1 +0,0 @@\n"
+                "-keep me\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertFalse(target.exists())
+            changes = tracker.get_changes()
+            self.assertEqual(len(changes), 1)
+            self.assertEqual(changes[0].change_type, "delete")
+            self.assertEqual(changes[0].source, "apply_patch")
+            self.assertTrue(changes[0].content_before.startswith("keep me"))
+            summary = tracker.get_summary()
+            self.assertEqual(summary["totalFiles"], 1)
+            self.assertEqual(summary["files"][0]["changeType"], "delete")
+            self.assertEqual(summary["files"][0]["deletedLines"], 1)
+
+    def test_apply_patch_delete_all_lines_without_markers_keeps_empty_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "blank.txt"
+            target.write_text("x\ny\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = "@@ -1,2 +1,1 @@\n-x\n-y\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertFalse(result.get("deleted", False))
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), "")
+
+    def test_apply_patch_tolerates_phantom_trailing_empty_deletion(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "demo.txt"
+            target.write_text("l1\nl2\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = (
+                "--- a/demo.txt\n"
+                "+++ /dev/null\n"
+                "@@ -1,3 +0,0 @@\n"
+                "-l1\n"
+                "-l2\n"
+                "-\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertTrue(result.get("deleted"))
+            self.assertFalse(target.exists())
+
+    def test_apply_patch_tolerates_phantom_trailing_empty_deletion_in_edit(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "demo.txt"
+            target.write_text("l1\nl2\nl3\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = "@@ -2,2 +1,1 @@\n-l2\n-l3\n-\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertFalse(result.get("deleted", False))
+            self.assertEqual(target.read_text(encoding="utf-8"), "l1\n")
+
+    def test_apply_patch_deletes_bom_file_with_phantom_trailing_line(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "bom.py"
+            target.write_bytes(b"\xef\xbb\xbfdef main():\n    pass\n")
+            agent = _DummyAgent(root)
+
+            patch = (
+                "--- a/bom.py\n"
+                "+++ /dev/null\n"
+                "@@ -1,3 +0,0 @@\n"
+                "-def main():\n"
+                "-    pass\n"
+                "-\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertTrue(result.get("deleted"))
+            self.assertFalse(target.exists())
+
+    def test_apply_patch_partial_deletion_does_not_delete_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "partial.txt"
+            target.write_text("l1\nl2\nl3\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = "@@ -1,3 +1,2 @@\n-l1\n l2\n l3\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertFalse(result.get("deleted", False))
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), "l2\nl3\n")
 
     def test_apply_patch_preview_includes_two_context_lines_when_available(self):
         with tempfile.TemporaryDirectory() as td:
