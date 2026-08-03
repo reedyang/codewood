@@ -605,6 +605,58 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("settles the tool round as soon as its cmd-output block closes", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Run command", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\uE004• Ran git status\uE005", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n\uE000modified: file.py", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // While the output block is still open the round must stay running so
+    // the tool spinner keeps spinning during command execution.
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns[0].rounds).toHaveLength(1);
+      expect(turns[0].rounds[0].waitEndedAt).toBeNull();
+    });
+
+    // The closing chunk settles the round immediately — no round_end needed,
+    // so the GUI can flip to the "Working..." wait indicator right away.
+    act(() => {
+      apiMock.emit({
+        event: "output",
+        data: { text: "\n\uE001", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns[0].rounds).toHaveLength(1);
+      expect(turns[0].rounds[0].waitEndedAt).toBeTypeOf("number");
+    });
+  });
+
   it("keeps command-output continuation chunks in the round with the open cmd block", async () => {
     render(
       <AppProvider>
