@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import type { WorkspaceChatSummary } from "../api/types";
 import { chatKey } from "./chatMenu";
@@ -14,12 +14,22 @@ export function ArchivedChatsSettings() {
   const [chatToDelete, setChatToDelete] = useState<ArchivedChat | null>(null);
   const [confirmRemoveAll, setConfirmRemoveAll] = useState(false);
 
+  // Keep the latest workspaces in a ref so ``loadAll`` stays referentially
+  // stable. Depending on ``state`` directly would recreate ``loadAll`` on every
+  // state update (which happens constantly while a task streams), re-firing the
+  // mount effect in a tight loop and making the page flicker/refresh forever.
+  const workspacesRef = useRef(state?.workspaces ?? []);
+  useEffect(() => {
+    workspacesRef.current = state?.workspaces ?? [];
+  }, [state?.workspaces]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const workspaces = state?.workspaces ?? [];
-    await Promise.allSettled(workspaces.map((ws) => refreshWorkspaceChats(ws.id)));
+    await Promise.allSettled(
+      workspacesRef.current.map((ws) => refreshWorkspaceChats(ws.id)),
+    );
     setLoading(false);
-  }, [state, refreshWorkspaceChats]);
+  }, [refreshWorkspaceChats]);
 
   useEffect(() => {
     void loadAll();
