@@ -1722,7 +1722,7 @@ describe("AppContext thinking rounds", () => {
       turns: [
         {
           userText: "查看我的codex用量",
-          timestamp: "2026-08-01 00:20:39",
+          timestamp: new Date().toISOString(),
           rounds: [
             {
               waitSeconds: 20,
@@ -1965,7 +1965,7 @@ describe("AppContext thinking rounds", () => {
         },
         {
           userText: "上次消息B ",
-          timestamp: "2026-08-03 12:03:00",
+          timestamp: new Date().toISOString(),
           rounds: [{ waitSeconds: 1, text: "", tools: "", selection: "", thinking: "", compactNoticeTitle: "", compactNoticeBody: "", interrupted: "", modelError: "" }],
         },
         {
@@ -2023,6 +2023,97 @@ describe("AppContext thinking rounds", () => {
       };
       expect(view.history).toEqual(["上上次消息A", "上次消息B ", "最新消息C"]);
       expect(view.live.map((l) => l.userText)).toEqual([]);
+    });
+  });
+
+  it("ignores a duplicate turn_start while the original turn is streaming", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "run the task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "first command", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      // This can occur when the SSE connection is re-established while the
+      // original event subscription is still being torn down.
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "run the task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "second command", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Array<{
+        userText: string;
+        rounds: Array<{ segments: Array<{ text: string }> }>;
+      }>;
+      expect(turns).toHaveLength(1);
+      expect(turns[0].userText).toBe("run the task");
+      expect(turns[0].rounds[0].segments.map((segment) => segment.text).join("")).toBe(
+        "first commandsecond command",
+      );
+    });
+  });
+
+  it("keeps a just-finished repeated prompt when history only has an older copy", async () => {
+    apiMock.getChatHistory.mockResolvedValue({
+      turns: [{
+        userText: "repeat this task",
+        timestamp: "2020-01-01 00:00:00",
+        rounds: [{ waitSeconds: 1, text: "old answer", tools: "" }],
+      }],
+      start: 0,
+      total: 1,
+    });
+    render(
+      <AppProvider>
+        <HistoryTurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "repeat this task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "new command", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("history-and-turns").textContent || "{}") as {
+        history: Array<string | undefined>;
+        live: Array<{ userText: string }>;
+      };
+      expect(view.history).toEqual(["repeat this task"]);
+      expect(view.live.map((turn) => turn.userText)).toEqual(["repeat this task"]);
     });
   });
 
