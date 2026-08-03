@@ -74,6 +74,14 @@ _READ_ONLY_COMMAND_PATTERNS: List[re.Pattern] = [
         # --- version queries --------------------------------------------
         r"^(python|python3|node|npm|go|rustc|java|javac|gcc|g\+\+|clang)\s+--version(\s|$)",
         r"^(pip|pip3|gem)\s+(--version|-V)(\s|$)",
+        # --- frontend test / type-check ----------------------------------
+        # These can write caches, coverage, or emit output, but their file
+        # churn is intentionally not tracked (no snapshot / diff overhead).
+        r"^npx(\s+--[^\s]+)*\s+vitest\s+run(\s|$)",
+        r"^npx(\s+--[^\s]+)*\s+tsc(\s|$)",
+        # --- python test runners -----------------------------------------
+        r"^(python|python3|py)(\.exe)?\s+-m\s+(pytest|unittest)(\s|$)",
+        r"^pytest(\.exe)?(\s|$)",
     ]
 ]
 
