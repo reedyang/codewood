@@ -468,6 +468,8 @@ export interface FileChangeRecord {
   deletedLines: number;
   patch?: DiffRow[];
   backupPath?: string;
+  /** Original path for rename changes. */
+  oldPath?: string;
 }
 
 /** Summary of all file changes */

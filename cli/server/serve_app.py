@@ -6743,6 +6743,20 @@ class ServeApp:
             # del: not present in new content
         return result
 
+    @staticmethod
+    def _normalized_undo_lines(lines: List[str]) -> List[str]:
+        """Normalize a line list for undo conflict comparison.
+
+        Recorded content may carry a ``\\ufeff`` BOM character on the first
+        line (``Path.read_text`` keeps it), while on-disk reads via
+        ``_read_text_preserving_encoding`` strip the BOM bytes.  Without this
+        normalization, undoing a create/rename of a BOM file always reports
+        "file modified since creation".
+        """
+        if lines and str(lines[0]).startswith("\ufeff"):
+            lines = [str(lines[0])[1:]] + list(lines[1:])
+        return lines
+
     def _lookup_file_change(
         self, chat_id: str, ref: str, file_path: str, workspace_id: str = "",
     ) -> Optional[Dict[str, Any]]:
@@ -6885,7 +6899,7 @@ class ServeApp:
                     except Exception:
                         outcome[fpath] = {"success": False, "error": "cannot read file"}
                         continue
-                    if actual != expected_new:
+                    if self._normalized_undo_lines(actual) != self._normalized_undo_lines(expected_new):
                         outcome[fpath] = {"success": False, "error": "file modified since creation"}
                         continue
                     try:
@@ -6893,6 +6907,34 @@ class ServeApp:
                         outcome[fpath] = {"success": True}
                     except Exception as exc:
                         outcome[fpath] = {"success": False, "error": f"delete failed: {exc}"}
+                elif ct == "rename":
+                    old_path = str(fc.get("oldPath", "") or "")
+                    if not old_path:
+                        outcome[fpath] = {"success": False, "error": "no original path recorded"}
+                        continue
+                    old_target = Path(old_path)
+                    if old_target.exists():
+                        outcome[fpath] = {"success": False, "error": "target file already exists"}
+                        continue
+                    # Verify the renamed file still matches what we recorded.
+                    expected_new = self._reconstruct_expected_from_diffrows(diff or [])
+                    try:
+                        actual, _, _, _ = self._read_file_for_patch(fpath)
+                    except FileNotFoundError:
+                        outcome[fpath] = {"success": False, "error": "renamed file missing"}
+                        continue
+                    except Exception:
+                        outcome[fpath] = {"success": False, "error": "cannot read file"}
+                        continue
+                    if self._normalized_undo_lines(actual) != self._normalized_undo_lines(expected_new):
+                        outcome[fpath] = {"success": False, "error": "file modified since creation"}
+                        continue
+                    try:
+                        old_target.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(fpath, old_target)
+                        outcome[fpath] = {"success": True}
+                    except Exception as exc:
+                        outcome[fpath] = {"success": False, "error": f"rename failed: {exc}"}
                 elif ct == "delete":
                     bp = str(fc.get("backupPath", ""))
                     if not bp:
@@ -6981,6 +7023,25 @@ class ServeApp:
                         outcome[fpath] = {"success": True}
                     except Exception as exc:
                         outcome[fpath] = {"success": False, "error": f"create failed: {exc}"}
+                elif ct == "rename":
+                    old_path = str(fc.get("oldPath", "") or "")
+                    if not old_path:
+                        outcome[fpath] = {"success": False, "error": "no original path recorded"}
+                        continue
+                    old_target = Path(old_path)
+                    new_target = Path(fpath)
+                    if new_target.exists():
+                        outcome[fpath] = {"success": False, "error": "file already exists"}
+                        continue
+                    if not old_target.exists():
+                        outcome[fpath] = {"success": False, "error": "original file missing"}
+                        continue
+                    try:
+                        new_target.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(old_target, new_target)
+                        outcome[fpath] = {"success": True}
+                    except Exception as exc:
+                        outcome[fpath] = {"success": False, "error": f"rename failed: {exc}"}
                 elif ct == "delete":
                     bp = str(fc.get("backupPath", ""))
                     if not bp:

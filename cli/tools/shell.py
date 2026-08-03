@@ -2092,9 +2092,28 @@ def action_shell_command(
                 _new_before_filter = len(_new)
                 _modified_before_filter = len(_modified)
                 _ws_deleted_before_filter = len(_ws_deleted)
+                # Detect renames BEFORE the cmd_paths filter: the old path no
+                # longer exists on disk so ``_extract_command_file_paths``
+                # cannot resolve it, and without pairing it would be dropped
+                # as an unattributed deletion (leaving only a bogus "create"
+                # record for the new path).  Only pair when the new path is
+                # explicitly referenced by the command.
+                _rename_pairs = _detect_rename_pairs(
+                    _new, _ws_deleted, _before_content_snapshot, _repo_root,
+                    _cmd_paths, _delete_snapshots,
+                )
+                _renamed_new = {_n for _, _n in _rename_pairs}
+                _renamed_old = {_o for _o, _ in _rename_pairs}
+                if _rename_pairs:
+                    _log.info("detected %d rename pair(s): %s",
+                              len(_rename_pairs),
+                              ", ".join(f"{Path(o).name} -> {Path(n).name}"
+                                        for o, n in _rename_pairs))
                 _new = [
                     p for p in _new
-                    if p in _cmd_paths and not policy.is_workspace_cache_path(Path(p))
+                    if p not in _renamed_new
+                    and p in _cmd_paths
+                    and not policy.is_workspace_cache_path(Path(p))
                 ]
                 _modified = [
                     p for p in _modified
@@ -2102,7 +2121,9 @@ def action_shell_command(
                 ]
                 _ws_deleted = [
                     p for p in _ws_deleted
-                    if p in _cmd_paths and not policy.is_workspace_cache_path(Path(p))
+                    if p not in _renamed_old
+                    and p in _cmd_paths
+                    and not policy.is_workspace_cache_path(Path(p))
                 ]
                 _log.info("cmd_paths filter: new %d→%d modified %d→%d ws_deleted %d→%d",
                           _new_before_filter, len(_new),
@@ -2112,6 +2133,30 @@ def action_shell_command(
                     _log.info("ws_deleted paths: %s",
                               ", ".join(Path(p).name for p in _ws_deleted))
                 _tracker2 = getattr(agent, "file_change_tracker", None)
+                for _old_path, _new_path in _rename_pairs:
+                    try:
+                        _rcontent = Path(_new_path).read_text(
+                            encoding="utf-8", errors="replace",
+                        )
+                    except Exception:
+                        continue
+                    _rrows = _build_all_add_diff_rows(_rcontent)
+                    if _tracker2 is not None:
+                        _tracker2.record_change(
+                            file_path=_new_path,
+                            change_type="rename",
+                            source="shell",
+                            content_before=_before_content_snapshot.get(_old_path) or "",
+                            content_after=_rcontent,
+                            patch=_rrows,
+                            old_path=_old_path,
+                        )
+                    _shell_diff_entries.append({
+                        "file": _new_path,
+                        "changeType": "rename",
+                        "oldPath": _old_path,
+                        "diffRows": _rrows,
+                    })
                 for _path_str in _new:
                     try:
                         _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
@@ -4175,6 +4220,57 @@ def _diff_workspace_snapshots(
         if p in after and before[p] != after[p]
     ]
     return new_files, modified_files, deleted_files
+
+
+def _normalize_line_endings(text: str) -> str:
+    """Normalize CRLF/CR line endings to LF for content comparison."""
+    return str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _detect_rename_pairs(
+    new_files: List[str],
+    ws_deleted: List[str],
+    before_content_snapshot: Dict[str, str],
+    repo_root: Optional[Path],
+    cmd_paths: Set[str],
+    delete_snapshots: Optional[Dict[str, str]] = None,
+) -> List[Tuple[str, str]]:
+    """Pair workspace-deleted files with newly-created files whose content
+    matches exactly (e.g. ``mv a b`` / ``ren a b`` / ``git mv a b``).
+
+    Only pairs whose *new* path is explicitly referenced by the command are
+    returned, so renames performed as side effects by unrelated processes are
+    not falsely attributed to the command.  Old paths already captured by the
+    delete-target parser (``delete_snapshots``) keep their dedicated delete
+    treatment instead of being reclassified as a rename.
+
+    Returns ``[(old_path, new_path), ...]``.
+    """
+    if not new_files or not ws_deleted:
+        return []
+    delete_snapshots = delete_snapshots or {}
+    new_by_key: Dict[str, str] = {}
+    for p in new_files:
+        if p not in cmd_paths:
+            continue
+        try:
+            content = Path(p).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        new_by_key.setdefault(_normalize_line_endings(content), p)
+    pairs: List[Tuple[str, str]] = []
+    for old in ws_deleted:
+        if old in delete_snapshots:
+            continue
+        content = before_content_snapshot.get(old)
+        if content is None and repo_root is not None:
+            content = _git_content_before(repo_root, old)
+        if not content:
+            continue
+        new_path = new_by_key.get(_normalize_line_endings(content))
+        if new_path is not None and new_path != old:
+            pairs.append((old, new_path))
+    return pairs
 
 
 def _build_all_add_diff_rows(content: str) -> List[Dict[str, Any]]:

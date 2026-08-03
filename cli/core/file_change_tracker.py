@@ -21,6 +21,7 @@ class FileChangeRecord:
     added_lines: int = 0
     deleted_lines: int = 0
     backup_path: Optional[str] = None  # relative backup filename for delete recovery
+    old_path: Optional[str] = None  # original path for rename changes
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -34,6 +35,8 @@ class FileChangeRecord:
         }
         if self.backup_path:
             result["backupPath"] = self.backup_path
+        if self.old_path:
+            result["oldPath"] = self.old_path
         return result
 
 
@@ -67,6 +70,7 @@ class FileChangeTracker:
         content_after: Optional[str] = None,
         patch: Optional[List[Dict[str, Any]]] = None,
         backup_path: Optional[str] = None,
+        old_path: Optional[str] = None,
     ) -> Optional[FileChangeRecord]:
         """Record a file change."""
         # Changes under the workspace cache directory are disposable and never
@@ -99,6 +103,7 @@ class FileChangeTracker:
             added_lines=added_lines,
             deleted_lines=deleted_lines,
             backup_path=backup_path,
+            old_path=old_path,
         )
         self._changes.append(record)
         return record
@@ -191,6 +196,7 @@ class FileChangeTracker:
                     "deletedLines": change.deleted_lines,
                     "patch": diff_rows,
                     "backupPath": change.backup_path,
+                    "oldPath": change.old_path,
                     "_first_change_type": change.change_type,
                     "_first_before": change.content_before,
                     "_last_after": change.content_after,
@@ -227,6 +233,11 @@ class FileChangeTracker:
             if final_patch is not None:
                 entry["patch"] = final_patch
                 entry["addedLines"], entry["deletedLines"] = _count_diff_rows(final_patch)
+            elif entry["changeType"] == "rename" and entry["patch"]:
+                # A pure rename (identical content) records no line changes
+                # via difflib; surface the patch rows instead so the UI shows
+                # the new file's lines as added.
+                entry["addedLines"], entry["deletedLines"] = _count_diff_rows(entry["patch"])
 
         return {
             "totalFiles": len(files),
