@@ -57,7 +57,6 @@ _READ_ONLY_COMMAND_PATTERNS: List[re.Pattern] = [
         # --- search -----------------------------------------------------
         r"^(find|findstr|grep|rg|ag|ack)(\.exe)?(\s|$)",
         r"^(sls|select-string)(\.exe)?(\s|$)",
-        r"^git\s+grep\s",
         # --- text processing / comparison --------------------------------
         r"^(wc|sort|uniq|cut|tr|diff|fc|comp|comm)(\s|$)",
         r"^diff\s",
@@ -68,23 +67,6 @@ _READ_ONLY_COMMAND_PATTERNS: List[re.Pattern] = [
         # --- help -------------------------------------------------------
         r"^(help|man|info)(\s|$)",
         r"^--?(help|h|\?)(\s|$)",
-        # --- read-only git subcommands ----------------------------------
-        r"^git(\s+--no-pager)?\s+status(\s|$)",
-        r"^git(\s+--no-pager)?\s+log\s",
-        r"^git(\s+--no-pager)?\s+diff\s",
-        r"^git(\s+--no-pager)?\s+show\s",
-        r"^git(\s+--no-pager)?\s+branch(\s|$)",
-        r"^git(\s+--no-pager)?\s+tag(\s|$)",
-        r"^git(\s+--no-pager)?\s+remote(\s|$)",
-        r"^git(\s+--no-pager)?\s+stash\s+list(\s|$)",
-        r"^git(\s+--no-pager)?\s+rev-parse\s",
-        r"^git(\s+--no-pager)?\s+config\s",
-        r"^git(\s+--no-pager)?\s+describe(\s|$)",
-        r"^git(\s+--no-pager)?\s+ls-files(\s|$)",
-        r"^git(\s+--no-pager)?\s+ls-tree\s",
-        r"^git(\s+--no-pager)?\s+blame\s",
-        r"^git(\s+--no-pager)?\s+shortlog(\s|$)",
-        r"^git(\s+--no-pager)?\s+--version(\s|$)",
         # --- network diagnostics / system info --------------------------
         r"^(ping|pathping|tracert|traceroute|netstat|nslookup|dig)(\.exe)?(\s|$)",
         r"^(ipconfig|ifconfig|arp|nbtstat|getmac|systeminfo|tasklist)(\.exe)?(\s|$)",
@@ -110,6 +92,104 @@ _CURL_WRITE_FLAGS: Set[str] = {
 }
 
 
+# git subcommands that are strictly read-only: they never create, modify, or
+# delete files in the working tree, refs, or object database.  Commands
+# matching this set (after global options such as ``-C <path>`` are skipped)
+# are safe to exempt from file-change monitoring and the before-content
+# snapshot.
+_GIT_STRICTLY_READONLY_SUBCOMMANDS: Set[str] = {
+    "status", "log", "diff", "show", "rev-parse", "describe",
+    "ls-files", "ls-tree", "blame", "shortlog", "grep",
+    "whatchanged", "rev-list", "merge-base", "for-each-ref",
+    "count-objects", "var", "version", "help", "fsck",
+    "cherry", "name-rev", "check-attr", "check-ignore",
+    "check-ref-format", "diff-tree", "diff-index", "diff-files",
+    "cat-file", "config",
+}
+
+# git subcommands that are *usually* read-only but also accept flags or
+# sub-subcommands that write.  Mapping: subcommand -> set of dangerous flags /
+# sub-subcommands; when none of them appears the invocation is read-only.
+# ``git stash`` with no arguments is ``git stash push`` (writes!), so the
+# no-arguments form of ``stash`` is treated as dangerous below.
+_GIT_CONDITIONALLY_READONLY_SUBCOMMANDS: Dict[str, Set[str]] = {
+    "branch": {
+        "-d", "-D", "-m", "-M", "-c", "-C", "-u", "--delete",
+        "--move", "--copy", "--set-upstream-to", "--unset-upstream",
+        "--edit-description",
+    },
+    "tag": {
+        "-d", "-a", "-s", "-u", "-f", "-m", "-F", "-e",
+        "--delete", "--annotate", "--sign", "--force", "--message",
+        "--file", "--edit",
+    },
+    "remote": {
+        "add", "rename", "remove", "set-url", "set-head", "prune",
+        "update",
+    },
+    "stash": {
+        "push", "pop", "apply", "drop", "clear", "create", "store",
+        "branch", "save",
+    },
+    "submodule": {
+        "add", "update", "init", "deinit", "set-url", "set-branch",
+        "absorbgitdirs", "sync", "foreach", "summary",
+    },
+    "worktree": {
+        "add", "remove", "move", "prune", "lock", "unlock",
+    },
+    "notes": {
+        "add", "copy", "append", "edit", "remove", "prune", "set-head",
+        "merge",
+    },
+    "reflog": {"expire", "delete"},
+}
+
+
+def _is_read_only_git_command(command: str) -> Optional[bool]:
+    """Classify a git invocation as read-only or not.
+
+    Returns ``True`` when the git subcommand (with global options such as
+    ``-C <path>`` / ``--no-pager`` / ``-c key=val`` skipped) is known to never
+    touch the working tree, ``False`` when it may write files/refs/objects,
+    and ``None`` when *command* is not a git invocation at all (the caller
+    falls back to the generic read-only whitelist).
+
+    This deliberately replaces the old prefix regexes (``^git status`` etc.)
+    which neither understood ``git -C <repo> status`` nor noticed that
+    ``git branch -d`` / ``git tag -a`` / ``git remote add`` write refs.
+    """
+    s = str(command or "").strip()
+    if not s:
+        return None
+    parts = _split_shell_like(s)
+    if not parts:
+        return None
+    if _token_exe_base(_strip_wrapping_quotes(parts[0])) != "git":
+        return None
+    sub_idx = _git_subcommand_index(parts)
+    if sub_idx is None:
+        # bare "git" / "git --version" / "git --help" prints info; read-only.
+        return True
+    sub = _strip_wrapping_quotes(parts[sub_idx]).lower()
+    if sub in ("--version", "--help", "-h", "version", "help"):
+        return True
+    if sub in _GIT_STRICTLY_READONLY_SUBCOMMANDS:
+        return True
+    danger = _GIT_CONDITIONALLY_READONLY_SUBCOMMANDS.get(sub)
+    if danger is None:
+        return False
+    rest = parts[sub_idx + 1:]
+    if not rest:
+        # No arguments: ``git stash`` means ``git stash push`` (writes!);
+        # the other conditional subcommands default to read-only listings.
+        return sub != "stash"
+    for tok in rest:
+        if _strip_wrapping_quotes(tok).lower() in danger:
+            return False
+    return True
+
+
 def _is_read_only_command(command: str) -> bool:
     """Return True when *command* is a known read-only operation that
     cannot create, modify, or delete workspace files.
@@ -129,6 +209,9 @@ def _is_read_only_command(command: str) -> bool:
         return True  # empty command produces no file changes
     if any(op in stripped for op in (">", ">>", "|")):
         return False
+    git_ro = _is_read_only_git_command(stripped)
+    if git_ro is not None:
+        return git_ro
     for pat in _READ_ONLY_COMMAND_PATTERNS:
         if pat.search(stripped):
             return True
@@ -3756,6 +3839,24 @@ def _snapshot_workspace_file_list(cwd: Path) -> Dict[str, Tuple[float, int]]:
     return snapshot
 
 
+# Guard rails for the before-content snapshot.  Without these, a command that
+# references a workspace directory (e.g. ``git -C <repo> status``) would
+# recursively expand every file beneath it and read them all into memory,
+# including .git pack files, virtualenvs, node_modules, etc.  On a large
+# repository that easily grows into hundreds of MB -- or tens of GB when
+# .git/objects packs are decoded -- and stalls the machine.  The snapshot is
+# best-effort: files skipped here still fall back to git (index/HEAD) when
+# they are tracked, so only untracked-file diffs degrade.
+_SKIP_DIR_NAMES: Set[str] = {
+    ".git", "node_modules", ".venv", ".venv-windows",
+    "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".idea", ".vscode", ".pnpm-store", ".codewood",
+}
+_SNAPSHOT_MAX_FILES = 4000
+_SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024
+_SNAPSHOT_MAX_FILE_BYTES = 1 * 1024 * 1024
+
+
 def _snapshot_workspace_before_content(
     command: str,
     execution_cwd: Path,
@@ -3785,16 +3886,26 @@ def _snapshot_workspace_before_content(
     skipped silently.
     """
     snapshot: Dict[str, str] = {}
+    _snapshot_bytes = 0
 
     def _read_if_file(abs_path: Path) -> None:
+        nonlocal _snapshot_bytes
         key = str(abs_path)
         if key in snapshot:
             return
+        if len(snapshot) >= _SNAPSHOT_MAX_FILES:
+            return
         try:
             if abs_path.is_file():
+                size = abs_path.stat().st_size
+                if size > _SNAPSHOT_MAX_FILE_BYTES:
+                    return
+                if _snapshot_bytes + size > _SNAPSHOT_MAX_BYTES:
+                    return
                 snapshot[key] = abs_path.read_text(
                     encoding="utf-8", errors="replace",
                 )
+                _snapshot_bytes += size
         except Exception:
             pass
 
@@ -3930,9 +4041,10 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
             if resolved is not None:
                 if resolved.is_dir():
                     try:
-                        for f in resolved.rglob("*"):
-                            if f.is_file():
-                                paths.add(str(f))
+                        for _root, _dirs, _files in os.walk(resolved):
+                            _dirs[:] = [d for d in _dirs if d not in _SKIP_DIR_NAMES]
+                            for _name in _files:
+                                paths.add(str(Path(_root) / _name))
                     except (OSError, PermissionError):
                         pass
                 elif resolved.is_file():
@@ -4002,9 +4114,10 @@ def _add_paths_from_inline_code(
             if p.exists():
                 if p.is_dir():
                     try:
-                        for f in p.rglob("*"):
-                            if f.is_file():
-                                paths.add(str(f))
+                        for _root, _dirs, _files in os.walk(p):
+                            _dirs[:] = [d for d in _dirs if d not in _SKIP_DIR_NAMES]
+                            for _name in _files:
+                                paths.add(str(Path(_root) / _name))
                     except (OSError, PermissionError):
                         pass
                 elif p.is_file():
