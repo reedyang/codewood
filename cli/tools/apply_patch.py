@@ -6,7 +6,9 @@ cli/actions/filesystem_actions.py) plus the ApplyPatchTool class.
 
 from __future__ import annotations
 
+import datetime
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -195,6 +197,23 @@ def _normalize_for_match(s: str) -> str:
     return s.translate(_QUOTE_NORMALIZE_TABLE)
 
 
+def _is_phantom_eof_empty_deletion(hl: str, cur: int, old_len: int) -> bool:
+    """True when *hl* is an empty deletion line ('-' with no content) located
+    past the end of the file.
+
+    The read tool numbers the trailing newline as an extra empty line
+    (``total_lines`` counts one more than ``splitlines()``), so models
+    routinely emit a phantom trailing ``-`` line that the file does not
+    actually contain.  Tolerating it keeps the patch applicable instead of
+    failing the whole apply with a context mismatch.
+    """
+    return bool(
+        hl.startswith("-")
+        and hl[1:] == ""
+        and cur >= old_len
+    )
+
+
 def _matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> bool:
     """Strict exact matching of hunk context / deletion lines against old_lines.
     Both sides are normalized for typographic quote differences before comparison."""
@@ -209,7 +228,11 @@ def _matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> 
         prefix = hl[0]
         text = hl[1:]
         if prefix in (" ", "-"):
-            if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+            if cur >= len(old_lines):
+                if _is_phantom_eof_empty_deletion(hl, cur, len(old_lines)):
+                    continue
+                return False
+            if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                 return False
             cur += 1
         elif prefix == "+":
@@ -307,7 +330,12 @@ def _hunk_matches_at(
             for hl in core:
                 if hl.startswith(("-", " ")):
                     text = hl[1:]
-                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                    if cur >= len(old_lines):
+                        if _is_phantom_eof_empty_deletion(hl, cur, len(old_lines)):
+                            continue
+                        ok = False
+                        break
+                    if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                         ok = False
                         break
                     cur += 1
@@ -322,7 +350,12 @@ def _hunk_matches_at(
                 ok = True
                 for hl in trailing_ctx:
                     text = hl[1:]
-                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                    if cur >= len(old_lines):
+                        if _is_phantom_eof_empty_deletion(hl, cur, len(old_lines)):
+                            continue
+                        ok = False
+                        break
+                    if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                         ok = False
                         break
                     cur += 1
@@ -412,6 +445,58 @@ def _locate_hunk_start(
             if _hunk_matches_at(old_lines, test_pos, hunk_lines, fuzz=fuzz):
                 return test_pos
     return None
+
+
+def _patch_intends_delete(patch_text: str, hunks: List[Dict[str, Any]]) -> bool:
+    """Return True when the patch uses git's delete-diff conventions.
+
+    A patch is treated as a file deletion when it either targets
+    ``/dev/null`` on the ``+++`` side (git's marker for deleted files) or
+    contains a hunk header whose new-side count is zero (``+0,0`` style).
+    The caller further requires that applying the hunks leaves no remaining
+    lines before actually deleting the file.
+    """
+    if not patch_text:
+        return False
+    for ln in patch_text.splitlines():
+        stripped = str(ln).lstrip()
+        if stripped.startswith("+++") and "/dev/null" in stripped:
+            return True
+    return bool(
+        re.search(r"^@@[^\r\n]*\+\d+,0\s*@@", patch_text, re.MULTILINE)
+    )
+
+
+def _backup_deleted_content(
+    raw_bytes: bytes,
+    original_path: Path,
+    agent: Any,
+) -> Optional[str]:
+    """Persist *raw_bytes* to the active chat's backups directory so a file
+    deleted via apply_patch can be recovered.
+
+    Returns the short backup filename (relative to the backups directory) or
+    ``None`` when no chat backups directory is available.
+    """
+    try:
+        chat_mgr = getattr(agent, "_chat_state_manager", None)
+        chat_id = str(getattr(agent, "active_chat_id", "") or "")
+        if chat_mgr is None or not chat_id:
+            return None
+        backups_dir = chat_mgr.chat_backups_dir_for_chat(chat_id)
+        if backups_dir is None:
+            return None
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"{original_path.name}_{ts}_{secrets.token_hex(4)}.bak"
+        backup_path = backups_dir / backup_name
+        tmp = backup_path.with_suffix(backup_path.suffix + ".tmp")
+        with open(tmp, "wb") as fh:
+            fh.write(raw_bytes)
+        tmp.replace(backup_path)
+        return backup_name
+    except Exception:
+        return None
 
 
 def action_apply_unified_patch(
@@ -627,7 +712,20 @@ def action_apply_unified_patch(
                     hunk_new_fragment.append(old_lines[cur])
                     cur += 1
                 elif prefix == "-":
-                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                    if cur >= len(old_lines):
+                        if _is_phantom_eof_empty_deletion(hl, cur, len(old_lines)):
+                            continue
+                        expected = repr(text)
+                        actual = "<end of file>"
+                        return {
+                            "success": False,
+                            "error": _format_apply_patch_error(
+                                f"Hunk deletion expects to remove {expected} but "
+                                f"file line {cur + 1} is {actual} — "
+                                f"check line numbers and indentation."
+                            ),
+                        }
+                    if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
                         expected = repr(text)
                         actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
                         return {
@@ -671,6 +769,14 @@ def action_apply_unified_patch(
         new_text = newline.join(result_lines)
         if had_trailing_newline and len(result_lines) > 0:
             new_text += newline
+        # A patch that removes every line of an existing file using git's
+        # delete-diff markers ('+++ /dev/null' or a '+0,0' hunk header)
+        # deletes the file instead of leaving an empty one behind.
+        is_delete = bool(
+            file_exists
+            and not result_lines
+            and _patch_intends_delete(normalized_patch, hunks)
+        )
         # When the interactive TUI selector will render the change preview
         # itself (so it can re-layout live on terminal resize), skip the static
         # text print here and hand the structured segments to the confirm call.
@@ -708,7 +814,11 @@ def action_apply_unified_patch(
                 translate(
                     "confirm.apply_patch_text_file",
                     _lang,
-                    fallback="⚠️ Confirm applying patch to text file: {path} ?",
+                    fallback=(
+                        "⚠️ Confirm deleting file: {path} ?"
+                        if is_delete
+                        else "⚠️ Confirm applying patch to text file: {path} ?"
+                    ),
                     path=str(abs_path),
                 ),
                 offer_always=False,
@@ -718,19 +828,23 @@ def action_apply_unified_patch(
             )
             if not ok:
                 return {"success": False, "error": "Operation cancelled by user"}
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
         # Snapshot file content before modification for change tracking
         content_before = source if file_exists else None
-        # Write raw bytes so the text-mode universal-newline translation does not
-        # rewrite "\n" to the OS separator. This keeps the chosen ``newline`` and
-        # encoding/BOM exactly as intended.
-        if file_exists:
-            data = bom_bytes + new_text.encode(base_codec or "utf-8", errors="replace")
+        if is_delete:
+            abs_path.unlink()
         else:
-            data = new_text.encode("utf-8", errors="replace")
-        abs_path.write_bytes(data)
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write raw bytes so the text-mode universal-newline translation
+            # does not rewrite "\n" to the OS separator. This keeps the chosen
+            # ``newline`` and encoding/BOM exactly as intended.
+            if file_exists:
+                data = bom_bytes + new_text.encode(base_codec or "utf-8", errors="replace")
+            else:
+                data = new_text.encode("utf-8", errors="replace")
+            abs_path.write_bytes(data)
         resolved = abs_path.resolve()
-        agent._ai_created_path_keys.add(agent._ephemeral_path_key(resolved))
+        if not is_delete:
+            agent._ai_created_path_keys.add(agent._ephemeral_path_key(resolved))
         agent._reload_skills_if_workspace_skill_changed([resolved])
         # Record file change for the change tracker
         try:
@@ -738,14 +852,29 @@ def action_apply_unified_patch(
             _fc_logger = get_logger("codewood.file_change")
             tracker = getattr(agent, "file_change_tracker", None)
             if tracker is not None:
-                tracker.record_patch_change(
-                    file_path=str(resolved),
-                    source="apply_patch",
-                    segments=preview_segments or [],
-                    content_before=content_before,
-                    content_after=new_text,
-                )
-                _fc_logger.debug(f"[file_changes] recorded patch change for {resolved} (segments={len(preview_segments or [])})")
+                if is_delete:
+                    backup_name = _backup_deleted_content(
+                        bom_bytes + source.encode(base_codec or "utf-8", errors="replace"),
+                        resolved,
+                        agent,
+                    )
+                    tracker.record_delete(
+                        file_path=str(resolved),
+                        source="apply_patch",
+                        content_before=content_before or "",
+                        backup_path=backup_name,
+                    )
+                    tracker.cancel_create_for_deleted_file(str(resolved))
+                    _fc_logger.debug(f"[file_changes] recorded delete for {resolved}")
+                else:
+                    tracker.record_patch_change(
+                        file_path=str(resolved),
+                        source="apply_patch",
+                        segments=preview_segments or [],
+                        content_before=content_before,
+                        content_after=new_text,
+                    )
+                    _fc_logger.debug(f"[file_changes] recorded patch change for {resolved} (segments={len(preview_segments or [])})")
             else:
                 _fc_logger.debug("[file_changes] tracker is None in apply_patch")
         except Exception as _e:
@@ -770,11 +899,16 @@ def action_apply_unified_patch(
         return {
             "success": True,
             "file": str(resolved),
+            "deleted": is_delete,
             "hunk_count": len(hunks),
             "change_preview": preview_lines,
             "change_preview_rows": change_preview_rows,
             "warnings": patch_warnings,
-            "message": f"Successfully applied patch to '{resolved.name}'",
+            "message": (
+                f"Successfully deleted file '{resolved.name}'"
+                if is_delete
+                else f"Successfully applied patch to '{resolved.name}'"
+            ),
         }
     except Exception as e:
         return {"success": False, "error": _format_apply_patch_error(f"apply_patch failed: {str(e)}")}
