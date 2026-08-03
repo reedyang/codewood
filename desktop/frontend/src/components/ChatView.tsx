@@ -2553,7 +2553,7 @@ function CompletedTurnView({
       detailNodes.push(
         <div className="ask-selection" key={`selection-${index}`}>
           <Icon name="check" size={13} className="ask-selection-icon" />
-          <span className="ask-selection-label">{t("askMoreInfo.selectedLabel")}</span>
+          <span className="ask-selection-label">{t("askMoreInfo.answerLabel")}</span>
           <span className="ask-selection-text">{round.selection}</span>
         </div>,
       );
