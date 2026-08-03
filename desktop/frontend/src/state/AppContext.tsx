@@ -1848,6 +1848,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         };
         return { ...prev, [chatId]: merged };
       }
+      // SSE is normally at-most-once, but a reconnect or overlapping event
+      // subscription can occasionally deliver ``turn_start`` twice.  The
+      // second event belongs to the already-open turn, not a new user action:
+      // one chat cannot run two turns concurrently.  Ignore it so subsequent
+      // streamed tool output does not get split into a duplicate transcript
+      // row.  Keep the comparison exact here; this is event de-duplication,
+      // not the more permissive persisted-history reconciliation below.
+      if (last && last.endedAt === null && last.userText === userText) {
+        return prev;
+      }
       return {
         ...prev,
         [chatId]: [
@@ -3231,9 +3241,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // previous turn's idle event). The next history reload reconciles them.
   const dropSettledLiveTurnsNotInHistory = useCallback(
     (chatId: string, pageTurns: Array<{ userText?: string; timestamp?: string }>) => {
-      const kept = new Set(
-        pageTurns.map((t) => String(t.userText || "").trim()),
-      );
+      // User text alone is not a turn identity: a user can legitimately send
+      // the same prompt twice.  Associate each archived text with its message
+      // timestamp, so a stale page containing an *older* identical prompt
+      // cannot make us discard the just-finished live turn (the regression
+      // that briefly hid the latest task after command completion).
+      const archivedAtByText = new Map<string, number[]>();
+      for (const turn of pageTurns) {
+        const text = String(turn.userText || "").trim();
+        if (!text) continue;
+        const timestamp = Date.parse(String(turn.timestamp || "").replace(" ", "T"));
+        const timestamps = archivedAtByText.get(text) ?? [];
+        timestamps.push(timestamp);
+        archivedAtByText.set(text, timestamps);
+      }
       setTurnsByChat((prev) => {
         const list = prev[chatId];
         if (!list || list.length === 0) {
@@ -3252,7 +3273,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // on the trimmed user text: a settled turn that is already archived
           // must be dropped instead of lingering at the tail (which reorders
           // the transcript around newer history turns).
-          if (kept.has(String(tt.userText || "").trim())) {
+          const archivedAt = archivedAtByText.get(String(tt.userText || "").trim());
+          // Structured history records the user's send time, while the live
+          // turn records when its matching SSE start arrived.  They should be
+          // seconds apart.  Keep a generous window for a paused UI thread,
+          // but never treat an hours-old identical prompt as this live turn.
+          const represented = archivedAt?.some((timestamp) =>
+            !Number.isFinite(timestamp) || Math.abs(timestamp - tt.startedAt) <= 120_000,
+          );
+          if (represented) {
             return false;
           }
           return true;
