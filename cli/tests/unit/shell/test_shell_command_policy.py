@@ -9,6 +9,7 @@ from cli.tools.shell import _enforce_git_no_pager_for_shell_command
 from cli.tools.shell import enforce_workspace_rg_for_shell_command
 from cli.tools.shell import _is_read_only_command
 from cli.tools.shell import normalize_shell_command_for_summary
+from cli.tools.shell import _normalize_windows_shell_path_separators
 
 
 class ShellCommandPolicyTests(unittest.TestCase):
@@ -362,6 +363,76 @@ class ReadOnlyTestAndTypecheckCommandTests(unittest.TestCase):
     def test_redirect_or_pipe_still_disqualifies(self):
         self.assertFalse(_is_read_only_command("npx vitest run > out.txt"))
         self.assertFalse(_is_read_only_command("pytest | tee log.txt"))
+
+    def test_normalize_windows_path_separators_converts_executable_and_paths(self):
+        cmd = (
+            ".venv-windows/Scripts/python.exe -m pytest "
+            "cli/tests/unit/shell/test_shell_command_policy.py -q"
+        )
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _normalize_windows_shell_path_separators(cmd)
+        self.assertEqual(
+            rewritten,
+            ".venv-windows\\Scripts\\python.exe -m pytest "
+            "cli\\tests\\unit\\shell\\test_shell_command_policy.py -q",
+        )
+
+    def test_normalize_windows_path_separators_converts_cmd_builtin_args(self):
+        # cmd.exe built-ins treat ``/`` as a switch (``Invalid switch``).
+        with patch("cli.tools.shell.os.name", "nt"):
+            self.assertEqual(
+                _normalize_windows_shell_path_separators("del cli/tests/x.txt"),
+                "del cli\\tests\\x.txt",
+            )
+            self.assertEqual(
+                _normalize_windows_shell_path_separators("type C:/Users/foo/readme.txt"),
+                "type C:\\Users\\foo\\readme.txt",
+            )
+
+    def test_normalize_windows_path_separators_leaves_urls_and_flags(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            for cmd in [
+                "git clone https://github.com/a/b.git",
+                "git clone git@github.com:org/repo.git",
+                "python -m http.server 8000 --directory public/",
+                'python -c "print(1)"',
+                "docker run -v /host/path:/container/path image",
+            ]:
+                self.assertEqual(
+                    _normalize_windows_shell_path_separators(cmd), cmd, cmd
+                )
+
+    def test_normalize_windows_path_separators_skips_pattern_first_tools(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            for cmd in [
+                'rg -n "src/foo.py" cli',
+                "grep -r 'foo/bar' src",
+                "git add cli/tests/x.py",
+                "git log -- cli/tests/x.py",
+            ]:
+                self.assertEqual(
+                    _normalize_windows_shell_path_separators(cmd), cmd, cmd
+                )
+
+    def test_normalize_windows_path_separators_skips_powershell_payloads(self):
+        cmd = (
+            'powershell -ExecutionPolicy Bypass -Command '
+            '"Get-ChildItem C:/Users/foo"'
+        )
+        with patch("cli.tools.shell.os.name", "nt"):
+            self.assertEqual(_normalize_windows_shell_path_separators(cmd), cmd)
+
+    def test_normalize_windows_path_separators_rewrites_cmd_c_payload(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            rewritten = _normalize_windows_shell_path_separators(
+                'cmd /c "del cli/tests/x.txt"'
+            )
+        self.assertIn("cli\\tests\\x.txt", rewritten)
+
+    def test_normalize_windows_path_separators_noop_on_non_windows(self):
+        cmd = "del cli/tests/x.txt"
+        with patch("cli.tools.shell.os.name", "posix"):
+            self.assertEqual(_normalize_windows_shell_path_separators(cmd), cmd)
 
 
 if __name__ == "__main__":
