@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cli.tools.shell import _git_content_before
+from cli.tools.shell import _SNAPSHOT_MAX_FILE_BYTES
 from cli.tools.shell import _snapshot_workspace_before_content
 
 
@@ -98,6 +99,72 @@ class SnapshotBeforeContentTests(unittest.TestCase):
             )
 
         self.assertEqual(snapshot[str(target)], "hello\n")
+
+    def test_directory_expansion_skips_git_and_virtualenvs(self):
+        git_dir = self.work / ".git"
+        git_dir.mkdir()
+        pack = git_dir / "pack.pack"
+        pack.write_bytes(b"x" * 2048)
+        venv = self.work / ".venv"
+        venv.mkdir()
+        venv_file = venv / "site.py"
+        venv_file.write_text("import os\n", encoding="utf-8")
+        normal = self.work / "src"
+        normal.mkdir()
+        normal_file = normal / "a.py"
+        normal_file.write_text("print('a')\n", encoding="utf-8")
+
+        calls = [_CompletedText(0, ""), _CompletedText(0, "")]
+        with patch("cli.tools.shell._subprocess_mod.run", side_effect=calls):
+            snapshot = _snapshot_workspace_before_content(
+                f"git -C {self.work.as_posix()} status", self.work, self.repo,
+            )
+
+        self.assertNotIn(str(pack), snapshot)
+        self.assertNotIn(str(venv_file), snapshot)
+        self.assertIn(str(normal_file), snapshot)
+        self.assertEqual(snapshot[str(normal_file)], "print('a')\n")
+
+    def test_oversized_file_skipped(self):
+        target = self.work / "big.txt"
+        target.write_bytes(b"x" * (_SNAPSHOT_MAX_FILE_BYTES + 1))
+
+        calls = [_CompletedText(0, ""), _CompletedText(0, "")]
+        with patch("cli.tools.shell._subprocess_mod.run", side_effect=calls):
+            snapshot = _snapshot_workspace_before_content(
+                f"cat {(self.work / 'big.txt').as_posix()}", self.work, self.repo,
+            )
+
+        self.assertNotIn(str(target), snapshot)
+        self.assertEqual(len(snapshot), 0)
+
+    def test_file_count_budget_stops_reading(self):
+        for i in range(5):
+            f = self.work / f"f{i}.txt"
+            f.write_text(f"content {i}\n", encoding="utf-8")
+
+        calls = [_CompletedText(0, ""), _CompletedText(0, "")]
+        with patch("cli.tools.shell._subprocess_mod.run", side_effect=calls):
+            with patch("cli.tools.shell._SNAPSHOT_MAX_FILES", 2):
+                snapshot = _snapshot_workspace_before_content(
+                    f"cat {self.work.as_posix()}", self.work, self.repo,
+                )
+
+        self.assertEqual(len(snapshot), 2)
+
+    def test_byte_budget_stops_reading(self):
+        for i in range(5):
+            f = self.work / f"g{i}.txt"
+            f.write_text("y" * 1000, encoding="utf-8")
+
+        calls = [_CompletedText(0, ""), _CompletedText(0, "")]
+        with patch("cli.tools.shell._subprocess_mod.run", side_effect=calls):
+            with patch("cli.tools.shell._SNAPSHOT_MAX_BYTES", 2500):
+                snapshot = _snapshot_workspace_before_content(
+                    f"cat {self.work.as_posix()}", self.work, self.repo,
+                )
+
+        self.assertEqual(len(snapshot), 2)
 
     def test_non_git_workspace_snapshots_command_paths_only(self):
         target = self.work / "target.txt"

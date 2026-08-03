@@ -215,5 +215,116 @@ class ShellCommandPolicyTests(unittest.TestCase):
         self.assertTrue(_is_read_only_command("git --no-pager status"))
 
 
+class ReadOnlyGitCommandTests(unittest.TestCase):
+    def test_strictly_readonly_git_subcommands(self):
+        for cmd in [
+            "git status",
+            "git status --short",
+            "git -C D:/repo status",
+            "git -C D:/repo status --short",
+            "git -C 'D:/path with space' status",
+            "git --no-pager -C D:/repo log --oneline -5",
+            "git -C D:/repo diff HEAD",
+            "git -C D:/repo show --stat HEAD",
+            "git rev-parse --abbrev-ref HEAD",
+            "git ls-files --others --exclude-standard",
+            "git -C D:/repo ls-tree HEAD",
+            "git blame src/a.py",
+            "git grep foo",
+            "git config user.name",
+            "git describe --tags",
+            "git shortlog -n",
+            "git -c core.quotepath=false status",
+            "git --no-pager diff --stat",
+            "git diff -- src/a.py",
+        ]:
+            self.assertTrue(_is_read_only_command(cmd), cmd)
+
+    def test_conditional_readonly_listing_forms(self):
+        for cmd in [
+            "git branch",
+            "git branch -a",
+            "git branch -vv",
+            "git branch --list",
+            "git -C D:/repo branch --show-current",
+            "git tag",
+            "git tag -l",
+            "git tag -n",
+            "git remote",
+            "git remote -v",
+            "git remote show origin",
+            "git remote get-url origin",
+            "git stash list",
+            "git stash show -p",
+            "git submodule status",
+            "git worktree list",
+            "git notes show HEAD",
+            "git notes list",
+            "git reflog",
+            "git reflog show HEAD",
+            "git --version",
+            "git --help",
+            "git help status",
+            "git",
+        ]:
+            self.assertTrue(_is_read_only_command(cmd), cmd)
+
+    def test_writing_git_subcommands_not_readonly(self):
+        for cmd in [
+            "git add .",
+            "git commit -m x",
+            "git checkout master",
+            "git checkout -- file",
+            "git reset --hard",
+            "git clean -fd",
+            "git push origin main",
+            "git pull",
+            "git fetch",
+            "git clone https://example.com/x",
+            "git merge dev",
+            "git rebase dev",
+            "git cherry-pick abc",
+            "git apply patch.diff",
+            "git restore file",
+            "git switch dev",
+            "git rm file",
+            "git mv a b",
+            "git init",
+            "git gc",
+            "git prune",
+            "git update-ref refs/x y",
+            "git symbolic-ref HEAD refs/heads/x",
+            "git stash",
+            "git stash push",
+            "git stash pop",
+            "git stash apply",
+            "git stash drop",
+            "git stash clear",
+            "git branch -d old",
+            "git branch -D old",
+            "git branch --delete old",
+            "git branch -m new",
+            "git branch -c copy",
+            "git branch -u origin/main",
+            "git tag -d v1",
+            "git tag -a v1 -m msg",
+            "git tag -f v1",
+            "git remote add origin url",
+            "git remote remove origin",
+            "git remote set-url origin url",
+            "git remote prune origin",
+            "git submodule add https://example.com/x",
+            "git submodule update",
+            "git worktree add ../wt",
+            "git notes add -m x",
+            "git reflog expire --expire=now --all",
+        ]:
+            self.assertFalse(_is_read_only_command(cmd), cmd)
+
+    def test_redirect_or_pipe_disqualifies_git_whitelist(self):
+        self.assertFalse(_is_read_only_command("git log > out.txt"))
+        self.assertFalse(_is_read_only_command("git status | grep x"))
+
+
 if __name__ == "__main__":
     unittest.main()
