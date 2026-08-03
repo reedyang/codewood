@@ -428,6 +428,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
   const client = clientRef.current;
 
+  // Keep a lightweight, authenticated renderer-to-app-log channel available
+  // for future GUI diagnostics.  A single startup marker verifies that the
+  // loaded frontend and the backend endpoint are from the same launch.
+  useEffect(() => {
+    void (client as any).logFrontendTrace?.("frontend-started", { source: "desktop-gui" });
+  }, [client]);
+
   const [state, setState] = useState<AppState | null>(null);
   // Live (in-session) turns are tracked per chat so a chat's in-progress work
   // is preserved when the user switches to another chat. The active chat's
@@ -1477,8 +1484,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!activeWsId || !chats) {
       return;
     }
+    // During a cross-workspace focus switch, ``state`` can briefly contain a
+    // stale workspace id while its chat list was produced by the background
+    // runtime in the other workspace.  Never cache that unconfirmed snapshot:
+    // chat ids repeat per workspace, so it would make A's running chat appear
+    // as a real row under B until the next full reload.
+    const expectedWsId = focusOverride?.wsId ?? optimisticChatFocus?.wsId ?? "";
+    if (expectedWsId && activeWsId !== expectedWsId) {
+      return;
+    }
     setWorkspaceChats((prev) => ({ ...prev, [activeWsId]: chats }));
-  }, [state?.workspace.id, state?.chats]);
+  }, [
+    state?.workspace.id,
+    state?.chats,
+    focusOverride?.wsId,
+    optimisticChatFocus?.wsId,
+  ]);
 
   const updatePrefs = useCallback(
     (next: UiPrefs) => {
@@ -2142,7 +2163,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 setState((prev) => {
                   if (!prev) return prev;
                   const merged: any = { ...prev };
-                  if (next.chats && (!nextChatWs || nextChatWs === String(prev.workspace?.id || ""))) {
+                  // A background runtime's SSE envelope is authoritative for
+                  // its workspace.  Never merge a snapshot whose embedded
+                  // workspace disagrees with that envelope: during a
+                  // cross-workspace switch the shared agent can briefly build
+                  // a state object with B's workspace metadata but A's chat
+                  // records.  Since chat ids repeat per workspace, merging it
+                  // by bare id would overwrite B's chat name/list with A's.
+                  if (
+                    next.chats &&
+                    nextChatWs === eventWsId &&
+                    nextChatWs === String(prev.workspace?.id || "")
+                  ) {
                     const nextChats = Array.isArray(next.chats) ? next.chats : [];
                     // ``next.chats`` is the authoritative full chat list for
                     // this workspace, so a chat absent from it (deleted on the
@@ -2290,7 +2322,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
               setState((prev) => {
                 if (!prev) return prev;
                 const merged: any = { ...prev };
-                if (next.chats) {
+                // A streaming ``state`` event is an incremental update, but
+                // chat ids repeat per workspace.  Never merge its list by bare
+                // id unless all three identities agree.  Otherwise an A/chat-1
+                // plan or usage update can rename B/chat-1 in the currently
+                // rendered B list for one frame, until the next full B snapshot
+                // arrives (the observed same-name flash on the second switch).
+                const nextChatWs = String(next.workspace?.id || "");
+                const prevChatWs = String(prev.workspace?.id || "");
+                if (
+                  next.chats &&
+                  nextChatWs === eventWsId &&
+                  nextChatWs === prevChatWs
+                ) {
                   merged.chats = prev.chats.map((c) => {
                     const updated = next.chats?.find((nc: any) => nc.id === c.id);
                     return updated ? { ...c, ...updated } : c;
@@ -3240,7 +3284,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // response arrived (e.g. an auto-sent pending message right after the
   // previous turn's idle event). The next history reload reconciles them.
   const dropSettledLiveTurnsNotInHistory = useCallback(
-    (chatId: string, pageTurns: Array<{ userText?: string; timestamp?: string }>) => {
+    (chatId: string, pageTurns: HistoryTurn[]) => {
       // User text alone is not a turn identity: a user can legitimately send
       // the same prompt twice.  Associate each archived text with its message
       // timestamp, so a stale page containing an *older* identical prompt
@@ -3274,13 +3318,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // must be dropped instead of lingering at the tail (which reorders
           // the transcript around newer history turns).
           const archivedAt = archivedAtByText.get(String(tt.userText || "").trim());
+          const liveOutput = tt.rounds
+            .flatMap((round) => round.segments.map((segment) => segment.text))
+            .join("")
+            .trim();
+          const archivedOutput = pageTurns
+            .filter((turn) => String(turn.userText || "").trim() === String(tt.userText || "").trim())
+            .flatMap((turn) => turn.rounds ?? [])
+            .map((round) => `${round.tools || ""}${round.text || ""}${round.thinking || ""}`)
+            .join("");
           // Structured history records the user's send time, while the live
           // turn records when its matching SSE start arrived.  They should be
           // seconds apart.  Keep a generous window for a paused UI thread,
           // but never treat an hours-old identical prompt as this live turn.
           const represented = archivedAt?.some((timestamp) =>
             !Number.isFinite(timestamp) || Math.abs(timestamp - tt.startedAt) <= 120_000,
-          );
+          ) || Boolean(liveOutput && archivedOutput.includes(liveOutput));
           if (represented) {
             return false;
           }
@@ -3364,16 +3417,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // dropping it (and then dropping the settled live turns) would erase
           // the completed task's user message and steps from the transcript
           // until the next chat switch.
-          const activeUserTexts = new Set(
-            live
-              .filter((tt) => tt.endedAt === null)
-              .map((tt) => tt.userText || ""),
-          );
+          const activeTurns = live.filter((tt) => tt.endedAt === null);
           const tail = page.turns[page.turns.length - 1];
-          const tailIsStreamingDuplicate =
-            !!tail &&
-            activeUserTexts.has(String(tail.userText || "")) &&
-            (!Array.isArray(tail.rounds) || tail.rounds.length === 0);
+          const tailTimestamp = Date.parse(
+            String(tail?.timestamp || "").replace(" ", "T"),
+          );
+          const tailIsStreamingDuplicate = !!tail && activeTurns.some((turn) => {
+            if (String(turn.userText || "").trim() !== String(tail.userText || "").trim()) {
+              return false;
+            }
+            // A history reload after switching away and back may already have
+            // replayed the running turn's tool rounds.  It is still the same
+            // live turn and must not render a second time.  Match its user
+            // send time to avoid mistaking an older, identical prompt for the
+            // active one; retain the old no-round fallback for legacy history
+            // entries that have no parseable timestamp.
+            const liveOutput = turn.rounds
+              .flatMap((round) => round.segments.map((segment) => segment.text))
+              .join("")
+              .trim();
+            const tailOutput = (tail.rounds ?? [])
+              .map((round) => `${round.tools || ""}${round.text || ""}${round.thinking || ""}`)
+              .join("");
+            return Number.isFinite(tailTimestamp)
+              ? Math.abs(tailTimestamp - turn.startedAt) <= 120_000 ||
+                Boolean(liveOutput && tailOutput.includes(liveOutput))
+              : Boolean(liveOutput && tailOutput.includes(liveOutput)) ||
+                (!Array.isArray(tail.rounds) || tail.rounds.length === 0);
+          });
           const keptTurns = tailIsStreamingDuplicate
             ? page.turns.slice(0, -1)
             : page.turns;
@@ -3381,6 +3452,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
           dropSettledLiveTurnsNotInHistory(key, keptTurns);
+          if (tailIsStreamingDuplicate) {
+            // ``idle`` can settle the live turn in the same event batch that
+            // started this fetch.  In that narrow window this branch preserves
+            // the live copy and hides its history copy, but no later event is
+            // guaranteed to reconcile them.  Recheck after React has applied
+            // the settlement; if the turn is now done, the normal history path
+            // replaces it with the archived copy.
+            window.setTimeout(() => {
+              if (
+                historyChatRef.current === expectedKey &&
+                !(turnsByChatRef.current[key] ?? []).some((turn) => turn.endedAt === null)
+              ) {
+                reloadHistoryRef.current();
+              }
+            }, 100);
+          }
         } else if (hasSettledLive && page.turns.length === 0) {
           // A background turn finished in this chat while it was unfocused —
           // its full output is captured in the live bucket — but the persisted

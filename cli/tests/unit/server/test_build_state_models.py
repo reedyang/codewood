@@ -40,6 +40,9 @@ class _FakeAgent:
     def _workspace_root_path(self, entry):
         return str(entry.get("root") or "")
 
+    def _workspace_current_dir_path(self, entry):
+        return entry.get("current_dir") or entry.get("root")
+
     def _active_runtime_chat_ids(self):
         return []
 
@@ -105,6 +108,24 @@ class BuildStateModelTests(unittest.TestCase):
         self.assertEqual(state["contextUsage"]["window"], 128000)
         self.assertEqual(state["contextUsage"]["tokens"], 4096)
         self.assertEqual(state["contextUsage"]["percent"], 3)
+
+    def test_explicit_background_workspace_uses_its_own_metadata(self):
+        agent = _FakeAgent()
+        agent._workspaces_state["workspaces"]["ws-2"] = {
+            "id": "ws-2",
+            "name": "Workspace B",
+            "root": "D:/workspace-b",
+            "current_dir": "D:/workspace-b/subdir",
+            "kind": "custom",
+        }
+
+        with patch("cli.server.serve_app._compute_chat_cache_stats", return_value={}):
+            state = _build_state_inner(agent, workspace_id="ws-2")
+
+        self.assertEqual(state["workspace"]["id"], "ws-2")
+        self.assertEqual(state["workspace"]["name"], "Workspace B")
+        self.assertEqual(state["workspace"]["root"], "D:/workspace-b")
+        self.assertEqual(state["workspace"]["workDirectory"], "D:/workspace-b/subdir")
 
 
 if __name__ == "__main__":

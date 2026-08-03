@@ -55,6 +55,22 @@ export class ApiClient {
     return (await res.json()) as AppState;
   }
 
+  /**
+   * Best-effort GUI diagnostic event.  It is intentionally limited to routing
+   * metadata (workspace/chat ids and names), never transcript content.
+   */
+  async logFrontendTrace(phase: string, data: Record<string, unknown>): Promise<void> {
+    try {
+      await fetch(`${this.base}/frontend-trace`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ phase, data }),
+      });
+    } catch {
+      // Diagnostics must never affect normal UI operation.
+    }
+  }
+
   async fetchIndexStatus(): Promise<IndexStatus> {
     const res = await fetch(`${this.base}/index-status`, { headers: this.headers() });
     if (!res.ok) {
