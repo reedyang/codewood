@@ -542,8 +542,8 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
           <section className="tree-section">
             <div className="tree-section-title">{t("sidebar.pinned")}</div>
             <ul className="tree-list">
-              {pinnedWorkspaces.map((ws) => renderWorkspaceGroup(ws))}
               {pinnedChatEntries.map(({ chat, wsId }) => renderChatRow(chat, wsId))}
+              {pinnedWorkspaces.map((ws) => renderWorkspaceGroup(ws))}
             </ul>
           </section>
         )}
