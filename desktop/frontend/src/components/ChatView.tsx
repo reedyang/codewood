@@ -11,7 +11,7 @@ import {
 import appIconUrl from "../assets/app_icon_mark.svg";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
-import type { HistoryRound, HistoryTurn, PlanStep, SubAgentMessage, Turn, TurnRound } from "../api/types";
+import type { CompactNoticeData, HistoryRound, HistoryTurn, PlanStep, SubAgentMessage, Turn, TurnRound } from "../api/types";
 import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
@@ -1812,7 +1812,7 @@ export function ChatView() {
                 );
               });
             })()}
-            {compactNotice && (
+            {compactNotice && compactNotice.anchorTurnId === undefined && (
               <div className="turn compact-notice-turn" role="alert" aria-live="polite">
                 <CompactNoticeView
                   title={compactNotice.title}
@@ -1828,6 +1828,7 @@ export function ChatView() {
                 now={now}
                 negIndex={liveNeg[index]}
                 handlers={messageHandlers}
+                compactNotice={compactNotice?.anchorTurnId === turn.id ? compactNotice : null}
               />
             ))}
             <AskMoreInfoPanel />
@@ -3353,16 +3354,18 @@ export function LiveRoundView({
   );
 }
 
-function TurnView({
+export function TurnView({
   turn,
   now,
   negIndex,
   handlers,
+  compactNotice,
 }: {
   turn: Turn;
   now: number;
   negIndex: number;
   handlers: MessageHandlers;
+  compactNotice: CompactNoticeData | null;
 }) {
   const { t, state } = useApp();
   // A finished live turn (``endedAt`` set) must render collapsed into the
@@ -3372,11 +3375,22 @@ function TurnView({
   // (e.g. the post-idle history reload came back with an empty page yet).
   if (turn.endedAt !== null) {
     return (
-      <CompletedTurnView
-        turn={liveTurnToHistoryTurn(turn)}
-        negIndex={negIndex}
-        handlers={handlers}
-      />
+      <>
+        <CompletedTurnView
+          turn={liveTurnToHistoryTurn(turn)}
+          negIndex={negIndex}
+          handlers={handlers}
+        />
+        {compactNotice && (
+          <div className="turn compact-notice-turn" role="alert" aria-live="polite">
+            <CompactNoticeView
+              title={compactNotice.title}
+              body={compactNotice.body}
+              stage={compactNotice.stage}
+            />
+          </div>
+        )}
+      </>
     );
   }
   const liveGroups = groupLiveRounds(turn.rounds);
@@ -3397,6 +3411,15 @@ function TurnView({
           index={negIndex}
           handlers={handlers}
         />
+      )}
+      {compactNotice && (
+        <div className="turn compact-notice-turn" role="alert" aria-live="polite">
+          <CompactNoticeView
+            title={compactNotice.title}
+            body={compactNotice.body}
+            stage={compactNotice.stage}
+          />
+        </div>
       )}
       {liveGroups.map((group, index) => {
         if (group.kind === "tool") {

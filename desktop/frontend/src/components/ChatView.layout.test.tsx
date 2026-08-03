@@ -17,7 +17,7 @@ vi.mock("../state/AppContext", () => ({
   }),
 }));
 
-import { HistoryRoundDetailView, LiveRoundView, RoundShell } from "./ChatView";
+import { HistoryRoundDetailView, LiveRoundView, RoundShell, TurnView } from "./ChatView";
 import { StepsView } from "./Steps";
 
 describe("HistoryRoundDetailView", () => {
@@ -258,5 +258,37 @@ describe("liveTurnToHistoryTurn", () => {
     // Elapsed time is carried over so the "Worked for" timer is correct.
     expect(history.rounds[0].waitSeconds).toBe(4);
     expect(history.rounds[1].waitSeconds).toBe(10);
+  });
+});
+
+describe("TurnView compact notice placement", () => {
+  it("keeps a streamed compact summary after the triggering live user entry", () => {
+    render(
+      <TurnView
+        turn={{
+          id: 9,
+          userText: "最新一条用户消息",
+          rounds: [],
+          startedAt: 1000,
+          endedAt: null,
+        }}
+        now={1100}
+        negIndex={-1}
+        handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
+        compactNotice={{
+          title: "Compacting context",
+          body: "streamed compact summary",
+          text: "Compacting context",
+          stage: "stream",
+          anchorTurnId: 9,
+        }}
+      />,
+    );
+
+    const user = screen.getByText("最新一条用户消息");
+    const summary = screen.getByText("streamed compact summary");
+    expect(
+      user.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
   });
 });
