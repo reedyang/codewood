@@ -251,6 +251,30 @@ class FileChangeTrackerTests(unittest.TestCase):
         self.assertEqual(f["addedLines"], 2)
         self.assertEqual(f["deletedLines"], 1)
 
+    def test_get_summary_includes_rename_with_old_path(self):
+        tracker = FileChangeTracker()
+        content = "line1\nline2\nline3\n"
+        tracker.record_change(
+            file_path="D:/workspace/alice_wonderland.py",
+            change_type="rename",
+            source="shell",
+            content_before=content,
+            content_after=content,
+            patch=[
+                {"type": "add", "oldNo": None, "newNo": 1, "oldText": "", "newText": "line1"},
+                {"type": "add", "oldNo": None, "newNo": 2, "oldText": "", "newText": "line2"},
+                {"type": "add", "oldNo": None, "newNo": 3, "oldText": "", "newText": "line3"},
+            ],
+            old_path="D:/workspace/helloworld.py",
+        )
+
+        summary = tracker.get_summary()
+        f = summary["files"][0]
+        self.assertEqual(f["changeType"], "rename")
+        self.assertEqual(f["oldPath"], "D:/workspace/helloworld.py")
+        self.assertEqual(f["addedLines"], 3)
+        self.assertEqual(summary["totalFiles"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

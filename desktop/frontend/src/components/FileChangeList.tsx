@@ -13,6 +13,7 @@ interface FileChangeListProps {
 function isUndoable(file: FileChangeRecord): boolean {
   if (file.changeType === "modify" && (file.patch?.length || file.backupPath)) return true;
   if (file.changeType === "create" && file.patch?.length) return true;
+  if (file.changeType === "rename" && file.patch?.length) return true;
   if (file.changeType === "delete" && file.backupPath) return true;
   return false;
 }
@@ -182,6 +183,11 @@ function FileChangeItem({ file, isExpanded, isUndone, onToggle, t, workspaceRoot
     const parts = file.filePath.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1];
   }, [file.filePath]);
+  const oldFileName = useMemo(() => {
+    if (!file.oldPath) return "";
+    const parts = file.oldPath.replace(/\\/g, "/").split("/");
+    return parts[parts.length - 1];
+  }, [file.oldPath]);
 
   const isDelete = file.changeType === "delete";
   const isBinary = file.changeType === "modify" && file.addedLines === 0 && file.deletedLines === 0 && (!file.patch || file.patch.length === 0);
@@ -217,6 +223,11 @@ function FileChangeItem({ file, isExpanded, isUndone, onToggle, t, workspaceRoot
         title={relativePath}
       >
         <span className={`file-change-item-name ${isDelete ? "strikethrough" : ""}`}>{fileName}</span>
+        {oldFileName && (
+          <span className="file-change-old-path" title={file.oldPath}>
+            ← {oldFileName}
+          </span>
+        )}
         {isUndone && <span className="file-change-undone-badge">{t("fileChange.undone")}</span>}
         <span className="file-change-item-stats">
           {isBinary ? (

@@ -6456,6 +6456,15 @@ body.resizing-y .console-term {
   white-space: nowrap;
 }
 
+.file-change-old-path {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .file-change-item-stats {
   display: flex;
   gap: 8px;
