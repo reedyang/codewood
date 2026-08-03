@@ -268,6 +268,8 @@ export interface CompactNoticeData {
   text: string;
   stage?: string;
   mode?: string;
+  /** Live turn whose user entry immediately precedes this in-progress summary. */
+  anchorTurnId?: number;
 }
 
 export type ServerEvent =

@@ -2410,12 +2410,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!eventKey || !title) {
             break;
           }
+          // History and streaming turns are separate lists.  Anchor this
+          // streamed summary to the live turn that was current on arrival, so
+          // it remains after its user entry instead of above it.
+          const liveTurns = turnsByChatRef.current[eventKey] ?? EMPTY_TURNS;
+          const anchorTurnId = liveTurns.length > 0
+            ? liveTurns[liveTurns.length - 1].id
+            : undefined;
           setCompactNoticeState((state) => ({
             chatKey: eventKey,
-            notice: buildCompactNoticeData(title, body, {
-              stage: String(compactData.stage ?? "") || undefined,
-              mode: String(compactData.mode ?? "") || undefined,
-            }),
+            notice: {
+              ...buildCompactNoticeData(title, body, {
+                stage: String(compactData.stage ?? "") || undefined,
+                mode: String(compactData.mode ?? "") || undefined,
+              }),
+              // Stream chunks update the body but retain the original anchor.
+              anchorTurnId:
+                state.chatKey === eventKey && state.notice?.anchorTurnId !== undefined
+                  ? state.notice.anchorTurnId
+                  : anchorTurnId,
+            },
             version: state.version + 1,
           }));
           break;
