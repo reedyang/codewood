@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from cli.tools.shell import _detect_rename_pairs
+from cli.tools.shell import _extract_command_file_paths
 from cli.tools.shell import _normalize_line_endings
 
 
@@ -116,6 +117,50 @@ class DetectRenamePairsTests(unittest.TestCase):
                 [new], [old], {}, Path("D:/repo"), {new}, {},
             )
 
+        self.assertEqual(pairs, [(old, new)])
+
+    def test_common_rename_commands_pair(self):
+        """``ren``/``mv``/``Rename-Item``/wrapped forms all pair the deleted
+        and new files — detection is content-based, not command-specific."""
+        old = self._write("a.py", "line1\nline2\nline3\n")
+        new = self._write("b.py", "line1\nline2\nline3\n")
+        snapshot = {old: "line1\nline2\nline3\n"}
+
+        for cmd in (
+            "ren a.py b.py",
+            "rename a.py b.py",
+            "move a.py b.py",
+            "mv a.py b.py",
+            "git mv a.py b.py",
+            "Rename-Item a.py b.py",
+            "Move-Item a.py b.py",
+            'powershell -Command "Rename-Item a.py b.py"',
+            'powershell -ExecutionPolicy Bypass -Command "Rename-Item a.py b.py"',
+            'cmd /c "ren a.py b.py"',
+        ):
+            with self.subTest(cmd=cmd):
+                cmd_paths = _extract_command_file_paths(cmd, self.cwd)
+                self.assertIn(new, cmd_paths, f"new path missing for: {cmd}")
+                pairs = _detect_rename_pairs(
+                    [new], [old], snapshot, None, cmd_paths, {},
+                )
+                self.assertEqual(pairs, [(old, new)], f"no pair for: {cmd}")
+
+    def test_encoded_command_wrapper_pairs(self):
+        import base64
+
+        old = self._write("a.py", "x\n")
+        new = self._write("b.py", "x\n")
+        encoded = base64.b64encode("Rename-Item a.py b.py".encode("utf-16-le")).decode()
+
+        cmd_paths = _extract_command_file_paths(
+            f"powershell -EncodedCommand {encoded}", self.cwd,
+        )
+
+        self.assertIn(new, cmd_paths)
+        pairs = _detect_rename_pairs(
+            [new], [old], {old: "x\n"}, None, cmd_paths, {},
+        )
         self.assertEqual(pairs, [(old, new)])
 
 
