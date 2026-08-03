@@ -719,7 +719,7 @@ function PromptWithAttachment({
         return (
           <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
             {tw ? (
-              <div style={{ width: `${tw + 2}ch`, wordBreak: "normal" }}>
+              <div style={{ width: `${tw + 2}ch`, maxWidth: "100%", wordBreak: "break-word" }}>
                 <AnsiText text={cleaned} />
               </div>
             ) : (

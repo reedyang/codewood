@@ -4516,10 +4516,15 @@ html[data-has-bg] .select {
 .activity-steps .cmd-output {
   white-space: pre-wrap;
   word-break: break-word;
+  line-height: 1.5;
   padding: 10px 12px 4px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--output-bg) 30%, transparent);
+  /* Cap at 20 lines; taller output scrolls vertically instead of stretching
+     the transcript. pre-wrap above keeps long lines soft-wrapped. */
+  max-height: calc(20 * 1.5em);
+  overflow-y: auto;
 }
 
 .activity-steps .cmd-output-block + .cmd-output-block,
@@ -4820,7 +4825,10 @@ h6.md-h {
   margin-top: 4px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Cap at 20 lines; taller file contents scroll vertically. */
+  max-height: calc(20 * 1.45em);
   padding: 4px 8px 4px 12px;
 }
 .activity-steps .syn-output pre.hljs {
@@ -4828,6 +4836,8 @@ h6.md-h {
   padding: 0;
   background: none;
   color: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .activity-steps .syn-output-linenums {
   display: block;
