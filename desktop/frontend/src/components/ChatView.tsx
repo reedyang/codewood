@@ -2159,6 +2159,7 @@ export function liveTurnToHistoryTurn(turn: Turn): HistoryTurn {
           : Math.max(0, Math.round(elapsedMs / 1000)),
       text: answer,
       tools,
+      selection: String(r.selection || ""),
       thinking: String(r.thinkingText || ""),
     };
   });
@@ -2704,10 +2705,11 @@ function isLiveToolRound(round: TurnRound): boolean {
   const hasSteps = round.segments.some((segment) => segment.kind === "step" && segment.text.trim());
   const hasAnswer = round.segments.some((segment) => segment.kind === "answer" && segment.text.trim());
   const hasThinking = Boolean(String(round.thinkingText || "").trim());
+  const hasSelection = Boolean(String(round.selection || "").trim());
   // Only pure tool calls (no thinking, no visible answer) merge into tool groups.
   // Rounds with their own thinking stay separate so each "Thought for" block
   // matches its corresponding tool calls.
-  return hasSteps && !hasAnswer && !hasThinking;
+  return hasSteps && !hasAnswer && !hasThinking && !hasSelection;
 }
 
 export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
@@ -2724,7 +2726,8 @@ export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
     const hasThinking = String(round.thinkingText || "").trim().length > 0;
     const hasSteps = round.segments.some((segment) => segment.kind === "step" && segment.text.trim());
     const hasAnswer = round.segments.some((segment) => segment.kind === "answer" && segment.text.trim());
-    if (!hasThinking && !hasSteps && !hasAnswer) {
+    const hasSelection = String(round.selection || "").trim().length > 0;
+    if (!hasThinking && !hasSteps && !hasAnswer && !hasSelection) {
       continue;
     }
     if (isLiveToolRound(round)) {
@@ -2745,7 +2748,7 @@ function hasVisibleRoundContent(round: TurnRound | undefined): boolean {
   }
   const hasThinking = Boolean(round.thinkingText?.trim().length);
   const hasSegments = round.segments.some((segment) => segment.text.trim().length > 0);
-  return hasThinking || hasSegments;
+  return hasThinking || hasSegments || Boolean(round.selection?.trim());
 }
 
 function liveGroupShowsOwnWorking(
@@ -3259,6 +3262,16 @@ export function LiveRoundView({
   forceSettled?: boolean;
 }) {
   const { t } = useApp();
+  const selection = String(round.selection || "").trim();
+  if (selection) {
+    return (
+      <div className="ask-selection">
+        <Icon name="check" size={13} className="ask-selection-icon" />
+        <span className="ask-selection-label">{t("askMoreInfo.answerLabel")}</span>
+        <span className="ask-selection-text">{selection}</span>
+      </div>
+    );
+  }
   const running = !forceSettled && round.waitEndedAt === null;
   const effectiveEndedAt = forceSettled ? round.waitEndedAt ?? now : round.waitEndedAt;
   const elapsedMs = (effectiveEndedAt ?? now) - round.waitStartedAt;

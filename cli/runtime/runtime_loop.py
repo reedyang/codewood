@@ -5009,17 +5009,11 @@ def run_agent_loop(agent: Any):
                                     )
                                     if callable(_gui_emit):
                                         _gui_emit(_new_block)
-                                        from ..core.localization import translate as _tl
-                                        _lang_fn = getattr(self, "_ui_language", None)
-                                        _lang = (
-                                            _lang_fn()
-                                            if callable(_lang_fn)
-                                            else (getattr(self, "display_language", None) or "en")
-                                        )
-                                        _answer_line = (
-                                            f"{_tl('tool.answer_line', _lang)}{supplement_text}"
-                                        )
-                                        _gui_emit(f"\n{_answer_line}")
+                                    _selection_emit = getattr(
+                                        self, "_gui_request_user_input_answer_emit", None
+                                    )
+                                    if callable(_selection_emit):
+                                        _selection_emit(supplement_text)
                         except Exception:
                             pass
                         next_input = (

@@ -198,7 +198,62 @@ class _FakeAgentWithReadRender(_FakeAgent):
             print(content)
 
 
+class _FakeAgentWithAskRender(_FakeAgent):
+    """Minimal renderer for persisted Ask rounds with their rewritten output."""
+
+    def _parse_request_user_input_answer_history_content(self, content):
+        prefix = "[ASK_MORE_INFO_ANSWER]"
+        return content[len(prefix):] if content.startswith(prefix) else None
+
+    def _rerender_tool_rounds(self, raw_list):
+        rendered = []
+        for item in raw_list:
+            tool = str(item.get("tool") or "")
+            if tool == "request_user_input":
+                line = "• Ask: Pick a filename?"
+            else:
+                line = f"• Ran {item.get('args', {}).get('command', '')}"
+            output = str(item.get("output") or "")
+            rendered.append(f"{line}\n{output}" if output else line)
+        return rendered
+
+
 class StructuredTurnGroupingTests(unittest.TestCase):
+    def test_ask_selection_remains_with_ask_before_following_tool_call(self):
+        agent = _FakeAgentWithAskRender()
+        agent.conversation_history = [
+            {"role": "user", "content": "Rename this file", "created_at": "2026-08-03 16:25:49"},
+            {
+                "role": "assistant",
+                "content": _tool_plan("request_user_input", {"question": "Pick a filename?"}),
+                "_tool_rounds_raw": [{
+                    "tool": "request_user_input",
+                    "args": {"question": "Pick a filename?"},
+                    "output": "1. alice_wonderland.py\n2. alice_story.py\nYour answer: alice_wonderland.py",
+                }],
+                "created_at": "2026-08-03 16:25:58",
+            },
+            {"role": "assistant", "content": "[ASK_MORE_INFO_ANSWER]alice_wonderland.py", "created_at": "2026-08-03 16:26:00"},
+            {"role": "user", "content": "[User supplement] alice_wonderland.py", "_internal": True, "created_at": "2026-08-03 16:26:01"},
+            {
+                "role": "assistant",
+                "content": _tool_plan("shell", {"command": "ren helloworld.py alice_wonderland.py"}),
+                "_tool_rounds_raw": [{
+                    "tool": "shell",
+                    "args": {"command": "ren helloworld.py alice_wonderland.py"},
+                    "output": "",
+                }],
+                "created_at": "2026-08-03 16:26:01",
+            },
+        ]
+
+        turn = _build_structured_turns(agent)[0]
+        rounds = turn["rounds"]
+        self.assertEqual(len(rounds), 3)
+        self.assertIn("Ask: Pick a filename?", rounds[0]["tools"])
+        self.assertEqual(rounds[1]["selection"], "alice_wonderland.py")
+        self.assertIn("Ran ren helloworld.py alice_wonderland.py", rounds[2]["tools"])
+
     def test_falls_back_to_raw_answer_when_clean_content_is_backslash_fragment(self):
         agent = _FakeAgent()
         agent.conversation_history = [

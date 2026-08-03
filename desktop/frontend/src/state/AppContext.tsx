@@ -2375,6 +2375,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
           appendThinking(String(data.text ?? ""), eventKey);
           break;
         }
+        case "request_user_input_answer": {
+          const selectionData = event.data as { answer?: string };
+          const answer = String(selectionData.answer ?? "").trim();
+          if (!answer || !eventKey) break;
+          // Keep the live transcript's choice as its own visual round. This
+          // matches the persisted-history ``ask-selection`` row instead of
+          // appending a plain line to the tool-output block.
+          setTurnsByChat((prev) => {
+            const turns = prev[eventKey];
+            if (!turns || turns.length === 0) return prev;
+            const next = [...turns];
+            const turn = next[next.length - 1];
+            const now = Date.now();
+            const previousRounds = [...turn.rounds];
+            const previous = previousRounds[previousRounds.length - 1];
+            // The Ask model pass is complete once the user has selected an
+            // answer.  Freeze it before adding the selection row so its
+            // tool activity no longer appears to be spinning.
+            if (previous && previous.waitEndedAt === null) {
+              previousRounds[previousRounds.length - 1] = {
+                ...previous,
+                waitEndedAt: now,
+              };
+            }
+            next[next.length - 1] = {
+              ...turn,
+              rounds: [...previousRounds, {
+                id: nextIdRef.current++,
+                waitStartedAt: now,
+                waitEndedAt: now,
+                segments: [],
+                selection: answer,
+              }],
+            };
+            return { ...prev, [eventKey]: next };
+          });
+          break;
+        }
         case "confirm": {
           const req = event.data as ConfirmRequest;
           const ownerChat = String(req.chatId || chatId || "");

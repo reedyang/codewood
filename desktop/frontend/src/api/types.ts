@@ -282,6 +282,7 @@ export type ServerEvent =
   | { event: "thinking"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
   | { event: "request_user_input"; data: AskMoreInfoRequest }
+  | { event: "request_user_input_answer"; data: { answer: string; chatId?: string; workspaceId?: string } }
   | { event: "file_changes"; data: FileChangeSummary & { chatId?: string; workspaceId?: string; turnIndex?: number } }
   | { event: "sub_agent_start"; data: { sessionId: string; name: string; topic: string; description: string; prompt: string } }
   | { event: "sub_agent_assistant"; data: { sessionId: string; text: string } }
@@ -308,6 +309,8 @@ export interface TurnRound {
   waitStartedAt: number;
   waitEndedAt: number | null;
   segments: TurnSegment[];
+  /** A request_user_input choice, shown with the same left-side style as history. */
+  selection?: string;
   /** Accumulated model reasoning/thinking text for this round. */
   thinkingText?: string;
   /** When model reasoning/thinking started for this round. */
