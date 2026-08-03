@@ -1039,6 +1039,22 @@ class SessionMemoryService:
             pass
         return False
 
+    def _is_conversation_interrupted_history_message(self, item: Dict[str, Any]) -> bool:
+        """True for internal ``[CONVERSATION_INTERRUPTED]`` bookkeeping markers.
+
+        The next user message must not carry any info about a previously
+        cancelled task, so interrupted markers are excluded from the model
+        context (they stay in history for the TUI banner replay).
+        """
+        try:
+            parse_interrupted = getattr(self.agent, "_parse_conversation_interrupted_history_content", None)
+            if callable(parse_interrupted):
+                raw = str(item.get("content") or "")
+                return parse_interrupted(raw) is not None
+        except Exception:
+            pass
+        return False
+
     def _context_eligible_history(self) -> List[Dict[str, Any]]:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
 
@@ -1055,6 +1071,8 @@ class SessionMemoryService:
                 if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
                     continue
                 if self._is_model_call_error_history_message(item):
+                    continue
+                if self._is_conversation_interrupted_history_message(item):
                     continue
                 out.append(item)
             return out
@@ -1084,6 +1102,8 @@ class SessionMemoryService:
             if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
                 continue
             if self._is_model_call_error_history_message(item):
+                continue
+            if self._is_conversation_interrupted_history_message(item):
                 continue
             out.append((idx, item))
         return out

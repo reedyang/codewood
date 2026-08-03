@@ -4425,7 +4425,59 @@ class Agent:
             reason=reason,
             detail=detail,
         )
-        self._append_chat_message("assistant", assistant_content)
+        # The interrupted marker is bookkeeping for the TUI banner replay and
+        # must never enter the model context: the next user message carries no
+        # info about the previously cancelled task.
+        self._append_chat_message(
+            "assistant",
+            assistant_content,
+            exclude_from_model_context=True,
+        )
+
+    def _retrofit_last_shell_tool_result_aborted(self) -> bool:
+        """Mark the last recorded shell tool result as user-aborted in history.
+
+        Called when a task interrupt is consumed at a round boundary right
+        after a failed shell round: the persisted ``role:tool`` message must
+        reflect the user stop instead of a plain command failure, so the
+        ``aborted_by_user`` flag is set and the ``error`` field is rewritten
+        to "Command aborted by user" in place (the original output is left
+        untouched). Only the most recent history message is touched (the
+        interrupted marker is recorded afterwards), so a stop that lands
+        mid-stream with no trailing tool result is a safe no-op.
+        """
+        try:
+            hist = list(getattr(self, "conversation_history", None) or [])
+            if not hist:
+                return False
+            msg = hist[-1]
+            if not isinstance(msg, dict):
+                return False
+            if str(msg.get("role") or "").strip().lower() != "tool":
+                return False
+            if str(msg.get("name") or "").strip().lower() != "shell":
+                return False
+            raw = str(msg.get("content") or "")
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                payload = None
+            if not isinstance(payload, dict):
+                return False
+            if bool(payload.get("success", True)):
+                return False
+            if bool(payload.get("aborted_by_user", False)):
+                return False
+            payload["aborted_by_user"] = True
+            payload["error"] = "Command aborted by user"
+            msg["content"] = json.dumps(payload, ensure_ascii=False)
+            try:
+                self._sync_active_chat_messages()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
 
     def _build_model_call_error_history_content(
         self,
@@ -5767,6 +5819,12 @@ class Agent:
             except Exception:
                 is_running = False
             if not is_running:
+                # The subprocess already exited but its tool call is still in
+                # flight (it remains registered until the shell round ends).
+                # A user interrupt landing in that window still aborts the
+                # round, so record the process as aborted too — otherwise the
+                # recorded tool result looks like a plain command failure.
+                self._mark_process_aborted(p)
                 continue
             requested_any = True
             terminated = bool(self._terminate_single_process_tree(p))

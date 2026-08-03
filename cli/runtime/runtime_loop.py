@@ -5269,6 +5269,25 @@ def run_agent_loop(agent: Any):
                     self._last_cancelled_task = str(original_user_task or "").strip()
                 except Exception:
                     self._last_cancelled_task = str(getattr(self, "_last_cancelled_task", "") or "")
+                # The interrupt was consumed at a round boundary, possibly right
+                # after a failed shell round whose tool result was already
+                # persisted. Retrofit that trailing result BEFORE recording the
+                # interrupted marker (which would otherwise become the last
+                # history message), so the transcript records the user stop
+                # (aborted_by_user=true) instead of a plain command failure.
+                try:
+                    if (
+                        str(last_tool_name or "").strip().lower() == "shell"
+                        and isinstance(last_tool_result, dict)
+                        and not bool(last_tool_result.get("aborted_by_user", False))
+                        and not bool(last_tool_result.get("success", True))
+                    ):
+                        last_tool_result["aborted_by_user"] = True
+                        retrofit = getattr(self, "_retrofit_last_shell_tool_result_aborted", None)
+                        if callable(retrofit):
+                            retrofit()
+                except Exception:
+                    pass
                 try:
                     self._record_conversation_interrupted_history(
                         interrupted_kind="task",

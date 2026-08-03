@@ -910,6 +910,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
         self.assertFalse(result.get("success", True))
         self.assertTrue(bool(result.get("aborted_by_user", False)))
+        self.assertEqual(result.get("error"), "Command aborted by user")
         self.assertEqual(result.get("display_rendered_lines"), 4)
         self.assertIn("line1\ncommand aborted by user\n", str(result.get("output") or ""))
 

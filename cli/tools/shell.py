@@ -2548,6 +2548,12 @@ def action_shell_command(
                 "message": no_match_message,
                 **base_out,
             }
+        if aborted_by_user:
+            return {
+                "success": False,
+                "error": "Command aborted by user",
+                **base_out,
+            }
         return {
             "success": False,
             "error": rg_error or f"Command execution failed, exit code: {return_code}",

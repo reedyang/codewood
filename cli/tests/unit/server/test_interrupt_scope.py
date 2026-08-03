@@ -117,6 +117,21 @@ class ChatInterruptScopeTests(unittest.TestCase):
             "only chat-b's own subprocess may be terminated",
         )
 
+    def test_interrupt_marks_already_exited_inflight_process_aborted(self):
+        agent = _agent()
+        # The subprocess exited on its own (exit code 1) but its shell tool
+        # call is still in flight: it stays registered until the round ends.
+        proc = types.SimpleNamespace(poll=lambda: 1, pid=3333)
+        agent._register_interruptible_process(proc, "ws-1::chat-a")
+
+        agent._request_chat_interrupt("chat-a", "ws-1")
+
+        self.assertTrue(
+            agent._consume_process_aborted(proc),
+            "an interrupt landing while the tool call is still in flight must "
+            "record the result as user-aborted, not a plain command failure",
+        )
+
     def test_serveapp_interrupt_with_chat_id_does_not_set_global_flag(self):
         agent = _agent()
         app = _app(agent)
