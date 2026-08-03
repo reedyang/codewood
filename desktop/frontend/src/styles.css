@@ -264,8 +264,11 @@ html[data-has-bg] .composer {
 /* Right-side panels keep their own lighter glass layer so they stay distinct
    from the message panel, and a soft left-edge shadow separates the two areas
    like the native split-pane reference. */
-html[data-has-bg] .plan-panel,
 html[data-has-bg] .right-panel {
+  background: transparent !important;
+  box-shadow: -10px 0 18px -16px rgba(0, 0, 0, 0.45);
+}
+html[data-has-bg] .plan-panel {
   background: var(--bg-right-panel) !important;
   box-shadow: -10px 0 18px -16px rgba(0, 0, 0, 0.45);
 }
