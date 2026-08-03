@@ -46,6 +46,9 @@ from ..config.app_info import get_app_slug_snake
 from ..services.session_memory_service import _assistant_display_view
 
 _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
+_WORKSPACE_ROUTE_LOGGER = logging.getLogger(
+    f"{get_app_slug_snake()}.workspace_routing"
+)
 
 # Matches CSI / SGR and most other ANSI escape sequences.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
@@ -1401,10 +1404,34 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
     from ..managers.chat_state_manager import _chat_mode_is_plan
 
     # Use the override if provided; otherwise fall back to agent global.
-    _ws_id = str(workspace_id or "").strip() or str(getattr(agent, "workspace_id", "") or "")
+    # A background runtime keeps its own persistence context after the user
+    # focuses another workspace.  In that case the chat entries below resolve
+    # to the runtime workspace, while these agent globals already describe the
+    # newly focused workspace.  Resolve all workspace metadata from the same
+    # explicit id so one SSE snapshot can never combine A's chats with B's
+    # name/root (chat ids are only unique *within* a workspace).
+    requested_ws_id = str(workspace_id or "").strip()
+    _ws_id = requested_ws_id or str(getattr(agent, "workspace_id", "") or "")
     _ws_name = str(getattr(agent, "workspace_name", "") or "")
     _ws_root = str(getattr(agent, "workspace_root", "") or "")
     _ws_work_dir = str(getattr(agent, "work_directory", "") or "")
+    if requested_ws_id:
+        try:
+            raw_workspaces = getattr(agent, "_workspaces_state", {}).get("workspaces", {})
+            entry = raw_workspaces.get(requested_ws_id) if isinstance(raw_workspaces, dict) else None
+            if isinstance(entry, dict):
+                _ws_name = str(entry.get("name") or _ws_name)
+                try:
+                    _ws_root = str(agent._workspace_root_path(entry))
+                except Exception:
+                    _ws_root = str(entry.get("root") or _ws_root)
+                try:
+                    current_dir = agent._workspace_current_dir_path(entry)
+                    _ws_work_dir = str(current_dir or _ws_root)
+                except Exception:
+                    _ws_work_dir = _ws_root
+        except Exception:
+            pass
 
     default_ws_id = ""
     try:
@@ -1526,6 +1553,17 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
         # capped when serialized (see ``_truncate_file_changes``).
     except Exception:
         pass
+    if requested_ws_id and requested_ws_id != str(getattr(agent, "workspace_id", "") or ""):
+        _WORKSPACE_ROUTE_LOGGER.info(
+            "background-state snapshot_ws=%s snapshot_name=%r global_ws=%s "
+            "global_name=%r active_chat=%s chats=%s",
+            _ws_id,
+            _ws_name,
+            str(getattr(agent, "workspace_id", "") or ""),
+            str(getattr(agent, "workspace_name", "") or ""),
+            active_chat_id,
+            [(str(c.get("id") or ""), str(c.get("name") or "")) for c in chats],
+        )
 
     model_available: List[str] = []
     # The displayed "current model" must follow the focused chat, not the shared
@@ -1959,6 +1997,30 @@ class ServeApp:
             "workspaceId": self._active_chat_workspace_id(),
         }
         payload.update(extra)
+        # A state payload must be self-consistent with its SSE envelope.  The
+        # renderer uses the envelope to decide which workspace cache to update;
+        # if a background loop ever supplies A's chat list under B's envelope,
+        # same-id chats (chat-1, chat-2, ...) visibly jump between workspaces.
+        # Keep this warning in the normal app log so a reproduction includes
+        # both ids and the affected list, without logging streamed content.
+        snapshot = payload.get("state")
+        if isinstance(snapshot, dict):
+            snapshot_ws_id = str(
+                (snapshot.get("workspace") or {}).get("id") or ""
+            )
+            route_ws_id = str(payload.get("workspaceId") or "")
+            if snapshot_ws_id and route_ws_id and snapshot_ws_id != route_ws_id:
+                _WORKSPACE_ROUTE_LOGGER.warning(
+                    "state-route mismatch envelope_ws=%s snapshot_ws=%s chat=%s chats=%s",
+                    route_ws_id,
+                    snapshot_ws_id,
+                    cid,
+                    [
+                        (str(item.get("id") or ""), str(item.get("name") or ""))
+                        for item in snapshot.get("chats", [])
+                        if isinstance(item, dict)
+                    ],
+                )
         return payload
 
     def _runtime_for_thread(self) -> Optional["_ChatRuntime"]:
@@ -2022,6 +2084,47 @@ class ServeApp:
         rt = self._runtime_for_thread()
         return _build_state_inner(self.agent,
             workspace_id=rt.workspace_id if rt is not None else "")
+
+    @contextlib.contextmanager
+    def _runtime_persistence_scope(self, rt: "_ChatRuntime"):
+        """Bind an HTTP thread to *rt* before persisting its live session.
+
+        Workspace changes are handled by a different HTTP worker from the
+        chat's loop.  Its thread-local session can therefore still point at a
+        chat from the workspace just left, while the agent globals already
+        point at the newly selected workspace.  Syncing in that mixed state
+        writes a same-id chat into the wrong index.  This scope qualifies both
+        the session and the persistence override from the runtime's captured
+        workspace, and restores the request thread exactly afterwards.
+        """
+        agent = self.agent
+        tls = getattr(agent, "_session_tls", None)
+        previous_chat_key = str(getattr(tls, "chat_id", "") or "") if tls else ""
+        previous_session = getattr(tls, "session", None) if tls else None
+        get_ctx = getattr(agent, "_persist_workspace_ctx", None)
+        previous_ctx = get_ctx() if callable(get_ctx) else None
+        set_ctx = getattr(agent, "_set_persist_workspace_ctx", None)
+        try:
+            agent._bind_session(rt.chat_id, rt.workspace_id)
+            if callable(set_ctx) and rt.workspace_id:
+                cfg = rt.workspace_config_dir
+                set_ctx(
+                    {
+                        "workspace_id": rt.workspace_id,
+                        "provider": (
+                            lambda wsid, _cfg=cfg: self._persist_ctx_for_workspace(
+                                wsid, _cfg
+                            )
+                        ),
+                    }
+                )
+            yield
+        finally:
+            if callable(set_ctx):
+                set_ctx(previous_ctx)
+            if tls is not None:
+                tls.chat_id = previous_chat_key
+                tls.session = previous_session
 
     def _chat_is_busy_key(self, key: str) -> bool:
         """True iff the runtime identified by a workspace-qualified key is busy.
@@ -3275,6 +3378,13 @@ class ServeApp:
         if not cid and not wsid:
             return False
         agent = self.agent
+        _WORKSPACE_ROUTE_LOGGER.info(
+            "select-chat request target_ws=%s target_chat=%s current_ws=%s current_chat=%s",
+            wsid,
+            cid,
+            str(getattr(agent, "workspace_id", "") or ""),
+            str(getattr(agent, "active_chat_id", "") or ""),
+        )
         # Ask the project-context indexer to yield the GIL so this HTTP
         # handler can acquire it promptly (cooperative yield).
         try:
@@ -3286,19 +3396,25 @@ class ServeApp:
         try:
             if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
                 try:
-                    runner = getattr(agent, "_active_runtime_chat_ids", None)
-                    running_ids = (
-                        [str(x) for x in (runner() or []) if str(x)]
-                        if callable(runner)
-                        else []
-                    )
-                    if running_ids:
-                        sync = getattr(agent, "_sync_active_chat_messages", None)
-                        if callable(sync):
-                            sync()
-                        save = getattr(agent, "_save_chat_state", None)
-                        if callable(save):
-                            save()
+                    # Do not call sync/save in this HTTP request's ambient
+                    # session.  It may retain a background chat id while the
+                    # agent globals already identify another workspace, which
+                    # writes a same-id chat into that other workspace's index.
+                    # Persist every running runtime through its captured
+                    # workspace-qualified scope instead.
+                    with self._runtimes_lock:
+                        running = [
+                            rt for rt in self._runtimes.values()
+                            if rt.busy.is_set()
+                        ]
+                    for runtime in running:
+                        with self._runtime_persistence_scope(runtime):
+                            sync = getattr(agent, "_sync_active_chat_messages", None)
+                            if callable(sync):
+                                sync()
+                            save = getattr(agent, "_save_chat_state", None)
+                            if callable(save):
+                                save()
                 except Exception:
                     pass
 
@@ -3307,7 +3423,27 @@ class ServeApp:
                 )
 
                 with contextlib.redirect_stdout(io.StringIO()):
-                    workspace_switch_command(agent, wsid)
+                    # The GUI is switching to a known chat (or intentionally
+                    # to an empty workspace draft).  Do not manufacture a
+                    # default ``chat-1`` while loading the target workspace:
+                    # ids repeat per workspace, and that transient default
+                    # becomes a persistent stray chat before the requested
+                    # chat is activated.
+                    workspace_switch_command(
+                        agent, wsid, create_default_chat=False
+                    )
+
+                _WORKSPACE_ROUTE_LOGGER.info(
+                    "select-chat switched target_ws=%s actual_ws=%s active_chat=%s chats=%s",
+                    wsid,
+                    str(getattr(agent, "workspace_id", "") or ""),
+                    str(getattr(agent, "active_chat_id", "") or ""),
+                    [
+                        (str(entry.get("id") or ""), str(entry.get("name") or ""))
+                        for entry in (getattr(agent, "_chat_entries", lambda: [])() or [])
+                        if isinstance(entry, dict)
+                    ],
+                )
 
                 with self._ws_persist_lock:
                     self._ws_persist_ctx.clear()
@@ -3316,7 +3452,21 @@ class ServeApp:
                     target = agent._resolve_chat_selector(cid)
                     rid = str(target.get("id") or "") if target else ""
                 if not rid:
+                    _WORKSPACE_ROUTE_LOGGER.warning(
+                        "select-chat missing target target_ws=%s target_chat=%s actual_ws=%s",
+                        wsid,
+                        cid,
+                        str(getattr(agent, "workspace_id", "") or ""),
+                    )
                     return False
+                _WORKSPACE_ROUTE_LOGGER.info(
+                    "select-chat resolved target_ws=%s requested_chat=%s resolved_chat=%s name=%r busy=%s",
+                    wsid,
+                    cid,
+                    rid,
+                    str((target or {}).get("name") or ""),
+                    self._chat_is_busy(rid),
+                )
                 track = getattr(self, "_track_focus", None)
                 if callable(track):
                     track(rid, wsid)
@@ -7672,6 +7822,27 @@ def _make_handler(app: ServeApp):
             body = self._read_json_body(max_body)
             if body is None:
                 self._send_json(400, {"error": "invalid body"})
+                return
+            if path == "/frontend-trace":
+                # Renderer-side workspace routing diagnostics.  Keep this
+                # endpoint authenticated and deliberately metadata-only so a
+                # reproduction can be understood from codewood.log without
+                # recording user prompts or assistant/tool output.
+                phase = str(body.get("phase") or "")[:80]
+                raw_data = body.get("data")
+                data = raw_data if isinstance(raw_data, dict) else {}
+                try:
+                    from ..config.app_info import get_app_logger_root
+                    from ..core.logging.app_logging import get_logger
+
+                    get_logger(f"{get_app_logger_root()}.workspace_routing").info(
+                        "frontend-trace phase=%s data=%s",
+                        phase,
+                        json.dumps(data, ensure_ascii=False, default=str)[:4000],
+                    )
+                except Exception:
+                    pass
+                self._send_json(200, {"ok": True})
                 return
             if path == "/input":
                 text = str(body.get("text") or "")

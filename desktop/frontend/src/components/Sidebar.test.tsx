@@ -84,6 +84,9 @@ describe("Sidebar workspace routing", () => {
 
     render(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
 
+    // The backend still reports ws-1 while the optimistic UI focus is ws-2.
+    // Its live list must not replace ws-2's cached rows during that handoff.
+    expect(screen.queryByRole("button", { name: "New Chat" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Existing Chat" }));
 
     expect(switchToChat).toHaveBeenCalledWith("chat-3", "ws-2");

@@ -223,7 +223,9 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
     )
 
 
-def workspace_switch_command(agent: Any, selector: str) -> str:
+def workspace_switch_command(
+    agent: Any, selector: str, *, create_default_chat: bool = True
+) -> str:
     default_workspace_id = _default_workspace_id()
     entry = agent._workspace_entry_by_selector(selector)
     if not entry:
@@ -241,7 +243,7 @@ def workspace_switch_command(agent: Any, selector: str) -> str:
     )
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
-    agent._refresh_workspace_runtime()
+    agent._refresh_workspace_runtime(create_default_chat=create_default_chat)
     # Globals now point at the target workspace, but the session still carries
     # the previous chat's id/history (its active chat is bound later by
     # ``_activate_chat``). Persist only the position metadata here; syncing

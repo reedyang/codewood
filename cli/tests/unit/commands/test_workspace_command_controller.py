@@ -10,6 +10,7 @@ class _FakeWorkspaceSwitchAgent:
         self.workspace_name = "Workspace A"
         self.work_directory = Path("D:/ws/a")
         self.refresh_calls = 0
+        self.refresh_create_default_chat = []
         self.saved_workspace_ids = []
         # Records (workspace_id, sync_messages) for each persist call so tests
         # can assert the post-apply save is metadata-only.
@@ -34,8 +35,9 @@ class _FakeWorkspaceSwitchAgent:
         self.workspace_name = str(entry.get("name") or self.workspace_name)
         self.work_directory = Path(str(entry.get("current_dir") or self.work_directory))
 
-    def _refresh_workspace_runtime(self):
+    def _refresh_workspace_runtime(self, create_default_chat: bool = True):
         self.refresh_calls += 1
+        self.refresh_create_default_chat.append(bool(create_default_chat))
 
 
 class WorkspaceCommandControllerTests(unittest.TestCase):
@@ -44,6 +46,7 @@ class WorkspaceCommandControllerTests(unittest.TestCase):
         msg = workspace_switch_command(agent, "ws-b")
         self.assertIn("✅ Switched to workspace: Workspace B", msg)
         self.assertEqual(agent.refresh_calls, 1)
+        self.assertEqual(agent.refresh_create_default_chat, [True])
         self.assertEqual(agent.saved_workspace_ids, ["ws-a", "ws-b"])
         # Pre-apply (source workspace) flushes live messages; post-apply (target
         # workspace) must persist position metadata only, because the session
@@ -64,6 +67,11 @@ class WorkspaceCommandControllerTests(unittest.TestCase):
         self.assertEqual(msg, "ℹ️ Already in workspace: Workspace A")
         self.assertEqual(agent.saved_workspace_ids, [])
         self.assertEqual(agent.refresh_calls, 0)
+
+    def test_workspace_switch_can_skip_default_chat_creation(self):
+        agent = _FakeWorkspaceSwitchAgent()
+        workspace_switch_command(agent, "ws-b", create_default_chat=False)
+        self.assertEqual(agent.refresh_create_default_chat, [False])
 
 
 if __name__ == "__main__":

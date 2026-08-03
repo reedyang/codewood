@@ -414,6 +414,11 @@ function StreamingStateMergeProbe() {
   );
 }
 
+function StateChatsProbe() {
+  const { state } = useApp();
+  return <pre data-testid="state-chats">{JSON.stringify(state?.chats)}</pre>;
+}
+
 describe("AppContext thinking rounds", () => {
   beforeEach(() => {
     apiMock.reset();
@@ -1226,6 +1231,74 @@ describe("AppContext thinking rounds", () => {
 
     await waitFor(() => {
       expect(apiMock.getChatHistory).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("does not merge a background workspace's mismatched idle snapshot by bare chat id", async () => {
+    apiMock.getState.mockResolvedValue(buildState({
+      workspace: {
+        id: "ws-2",
+        name: "Workspace B",
+        root: "D:/workspace-b",
+        workDirectory: "D:/workspace-b",
+      },
+      chats: [{
+        index: 0,
+        id: "chat-1",
+        name: "Chat B",
+        messageCount: 1,
+        active: true,
+        running: false,
+        archived: false,
+        planMode: false,
+        model: "provider/model",
+      }],
+    }));
+    render(
+      <AppProvider>
+        <StateChatsProbe />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByTestId("state-chats").textContent).toContain("Chat B");
+    });
+
+    // The envelope correctly says this is workspace A, but a racy backend
+    // snapshot has B's workspace metadata and A's chat record.  Matching on
+    // only ``chat-1`` would rename the B entry to "Chat A".
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            workspace: {
+              id: "ws-2",
+              name: "Workspace B",
+              root: "D:/workspace-b",
+              workDirectory: "D:/workspace-b",
+            },
+            chats: [{
+              index: 0,
+              id: "chat-1",
+              name: "Chat A",
+              messageCount: 2,
+              active: true,
+              running: true,
+              archived: false,
+              planMode: false,
+              model: "provider/model",
+            }],
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("state-chats").textContent).toContain("Chat B");
+      expect(screen.getByTestId("state-chats").textContent).not.toContain("Chat A");
     });
   });
 

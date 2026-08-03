@@ -152,7 +152,11 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     return map;
   }, [workspaces]);
 
-  // Chats per workspace (active workspace sourced from live state).
+  // Chats per workspace.  The live ``activeChats`` list may only replace the
+  // cache once the backend confirms it is describing the workspace the user
+  // selected.  During a cross-workspace switch, ``activeWsId`` is optimistic
+  // while ``state`` can still be the workspace just left; overriding B's cache
+  // with that A list is what made same-id chats flash under B.
   const chatsByWorkspace = useMemo(() => {
     const map: Record<string, ChatRow[]> = {};
     for (const [wsId, list] of Object.entries(workspaceChats)) {
@@ -162,7 +166,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
         return bTime - aTime;
       });
     }
-    if (activeWsId) {
+    if (activeWsId && activeWsId === backendWsId) {
       map[activeWsId] = [...activeChats].sort((a, b) => {
         const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
         const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
@@ -170,7 +174,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
       });
     }
     return map;
-  }, [activeChats, workspaceChats, activeWsId]);
+  }, [activeChats, workspaceChats, activeWsId, backendWsId]);
   // Freeze idle-chat relative timestamps until the chat data itself changes,
   // so only the actively running chat shows a live second-by-second timer.
   const relativeNow = useMemo(
