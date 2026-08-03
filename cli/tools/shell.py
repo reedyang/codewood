@@ -4031,6 +4031,32 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
     _skip_tokens = _skip_tokens | {t.upper() for t in _skip_tokens}
     _skip_cmd_keywords = _skip_cmd_keywords | {t.upper() for t in _skip_cmd_keywords}
 
+    # Unwrap common Windows wrappers (``powershell -Command "<payload>"``,
+    # ``powershell -EncodedCommand <base64>``, ``cmd /c "<payload>"``) so
+    # rename / move / create / delete commands inside the payload are
+    # attributed.  Mirrors the delete-target parser's unwrapping.
+    ps_match = _WIN_POWERSHELL_COMMAND_RE.match(command.strip())
+    if ps_match:
+        payload_raw = ps_match.group("payload").strip()
+        payload, _ = _strip_powershell_payload_quotes(payload_raw)
+        if payload:
+            command = payload
+    cmd_c_match = _WIN_CMD_C_WRAPPER_RE.match(command.strip())
+    if cmd_c_match:
+        payload = cmd_c_match.group("payload").strip()
+        if len(payload) >= 2 and payload[0] == payload[-1] and payload[0] in ('"', "'"):
+            payload = payload[1:-1]
+        if payload:
+            command = payload
+    enc_match = _WIN_POWERSHELL_ENCODED_RE.search(command)
+    if enc_match:
+        try:
+            decoded = base64.b64decode(enc_match.group(1)).decode("utf-16-le")
+        except Exception:
+            decoded = ""
+        if decoded.strip():
+            command = decoded.strip()
+
     paths: Set[str] = set()
     try:
         import shlex
@@ -4105,7 +4131,7 @@ def _extract_command_file_paths(command: str, cwd: Path) -> Set[str]:
         _flag_set = _INLINE_CODE_INTERPRETERS.get(_first_base)
         if _flag_set is not None:
             for j in range(1, len(tokens) - 1):
-                if tokens[j] in _flag_set:
+                if tokens[j].lower() in _flag_set:
                     code_str = tokens[j + 1]
                     _add_paths_from_inline_code(code_str, cwd, paths)
                     break
