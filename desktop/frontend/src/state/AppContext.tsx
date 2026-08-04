@@ -2463,6 +2463,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 waitSeconds: Number(d.waitSeconds) || 0,
                 remainingSeconds: Number(d.remainingSeconds) || 0,
                 modelName: String(d.modelName || ""),
+                message: String(d.message || ""),
                 updatedAt: Date.now(),
               },
             };

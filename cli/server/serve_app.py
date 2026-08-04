@@ -7528,6 +7528,7 @@ class ServeApp:
                     waitSeconds=float(kw.get("wait_seconds") or 0),
                     remainingSeconds=float(kw.get("remaining_seconds") or 0),
                     modelName=str(kw.get("model_name") or ""),
+                    message=str(kw.get("message") or ""),
                     done=bool(kw.get("done")),
                 ),
             )

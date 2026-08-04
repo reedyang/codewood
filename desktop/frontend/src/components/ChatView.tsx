@@ -1886,7 +1886,11 @@ export function ChatView() {
                 <span className="retry-countdown-icon">⏳</span>
                 <span className="retry-countdown-text">
                   {t("retry.countdown", {
-                    code: String(retryCountdown.code),
+                    label:
+                      (retryCountdown.message || "").trim() ||
+                      t("retry.httpError", {
+                        code: String(retryCountdown.code),
+                      }),
                     n: String(retryCountdown.retryNumber),
                     seconds: String(Math.max(1, Math.ceil(retryCountdown.remainingSeconds))),
                   })}

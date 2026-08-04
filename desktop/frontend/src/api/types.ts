@@ -328,6 +328,8 @@ export interface RetryCountdownEvent {
   /** Remaining seconds until the retry fires (updated every second). */
   remainingSeconds: number;
   modelName?: string;
+  /** Human-readable message from the API error body (``error.message``). */
+  message?: string;
   /** True on the final tick right before the retry attempt fires. */
   done?: boolean;
 }
@@ -339,6 +341,8 @@ export interface RetryCountdownState {
   waitSeconds: number;
   remainingSeconds: number;
   modelName?: string;
+  /** Human-readable message from the API error body (``error.message``). */
+  message?: string;
   /** Client-side arrival time of the last tick (for display freshness). */
   updatedAt?: number;
 }

@@ -2943,7 +2943,10 @@ def _tui_retry_countdown_callback(**kwargs: Any) -> None:
         remaining_s = int(remaining)
         if remaining > remaining_s:
             remaining_s += 1
-        if code == 429:
+        message = str(kwargs.get("message") or "").strip()
+        if message:
+            label = message
+        elif code == 429:
             label = "429 Too Many Requests"
         elif code == 503:
             label = "503 Service Unavailable"

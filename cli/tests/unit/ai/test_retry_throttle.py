@@ -11,6 +11,7 @@ from cli.ai.ai_provider_clients import (
     _model_call_error_throttle_code,
     _retry_wait_seconds,
     _sleep_with_retry_countdown,
+    _throttle_error_message,
     set_retry_countdown_callback,
 )
 
@@ -28,6 +29,7 @@ def _throttle_attempt(code: int) -> dict:
     return {
         "label": "chat with-suffix",
         "error": f"{code} Client Error: boom for url: http://x",
+        "response_body": f'{{"error":{{"message":"rpm exhausted ({code})"}}}}',
     }
 
 
@@ -68,6 +70,34 @@ class ThrottleDetectionTests(unittest.TestCase):
         )
         self.assertIsNone(_model_call_error_throttle_code(err))
 
+    def test_throttle_error_message_extracted_from_response_body(self):
+        err = ModelCallError("failed", attempt_errors=[_throttle_attempt(429)])
+        self.assertEqual(_throttle_error_message(err, 429), "rpm exhausted (429)")
+
+    def test_throttle_error_message_falls_back_to_embedded_body_text(self):
+        err = ModelCallError(
+            "failed",
+            attempt_errors=[
+                {
+                    "label": "chat",
+                    "error": (
+                        "429 Client Error: Too Many Requests for url: http://x; "
+                        'response_body={"error":{"message":"quota exceeded"}}'
+                    ),
+                }
+            ],
+        )
+        self.assertEqual(_throttle_error_message(err, 429), "quota exceeded")
+
+    def test_throttle_error_message_empty_when_unparseable(self):
+        err = ModelCallError(
+            "failed",
+            attempt_errors=[
+                {"label": "chat", "error": "429 Client Error: Too Many Requests for url: http://x"}
+            ],
+        )
+        self.assertEqual(_throttle_error_message(err, 429), "")
+
 
 class CountdownSleepTests(unittest.TestCase):
     def tearDown(self) -> None:
@@ -77,13 +107,21 @@ class CountdownSleepTests(unittest.TestCase):
         ticks = []
         set_retry_countdown_callback(lambda **kw: ticks.append(dict(kw)))
         with patch("cli.ai.ai_provider_clients.time.sleep"):
-            _sleep_with_retry_countdown(3.0, retry_number=1, code=429, model_name="m")
+            _sleep_with_retry_countdown(
+                3.0,
+                retry_number=1,
+                code=429,
+                model_name="m",
+                message="rpm exhausted",
+            )
         remaining = [t["remaining_seconds"] for t in ticks]
         self.assertEqual(remaining, [3.0, 2.0, 1.0, 0.0])
         self.assertTrue(ticks[-1].get("done"))
         self.assertEqual(ticks[0]["code"], 429)
         self.assertEqual(ticks[0]["retry_number"], 1)
         self.assertEqual(ticks[0]["wait_seconds"], 3.0)
+        self.assertEqual(ticks[0]["message"], "rpm exhausted")
+        self.assertEqual(ticks[-1]["message"], "rpm exhausted")
 
 
 class InfiniteRetryLoopTests(unittest.TestCase):
@@ -110,6 +148,7 @@ class InfiniteRetryLoopTests(unittest.TestCase):
 
     def test_throttle_retries_with_backoff_then_succeeds(self):
         calls = {"n": 0}
+        sleeps = []
 
         def fake_call(**kwargs):
             calls["n"] += 1
@@ -126,12 +165,17 @@ class InfiniteRetryLoopTests(unittest.TestCase):
             side_effect=fake_call,
         ), patch(
             "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
-            side_effect=lambda wait, **kw: waits.append(wait),
+            side_effect=lambda wait, **kw: (waits.append(wait), sleeps.append(kw)),
         ):
             result = self._call({"api_key": "k", "base_url": "http://x", "api_mode": "chat"})
         self.assertEqual(result, "ok")
         self.assertEqual(calls["n"], 4)
         self.assertEqual(waits, [3, 4, 8])
+        for kw in sleeps:
+            self.assertEqual(kw["code"], 429)
+            self.assertEqual(kw["message"], "rpm exhausted (429)")
+        self.assertEqual(sleeps[0]["retry_number"], 1)
+        self.assertEqual(sleeps[2]["retry_number"], 3)
 
     def test_503_also_retries_forever(self):
         calls = {"n": 0}
