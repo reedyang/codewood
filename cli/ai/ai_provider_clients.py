@@ -1721,16 +1721,35 @@ def _extract_api_error_message(error: "OpenAIRequestError") -> str:
     """
     body = str(getattr(error, "response_body", "") or "")
     if body:
-        try:
-            parsed = json.loads(body)
-            if isinstance(parsed, dict):
-                err_obj = parsed.get("error")
-                if isinstance(err_obj, dict):
-                    msg = str(err_obj.get("message") or "")
-                    if msg.strip():
-                        return msg.strip()
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
+        msg = _parse_error_message_from_body(body)
+        if msg:
+            return msg
+    return ""
+
+
+def _parse_error_message_from_body(body: str) -> str:
+    """Extract ``error.message`` from an API JSON error body.
+
+    Handles both the common ``{"error":{"message":...}}`` shape and a plain
+    string ``error`` field. Returns ``""`` when the body is empty, not JSON,
+    or carries no usable message.
+    """
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    err_obj = parsed.get("error")
+    if isinstance(err_obj, dict):
+        msg = str(err_obj.get("message") or "").strip()
+        if msg:
+            return msg
+    if isinstance(err_obj, str) and err_obj.strip():
+        return err_obj.strip()
     return ""
 
 
@@ -1767,6 +1786,32 @@ def _model_call_error_throttle_code(error: "ModelCallError") -> Optional[int]:
 def _model_call_error_contains_throttle(error: "ModelCallError") -> bool:
     """Check whether any attempt in a ModelCallError was a 429 or 503."""
     return _model_call_error_throttle_code(error) is not None
+
+
+def _throttle_error_message(error: "ModelCallError", code: int) -> str:
+    """Extract the API-returned ``error.message`` for a throttle attempt.
+
+    The attempt trail stores the raw response body under ``response_body``
+    (added on the throttle path); older entries only embed it as
+    ``...; response_body={...}`` inside the ``error`` text, so both sources
+    are tried. Returns ``""`` when no usable message is available.
+    """
+    for attempt in (error.attempt_errors or []):
+        err_text = str(attempt.get("error") or "")
+        token = str(code)
+        if not (
+            f" {token} " in err_text
+            or err_text.startswith(f"{token} ")
+            or f"{token} Client Error" in err_text
+        ):
+            continue
+        body = str(attempt.get("response_body") or "").strip()
+        if not body and "response_body=" in err_text:
+            body = err_text.split("response_body=", 1)[1].strip()
+        msg = _parse_error_message_from_body(body)
+        if msg:
+            return msg
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1822,6 +1867,7 @@ def _sleep_with_retry_countdown(
     retry_number: int,
     code: int,
     model_name: str = "",
+    message: str = "",
 ) -> None:
     """Sleep *wait_seconds*, notifying the countdown hook every second."""
     remaining = float(wait_seconds)
@@ -1833,6 +1879,7 @@ def _sleep_with_retry_countdown(
             wait_seconds=float(wait_seconds),
             remaining_seconds=remaining,
             model_name=model_name,
+            message=message,
         )
         time.sleep(step)
         remaining -= step
@@ -1842,6 +1889,7 @@ def _sleep_with_retry_countdown(
         wait_seconds=float(wait_seconds),
         remaining_seconds=0.0,
         model_name=model_name,
+        message=message,
         done=True,
     )
 
@@ -2203,6 +2251,7 @@ def _call_openai_with_suffix_strategy(
                 "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
                 "url": primary_url,
                 "error": str(first_error),
+                "response_body": str(getattr(first_error, "response_body", "") or ""),
             }
         ]
         raise ModelCallError(str(first_error), attempt_errors=attempts) from first_error
@@ -2213,6 +2262,7 @@ def _call_openai_with_suffix_strategy(
                 "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
                 "url": primary_url,
                 "error": str(first_error) if first_error is not None else "",
+                "response_body": str(getattr(first_error, "response_body", "") or "") if first_error is not None else "",
             }
         ]
         if first_error is not None:
@@ -2513,6 +2563,7 @@ def _call_with_openai_compatible(
                         retry_number=retry_number,
                         code=throttle_code,
                         model_name=model_name,
+                        message=_throttle_error_message(e, throttle_code),
                     )
                     continue
                 last_error = e

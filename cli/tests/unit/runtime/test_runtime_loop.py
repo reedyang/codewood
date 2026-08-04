@@ -2802,13 +2802,30 @@ class _TestTuiRetryCountdown(unittest.TestCase):
         cb = self._install(agent)
         fake_out = self._FakeTtyStream()
         with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
-            cb(code=429, retry_number=1, wait_seconds=3, remaining_seconds=3, model_name="m", done=False)
-            cb(code=429, retry_number=1, wait_seconds=3, remaining_seconds=2, model_name="m", done=False)
+            cb(
+                code=429,
+                retry_number=1,
+                wait_seconds=3,
+                remaining_seconds=3,
+                model_name="m",
+                message="Rate limit reached for gpt-4o-mini",
+                done=False,
+            )
+            cb(
+                code=429,
+                retry_number=1,
+                wait_seconds=3,
+                remaining_seconds=2,
+                model_name="m",
+                message="Rate limit reached for gpt-4o-mini",
+                done=False,
+            )
             cb(done=True)
         self.assertEqual(len(stop_calls), 1)
         merged = "".join(fake_out.writes)
         self.assertIn("\r\x1b[2K", merged)
-        self.assertIn("⏳ 429 Too Many Requests — retry #1 in 3s", merged)
+        self.assertIn("⏳ Rate limit reached for gpt-4o-mini — retry #1 in 3s", merged)
+        self.assertNotIn("429 Too Many Requests", merged)
         self.assertTrue(merged.endswith("\r\x1b[2K"))
 
     def test_done_tick_does_not_stop_ticker_again(self):
@@ -2821,6 +2838,14 @@ class _TestTuiRetryCountdown(unittest.TestCase):
             cb(code=503, retry_number=2, wait_seconds=8, remaining_seconds=8, model_name="m", done=False)
         self.assertEqual(len(stop_calls), 1)
         self.assertIn("503 Service Unavailable", "".join(fake_out.writes))
+
+    def test_falls_back_to_status_label_without_message(self):
+        agent = self._FakeAgent()
+        cb = self._install(agent)
+        fake_out = self._FakeTtyStream()
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
+            cb(code=429, retry_number=1, wait_seconds=3, remaining_seconds=3, model_name="m", done=False)
+        self.assertIn("⏳ 429 Too Many Requests — retry #1 in 3s", "".join(fake_out.writes))
 
     def test_non_tty_stdout_stays_silent(self):
         agent = self._FakeAgent()
