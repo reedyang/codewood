@@ -547,7 +547,7 @@ def _should_retry_openai_alternate_url(error: Exception) -> bool:
             "unsupported",
         )
         return not any(marker in body for marker in semantic_markers)
-    if code in (401, 403, 407, 429):
+    if code in (401, 403, 407, 429, 503):
         return False
     return True
 
@@ -1734,20 +1734,116 @@ def _extract_api_error_message(error: "OpenAIRequestError") -> str:
     return ""
 
 
-def _is_rate_limit_error(error: Exception) -> bool:
-    """Check whether an error is a rate-limit (HTTP 429) response."""
+def _is_throttle_error(error: Exception) -> bool:
+    """Check whether an error is a retryable throttle response (429 or 503)."""
     if not isinstance(error, OpenAIRequestError):
         return False
-    return int(error.status_code or 0) == 429
+    return int(error.status_code or 0) in (429, 503)
 
 
-def _model_call_error_contains_429(error: "ModelCallError") -> bool:
-    """Check whether any attempt in a ModelCallError was a 429 rate-limit."""
+def _model_call_error_throttle_code(error: "ModelCallError") -> Optional[int]:
+    """Return 429 or 503 when an attempt was a retryable throttle response.
+
+    Mirrors the text-matching style of the removed ``_model_call_error_contains_429``:
+    ``requests`` formats HTTPError messages like
+    ``429 Client Error: Too Many Requests for url: ...`` (older versions) or
+    ``503 Server Error: Service Unavailable for url: ...`` (with spaces), so
+    each status token is matched with its surrounding spaces or a
+    ``<code> Client Error`` marker to avoid false positives inside URLs.
+    """
     for attempt in (error.attempt_errors or []):
         err_text = str(attempt.get("error") or "")
-        if " 429 " in err_text or err_text.startswith("429 ") or "429 Client Error" in err_text:
-            return True
-    return False
+        for code in (429, 503):
+            token = str(code)
+            if (
+                f" {token} " in err_text
+                or err_text.startswith(f"{token} ")
+                or f"{token} Client Error" in err_text
+            ):
+                return code
+    return None
+
+
+def _model_call_error_contains_throttle(error: "ModelCallError") -> bool:
+    """Check whether any attempt in a ModelCallError was a 429 or 503."""
+    return _model_call_error_throttle_code(error) is not None
+
+
+# ---------------------------------------------------------------------------
+# Retryable-throttle (HTTP 429 / 503) infinite retry with backoff.
+#
+# Wait sequence per retry number ``n`` (1-based): 3s, then 2^n seconds
+# (4, 8, 16, 32, ...), capped at 1 minute. The loop keeps retrying forever.
+# ---------------------------------------------------------------------------
+_RETRY_INITIAL_WAIT_SECONDS = 3.0
+_RETRY_MAX_WAIT_SECONDS = 60.0
+
+
+def _retry_wait_seconds(retry_number: int) -> float:
+    """Backoff wait before retry *retry_number* (1-based)."""
+    n = max(1, int(retry_number or 0))
+    if n == 1:
+        return _RETRY_INITIAL_WAIT_SECONDS
+    return min(float(2 ** n), _RETRY_MAX_WAIT_SECONDS)
+
+
+_RETRY_COUNTDOWN_CALLBACK: Optional[Callable[..., None]] = None
+_RETRY_COUNTDOWN_LOCK = threading.Lock()
+
+
+def set_retry_countdown_callback(callback: Optional[Callable[..., None]]) -> None:
+    """Register a hook invoked while a 429/503 retry wait is running.
+
+    The callback is called once per second with keyword arguments:
+    ``code`` (int), ``retry_number`` (int), ``wait_seconds`` (float),
+    ``remaining_seconds`` (float), ``model_name`` (str) and a final call
+    with ``done=True`` / ``remaining_seconds=0`` right before the retry
+    fires. The GUI wires this to SSE ``retry_countdown`` events; the TUI
+    renders an in-place ANSI countdown line.
+    """
+    global _RETRY_COUNTDOWN_CALLBACK
+    with _RETRY_COUNTDOWN_LOCK:
+        _RETRY_COUNTDOWN_CALLBACK = callback
+
+
+def _notify_retry_countdown(**kwargs: Any) -> None:
+    with _RETRY_COUNTDOWN_LOCK:
+        cb = _RETRY_COUNTDOWN_CALLBACK
+    if callable(cb):
+        try:
+            cb(**kwargs)
+        except Exception:
+            pass
+
+
+def _sleep_with_retry_countdown(
+    wait_seconds: float,
+    *,
+    retry_number: int,
+    code: int,
+    model_name: str = "",
+) -> None:
+    """Sleep *wait_seconds*, notifying the countdown hook every second."""
+    remaining = float(wait_seconds)
+    while remaining > 0:
+        step = min(1.0, remaining)
+        _notify_retry_countdown(
+            code=code,
+            retry_number=retry_number,
+            wait_seconds=float(wait_seconds),
+            remaining_seconds=remaining,
+            model_name=model_name,
+        )
+        time.sleep(step)
+        remaining -= step
+    _notify_retry_countdown(
+        code=code,
+        retry_number=retry_number,
+        wait_seconds=float(wait_seconds),
+        remaining_seconds=0.0,
+        model_name=model_name,
+        done=True,
+    )
 
 
 def fetch_openai_compatible_models(
@@ -2097,56 +2193,11 @@ def _call_openai_with_suffix_strategy(
             str(e),
         )
 
+    # Throttle responses (HTTP 429 / 503) skip alternate-URL probing and raise
+    # ModelCallError right away: the infinite backoff retry (3s, then 2^n
+    # capped at 60s) lives in ``call_openai_compatible_model`` so the wait
+    # sequence stays exactly 3, 4, 8, 16, ... without a nested 3s retry here.
     if first_error is not None and not _should_retry_openai_alternate_url(first_error):
-        if _is_rate_limit_error(first_error):
-            _OPENAI_ROUTE_LOG.warning(
-                "openai-route rate-limited model=%s api_kind=%s retry-after=3s url=%s",
-                model_name,
-                api_kind,
-                primary_url,
-            )
-            time.sleep(3)
-            try:
-                return _call_openai_once(
-                    model_name=model_name,
-                    api_kind=api_kind,
-                    url=primary_url,
-                    headers=headers,
-                    messages=messages,
-                    stream=stream,
-                    return_message=return_message,
-                    image_data=image_data,
-                    image_user_idx=image_user_idx,
-                    image_user_text=image_user_text,
-                    session_summary_mode=session_summary_mode,
-                    memory_query_expansion_mode=memory_query_expansion_mode,
-                    tool_schemas=tool_schemas,
-                    tool_choice=tool_choice,
-                    force_disable_thinking=force_disable_thinking,
-                    reasoning_effort=reasoning_effort,
-                    append_history=append_history,
-                )
-            except Exception as retry_error:
-                _OPENAI_ROUTE_LOG.warning(
-                    "openai-route retry-failed model=%s api_kind=%s url=%s error=%s",
-                    model_name,
-                    api_kind,
-                    primary_url,
-                    str(retry_error),
-                )
-                attempts: List[Dict[str, str]] = [
-                    {
-                        "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'} (1st)",
-                        "url": primary_url,
-                        "error": str(first_error),
-                    },
-                    {
-                        "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'} (retry after 3s)",
-                        "url": primary_url,
-                        "error": str(retry_error),
-                    },
-                ]
-                raise ModelCallError(str(retry_error), attempt_errors=attempts) from retry_error
         attempts: List[Dict[str, str]] = [
             {
                 "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
@@ -2413,92 +2464,80 @@ def _call_with_openai_compatible(
     last_error: Optional[Exception] = None
     aggregated_attempts: List[Dict[str, str]] = []
     for api_kind in api_kinds:
-        try:
-            _OPENAI_ROUTE_LOG.info(
-                "openai-route enter-kind model=%s api_kind=%s",
-                model_name,
-                api_kind,
-            )
-            return _call_openai_with_suffix_strategy(
-                model_name=model_name,
-                api_kind=api_kind,
-                base_url=str(base_url),
-                headers=headers,
-                messages=provider_messages,
-                stream=stream,
-                return_message=return_message,
-                image_data=image_data,
-                image_user_idx=image_user_idx,
-                image_user_text=image_user_text,
-                session_summary_mode=session_summary_mode,
-                memory_query_expansion_mode=memory_query_expansion_mode,
-                tool_schemas=tool_schemas,
-                tool_choice=tool_choice,
-                reasoning_effort=reasoning_effort,
-                thinking=thinking,
-                append_history=append_history,
-            )
-        except ModelCallError as e:
-            if _model_call_error_contains_429(e):
-                _OPENAI_ROUTE_LOG.warning(
-                    "openai-route rate-limited-outer model=%s api_kind=%s retry-after=3s",
+        # Throttle retries never exhaust: each 429/503 raises ModelCallError
+        # and the loop below backs off (3s, then 2^n capped at 60s) forever
+        # until the call succeeds or the user interrupts.
+        retry_number = 0
+        while True:
+            try:
+                _OPENAI_ROUTE_LOG.info(
+                    "openai-route enter-kind model=%s api_kind=%s retry_number=%s",
                     model_name,
                     api_kind,
+                    retry_number,
                 )
-                time.sleep(3)
-                try:
-                    return _call_openai_with_suffix_strategy(
-                        model_name=model_name,
-                        api_kind=api_kind,
-                        base_url=str(base_url),
-                        headers=headers,
-                        messages=provider_messages,
-                        stream=stream,
-                        return_message=return_message,
-                        image_data=image_data,
-                        image_user_idx=image_user_idx,
-                        image_user_text=image_user_text,
-                        session_summary_mode=session_summary_mode,
-                        memory_query_expansion_mode=memory_query_expansion_mode,
-                        tool_schemas=tool_schemas,
-                        tool_choice=tool_choice,
-                        reasoning_effort=reasoning_effort,
-                        thinking=thinking,
-                        append_history=append_history,
-                    )
-                except ModelCallError as retry_e:
-                    aggregated_attempts.extend(retry_e.attempt_errors)
+                return _call_openai_with_suffix_strategy(
+                    model_name=model_name,
+                    api_kind=api_kind,
+                    base_url=str(base_url),
+                    headers=headers,
+                    messages=provider_messages,
+                    stream=stream,
+                    return_message=return_message,
+                    image_data=image_data,
+                    image_user_idx=image_user_idx,
+                    image_user_text=image_user_text,
+                    session_summary_mode=session_summary_mode,
+                    memory_query_expansion_mode=memory_query_expansion_mode,
+                    tool_schemas=tool_schemas,
+                    tool_choice=tool_choice,
+                    reasoning_effort=reasoning_effort,
+                    thinking=thinking,
+                    append_history=append_history,
+                )
+            except ModelCallError as e:
+                throttle_code = _model_call_error_throttle_code(e)
+                if throttle_code is not None:
+                    retry_number += 1
+                    wait = _retry_wait_seconds(retry_number)
                     _OPENAI_ROUTE_LOG.warning(
-                        "openai-route kind-failed model=%s api_kind=%s error=%s",
+                        "openai-route throttled-retry model=%s api_kind=%s code=%s retry_number=%s wait=%.1fs",
                         model_name,
                         api_kind,
-                        str(retry_e),
+                        throttle_code,
+                        retry_number,
+                        wait,
                     )
-                    last_error = retry_e
+                    _sleep_with_retry_countdown(
+                        wait,
+                        retry_number=retry_number,
+                        code=throttle_code,
+                        model_name=model_name,
+                    )
                     continue
-            last_error = e
-            aggregated_attempts.extend(e.attempt_errors)
-            _OPENAI_ROUTE_LOG.warning(
-                "openai-route kind-failed model=%s api_kind=%s error=%s",
-                model_name,
-                api_kind,
-                str(e),
-            )
-            continue
-        except Exception as e:
-            last_error = e
-            aggregated_attempts.append({
-                "label": api_kind,
-                "url": str(base_url or ""),
-                "error": str(e),
-            })
-            _OPENAI_ROUTE_LOG.warning(
-                "openai-route kind-failed model=%s api_kind=%s error=%s",
-                model_name,
-                api_kind,
-                str(e),
-            )
-            continue
+                last_error = e
+                aggregated_attempts.extend(e.attempt_errors)
+                _OPENAI_ROUTE_LOG.warning(
+                    "openai-route kind-failed model=%s api_kind=%s error=%s",
+                    model_name,
+                    api_kind,
+                    str(e),
+                )
+                break
+            except Exception as e:
+                last_error = e
+                aggregated_attempts.append({
+                    "label": api_kind,
+                    "url": str(base_url or ""),
+                    "error": str(e),
+                })
+                _OPENAI_ROUTE_LOG.warning(
+                    "openai-route kind-failed model=%s api_kind=%s error=%s",
+                    model_name,
+                    api_kind,
+                    str(e),
+                )
+                break
 
     if last_error is not None:
         raise ModelCallError(str(last_error), attempt_errors=aggregated_attempts) from last_error

@@ -1949,6 +1949,34 @@ body.resizing-x .browser-frame {
   visibility: visible;
 }
 
+/* 429/503 retry countdown: a muted status line under the last message,
+   left-aligned with the message column (unlike the right-aligned user
+   bubble). Re-rendered once per second from backend SSE ticks. */
+.retry-countdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 80%;
+  text-align: left;
+}
+
+.retry-countdown-icon {
+  animation: retry-countdown-pulse 1s ease-in-out infinite;
+}
+
+@keyframes retry-countdown-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .entry-time {
   font-size: 11px;
   color: var(--text-muted);
