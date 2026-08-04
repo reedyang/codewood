@@ -87,6 +87,13 @@ export interface GeneralConfig {
 }
 
 /** Confirm allowlist data backed by ``confirm_allowlist.json``. */
+export interface SecurityAuditConfig {
+  /** Model selector in "provider/model_name" format, or empty string
+   *  to use the default chat model for security audit calls. */
+  security_audit_model: string;
+}
+
+/** Confirm allowlist data backed by ``confirm_allowlist.json``. */
 export interface ConfirmAllowlist {
   version: number;
   salt: string;

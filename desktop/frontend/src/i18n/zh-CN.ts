@@ -181,6 +181,11 @@ export const zhCN: Dict = {
   "settings.page.console": "终端窗口",
   "settings.page.archivedChats": "已归档对话",
   "settings.page.security": "安全",
+  "security.auditModel": "安全审核模型",
+  "security.auditModelHint":
+    "用于安全审核的专用模型（如脚本风险评估）。使用 \"provider/model_name\" 格式，留空则使用默认聊天模型。",
+  "security.auditModelDefault": "使用主模型",
+  "security.errSaveAuditModel": "保存安全审核模型失败。",
   "security.confirmAllowlist": "确认白名单",
   "security.confirmAllowlistHint":
     "已允许跳过确认提示的命令和脚本。修改后立即生效，无需重启。",
