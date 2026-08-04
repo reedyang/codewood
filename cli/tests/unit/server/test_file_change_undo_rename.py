@@ -24,7 +24,8 @@ class _FakeChatStateManager:
 class _FakeAgent:
     def __init__(self, cfg_dir: Path) -> None:
         self._chat_state_manager = _FakeChatStateManager(cfg_dir)
-        self._file_changes_by_chat = {}
+        self._file_changes_by_chat: dict = {}
+        self._path_policy = None
 
 
 class _Stub:
@@ -45,6 +46,7 @@ def _app(cfg_dir: Path) -> _Stub:
         setattr(stub, name, getattr(ServeApp, name).__get__(stub, _Stub))
     # Static helpers referenced via ``self`` inside the bound methods.
     stub._reconstruct_expected_from_diffrows = ServeApp._reconstruct_expected_from_diffrows
+    stub._apply_reverse_patch = ServeApp._apply_reverse_patch
     stub._read_file_for_patch = ServeApp._read_file_for_patch
     stub._normalized_undo_lines = ServeApp._normalized_undo_lines
     stub._file_changes_scope_key = ServeApp._file_changes_scope_key
@@ -151,6 +153,69 @@ class RenameUndoReapplyTests(unittest.TestCase):
         self.assertTrue(result["results"][self.new_path]["success"])
         self.assertFalse(Path(self.old_path).exists())
         self.assertEqual(Path(self.new_path).read_text(encoding="utf-8"), self.content)
+
+
+class UndoModifyThenRenameTests(unittest.TestCase):
+    """Undo order: modify followed by rename on the same logical file.
+
+    Summary has entries in chronological order:
+      1. a.txt (modify)
+      2. c.txt (rename, oldPath=a.txt)
+
+    ``undo_file_changes`` must process them in reverse so the rename
+    is undone first — restoring a.txt — before the modify is undone.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.app = _app(Path(self._tmp.name))
+        self.work = Path(self._tmp.name) / "work"
+        self.work.mkdir()
+        self.old_path = str(self.work / "a.txt")
+        self.new_path = str(self.work / "c.txt")
+        self.original_content = "line1\nline2\nline3\n"
+        self.modified_content = "line1\nline2\nmodified\n"
+        # The renamed file lives on disk; the original path does not.
+        Path(self.new_path).write_text(self.modified_content, encoding="utf-8")
+        scope_key = ServeApp._file_changes_scope_key("chat-1", "ws-1")
+        self.app.agent._file_changes_by_chat[scope_key] = {
+            "ref-1": {
+                "ref": "ref-1",
+                "totalFiles": 2,
+                "files": [
+                    {
+                        "filePath": self.old_path,
+                        "changeType": "modify",
+                        "addedLines": 1,
+                        "deletedLines": 1,
+                        "patch": [
+                            {"type": "change", "oldNo": 3, "newNo": 3,
+                             "oldText": "line3", "newText": "modified"},
+                        ],
+                    },
+                    {
+                        "filePath": self.new_path,
+                        "changeType": "rename",
+                        "oldPath": self.old_path,
+                        "addedLines": 3,
+                        "deletedLines": 0,
+                        "patch": [
+                            {"type": "add", "oldNo": None, "newNo": i + 1,
+                             "oldText": "", "newText": line}
+                            for i, line in enumerate(self.modified_content.splitlines())
+                        ],
+                    },
+                ],
+            }
+        }
+
+    def test_undo_modify_then_rename_reverse_order(self):
+        result = self.app.undo_file_changes("chat-1", "ref-1", [self.old_path, self.new_path], "ws-1")
+        self.assertTrue(result["results"][self.old_path]["success"], f"modify undo failed: {result['results'][self.old_path].get('error')}")
+        self.assertTrue(result["results"][self.new_path]["success"], f"rename undo failed: {result['results'][self.new_path].get('error')}")
+        self.assertFalse(Path(self.new_path).exists(), "renamed file should be gone")
+        self.assertEqual(Path(self.old_path).read_text(encoding="utf-8"), self.original_content, "a.txt should have original content")
 
 
 if __name__ == "__main__":
