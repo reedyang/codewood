@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import { useApp } from "../state/AppContext";
 import type { WorkspaceSummary } from "../api/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -91,6 +91,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     deleteWorkspace,
     toggleWorkspacePin,
     toggleChatPin,
+    reorderWorkspace,
     toggleChatArchive,
     archiveChats,
     toggleWorkspaceExpanded,
@@ -144,6 +145,67 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
 
   const isPinnedChat = (wsId: string, chatId: string) => pinnedChat.has(chatKey(wsId, chatId));
 
+  // Sort workspaces by the persisted workspaceOrder, preserving relative order
+  // for workspace IDs not yet in the list.
+  const sortByOrder = useCallback(
+    (list: WorkspaceSummary[]) => {
+      const order = uiPrefs.workspaceOrder;
+      const orderMap = new Map(order.map((id, i) => [id, i]));
+      return [...list].sort((a, b) => {
+        const ai = orderMap.get(a.id);
+        const bi = orderMap.get(b.id);
+        if (ai !== undefined && bi !== undefined) return ai - bi;
+        if (ai !== undefined) return -1;
+        if (bi !== undefined) return 1;
+        return 0;
+      });
+    },
+    [uiPrefs.workspaceOrder],
+  );
+
+  const dragSourceRef = useRef<string | null>(null);
+  const dragSourceIsPinnedRef = useRef(false);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  const handleDragStart = (e: DragEvent, wsId: string) => {
+    dragSourceRef.current = wsId;
+    dragSourceIsPinnedRef.current = pinnedWs.has(wsId);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", wsId);
+  };
+
+  const handleDragOver = (e: DragEvent, targetId: string, targetIsPinned: boolean) => {
+    e.preventDefault();
+    const sourceId = dragSourceRef.current;
+    if (!sourceId || sourceId === targetId) {
+      setDragOverId(null);
+      return;
+    }
+    // Only allow drops within the same group (pinned ↔ pinned, unpinned ↔ unpinned)
+    if (dragSourceIsPinnedRef.current !== targetIsPinned) { setDragOverId(null); return; }
+    e.dataTransfer.dropEffect = "move";
+    setDragOverId(targetId);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverId(null);
+  };
+
+  const handleDrop = (e: DragEvent, targetId: string, targetIsPinned: boolean) => {
+    e.preventDefault();
+    const sourceId = dragSourceRef.current;
+    if (sourceId && sourceId !== targetId && dragSourceIsPinnedRef.current === targetIsPinned) {
+      reorderWorkspace(sourceId, targetId);
+    }
+    dragSourceRef.current = null;
+    setDragOverId(null);
+  };
+
+  const handleDragEnd = () => {
+    dragSourceRef.current = null;
+    setDragOverId(null);
+  };
+
   const workspaceNameById = useMemo(() => {
     const map: Record<string, string> = {};
     for (const ws of workspaces) {
@@ -182,8 +244,8 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     [activeChats, workspaceChats, state?.workspace.id, state?.activeChatId],
   );
 
-  const pinnedWorkspaces = workspaces.filter((w) => pinnedWs.has(w.id) && !w.isDefault);
-  const unpinnedWorkspaces = workspaces.filter((w) => !pinnedWs.has(w.id) && !w.isDefault);
+  const pinnedWorkspaces = sortByOrder(workspaces.filter((w) => pinnedWs.has(w.id) && !w.isDefault));
+  const unpinnedWorkspaces = sortByOrder(workspaces.filter((w) => !pinnedWs.has(w.id) && !w.isDefault));
   const pinnedChatEntries: { chat: ChatRow; wsId: string }[] = [];
   for (const [wsId, list] of Object.entries(chatsByWorkspace)) {
     for (const chat of list) {
@@ -469,7 +531,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     const visibleChats = allChats.slice(0, visibleCount);
     const hasMore = allChats.length > visibleCount;
     return (
-      <li key={ws.id} className="tree-group">
+      <li key={ws.id} className={`tree-group${dragOverId === ws.id ? " drag-over" : ""}`} draggable onDragStart={(e) => handleDragStart(e, ws.id)} onDragOver={(e) => handleDragOver(e, ws.id, pinnedWs.has(ws.id))} onDragLeave={handleDragLeave} onDrop={(e) => handleDrop(e, ws.id, pinnedWs.has(ws.id))} onDragEnd={handleDragEnd}>
         <div className="tree-row ws-row" onContextMenu={(e) => openWorkspaceMenu(e, ws)}>
           {isRenaming("workspace", ws.id) ? (
             renderRenameRow()
@@ -548,6 +610,8 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
             <ul className="tree-list">
               {pinnedChatEntries.map(({ chat, wsId }) => renderChatRow(chat, wsId))}
               {pinnedWorkspaces.map((ws) => renderWorkspaceGroup(ws))}
+              <li className={`tree-drop-zone${dragOverId === '__pinned_end__' ? ' drag-over' : ''}`} onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId('__pinned_end__'); }} onDragLeave={() => setDragOverId(null)} onDrop={(e) => { e.preventDefault(); const src = dragSourceRef.current; if (src) { reorderWorkspace(src, null); } dragSourceRef.current = null; setDragOverId(null); }} />
+              <li className={`tree-drop-zone${dragOverId === '__pinned_end__' ? ' drag-over' : ''}`} onDragOver={(e) => { e.preventDefault(); if (dragSourceIsPinnedRef.current) { e.dataTransfer.dropEffect = 'move'; setDragOverId('__pinned_end__'); } }} onDragLeave={() => setDragOverId(null)} onDrop={(e) => { e.preventDefault(); const src = dragSourceRef.current; if (src && dragSourceIsPinnedRef.current) { reorderWorkspace(src, null); } dragSourceRef.current = null; setDragOverId(null); }} />
             </ul>
           </section>
         )}
@@ -556,6 +620,8 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
           <div className="tree-section-title">{t("sidebar.workspaces")}</div>
           <ul className="tree-list">
             {unpinnedWorkspaces.map((ws) => renderWorkspaceGroup(ws))}
+            <li className={`tree-drop-zone${dragOverId === '__workspaces_end__' ? ' drag-over' : ''}`} onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId('__workspaces_end__'); }} onDragLeave={() => setDragOverId(null)} onDrop={(e) => { e.preventDefault(); const src = dragSourceRef.current; if (src) { reorderWorkspace(src, null); } dragSourceRef.current = null; setDragOverId(null); }} />
+            <li className={`tree-drop-zone${dragOverId === '__workspaces_end__' ? ' drag-over' : ''}`} onDragOver={(e) => { e.preventDefault(); if (!dragSourceIsPinnedRef.current) { e.dataTransfer.dropEffect = 'move'; setDragOverId('__workspaces_end__'); } }} onDragLeave={() => setDragOverId(null)} onDrop={(e) => { e.preventDefault(); const src = dragSourceRef.current; if (src && !dragSourceIsPinnedRef.current) { reorderWorkspace(src, null); } dragSourceRef.current = null; setDragOverId(null); }} />
             {!hasNonDefaultWorkspaces && <li className="tree-empty">{t("sidebar.noWorkspaces")}</li>}
           </ul>
         </section>

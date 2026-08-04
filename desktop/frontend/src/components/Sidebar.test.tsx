@@ -50,6 +50,7 @@ describe("Sidebar workspace routing", () => {
       uiPrefs: {
         pinnedWorkspaceIds: [],
         pinnedChatIds: [],
+        workspaceOrder: [],
       },
       workspaceChats: {
         "ws-2": [{
@@ -73,6 +74,7 @@ describe("Sidebar workspace routing", () => {
       deleteWorkspace: vi.fn(async () => true),
       toggleWorkspacePin: vi.fn(),
       toggleChatPin: vi.fn(),
+      reorderWorkspace: vi.fn(),
       toggleChatArchive: vi.fn(async () => undefined),
       archiveChats: vi.fn(async () => undefined),
       toggleWorkspaceExpanded: vi.fn(),
@@ -131,6 +133,7 @@ describe("Sidebar workspace routing", () => {
       uiPrefs: {
         pinnedWorkspaceIds: [],
         pinnedChatIds: [],
+        workspaceOrder: [],
       },
       workspaceChats: {},
       expandedWorkspaceIds: ["ws-2"],
@@ -151,6 +154,7 @@ describe("Sidebar workspace routing", () => {
       deleteWorkspace: vi.fn(async () => true),
       toggleWorkspacePin: vi.fn(),
       toggleChatPin: vi.fn(),
+      reorderWorkspace: vi.fn(),
       toggleChatArchive: vi.fn(async () => undefined),
       archiveChats: vi.fn(async () => undefined),
       toggleWorkspaceExpanded: vi.fn(),
@@ -196,6 +200,7 @@ describe("Sidebar workspace routing", () => {
       uiPrefs: {
         pinnedWorkspaceIds: [],
         pinnedChatIds: [],
+        workspaceOrder: [],
       },
       workspaceChats: {},
       busyByChat: {},
@@ -211,6 +216,7 @@ describe("Sidebar workspace routing", () => {
       deleteWorkspace: vi.fn(async () => true),
       toggleWorkspacePin: vi.fn(),
       toggleChatPin: vi.fn(),
+      reorderWorkspace: vi.fn(),
       toggleChatArchive: vi.fn(async () => undefined),
       archiveChats: vi.fn(async () => undefined),
       toggleWorkspaceExpanded: vi.fn(),

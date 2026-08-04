@@ -273,6 +273,7 @@ interface AppContextValue {
   deleteWorkspace: (id: string) => Promise<boolean>;
   toggleWorkspacePin: (id: string) => void;
   toggleChatPin: (id: string) => void;
+  reorderWorkspace: (workspaceId: string, beforeId: string | null) => void;
   toggleChatArchive: (key: string) => Promise<void>;
   archiveChats: (keys: string[]) => Promise<void>;
   setModel: (selector: string) => Promise<void>;
@@ -1534,6 +1535,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const server: UiPrefs = {
       pinnedWorkspaceIds: ids(sp.pinnedWorkspaceIds),
       pinnedChatIds: ids(sp.pinnedChatIds),
+      workspaceOrder: ids(sp.workspaceOrder),
     };
     const hasServer =
       server.pinnedWorkspaceIds.length > 0 ||
@@ -3944,6 +3946,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [uiPrefs, updatePrefs],
   );
 
+  const reorderWorkspace = useCallback(
+    (workspaceId: string, beforeId: string | null) => {
+      const order = uiPrefs.workspaceOrder;
+      const newOrder = order.filter((id) => id !== workspaceId);
+      if (beforeId === null) {
+        newOrder.push(workspaceId);
+      } else {
+        const idx = newOrder.indexOf(beforeId);
+        if (idx >= 0) {
+          newOrder.splice(idx, 0, workspaceId);
+        } else {
+          newOrder.push(workspaceId);
+        }
+      }
+      // Append any workspace not yet in the order list (e.g. newly added
+      // workspaces) so they don't disappear from the display.
+      const allIds = (state?.workspaces ?? []).map((w) => w.id);
+      for (const id of allIds) {
+        if (!newOrder.includes(id)) {
+          newOrder.push(id);
+        }
+      }
+      updatePrefs({
+        ...uiPrefs,
+        workspaceOrder: newOrder,
+      });
+    },
+    [uiPrefs, updatePrefs, state?.workspaces],
+  );
+
   const toggleChatPin = useCallback(
     (id: string) =>
       updatePrefs({ ...uiPrefs, pinnedChatIds: toggleId(uiPrefs.pinnedChatIds, id) }),
@@ -4470,6 +4502,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     openWorkspaceInExplorer,
     deleteWorkspace: deleteWorkspaceViaApi,
     toggleWorkspacePin,
+    reorderWorkspace,
     toggleChatPin,
     toggleChatArchive,
     archiveChats,
