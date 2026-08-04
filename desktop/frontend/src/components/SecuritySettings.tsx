@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
 import { groupModelsByProvider } from "./ChatView";
@@ -17,32 +17,31 @@ export function SecuritySettings() {
   const [newExeToken, setNewExeToken] = useState("");
   const [confirmRemoveAll, setConfirmRemoveAll] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    const result = await getConfirmAllowlist();
-    if (result) {
-      setData(result);
-    } else {
-      setData({
-        version: 3,
-        salt: "",
-        shell_scripts: [],
-        shell_exe_tokens: [],
-      });
-    }
-    setLoaded(true);
-    setLoading(false);
-  }, [getConfirmAllowlist]);
+  const getConfirmAllowlistRef = useRef(getConfirmAllowlist);
+  getConfirmAllowlistRef.current = getConfirmAllowlist;
+  const getSecurityAuditConfigRef = useRef(getSecurityAuditConfig);
+  getSecurityAuditConfigRef.current = getSecurityAuditConfig;
+  const saveConfirmAllowlistRef = useRef(saveConfirmAllowlist);
+  saveConfirmAllowlistRef.current = saveConfirmAllowlist;
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      setError("");
+      const result = await getConfirmAllowlistRef.current();
+      if (!alive) return;
+      setData(result ?? { version: 3, salt: "", shell_scripts: [], shell_exe_tokens: [] });
+      setLoaded(true);
+      setLoading(false);
+    })();
+    return () => { alive = false; };
+  }, []);
 
   // Load audit model config
   useEffect(() => {
     let alive = true;
-    void getSecurityAuditConfig().then((cfg) => {
+    void getSecurityAuditConfigRef.current().then((cfg) => {
       if (!alive) return;
       if (cfg) {
         setAuditModel(cfg.security_audit_model ?? "");
@@ -51,7 +50,7 @@ export function SecuritySettings() {
     return () => {
       alive = false;
     };
-  }, [getSecurityAuditConfig]);
+  }, []);
 
   // Load model selectors for the dropdown
   useEffect(() => {
@@ -79,7 +78,7 @@ export function SecuritySettings() {
     const snapshot = JSON.stringify(data);
     if (snapshot === prevDataRef.current) return;
     prevDataRef.current = snapshot;
-    saveConfirmAllowlist(data).then((result) => {
+    saveConfirmAllowlistRef.current(data).then((result) => {
       if (!result.ok) {
         setError(t("security.errSave"));
       } else if (result.allowlist) {
