@@ -447,6 +447,70 @@ def _locate_hunk_start(
     return None
 
 
+def _detect_rename_paths(patch_text: str) -> Optional[Tuple[str, str]]:
+    """Return ``(old_path, new_path)`` when *patch_text* describes a file
+    rename, else ``None``.
+
+    apply_patch only edits the content of the file named by its ``path``
+    argument — it has no notion of renaming a file.  Renames are recognized
+    from git's ``rename from`` / ``rename to`` lines, a ``diff --git``
+    header whose two paths differ, or a ``--- old`` / ``+++ new`` header
+    pair whose paths differ (neither side being ``/dev/null``, which marks
+    a deletion).
+    """
+    if not patch_text:
+        return None
+    lines = patch_text.splitlines()
+
+    def _strip_vcs_prefix(p: str) -> str:
+        p = str(p).strip().strip('"')
+        for prefix in ("a/", "b/"):
+            if p.startswith(prefix):
+                p = p[len(prefix):]
+        return p
+
+    rename_from: Optional[str] = None
+    rename_to: Optional[str] = None
+    for ln in lines:
+        stripped = str(ln).strip()
+        m = re.match(r"^rename\s+from\s+(.+?)\s*$", stripped)
+        if m:
+            rename_from = _strip_vcs_prefix(m.group(1))
+            continue
+        m = re.match(r"^rename\s+to\s+(.+?)\s*$", stripped)
+        if m:
+            rename_to = _strip_vcs_prefix(m.group(1))
+    if rename_from and rename_to and rename_from != rename_to:
+        return rename_from, rename_to
+
+    for ln in lines:
+        stripped = str(ln).strip()
+        m = re.match(r"^diff --git\s+(\S+)\s+(\S+)\s*$", stripped)
+        if m:
+            old_path = _strip_vcs_prefix(m.group(1))
+            new_path = _strip_vcs_prefix(m.group(2))
+            if old_path != new_path:
+                return old_path, new_path
+
+    old_path: Optional[str] = None
+    new_path: Optional[str] = None
+    for ln in lines:
+        stripped = str(ln).strip()
+        if stripped.startswith("--- "):
+            old_path = _strip_vcs_prefix(stripped[4:])
+        elif stripped.startswith("+++ "):
+            new_path = _strip_vcs_prefix(stripped[4:])
+    if (
+        old_path is not None
+        and new_path is not None
+        and old_path != new_path
+        and old_path != "/dev/null"
+        and new_path != "/dev/null"
+    ):
+        return old_path, new_path
+    return None
+
+
 def _patch_intends_delete(patch_text: str, hunks: List[Dict[str, Any]]) -> bool:
     """Return True when the patch uses git's delete-diff conventions.
 
@@ -503,6 +567,18 @@ def action_apply_unified_patch(
     agent: Any, file_path: str, patch: str, confirmed: bool = False, fuzz: int = 2
 ) -> Dict[str, Any]:
     try:
+        rename_paths = _detect_rename_paths(str(patch or ""))
+        if rename_paths:
+            old_path, new_path = rename_paths
+            return {
+                "success": False,
+                "error": (
+                    "apply_patch does not support renaming files. "
+                    f"Detected a rename patch: '{old_path}' -> '{new_path}'. "
+                    "If you need to rename a file, use the shell tool "
+                    "instead."
+                ),
+            }
         policy = agent._get_path_policy()
         abs_path = agent._resolve_user_path(str(file_path))
         file_exists = abs_path.exists()
