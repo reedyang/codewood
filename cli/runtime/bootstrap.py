@@ -31,7 +31,7 @@ from ..core.config.subagents_loader import (
 from ..tooling.dispatcher import ToolDispatcher
 from ..tools.project_context_index import ProjectContextIndex
 
-DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT = 60
+DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT = 80
 
 
 def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: Path) -> None:

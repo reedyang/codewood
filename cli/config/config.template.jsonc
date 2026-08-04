@@ -57,7 +57,7 @@
     }
   ],
   "execution_policy": "moderate",
-  "auto_compact_trigger_percent": 60,
+  "auto_compact_trigger_percent": 80,
   "max_tool_rounds": null,
   "memory_enabled": false,
   "project_context_search_enabled": true

@@ -28,9 +28,9 @@ class RuntimePreferencesTests(unittest.TestCase):
             with redirect_stdout(out):
                 setup_runtime_preferences(agent)
 
-            self.assertEqual(agent.auto_compact_trigger_percent, 60)
+            self.assertEqual(agent.auto_compact_trigger_percent, 80)
             self.assertIn("Invalid auto_compact_trigger_percent", out.getvalue())
-            self.assertIn("using default 60%", out.getvalue())
+            self.assertIn("using default 80%", out.getvalue())
 
     def test_valid_auto_compact_trigger_percent_is_loaded(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
