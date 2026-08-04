@@ -2354,10 +2354,7 @@ def _call_with_openai_compatible(
     if not api_key:
         return api_key_error_msg
 
-    include_thinking = parse_bool_flag(
-        conf.get("include_thinking_in_messages"),
-        default_value=False,
-    )
+    include_thinking = True
     provider_messages = _normalize_openai_messages_for_request(
         messages, include_thinking=include_thinking
     )
