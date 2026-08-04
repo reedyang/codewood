@@ -17,6 +17,7 @@ import type {
   ConfirmAllowlist,
   CompletionCatalog,
   ConfirmRequest,
+  SecurityAuditConfig,
   FileChangeSummary,
   GeneralConfig,
   HistoryTurn,
@@ -294,6 +295,9 @@ interface AppContextValue {
   getModelPresets: () => Promise<unknown[]>;
   getGeneralConfig: () => Promise<GeneralConfig | null>;
   saveGeneralConfig: (general: Partial<GeneralConfig>) => Promise<boolean>;
+  getSecurityAuditConfig: () => Promise<SecurityAuditConfig | null>;
+  saveSecurityAuditConfig: (audit: Partial<SecurityAuditConfig>) => Promise<boolean>;
+  getModelSelectors: () => Promise<string[]>;
   getConfirmAllowlist: () => Promise<ConfirmAllowlist | null>;
   saveConfirmAllowlist: (
     allowlist: ConfirmAllowlist,
@@ -4520,6 +4524,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     getGeneralConfig: () => client.getGeneralConfig(),
     saveGeneralConfig: (general: Partial<GeneralConfig>) =>
       client.saveGeneralConfig(general),
+    getSecurityAuditConfig: () => client.getSecurityAuditConfig(),
+    saveSecurityAuditConfig: (audit: Partial<SecurityAuditConfig>) =>
+      client.saveSecurityAuditConfig(audit),
+    getModelSelectors: () => client.getModelSelectors(),
     getConfirmAllowlist: () => client.getConfirmAllowlist(),
     saveConfirmAllowlist: (allowlist: ConfirmAllowlist) =>
       client.saveConfirmAllowlist(allowlist),

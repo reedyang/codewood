@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
+import { groupModelsByProvider } from "./ChatView";
 import type { ConfirmAllowlist } from "../api/types";
 
 export function SecuritySettings() {
-  const { getConfirmAllowlist, saveConfirmAllowlist, t } = useApp();
+  const { getConfirmAllowlist, saveConfirmAllowlist, getSecurityAuditConfig, saveSecurityAuditConfig, getModelSelectors, t } = useApp();
   const [data, setData] = useState<ConfirmAllowlist | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [auditModel, setAuditModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [auditError, setAuditError] = useState("");
   const [newScriptPath, setNewScriptPath] = useState("");
   const [newExeToken, setNewExeToken] = useState("");
   const [confirmRemoveAll, setConfirmRemoveAll] = useState(false);
@@ -34,6 +38,39 @@ export function SecuritySettings() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Load audit model config
+  useEffect(() => {
+    let alive = true;
+    void getSecurityAuditConfig().then((cfg) => {
+      if (!alive) return;
+      if (cfg) {
+        setAuditModel(cfg.security_audit_model ?? "");
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [getSecurityAuditConfig]);
+
+  // Load model selectors for the dropdown
+  useEffect(() => {
+    let alive = true;
+    void getModelSelectors().then((list) => {
+      if (!alive) return;
+      setModels(Array.isArray(list) ? list : []);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  // Save audit model on dropdown change (no debounce needed)
+  const handleAuditModelChange = (value: string) => {
+    setAuditModel(value);
+    setAuditError("");
+    void saveSecurityAuditConfig({ security_audit_model: value }).then((ok) => {
+      if (!ok) setAuditError(t("security.errSaveAuditModel"));
+    });
+  };
 
   // Auto-save on every data change after the initial load.
   const prevDataRef = useRef<string | null>(null);
@@ -119,8 +156,32 @@ export function SecuritySettings() {
   return (
     <div className="settings-page">
       <h2 className="settings-page-title">{t("settings.page.security")}</h2>
-
       <section>
+        <h3 className="setting-section-title">
+          {t("security.auditModel")}
+        </h3>
+        <p className="setting-hint" style={{ textAlign: "left", marginBottom: 8, marginTop: 4 }}>
+          {t("security.auditModelHint")}
+        </p>
+        <select
+          className="select"
+          title={t("security.auditModel")}
+          value={auditModel}
+          onChange={(e) => handleAuditModelChange(e.target.value)}
+        >
+          <option value="">{t("security.auditModelDefault")}</option>
+          {groupModelsByProvider(models).map((group) => (
+            <optgroup key={group.provider} label={group.provider}>
+              {group.items.map((item) => (
+                <option key={item.selector} value={item.selector}>{item.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        {auditError && <p className="setting-error" style={{ marginTop: 8 }}>{auditError}</p>}
+      </section>
+
+      <section style={{ marginTop: 24 }}>
         <h3 className="setting-section-title">
           {t("security.confirmAllowlist")}
         </h3>

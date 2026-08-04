@@ -806,6 +806,36 @@ class Agent:
     def _get_configured_model_selectors(self) -> List[str]:
         return [str(item.get("selector") or "") for item in self._get_configured_model_catalog()]
 
+    def _resolve_security_audit_model(self) -> Optional[Dict[str, Any]]:
+        """Resolve the security audit model from the ``model_providers`` catalog.
+
+        Returns ``None`` when no audit model is configured or the selector
+        does not match any catalog entry, in which case the caller should
+        fall back to the normal chat model.
+        """
+        selector = str(
+            getattr(self, "_security_audit_model_selector", "") or ""
+        ).strip()
+        if not selector:
+            return None
+        # Try to match the selector against the configured model catalog.
+        choice = self._find_configured_model_choice(selector)
+        if choice:
+            return choice
+        # Fallback: treat the selector as "provider/model_name" and build
+        # a minimal params dict so the call can still go through even when
+        # the model is not in the catalog (e.g. an ad-hoc model name).
+        parts = selector.split("/", 1)
+        if len(parts) == 2:
+            provider, model_name = parts
+            return {
+                "provider": provider,
+                "name": model_name,
+                "selector": selector,
+                "params": {"model": model_name},
+            }
+        return None
+
     def _current_model_selector(self) -> str:
         provider = str(getattr(self, "provider", "") or "").strip()
         model_name = str(getattr(self, "model_name", "") or "").strip()
@@ -7826,6 +7856,23 @@ class Agent:
         return result
     def _call_orchestrator(self, call_ctx: AICallContext) -> Any:
         prov, mname, mparams, mconf = self._session_model_for_call()
+        # Security audit model override: when the call is for freedom-mode
+        # combined review or minimal classifier, and a dedicated audit model
+        # is configured, use that model instead of the chat model.
+        if (
+            call_ctx.freedom_combined_review or call_ctx.minimal_classifier
+        ) and not call_ctx.session_summary_mode:
+            audit_choice = self._resolve_security_audit_model()
+            if audit_choice is not None:
+                audit_provider = str(audit_choice.get("provider") or "").strip()
+                audit_params = dict(audit_choice.get("params") or {})
+                audit_model_name = str(audit_choice.get("name") or "").strip()
+                if audit_provider and audit_model_name:
+                    prov = audit_provider
+                    mname = audit_model_name
+                    mparams = audit_params
+                    mconf = None if str(audit_params.get("api_mode", "")).strip().lower() == "ollama" else audit_params
+
         # Stamp the resolved model + config onto the call context so the
         # orchestrator uses this frozen snapshot for the whole call. The shared
         # ``ai_orchestrator.context`` is rewritten by a concurrent chat

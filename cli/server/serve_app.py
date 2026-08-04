@@ -4955,6 +4955,89 @@ class ServeApp:
             pass
         return True
 
+    # Security audit model config
+    # -------------------------------------------------------------------------
+    # This setting lives at the top level of ``config.jsonc`` so it is
+    # consistent between the TUI and the GUI.
+
+    def get_security_audit_config(self) -> Dict[str, str]:
+        """Return current security audit model selector.
+
+        Falls back to the live agent attribute when ``config.jsonc`` is
+        missing or unreadable.
+        """
+        agent = self.agent
+        out: str = str(
+            getattr(agent, "_security_audit_model_selector", "") or ""
+        ).strip()
+        try:
+            from ..core.config.config_jsonc import (
+                CONFIG_JSONC_FILENAME,
+                load_config_jsonc,
+            )
+
+            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
+            if cfg_path.exists():
+                cfg = load_config_jsonc(cfg_path) or {}
+                if isinstance(cfg, dict) and "security_audit_model" in cfg:
+                    raw = cfg.get("security_audit_model", "")
+                    if isinstance(raw, str):
+                        out = raw.strip()
+        except Exception:
+            pass
+        return {"security_audit_model": out}
+
+    def save_security_audit_config(self, payload: Dict[str, Any]) -> bool:
+        """Persist security audit model to ``config.jsonc`` and apply
+        immediately. The rest of the config file is preserved.
+        """
+        if not isinstance(payload, dict):
+            return False
+        raw = payload.get("security_audit_model")
+        if not isinstance(raw, str):
+            return False
+        value = raw.strip()
+        agent = self.agent
+        try:
+            from ..core.config.config_jsonc import (
+                CONFIG_JSONC_FILENAME,
+                load_config_jsonc,
+                save_config_jsonc,
+            )
+
+            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
+            cfg_data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    cfg_data = load_config_jsonc(cfg_path) or {}
+                except Exception:
+                    cfg_data = {}
+            if not isinstance(cfg_data, dict):
+                cfg_data = {}
+            cfg_data["security_audit_model"] = value
+            save_config_jsonc(cfg_path, cfg_data)
+        except Exception:
+            return False
+        # Apply to the live agent so the change takes effect immediately.
+        try:
+            agent._security_audit_model_selector = value
+        except Exception:
+            pass
+        # Drop the resolved-config cache so the model catalog re-reads fresh.
+        agent._resolved_config_data = {}
+        return True
+
+    def get_model_selectors(self) -> List[str]:
+        """Return the list of configured model selector strings for dropdowns."""
+        agent = self.agent
+        try:
+            selectors = agent._get_configured_model_selectors()
+            if isinstance(selectors, list):
+                return [str(s) for s in selectors if s]
+        except Exception:
+            pass
+        return []
+
     def get_confirm_allowlist(self) -> Dict[str, Any]:
         """Return the confirm allowlist data by reading the file directly,
         so the call is not blocked by a running task's in-memory state."""
@@ -8196,6 +8279,19 @@ def _make_handler(app: ServeApp):
             if path == "/save-general-config":
                 general = body.get("general")
                 ok = app.save_general_config(general if isinstance(general, dict) else {})
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/security-audit-config":
+                self._send_json(200, {"ok": True, "audit": app.get_security_audit_config()})
+                return
+            if path == "/model-selectors":
+                self._send_json(200, {"ok": True, "selectors": app.get_model_selectors()})
+                return
+            if path == "/save-security-audit-config":
+                audit = body.get("audit")
+                ok = app.save_security_audit_config(
+                    audit if isinstance(audit, dict) else {}
+                )
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/save-confirm-allowlist":

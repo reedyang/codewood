@@ -317,6 +317,7 @@ Create `.codewood/config.jsonc` in your user directory:
   "execution_policy": "moderate",
   "auto_compact_trigger_percent": 80,
   "max_tool_rounds": 30,
+  "security_audit_model": "openai/gpt-4o-mini",
   "memory_enabled": false
 }
 ```
@@ -343,6 +344,7 @@ Create `.codewood/config.jsonc` in your user directory:
 - `extra_headers`: per-model custom request headers, available only for OpenAI-compatible `api_mode` values (`auto`/`chat`/`responses`)
 - `reasoning_effort`: optional per-model list of reasoning-effort levels the model supports (e.g. `["low","medium","high"]`). When set, a level can be selected per chat — in the TUI via `/model reasoning <level>` and in the GUI model menu — and the choice is sent to the provider as `reasoning_effort` (chat API) or `reasoning.effort` (responses API). The selected level is saved per chat and restored on reload. Omit or leave empty to disable reasoning-effort selection for the model. Object-form example: `{"name":"gpt-oss-120b","context_window":"128K","reasoning_effort":["low","medium","high"]}`
 - `auto_compact_trigger_percent`: automatic summarization threshold, default `80`
+- `security_audit_model`: optional model selector for security review calls (e.g. script risk assessment and command reversibility classification). Use `"provider/model_name"` format, e.g. `"openai/gpt-4o-mini"`. When set, all `freedom_combined_review` and `minimal_classifier` AI calls use this model instead of the default chat model. Leave empty or `""` to use the default chat model for security review. This setting lives at the top level of `config.jsonc` and is configurable via the GUI Security settings page.
 - `model_providers[i].params`: provider-specific parameters such as API keys and base URLs
 - All string values in `config.jsonc` support environment variable placeholders of the form `${ENV_NAME}`
 - Placeholders are type-converted automatically, including `bool`, `int`, `float`, `null`, and JSON `list` / `dict` values

@@ -162,6 +162,7 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.memory_enabled = True
     agent.memory_fallback_expansion_enabled = True
     agent.project_context_search_enabled = True
+    agent._security_audit_model_selector = ""
     agent.auto_compact_trigger_percent = DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
     agent.display_language = DEFAULT_DISPLAY_LANGUAGE
     # None means unlimited auto-execution rounds for a single task.
@@ -242,6 +243,14 @@ def setup_runtime_preferences(agent: Any) -> None:
                 if isinstance(_pcs, bool)
                 else str(_pcs).strip().lower() in ("1", "true", "yes", "on")
             )
+
+            _sam = cfg_data.get("security_audit_model", "")
+            if isinstance(_sam, str):
+                _sam = _sam.strip()
+            else:
+                _sam = ""
+            agent._security_audit_model_selector = _sam
+
     except Exception as e:
         print(
             translate(

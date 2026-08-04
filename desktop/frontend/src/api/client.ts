@@ -4,6 +4,7 @@ import type {
   ConfirmAllowlist,
   CompletionCatalog,
   GeneralConfig,
+  SecurityAuditConfig,
   IndexStatus,
   McpServerConfigEntry,
   McpServerDetails,
@@ -781,6 +782,47 @@ export class ApiClient {
       body: JSON.stringify({ general }),
     });
     return res.ok;
+  }
+
+  /** Security audit model config. */
+  async getSecurityAuditConfig(): Promise<SecurityAuditConfig | null> {
+    const res = await fetch(`${this.base}/security-audit-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) {
+      return null;
+    }
+    try {
+      const data = (await res.json()) as { audit?: SecurityAuditConfig };
+      return data.audit ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveSecurityAuditConfig(audit: Partial<SecurityAuditConfig>): Promise<boolean> {
+    const res = await fetch(`${this.base}/save-security-audit-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ audit }),
+    });
+    return res.ok;
+  }
+
+  /** Available model selectors for dropdowns. */
+  async getModelSelectors(): Promise<string[]> {
+    const res = await fetch(`${this.base}/model-selectors`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) return [];
+    try {
+      const data = (await res.json()) as { selectors?: string[] };
+      return Array.isArray(data.selectors) ? data.selectors : [];
+    } catch { return []; }
   }
 
   async getConfirmAllowlist(): Promise<ConfirmAllowlist | null> {
