@@ -86,6 +86,17 @@ export interface GeneralConfig {
   project_context_search_enabled: boolean;
 }
 
+/** Confirm allowlist data backed by ``confirm_allowlist.json``. */
+export interface ConfirmAllowlist {
+  version: number;
+  salt: string;
+  shell_scripts: {
+    path: string;
+    hash: string;
+  }[];
+  shell_exe_tokens: string[];
+}
+
 /** Per-server summary on the MCP settings page. */
 export interface McpServerSummary {
   name: string;

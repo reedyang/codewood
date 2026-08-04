@@ -4955,6 +4955,72 @@ class ServeApp:
             pass
         return True
 
+    def get_confirm_allowlist(self) -> Dict[str, Any]:
+        """Return the confirm allowlist data by reading the file directly,
+        so the call is not blocked by a running task's in-memory state."""
+        try:
+            from ..core.security.command_security import confirm_allowlist_path
+            p = confirm_allowlist_path(self.agent)
+            if p.is_file():
+                import json
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            return {
+                "version": 3,
+                "salt": "",
+                "shell_scripts": [],
+                "shell_exe_tokens": [],
+            }
+        except Exception:
+            return {
+                "version": 3,
+                "salt": "",
+                "shell_scripts": [],
+                "shell_exe_tokens": [],
+            }
+
+    def save_confirm_allowlist(self, payload: Dict[str, Any]) -> bool:
+        """Write the confirm allowlist file directly and reload into the agent,
+        so the mutation is not blocked by a running task's in-memory state."""
+        if not isinstance(payload, dict):
+            return False
+        try:
+            from ..core.security.command_security import (
+                confirm_allowlist_path,
+                load_confirm_allowlist,
+                shell_script_hash,
+            )
+            from pathlib import Path
+            import json
+            # Auto-compute hashes for shell_scripts entries that have an empty
+            # hash. This lets the frontend add entries without needing the salt.
+            scripts = payload.get("shell_scripts")
+            if isinstance(scripts, list):
+                for entry in scripts:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("path")
+                        and not entry.get("hash")
+                    ):
+                        try:
+                            h = shell_script_hash(self.agent, Path(entry["path"]))
+                            if h:
+                                entry["hash"] = h
+                        except Exception:
+                            pass
+            p = confirm_allowlist_path(self.agent)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            # Reload into the agent so the running loop picks up the change.
+            load_confirm_allowlist(self.agent)
+            return True
+        except Exception:
+            return False
+
     def get_completion_catalog(self) -> Dict[str, Any]:
         """Return suggestion sources used by the composer's slash popup.
 
@@ -7808,6 +7874,9 @@ def _make_handler(app: ServeApp):
             if path == "/index-status":
                 self._send_json(200, app.index_status())
                 return
+            if path == "/confirm-allowlist":
+                self._send_json(200, {"ok": True, "allowlist": app.get_confirm_allowlist()})
+                return
             self._send_json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
@@ -8128,6 +8197,16 @@ def _make_handler(app: ServeApp):
                 general = body.get("general")
                 ok = app.save_general_config(general if isinstance(general, dict) else {})
                 self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/save-confirm-allowlist":
+                allowlist = body.get("allowlist")
+                ok = app.save_confirm_allowlist(
+                    allowlist if isinstance(allowlist, dict) else {}
+                )
+                result = {"ok": ok}
+                if ok:
+                    result["allowlist"] = app.get_confirm_allowlist()
+                self._send_json(200 if ok else 400, result)
                 return
             if path == "/mcp-overview":
                 self._send_json(200, {"ok": True, **app.get_mcp_overview()})

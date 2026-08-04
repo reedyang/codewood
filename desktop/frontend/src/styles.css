@@ -2841,6 +2841,92 @@ html[data-has-bg] .select {
   border-color: #c54545;
 }
 
+/* Security settings page. */
+.setting-section-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.setting-section-subtitle {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--text-muted);
+}
+
+.security-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.security-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  gap: 8px;
+}
+
+.security-list-item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.security-list-path {
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.security-list-hash {
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.security-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.security-add-row .text-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.btn-icon:hover {
+  background: color-mix(in srgb, #c54545 12%, transparent);
+  color: #c54545;
+}
+
 /* Circular context-window usage badge on the composer toolbar. The ring uses
    the same accent color as buttons, escalating to warn/danger as the window
    fills up so it draws the eye before the model gets pushed into auto-compact. */
