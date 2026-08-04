@@ -3980,6 +3980,36 @@ html[data-has-bg] .select {
   background: var(--sidebar-active);
 }
 
+/* Drag-and-drop reordering for workspace groups. */
+.tree-group[draggable="true"] {
+  cursor: grab;
+}
+
+.tree-group[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* Drag indicator: draw a horizontal line at the top of the target element. */
+.tree-group.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
+.tree-group.drag-over:first-child {
+  margin-top: 0;
+}
+
+/* Drop zone at the end of a section list — invisible strip so the user can
+   drop a workspace after the last visible item. */
+.tree-drop-zone {
+  height: 8px;
+  list-style: none;
+  padding: 0;
+}
+
+.tree-drop-zone.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
 /* Hover tooltip (rich, multi-line) — used by sidebar chat items. */
 .hover-tooltip-wrap {
   position: relative;

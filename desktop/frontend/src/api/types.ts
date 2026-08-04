@@ -181,6 +181,7 @@ export interface AppState {
   uiPrefs?: {
     pinnedWorkspaceIds?: string[];
     pinnedChatIds?: string[];
+    workspaceOrder?: string[];
   };
   /** GUI-only embedded-console options (font + scrollback buffer). */
   consoleOptions?: {
