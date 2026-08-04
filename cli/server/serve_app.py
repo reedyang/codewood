@@ -7022,8 +7022,13 @@ class ServeApp:
         """Undo a list of files.  Returns {results: {filePath: {success, error?}}}.
 
         ``workspace_id`` scopes the chat (chat ids repeat across workspaces).
+
+        Process files in reverse order so that later operations (e.g. delete,
+        rename) are undone first, restoring the file before earlier operations
+        (e.g. modify) are undone.
         """
         outcome: Dict[str, Dict[str, Any]] = {}
+        files = list(reversed(files))
         for fpath in files:
             try:
                 fc = self._lookup_file_change(chat_id, ref, fpath, workspace_id)
