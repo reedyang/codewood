@@ -301,6 +301,7 @@ export type ServerEvent =
   | { event: "output"; data: { text: string } }
   | { event: "assistant"; data: { text: string } }
   | { event: "thinking"; data: { text: string } }
+  | { event: "retry_countdown"; data: RetryCountdownEvent }
   | { event: "confirm"; data: ConfirmRequest }
   | { event: "request_user_input"; data: AskMoreInfoRequest }
   | { event: "request_user_input_answer"; data: { answer: string; chatId?: string; workspaceId?: string } }
@@ -313,6 +314,34 @@ export type ServerEvent =
   | { event: "sub_agent_output"; data: { sessionId: string; text: string; toolName: string } }
   | { event: "sub_agent_end"; data: { sessionId: string; output: string; success: boolean; max_rounds_reached?: boolean } }
   | { event: string; data: Record<string, unknown> };
+
+/** SSE payload for a live 429/503 retry countdown tick from the backend. */
+export interface RetryCountdownEvent {
+  chatId?: string;
+  workspaceId?: string;
+  /** HTTP status that triggered the retry (429 or 503). */
+  code: number;
+  /** 1-based retry attempt number (wait sequence: 3s, 4s, 8s, ...). */
+  retryNumber: number;
+  /** Total wait for this retry attempt. */
+  waitSeconds: number;
+  /** Remaining seconds until the retry fires (updated every second). */
+  remainingSeconds: number;
+  modelName?: string;
+  /** True on the final tick right before the retry attempt fires. */
+  done?: boolean;
+}
+
+/** Live retry countdown kept per chat so background chats stay independent. */
+export interface RetryCountdownState {
+  code: number;
+  retryNumber: number;
+  waitSeconds: number;
+  remainingSeconds: number;
+  modelName?: string;
+  /** Client-side arrival time of the last tick (for display freshness). */
+  updatedAt?: number;
+}
 
 /** A streamed segment within a round: model text ("answer") or tool output ("step"). */
 export type SegmentKind = "step" | "answer";

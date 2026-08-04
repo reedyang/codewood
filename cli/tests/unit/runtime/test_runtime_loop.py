@@ -48,6 +48,8 @@ from cli.runtime.runtime_loop import (
     _take_pending_stream_history_reload_request,
     _warn_loop_ended_with_pending_plan,
     _strip_channel_thought_markers,
+    _install_tui_retry_countdown,
+    _tui_retry_countdown_callback,
 )
 
 
@@ -2756,6 +2758,76 @@ class StripChannelThoughtMarkersTests(unittest.TestCase):
             _strip_channel_thought_markers("a<|channel>thought 1<channel|>b<|channel>thought 2<channel|>c"),
             "abc",
         )
+
+
+class _TestTuiRetryCountdown(unittest.TestCase):
+    class _FakeTtyStream:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, text):
+            s = str(text or "")
+            self.writes.append(s)
+            return len(s)
+
+        def flush(self):
+            return None
+
+        def isatty(self):
+            return True
+
+    class _FakeAgent:
+        def __init__(self, gui_plain_stream=False, stopper=None):
+            self._gui_plain_stream = gui_plain_stream
+            self._active_status_ticker_stopper = stopper
+
+    def _install(self, agent):
+        with patch("cli.ai.ai_provider_clients.set_retry_countdown_callback") as mock_set:
+            _install_tui_retry_countdown(agent)
+            self.assertEqual(mock_set.call_count, 1)
+            return mock_set.call_args[0][0]
+
+    def test_skipped_in_gui_plain_stream_mode(self):
+        with patch("cli.ai.ai_provider_clients.set_retry_countdown_callback") as mock_set:
+            _install_tui_retry_countdown(self._FakeAgent(gui_plain_stream=True))
+            mock_set.assert_not_called()
+
+    def test_stops_ticker_once_then_renders_countdown(self):
+        stop_calls = []
+
+        def _stopper():
+            stop_calls.append(1)
+
+        agent = self._FakeAgent(stopper=_stopper)
+        cb = self._install(agent)
+        fake_out = self._FakeTtyStream()
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
+            cb(code=429, retry_number=1, wait_seconds=3, remaining_seconds=3, model_name="m", done=False)
+            cb(code=429, retry_number=1, wait_seconds=3, remaining_seconds=2, model_name="m", done=False)
+            cb(done=True)
+        self.assertEqual(len(stop_calls), 1)
+        merged = "".join(fake_out.writes)
+        self.assertIn("\r\x1b[2K", merged)
+        self.assertIn("⏳ 429 Too Many Requests — retry #1 in 3s", merged)
+        self.assertTrue(merged.endswith("\r\x1b[2K"))
+
+    def test_done_tick_does_not_stop_ticker_again(self):
+        stop_calls = []
+        agent = self._FakeAgent(stopper=lambda: stop_calls.append(1))
+        cb = self._install(agent)
+        fake_out = self._FakeTtyStream()
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
+            cb(done=True)
+            cb(code=503, retry_number=2, wait_seconds=8, remaining_seconds=8, model_name="m", done=False)
+        self.assertEqual(len(stop_calls), 1)
+        self.assertIn("503 Service Unavailable", "".join(fake_out.writes))
+
+    def test_non_tty_stdout_stays_silent(self):
+        agent = self._FakeAgent()
+        cb = self._install(agent)
+        with patch("cli.runtime.runtime_loop.sys.stdout", object()):
+            cb(code=429, retry_number=1, wait_seconds=3, remaining_seconds=3, model_name="m", done=False)
+            cb(done=True)
 
 
 if __name__ == "__main__":

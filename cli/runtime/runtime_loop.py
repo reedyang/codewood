@@ -2919,6 +2919,79 @@ def _gui_round_mark(agent: Any, begin: bool) -> None:
             pass
 
 
+def _tui_retry_countdown_callback(**kwargs: Any) -> None:
+    """Draw/refresh/clear a countdown line for a 429/503 retry wait.
+
+    Runs synchronously on the agent-loop thread while it sleeps between
+    retries, so terminal writes stay serialized with streaming output. Each
+    tick rewrites the line in place (``\\r`` + erase); the final ``done`` tick
+    erases it so the next output starts on a clean line. No-ops when stdout is
+    not a TTY so headless/piped runs stay silent.
+    """
+    try:
+        stream = sys.stdout
+        isatty = getattr(stream, "isatty", None)
+        if not callable(isatty) or not isatty():
+            return
+        if bool(kwargs.get("done")):
+            stream.write("\r\x1b[2K")
+            stream.flush()
+            return
+        code = int(kwargs.get("code") or 0)
+        retry_number = int(kwargs.get("retry_number") or 0)
+        remaining = max(0.0, float(kwargs.get("remaining_seconds") or 0))
+        remaining_s = int(remaining)
+        if remaining > remaining_s:
+            remaining_s += 1
+        if code == 429:
+            label = "429 Too Many Requests"
+        elif code == 503:
+            label = "503 Service Unavailable"
+        else:
+            label = f"HTTP {code}"
+        text = f"⏳ {label} — retry #{max(1, retry_number)} in {max(1, remaining_s)}s"
+        stream.write(f"\r\x1b[2K\x1b[2m{text}\x1b[0m")
+        stream.flush()
+    except Exception:
+        pass
+
+
+def _install_tui_retry_countdown(agent: Any) -> None:
+    """Wire the plain-terminal countdown for 429/503 retry waits.
+
+    GUI serve mode installs its own SSE-publishing callback (via
+    ``_gui_plain_stream``), so this only takes effect for the classic TUI /
+    headless ``agent.run()`` path where streamed output goes straight to
+    stdout.
+    """
+    if bool(getattr(agent, "_gui_plain_stream", False)):
+        return
+
+    stopped = [False]
+
+    def _callback(**kwargs: Any) -> None:
+        # The working-status marquee runs on a background thread and would
+        # fight the countdown for the same terminal line. Stop it once,
+        # before the first tick, mirroring how ephemeral screen notices
+        # take the line over before ``call_ai`` returns.
+        if not kwargs.get("done") and not stopped[0]:
+            stopped[0] = True
+            stopper = getattr(agent, "_active_status_ticker_stopper", None)
+            if callable(stopper):
+                try:
+                    stopper()
+                except Exception:
+                    pass
+        _tui_retry_countdown_callback(**kwargs)
+
+    try:
+        from ..ai.ai_provider_clients import set_retry_countdown_callback
+
+        set_retry_countdown_callback(_callback)
+    except Exception:
+        pass
+
+
 def _ensure_tui_active_chat(agent: Any) -> None:
     """Create a new chat on first user message when the workspace has none (TUI only).
 
@@ -3257,6 +3330,9 @@ def run_agent_loop(agent: Any):
         _sk_path = self.config_dir / "skills"
 
     _print_startup_overview(self)
+    # Plain-terminal (TUI) 429/503 retry countdown; GUI serve mode overrides
+    # this callback with its own SSE publisher before starting the loop.
+    _install_tui_retry_countdown(self)
     try:
         sys.stdout.flush()
     except Exception:

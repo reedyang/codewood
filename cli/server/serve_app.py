@@ -7512,6 +7512,27 @@ class ServeApp:
                 ),
             ),
         )
+        # Forward 429/503 retry countdown ticks to the GUI so it can render a
+        # live countdown line under the last message while the backend backs
+        # off (3s first, then 2^n seconds capped at 60s, retrying forever).
+        # ``_route`` tags each event with the calling loop thread's chat +
+        # workspace id so parallel chats stay separate.
+        from ..ai.ai_provider_clients import set_retry_countdown_callback
+
+        def _publish_retry_countdown(**kw: Any) -> None:
+            self.broadcaster.publish(
+                "retry_countdown",
+                self._route(
+                    code=int(kw.get("code") or 0),
+                    retryNumber=int(kw.get("retry_number") or 0),
+                    waitSeconds=float(kw.get("wait_seconds") or 0),
+                    remainingSeconds=float(kw.get("remaining_seconds") or 0),
+                    modelName=str(kw.get("model_name") or ""),
+                    done=bool(kw.get("done")),
+                ),
+            )
+
+        set_retry_countdown_callback(_publish_retry_countdown)
         # Bridge for the GUI-only browser tools: lets a tool send a command to
         # the embedded browser and block for its result. Its presence also gates
         # the browser_* tools into the model-visible spec (registry: gui_enabled).

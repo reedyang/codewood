@@ -21,6 +21,7 @@ export const en: Dict = {
   "activity.workedFor": "Worked for",
   "activity.thinking": "Thinking",
   "activity.thoughtFor": "Thought for",
+  "retry.countdown": "HTTP {code} — retry #{n} in {seconds}s",
   "tool.label.tool": "Tool",
   "tool.label.read": "Read",
   "tool.label.run_subagent": "Run subagent",

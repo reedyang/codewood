@@ -11,7 +11,7 @@ import {
 import appIconUrl from "../assets/app_icon_mark.svg";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
-import type { CompactNoticeData, HistoryRound, HistoryTurn, PlanStep, SubAgentMessage, Turn, TurnRound } from "../api/types";
+import type { CompactNoticeData, HistoryRound, HistoryTurn, PlanStep, RetryCountdownState, SubAgentMessage, Turn, TurnRound } from "../api/types";
 import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
@@ -1046,6 +1046,7 @@ export function ChatView() {
     interrupt,
     compactContext,
     compactNotice,
+    retryCountdownByChat,
     setExecutionPolicy,
     setModel,
     setReasoning,
@@ -1079,6 +1080,10 @@ export function ChatView() {
   const draftKey = draftMode ? DRAFT_KEY : chatKey(activeWorkspaceId, activeChatId);
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  // Live 429/503 retry countdown for the active chat, rendered below the last
+  // message and left-aligned with the message column.
+  const retryCountdown: RetryCountdownState | null =
+    retryCountdownByChat[chatKey(activeWorkspaceId, activeChatId)] ?? null;
   const [segmentsByChat, setSegmentsByChat] = useState<Record<string, Segment[]>>({});
   const segments = segmentsByChat[draftKey] ?? [];
   // Pending pasted-image attachments for the active draft, keyed by chat so
@@ -1874,6 +1879,18 @@ export function ChatView() {
                   body={compactNotice.body}
                   stage={compactNotice.stage}
                 />
+              </div>
+            )}
+            {retryCountdown && (
+              <div className="retry-countdown" role="status" aria-live="polite">
+                <span className="retry-countdown-icon">⏳</span>
+                <span className="retry-countdown-text">
+                  {t("retry.countdown", {
+                    code: String(retryCountdown.code),
+                    n: String(retryCountdown.retryNumber),
+                    seconds: String(Math.max(1, Math.ceil(retryCountdown.remainingSeconds))),
+                  })}
+                </span>
               </div>
             )}
             <AskMoreInfoPanel />

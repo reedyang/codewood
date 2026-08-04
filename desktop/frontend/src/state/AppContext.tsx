@@ -24,6 +24,7 @@ import type {
   McpServerConfigEntry,
   McpServerDetails,
   McpServerSummary,
+  RetryCountdownState,
   SegmentKind,
   ServerEvent,
   SkillSummary,
@@ -249,6 +250,8 @@ interface AppContextValue {
   cancelPendingInput: (index: number) => string | null;
   compactContext: () => Promise<{ ok: boolean; text?: string }>;
   compactNotice: CompactNoticeData | null;
+  /** Live 429/503 retry countdown per chat (workspace-qualified keys). */
+  retryCountdownByChat: Record<string, RetryCountdownState | null>;
   answerConfirm: (answer: string) => Promise<void>;
   /** Resolve the active ``request_user_input`` prompt with the user's answer. */
   answerAskMoreInfo: (answer: string) => Promise<void>;
@@ -732,6 +735,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     notice: CompactNoticeData | null;
     version: number;
   }>({ chatKey: "", notice: null, version: 0 });
+  // Live 429/503 retry countdown keyed by workspace-qualified chat key. The
+  // backend publishes one tick per second while it backs off before the next
+  // retry (3s, then 2^n capped at 60s, forever); the UI renders the latest
+  // tick below the last message and clears it on the ``done`` tick.
+  const [retryCountdownByChat, setRetryCountdownByChat] = useState<
+    Record<string, RetryCountdownState | null>
+  >({});
   useEffect(() => {
     const wsReady = (state?.workspace.id ?? "") === (focusOverride?.wsId ?? "");
     const chatReady =
@@ -2378,6 +2388,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           startTurn(String(data.text ?? ""), eventKey);
           setBusyForChat(eventKey, true);
           streamingKeyRef.current = eventKey;
+          // A new turn supersedes any stale retry countdown for this chat.
+          setRetryCountdownByChat((prev) => {
+            if (!prev[eventKey]) return prev;
+            const next = { ...prev };
+            delete next[eventKey];
+            return next;
+          });
           break;
         }
         case "round_start": {
@@ -2385,6 +2402,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "round_end": {
+          // The model round completed: any 429/503 retry countdown is over.
+          setRetryCountdownByChat((prev) => {
+            if (!prev[eventKey]) return prev;
+            const next = { ...prev };
+            delete next[eventKey];
+            return next;
+          });
           const roundMeta = event.data as Record<string, unknown>;
           const backendElapsedS = typeof roundMeta.thinkingElapsedSeconds === "number"
             ? roundMeta.thinkingElapsedSeconds as number : undefined;
@@ -2411,6 +2435,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
               return next;
             });
           }
+          break;
+        }
+        case "retry_countdown": {
+          // Backend ticks once per second while it backs off before the next
+          // 429/503 retry. Each tick replaces the previous one so the UI shows
+          // a single live countdown line below the last message; the final
+          // tick carries ``done`` and removes it. Routing follows the event's
+          // own workspace+chat so background chats stay independent.
+          const d = event.data as Extract<ServerEvent, { event: "retry_countdown" }>["data"];
+          const ownerChat = String(d.chatId || "");
+          if (!ownerChat) break;
+          const ownerKey = chatKey(eventWsId, ownerChat);
+          const done = Boolean(d.done);
+          setRetryCountdownByChat((prev) => {
+            if (done) {
+              if (!prev[ownerKey]) return prev;
+              const next = { ...prev };
+              delete next[ownerKey];
+              return next;
+            }
+            return {
+              ...prev,
+              [ownerKey]: {
+                code: Number(d.code) || 0,
+                retryNumber: Number(d.retryNumber) || 0,
+                waitSeconds: Number(d.waitSeconds) || 0,
+                remainingSeconds: Number(d.remainingSeconds) || 0,
+                modelName: String(d.modelName || ""),
+                updatedAt: Date.now(),
+              },
+            };
+          });
           break;
         }
         case "compact_notice": {
@@ -4489,6 +4545,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return result;
     },
     compactNotice,
+    retryCountdownByChat,
     answerConfirm,
     answerAskMoreInfo,
     clearTurns,
