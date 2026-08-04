@@ -3,7 +3,6 @@ import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
 import {
   MODEL_PRESETS,
-  findPreset,
   toEditorProvider,
   toConfigProviders,
   extractHostname,
@@ -179,7 +178,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       presetId,
       api_mode: preset.api_mode,
       base_url: preset.kind === "openai" ? preset.base_url : "",
-      include_thinking_in_messages: preset.include_thinking_in_messages ?? false,
       provider: preset.kind === "custom" ? providers[idx]?.provider || "" : preset.provider,
     });
   };
@@ -194,7 +192,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
         api_key: "",
         base_url: preset.base_url,
         api_mode: preset.api_mode,
-        include_thinking_in_messages: preset.include_thinking_in_messages ?? false,
         models: [],
         auto_refresh: false,
         presetId: preset.id,
@@ -484,12 +481,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       {providers.map((p, idx) => {
         const preset = presets.find((pr) => pr.id === p.presetId);
         const isOllama = preset?.kind === "ollama" || p.api_mode === "ollama";
-        const presetDefaultThinking =
-          (preset ?? findPreset(p.presetId))?.include_thinking_in_messages === true;
-        const showThinkingWarning =
-          !isOllama &&
-          presetDefaultThinking &&
-          p.include_thinking_in_messages === false;
         const isCollapsed = Boolean(collapsed[idx]);
         // Compute the effective label: use display_name, or simulate auto-suffix logic.
         const effectiveLabel = (): string => {
@@ -621,28 +612,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                       </select>
                     </div>
 
-                    <div className="models-field">
-                      <label className="models-effort">
-                        <input
-                          type="checkbox"
-                          checked={p.include_thinking_in_messages === true}
-                          onChange={(e) =>
-                            update(idx, {
-                              include_thinking_in_messages: e.target.checked,
-                            })
-                          }
-                        />
-                        {t("models.includeThinkingInMessages")}
-                      </label>
-                      <div className="models-hint">
-                        {t("models.includeThinkingInMessagesHint")}
-                      </div>
-                      {showThinkingWarning && (
-                        <div className="models-warning">
-                          {t("models.includeThinkingInMessagesWarning")}
-                        </div>
-                      )}
-                    </div>
                   </>
                 )}
 

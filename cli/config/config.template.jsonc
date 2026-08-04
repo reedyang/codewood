@@ -16,10 +16,6 @@
         //   "responses" = OpenAI-compatible; force /responses
         //   "ollama"    = local Ollama HTTP API (uses ``port``; ignores api_key/base_url)
         "api_mode": "auto",
-        // optional, default false for most providers. Some APIs (for example
-        // DeepSeek) can get better prompt-prefix cache hits when previous
-        // assistant reasoning is replayed in request history.
-        "include_thinking_in_messages": false,
         "models": [
           {
             "name": "<YOUR MODEL NAME>",

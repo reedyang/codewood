@@ -233,7 +233,6 @@ def _starter_user_config() -> dict:
                     "api_key": "<YOUR API KEY>",
                     "base_url": "https://api.openai.com/v1",
                     "api_mode": "chat",
-                    "include_thinking_in_messages": False,
                     "models": [
                         {
                             "name": "<YOUR MODEL NAME>",

@@ -291,7 +291,6 @@ Create `.codewood/config.jsonc` in your user directory:
         "api_key": "YOUR_API_KEY",
         "base_url": "YOUR API BASE URL",
         "api_mode": "auto",
-        "include_thinking_in_messages": false,
         "models": [
           {
             "name": "gpt-oss-120b",
@@ -332,7 +331,6 @@ Create `.codewood/config.jsonc` in your user directory:
   - `responses`: OpenAI-compatible HTTP API; forces `/responses`
   - `ollama`: local Ollama HTTP API (uses `port`; ignores `api_key`/`base_url`)
   - For backward compatibility, configurations that omit `api_mode` and set `provider: "ollama"` are still treated as `api_mode: "ollama"`
-- `model_providers[i].params.include_thinking_in_messages`: provider-level toggle for replaying prior assistant `thinking` / `reasoning_content` back to the API on later requests. Default is usually `false`, but some providers such as DeepSeek benefit from enabling it for better cache hit rates
 - `model_providers[i].params.port`: used by `api_mode: "ollama"`, with a default of `11434`
 - `model_providers[i].params.models`: model list; the first model is used by default
   - String form: `"gpt-oss-120b"` uses the default `context_window=128000` and `streaming=true`
