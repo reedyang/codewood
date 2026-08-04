@@ -1,6 +1,7 @@
 import type {
   AppState,
   ChatHistoryPage,
+  ConfirmAllowlist,
   CompletionCatalog,
   GeneralConfig,
   IndexStatus,
@@ -780,6 +781,43 @@ export class ApiClient {
       body: JSON.stringify({ general }),
     });
     return res.ok;
+  }
+
+  async getConfirmAllowlist(): Promise<ConfirmAllowlist | null> {
+    const res = await fetch(`${this.base}/confirm-allowlist`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      return null;
+    }
+    try {
+      const data = (await res.json()) as {
+        allowlist?: ConfirmAllowlist;
+      };
+      return data.allowlist ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveConfirmAllowlist(
+    allowlist: ConfirmAllowlist,
+  ): Promise<{ ok: boolean; allowlist?: ConfirmAllowlist }> {
+    const res = await fetch(`${this.base}/save-confirm-allowlist`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ allowlist }),
+    });
+    if (!res.ok) {
+      return { ok: false };
+    }
+    try {
+      const data = await res.json() as { ok: boolean; allowlist?: ConfirmAllowlist };
+      return { ok: true, allowlist: data.allowlist };
+    } catch {
+      return { ok: true };
+    }
   }
 
   async getMcpOverview(): Promise<McpServerSummary[]> {

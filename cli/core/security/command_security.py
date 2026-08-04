@@ -1,6 +1,7 @@
 ﻿import hashlib
 import json
 import os
+import fnmatch
 import re
 import secrets
 from pathlib import Path
@@ -214,7 +215,15 @@ def shell_command_in_allowlist(agent: Any, command: str) -> bool:
         actual = shell_script_hash(agent, sp)
         return bool(actual) and actual == expected
     ek = shell_executable_allowlist_key(agent, command)
-    return bool(ek) and ek in agent._allowlist_shell_exes
+    if not ek:
+        return False
+    if ek in agent._allowlist_shell_exes:
+        return True
+    # Wildcard matching: support * in allowlist entries.
+    for pattern in agent._allowlist_shell_exes:
+        if "*" in pattern and fnmatch.fnmatch(ek, pattern):
+            return True
+    return False
 
 
 def _is_workspace_read_command(agent: Any, command: str) -> bool:

@@ -8,6 +8,7 @@ import { SkillsSettings } from "./SkillsSettings";
 import { SubAgentsSettings } from "./SubAgentsSettings";
 import { ConsoleSettings } from "./ConsoleSettings";
 import { ArchivedChatsSettings } from "./ArchivedChatsSettings";
+import { SecuritySettings } from "./SecuritySettings";
 
 const THEME_OPTIONS: { value: Theme; icon: IconName }[] = [
   { value: "light", icon: "sun" },
@@ -19,7 +20,7 @@ const NAV_MIN = 160;
 const NAV_MAX = 360;
 const NAV_WIDTH_KEY = "codewood.settingsNavWidth";
 
-type PageId = "appearance" | "general" | "models" | "skills" | "mcp" | "subagents" | "console" | "archivedChats";
+type PageId = "appearance" | "general" | "models" | "skills" | "mcp" | "subagents" | "console" | "archivedChats" | "security";
 
 function loadNavWidth(): number {
   const raw = Number(window.localStorage.getItem(NAV_WIDTH_KEY));
@@ -50,7 +51,8 @@ export function SettingsView() {
     v === "mcp" ||
     v === "subagents" ||
     v === "console" ||
-    v === "archivedChats";
+    v === "archivedChats" ||
+    v === "security";
   const [page, setPage] = useState<PageId>(
     isPageId(settingsInitialPage) ? settingsInitialPage : "general",
   );
@@ -161,6 +163,7 @@ export function SettingsView() {
     { id: "subagents", label: t("settings.page.subagents"), icon: "robot" },
     { id: "console", label: t("settings.page.console"), icon: "terminal" },
     { id: "archivedChats", label: t("settings.page.archivedChats"), icon: "archive" },
+    { id: "security", label: t("settings.page.security"), icon: "shield" },
   ];
 
   return (
@@ -287,6 +290,7 @@ export function SettingsView() {
         {page === "subagents" && <SubAgentsSettings />}
         {page === "console" && <ConsoleSettings />}
         {page === "archivedChats" && <ArchivedChatsSettings />}
+        {page === "security" && <SecuritySettings />}
       </section>
 
     </div>

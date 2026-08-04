@@ -14,6 +14,7 @@ import type {
   AskMoreInfoRequest,
   ChatSummary,
   CompactNoticeData,
+  ConfirmAllowlist,
   CompletionCatalog,
   ConfirmRequest,
   FileChangeSummary,
@@ -292,6 +293,10 @@ interface AppContextValue {
   getModelPresets: () => Promise<unknown[]>;
   getGeneralConfig: () => Promise<GeneralConfig | null>;
   saveGeneralConfig: (general: Partial<GeneralConfig>) => Promise<boolean>;
+  getConfirmAllowlist: () => Promise<ConfirmAllowlist | null>;
+  saveConfirmAllowlist: (
+    allowlist: ConfirmAllowlist,
+  ) => Promise<{ ok: boolean; allowlist?: ConfirmAllowlist }>;
   getMcpOverview: () => Promise<McpServerSummary[]>;
   getMcpServerDetails: (name: string) => Promise<McpServerDetails | null>;
   setMcpServerEnabled: (name: string, enabled: boolean) => Promise<boolean>;
@@ -4482,6 +4487,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     getGeneralConfig: () => client.getGeneralConfig(),
     saveGeneralConfig: (general: Partial<GeneralConfig>) =>
       client.saveGeneralConfig(general),
+    getConfirmAllowlist: () => client.getConfirmAllowlist(),
+    saveConfirmAllowlist: (allowlist: ConfirmAllowlist) =>
+      client.saveConfirmAllowlist(allowlist),
     getMcpOverview: () => client.getMcpOverview(),
     getMcpServerDetails: (name: string) => client.getMcpServerDetails(name),
     setMcpServerEnabled: (name: string, enabled: boolean) =>
