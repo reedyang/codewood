@@ -375,6 +375,46 @@ function parseHistoryTime(value?: string): number | undefined {
   return Number.isNaN(ts) ? undefined : ts;
 }
 
+type TranscriptEntry =
+  | { source: "history"; index: number; turn: HistoryTurn; timestamp: number | undefined; order: number }
+  | { source: "live"; index: number; turn: Turn; timestamp: number | undefined; order: number };
+
+/**
+ * A history reload can race a terminal SSE event: the newly persisted turn is
+ * then in history while an older settled turn is still kept in the live bucket
+ * until its duplicate check can be retried.  Do not let the storage buckets
+ * dictate transcript order in that window; use their message times instead.
+ */
+export function orderTranscriptEntries(
+  historyTurns: HistoryTurn[],
+  liveTurns: Turn[],
+): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = [
+    ...historyTurns.map((turn, index) => ({
+      source: "history" as const,
+      index,
+      turn,
+      timestamp: parseHistoryTime(turn.timestamp),
+      order: index,
+    })),
+    ...liveTurns.map((turn, index) => ({
+      source: "live" as const,
+      index,
+      turn,
+      timestamp: turn.startedAt,
+      order: historyTurns.length + index,
+    })),
+  ];
+  return entries.sort((left, right) => {
+    // Preserve the previous history-then-live order when either legacy record
+    // has no reliable time rather than guessing and causing a fresh reorder.
+    if (left.timestamp === undefined || right.timestamp === undefined) {
+      return left.order - right.order;
+    }
+    return left.timestamp - right.timestamp || left.order - right.order;
+  });
+}
+
 interface MessageHandlers {
   onCopy: (text: string) => void;
   onFork: (index: number) => void;
@@ -1576,6 +1616,10 @@ export function ChatView() {
       }
     }
   }
+  const orderedTranscriptEntries = useMemo(
+    () => orderTranscriptEntries(historyTurns, turns),
+    [historyTurns, turns],
+  );
 
   // While an ``request_user_input`` prompt is pending the agent is paused waiting
   // on the user's selection — it isn't actively working — so the action
@@ -1800,18 +1844,29 @@ export function ChatView() {
                 {historyLoading ? t("history.loading") : t("history.more")}
               </div>
             )}
-            {(() => {
-              return historyTurns.map((turn, index) => {
+            {orderedTranscriptEntries.map((entry) => {
+              if (entry.source === "history") {
                 return (
                   <HistoryTurnView
-                    key={`h-${index}`}
-                    turn={turn}
-                    negIndex={histNeg[index]}
+                    key={`h-${entry.index}`}
+                    turn={entry.turn}
+                    negIndex={histNeg[entry.index]}
                     handlers={messageHandlers}
                   />
                 );
-              });
-            })()}
+              }
+              const turn = entry.turn;
+              return (
+                <TurnView
+                  key={turn.id}
+                  turn={turn}
+                  now={now}
+                  negIndex={liveNeg[entry.index]}
+                  handlers={messageHandlers}
+                  compactNotice={compactNotice?.anchorTurnId === turn.id ? compactNotice : null}
+                />
+              );
+            })}
             {compactNotice && compactNotice.anchorTurnId === undefined && (
               <div className="turn compact-notice-turn" role="alert" aria-live="polite">
                 <CompactNoticeView
@@ -1821,16 +1876,6 @@ export function ChatView() {
                 />
               </div>
             )}
-            {turns.map((turn, index) => (
-              <TurnView
-                key={turn.id}
-                turn={turn}
-                now={now}
-                negIndex={liveNeg[index]}
-                handlers={messageHandlers}
-                compactNotice={compactNotice?.anchorTurnId === turn.id ? compactNotice : null}
-              />
-            ))}
             <AskMoreInfoPanel />
             <ConfirmDialog />
             {(() => {

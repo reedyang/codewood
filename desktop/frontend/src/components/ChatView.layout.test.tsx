@@ -17,7 +17,7 @@ vi.mock("../state/AppContext", () => ({
   }),
 }));
 
-import { HistoryRoundDetailView, LiveRoundView, RoundShell, TurnView } from "./ChatView";
+import { HistoryRoundDetailView, LiveRoundView, orderTranscriptEntries, RoundShell, TurnView } from "./ChatView";
 import { StepsView } from "./Steps";
 
 describe("HistoryRoundDetailView", () => {
@@ -290,5 +290,29 @@ describe("TurnView compact notice placement", () => {
     expect(
       user.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+  });
+});
+
+describe("orderTranscriptEntries", () => {
+  it("keeps an older settled live turn ahead of a newer persisted history turn", () => {
+    const entries = orderTranscriptEntries(
+      [{
+        userText: "本轮用户消息",
+        timestamp: "2026-08-04 12:01:00",
+        rounds: [],
+      }],
+      [{
+        id: 1,
+        userText: "前一轮用户消息",
+        rounds: [],
+        startedAt: new Date("2026-08-04T12:00:00").getTime(),
+        endedAt: new Date("2026-08-04T12:00:30").getTime(),
+      }],
+    );
+
+    expect(entries.map((entry) => entry.turn.userText)).toEqual([
+      "前一轮用户消息",
+      "本轮用户消息",
+    ]);
   });
 });
