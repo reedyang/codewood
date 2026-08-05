@@ -28,18 +28,28 @@ import type {
  */
 export class ApiClient {
   readonly base: string;
-  private readonly token: string;
+  readonly token: string;
+  readonly port: string;
 
-  constructor() {
+  constructor(port?: string, token?: string) {
+    // After a backend crash-restart the host publishes a fresh port/token;
+    // explicit values let the client be rebuilt against the new endpoint.
+    if (port != null && token != null) {
+      this.port = port;
+      this.token = token;
+      this.base = `http://127.0.0.1:${port}`;
+      return;
+    }
     // Connection details arrive in the URL hash (so file:// loads work in
     // WebView2); fall back to the query string for http dev servers.
     const hash = window.location.hash.startsWith("#")
       ? window.location.hash.slice(1)
       : "";
     const params = new URLSearchParams(hash || window.location.search);
-    const port = params.get("port") ?? "";
+    const parsedPort = params.get("port") ?? "";
     this.token = params.get("token") ?? "";
-    this.base = `http://127.0.0.1:${port}`;
+    this.port = parsedPort;
+    this.base = `http://127.0.0.1:${parsedPort}`;
   }
 
   private headers(): HeadersInit {

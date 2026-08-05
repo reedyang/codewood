@@ -55,6 +55,7 @@ import {
   type RightPanelTabId,
 } from "./rightPanelTabs";
 import { IMG_CLOSE, IMG_OPEN } from "../utils/imageRefs";
+import { hostApi } from "../utils/hostApi";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -503,6 +504,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // event arrived after they had already switched away. Keyed by the
   // workspace-qualified composite (same convention as ``busyByChat``).
   const [connected, setConnected] = useState(false);
+  // Bumped whenever the ApiClient is rebuilt against a new backend endpoint
+  // (crash-restart); re-runs the event-stream effect with the fresh client.
+  const [connGeneration, setConnGeneration] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [confirmRequestByChat, setConfirmRequestByChat] = useState<
     Record<string, ConfirmRequest>
@@ -2959,7 +2963,68 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       source?.close();
     };
-  }, [client, appendSegment, startTurn, startRound, endRound, endActiveTurn, setBusyForChat]);
+  }, [client, connGeneration, appendSegment, startTurn, startRound, endRound, endActiveTurn, setBusyForChat]);
+
+  // Backend crash recovery: the host restarts the serve process on a fresh
+  // port/token and publishes the new endpoint. While disconnected we poll the
+  // host bridge (and listen for its push notification) and rebuild the
+  // ApiClient once the endpoint changes, which re-runs the event-stream
+  // effect above and reconnects. No-op in a plain browser (no host to poll).
+  useEffect(() => {
+    const api = hostApi();
+    if (!api || typeof api.backend_info !== "function") {
+      return;
+    }
+    let cancelled = false;
+
+    const applyInfo = (port: number, token: string) => {
+      const cur = clientRef.current;
+      if (!cur) {
+        return;
+      }
+      if (String(port) === cur.port && token === cur.token) {
+        return;
+      }
+      clientRef.current = new ApiClient(String(port), token);
+      setConnGeneration((g) => g + 1);
+    };
+
+    const onPush = (e: Event) => {
+      const detail = (e as CustomEvent<{ port: number; token: string }>).detail;
+      if (detail && typeof detail.port === "number") {
+        applyInfo(detail.port, detail.token);
+      }
+    };
+
+    const check = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const info = await api.backend_info!();
+        if (!cancelled && info && typeof info.port === "number") {
+          applyInfo(info.port, info.token);
+        }
+      } catch {
+        // Host bridge busy/unavailable; retry on the next tick.
+      }
+    };
+
+    window.addEventListener("codewood:backend-restarted", onPush);
+    if (!connected) {
+      void check();
+      const timer = setInterval(() => void check(), 1500);
+      return () => {
+        cancelled = true;
+        clearInterval(timer);
+        window.removeEventListener("codewood:backend-restarted", onPush);
+      };
+    }
+    return () => {
+      cancelled = true;
+      window.removeEventListener("codewood:backend-restarted", onPush);
+    };
+  }, [connected, client, connGeneration]);
 
   const persistPendingInputs = useCallback(
     async (chatId: string, wsId: string, inputs: string[]) => {

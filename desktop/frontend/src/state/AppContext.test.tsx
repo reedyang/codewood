@@ -64,6 +64,14 @@ const apiMock = vi.hoisted(() => {
 
 vi.mock("../api/client", () => ({
   ApiClient: class {
+    port = "";
+    token = "";
+    constructor(port?: string, token?: string) {
+      if (port != null && token != null) {
+        this.port = String(port);
+        this.token = token;
+      }
+    }
     getState = apiMock.getState;
     connectEvents = apiMock.connectEvents;
     getChatHistory = apiMock.getChatHistory;
@@ -2759,5 +2767,74 @@ describe("AppContext thinking rounds", () => {
       expect(view.cacheStats?.supported).toBe(true);
       expect(view.tokenStats?.outputTokens).toBe(500);
     });
+  });
+});
+
+describe("AppContext backend crash recovery", () => {
+  beforeEach(() => {
+    apiMock.reset();
+    apiMock.getState.mockResolvedValue(buildState());
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    );
+    window.localStorage.clear();
+    // Simulate the desktop host bridge (pywebview js_api).
+    (window as unknown as { pywebview?: unknown }).pywebview = {
+      api: { backend_info: vi.fn() },
+    };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { pywebview?: unknown }).pywebview;
+  });
+
+  it("rebuilds the ApiClient and reconnects when the host publishes a new endpoint", async () => {
+    const bridge = (
+      window as unknown as {
+        pywebview: { api: { backend_info: ReturnType<typeof vi.fn> } };
+      }
+    ).pywebview.api;
+    // Server is down: getState rejects and the stale endpoint stays
+    // published until the host finishes its restart.
+    apiMock.getState.mockRejectedValue(new Error("connection refused"));
+    bridge.backend_info.mockResolvedValue({ port: 1, token: "old-token" });
+
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    // Flush mount effects (initial getState + immediate endpoint poll).
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const callsBefore = apiMock.connectEvents.mock.calls.length;
+    expect(callsBefore).toBeGreaterThanOrEqual(1);
+
+    // The backend was restarted: the host pushes the new endpoint to the
+    // frontend, which rebuilds its ApiClient and reconnects immediately.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("codewood:backend-restarted", {
+          detail: { port: 2, token: "new-token" },
+        }),
+      );
+    });
+
+    // Flush the re-run event-stream effect (its getState rejection lands here).
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The event stream was re-established against the rebuilt client.
+    expect(apiMock.connectEvents.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(apiMock.getState.mock.calls.length).toBeGreaterThan(1);
   });
 });
