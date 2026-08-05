@@ -69,9 +69,6 @@ function ContextUsageView({ usage, t }: { usage: ContextUsage | null | undefined
           <span className="cache-stat-label">{t("dashboard.contextPercent")}</span>
         </div>
       </div>
-      <div className="context-usage-bar" title={`${percent.toFixed(1)}%`}>
-        <div className="context-usage-bar-fill" style={{ width: `${percent}%` }} />
-      </div>
       {parts.length > 0 ? (
         <div className="context-usage-parts">
           {parts.map((p) => (
@@ -79,15 +76,9 @@ function ContextUsageView({ usage, t }: { usage: ContextUsage | null | undefined
               <span className="context-usage-part-label" title={contextPartLabel(p.key, t)}>
                 {contextPartLabel(p.key, t)}
               </span>
-              <span className="context-usage-part-bar">
-                <span
-                  className="context-usage-part-bar-fill"
-                  style={{ width: `${windowSize > 0 ? Math.min(100, (p.tokens * 100) / windowSize) : 0}%` }}
-                />
-              </span>
-              <span className="context-usage-part-value">
-                {p.tokens.toLocaleString()}
-                <em>{windowSize > 0 ? `${((p.tokens * 100) / windowSize).toFixed(1)}%` : ""}</em>
+              <span className="context-usage-part-value">{p.tokens.toLocaleString()}</span>
+              <span className="context-usage-part-percent">
+                {windowSize > 0 ? `${((p.tokens * 100) / windowSize).toFixed(1)}%` : ""}
               </span>
             </div>
           ))}
