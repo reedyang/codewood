@@ -497,6 +497,34 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertIsInstance(rows, list)
             self.assertTrue(len(rows) > 0)
 
+    def test_gui_stream_mode_skips_tui_preview_without_confirm_provider(self):
+        """GUI stream mode, rather than approval setup, owns preview rendering."""
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "demo.txt"
+            target.write_text("hello\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+            agent.execution_policy = "moderate"
+            # The confirmation provider governs approval only; GUI stream mode
+            # must independently prevent the terminal preview from printing.
+            agent._gui_plain_stream = True
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = action_apply_unified_patch(
+                    agent,
+                    str(target),
+                    "@@ -1,1 +1,1 @@\n-hello\n+hello_mod\n",
+                    confirmed=False,
+                )
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(buf.getvalue(), "")
+            self.assertTrue(result.get("change_preview_rows"))
+
     def test_apply_patch_falls_back_to_context_when_hunk_line_number_is_wrong(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
