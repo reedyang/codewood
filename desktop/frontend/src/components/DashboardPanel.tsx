@@ -39,7 +39,7 @@ function contextPartLabel(key: string, t: (key: string) => string): string {
 function ContextUsageView({ usage, t }: { usage: ContextUsage | null | undefined; t: (key: string) => string }) {
   const windowSize = usage?.window && usage.window > 0 ? usage.window : 0;
   const usedTokens = usage?.tokens && usage.tokens > 0 ? usage.tokens : 0;
-  const percent = windowSize > 0 ? Math.min(100, Math.max(0, Math.round((usedTokens * 100) / windowSize))) : 0;
+  const percent = windowSize > 0 ? Math.min(100, Math.max(0, (usedTokens * 100) / windowSize)) : 0;
   const orderIndex = (key: string) => {
     const i = CONTEXT_PART_ORDER.indexOf(key);
     return i === -1 ? CONTEXT_PART_ORDER.length : i;
@@ -64,12 +64,12 @@ function ContextUsageView({ usage, t }: { usage: ContextUsage | null | undefined
         </div>
         <div className="cache-stat">
           <span className={`cache-stat-value ${percent > 80 ? "cache-miss" : percent > 0 ? "cache-hit" : ""}`}>
-            {percent}%
+            {percent.toFixed(1)}%
           </span>
           <span className="cache-stat-label">{t("dashboard.contextPercent")}</span>
         </div>
       </div>
-      <div className="context-usage-bar" title={`${percent}%`}>
+      <div className="context-usage-bar" title={`${percent.toFixed(1)}%`}>
         <div className="context-usage-bar-fill" style={{ width: `${percent}%` }} />
       </div>
       {parts.length > 0 ? (
@@ -87,7 +87,7 @@ function ContextUsageView({ usage, t }: { usage: ContextUsage | null | undefined
               </span>
               <span className="context-usage-part-value">
                 {p.tokens.toLocaleString()}
-                <em>{windowSize > 0 ? `${Math.round((p.tokens * 100) / windowSize)}%` : ""}</em>
+                <em>{windowSize > 0 ? `${((p.tokens * 100) / windowSize).toFixed(1)}%` : ""}</em>
               </span>
             </div>
           ))}

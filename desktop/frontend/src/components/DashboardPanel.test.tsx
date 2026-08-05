@@ -38,10 +38,13 @@ describe("DashboardPanel context usage", () => {
 
     expect(screen.getByText("128,000")).toBeTruthy();
     expect(screen.getByText("15,360")).toBeTruthy();
-    expect(screen.getByText("12%")).toBeTruthy();
+    expect(screen.getByText("12.0%")).toBeTruthy();
     expect(screen.getByText("dashboard.part.system")).toBeTruthy();
     expect(screen.getByText("dashboard.part.tools")).toBeTruthy();
     expect(screen.getByText("dashboard.part.history")).toBeTruthy();
+    expect(screen.getByText("6.3%")).toBeTruthy();
+    expect(screen.getByText("3.1%")).toBeTruthy();
+    expect(screen.getByText("2.6%")).toBeTruthy();
   });
 
   it("renders the breakdown in fixed order with history last", () => {

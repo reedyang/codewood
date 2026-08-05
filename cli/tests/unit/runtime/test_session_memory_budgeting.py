@@ -1325,6 +1325,89 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             self.assertGreaterEqual(int(p.get("tokens") or 0), 0)
             self.assertIn(str(p.get("key") or ""), allowed)
 
+    def test_refresh_context_usage_snapshot_history_fast_path_when_history_dominates(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 128000}
+        agent.conversation_history = [
+            {"role": "user", "content": "Implement feature A", "_token_count": 14},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "_cache_stats": {"input_tokens": 50000},
+                "_output_tokens": 100,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+            },
+        ]
+        svc = SessionMemoryService(agent)
+        cm = svc.llm_context_manager
+        orig_record = cm._context_usage_from_chat_record
+        calls = []
+
+        def _spy_record(messages_only=False):
+            calls.append(messages_only)
+            return orig_record(messages_only=messages_only)
+
+        cm._context_usage_from_chat_record = _spy_record  # type: ignore[assignment]
+        cm._build_context_usage_parts = (  # type: ignore[assignment]
+            lambda history_tokens: [
+                {"key": "system", "tokens": 800},
+                {"key": "tools", "tokens": 1200},
+            ]
+        )
+
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
+
+        # window usage = 50000 (API input_tokens) + 100 (anchor output) = 50100;
+        # other buckets = 800 + 1200 = 2000; residual 48100 > 10000 triggers the
+        # fast path, so the expensive per-message pass (messages_only=True) is
+        # skipped entirely.
+        self.assertEqual(calls, [False])
+        self.assertEqual(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 50100)
+        parts = {str(p.get("key") or ""): int(p.get("tokens") or 0) for p in getattr(agent, "_last_context_parts", [])}
+        self.assertEqual(parts.get("system"), 800)
+        self.assertEqual(parts.get("tools"), 1200)
+        self.assertEqual(parts.get("history"), 50100 - 2000)
+
+    def test_refresh_context_usage_snapshot_history_falls_back_when_residual_small(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 128000}
+        agent.conversation_history = [
+            {"role": "user", "content": "Implement feature A", "_token_count": 14},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "_cache_stats": {"input_tokens": 3000},
+                "_output_tokens": 100,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+            },
+        ]
+        svc = SessionMemoryService(agent)
+        cm = svc.llm_context_manager
+        orig_record = cm._context_usage_from_chat_record
+        calls = []
+
+        def _spy_record(messages_only=False):
+            calls.append(messages_only)
+            return orig_record(messages_only=messages_only)
+
+        cm._context_usage_from_chat_record = _spy_record  # type: ignore[assignment]
+        cm._build_context_usage_parts = (  # type: ignore[assignment]
+            lambda history_tokens: [
+                {"key": "system", "tokens": 800},
+                {"key": "tools", "tokens": 1200},
+            ]
+        )
+
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
+
+        # window = 3000 + 100 = 3100; residual 3100 - 2000 = 1100 <= 10000, so the
+        # exact per-message pass still runs and its estimate (14 + 100) is used.
+        self.assertEqual(calls, [False, True])
+        parts = {str(p.get("key") or ""): int(p.get("tokens") or 0) for p in getattr(agent, "_last_context_parts", [])}
+        self.assertEqual(parts.get("history"), 14 + 100)
+
     def test_refresh_context_usage_snapshot_tool_schemas_land_in_tools_bucket(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 128000}

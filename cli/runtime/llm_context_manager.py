@@ -95,6 +95,7 @@ AGGRESSIVE_COMPRESS_TRIGGER_PCT = 80
 AGGRESSIVE_COMPRESS_TARGET_PCT = 20
 AUTO_COMPACT_TRIGGER_PCT = 80
 AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
+HISTORY_USAGE_FAST_PATH_THRESHOLD = 10_000
 
 
 class LLMContextManager:
@@ -1429,14 +1430,21 @@ class LLMContextManager:
                 # history_tokens (anchored on the real API input_tokens)
                 # already includes the system prompt, tool schemas and skills
                 # prefix from the previous request; render the system-side
-                # buckets from the actual part texts. The history bucket shows
-                # the actual conversation messages (per-message text estimate)
-                # instead of the anchor residual, so a short chat with a cache
-                # anchor does not display a large "history" number; the
-                # provider-vs-estimate tokenizer gap is intentionally not
-                # attributed to any component.
+                # buckets from the actual part texts.
                 parts = self._build_context_usage_parts(0)
-                history_display = self._context_usage_from_chat_record(messages_only=True)
+                # Fast path: the window usage (history_tokens, anchored on the
+                # API-reported input_tokens) minus all non-history buckets gives
+                # the history share without re-estimating every message. Only
+                # trust it when the history portion clearly dominates (>10k
+                # tokens); otherwise fall back to the exact per-message
+                # computation so a short chat does not display a large
+                # "history" number from the provider-vs-estimate gap.
+                other_usage = sum(max(0, int(p.get("tokens") or 0)) for p in parts)
+                history_display = 0
+                if int(history_tokens) - other_usage > HISTORY_USAGE_FAST_PATH_THRESHOLD:
+                    history_display = int(history_tokens) - other_usage
+                else:
+                    history_display = self._context_usage_from_chat_record(messages_only=True)
                 if history_display > 0:
                     parts.append({"key": "history", "tokens": history_display})
             else:
