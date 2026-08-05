@@ -1285,6 +1285,7 @@ class Agent:
         self._last_llm_summary_pair_count = 0
         self._last_context_usage_percent = 0
         self._last_context_input_tokens = 0
+        self._last_context_parts = []
         self._chat_state_manager.clear_chat_context(self.active_chat_id)
         try:
             self._persist_active_chat_usage_snapshot()

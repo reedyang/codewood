@@ -629,7 +629,11 @@ class LLMContextManager:
         content = self._normalize_history_content_for_model(role, str(effective.get("content") or ""), message=effective)
         return self._estimate_message_tokens(role, content)
 
-    def _history_tokens_cumulative(self, messages: List[Dict[str, Any]]) -> int:
+    def _history_tokens_cumulative(
+        self,
+        messages: List[Dict[str, Any]],
+        use_cache_anchor: bool = True,
+    ) -> int:
         """Compute total history tokens using the cumulative formula.
 
         The last message with ``_cache_stats`` provides a cumulative anchor
@@ -641,6 +645,10 @@ class LLMContextManager:
         Internal-bookkeeping messages (task-worked summaries, compaction
         notices, slash results, etc.) are skipped — they are never sent to
         the model and should not inflate the usage display.
+
+        When ``use_cache_anchor`` is False the anchor is ignored and only the
+        per-message text estimates are summed — used to show the actual
+        conversation size in the dashboard instead of the anchor residual.
         """
         parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
@@ -680,6 +688,23 @@ class LLMContextManager:
             role = str(msg.get("role") or "").strip().lower()
             effective = _sms._assistant_model_view(msg) if role == "assistant" else msg
             content = self._normalize_history_content_for_model(role, str(effective.get("content") or ""), message=effective)
+            if role == "assistant":
+                # History is defined as every user message plus every model
+                # reply including reasoning and tool-call payloads, so fold
+                # the model-view extras into the text-level estimate.
+                text = content
+                thinking = str(effective.get("_thinking") or "").strip()
+                if thinking:
+                    text = f"{text}\n{thinking}" if text else thinking
+                tcs = effective.get("tool_calls")
+                if isinstance(tcs, list) and tcs:
+                    try:
+                        calls_text = json.dumps(tcs, ensure_ascii=False)
+                    except Exception:
+                        calls_text = ""
+                    if calls_text:
+                        text = f"{text}\n{calls_text}" if text else calls_text
+                content = text
             return self._estimate_message_tokens(role, content)
 
         total = 0
@@ -698,11 +723,12 @@ class LLMContextManager:
         # anchor's input_tokens still describe the *pre-compaction* context, so
         # trusting it would double-count everything. In that case we start from
         # the compaction summary and count forward instead.
-        use_cache_anchor = (
-            0 <= last_cache_idx < len(messages)
+        anchor_valid = (
+            use_cache_anchor
+            and 0 <= last_cache_idx < len(messages)
             and last_cache_idx >= latest_compaction_idx
         )
-        if use_cache_anchor:
+        if anchor_valid:
             anchor = messages[last_cache_idx]
             cs = anchor["_cache_stats"]
             if "input_tokens" in cs:
@@ -728,20 +754,90 @@ class LLMContextManager:
             total += _message_cost(m)
         return total
 
-    def _context_usage_from_chat_record(self) -> int:
+    def _context_usage_from_chat_record(self, messages_only: bool = False) -> int:
         """Compute cumulative history tokens from the active chat record.
 
         Works on any thread (no session binding required) because it reads
         from the persisted chat record, not conversation_history.
         Falls back to conversation_history when the chat record is unavailable.
+
+        ``messages_only=True`` skips the cache anchor so the result reflects
+        the actual conversation messages rather than the last API input.
         """
         cid = str(getattr(self.agent, "active_chat_id", "") or "").strip()
         chat = self.agent._find_chat_by_id(cid) if cid else None
         if not isinstance(chat, dict):
             hist = list(getattr(self.agent, "conversation_history", None) or [])
-            return self._history_tokens_cumulative(hist)
+            return self._history_tokens_cumulative(hist, use_cache_anchor=not messages_only)
         msgs = list(chat.get("messages") or [])
-        return self._history_tokens_cumulative(msgs)
+        return self._history_tokens_cumulative(msgs, use_cache_anchor=not messages_only)
+
+    def _build_context_usage_parts(
+        self,
+        history_tokens: int,
+    ) -> List[Dict[str, Any]]:
+        """Estimate token usage per context component for the dashboard breakdown.
+
+        The dashboard shows eight mutually exclusive buckets: system prompt
+        (base + collaboration mode + domain-specific append + runtime tail),
+        tools, skills routing prefix, sub-agents, MCP catalog, user
+        preferences, AGENTS.md and history. Each context part (see
+        ``cli.runtime.context``) is rendered once and attributed to its own
+        bucket. The estimates are text-level (no per-message overhead), so
+        their sum may differ slightly from ``_last_context_input_tokens``; the
+        header total remains authoritative. Best-effort: any part that fails to
+        render is skipped rather than aborting the snapshot refresh.
+        """
+        buckets: Dict[str, int] = {}
+
+        def _add(key: str, text: str) -> None:
+            text = str(text or "")
+            if not text.strip():
+                return
+            try:
+                tokens = int(self._estimate_text_tokens(text))
+            except Exception:
+                tokens = 0
+            if tokens > 0:
+                buckets[key] = buckets.get(key, 0) + tokens
+
+        def _add_tokens(key: str, tokens: int) -> None:
+            tokens = max(0, int(tokens or 0))
+            if tokens > 0:
+                buckets[key] = buckets.get(key, 0) + tokens
+
+        part_texts: Dict[str, str] = {}
+        try:
+            from .prompt_composer import _render_context_parts
+
+            for part_name, text in _render_context_parts(self.agent, True):
+                part_texts[str(part_name or "")] = str(text or "")
+        except Exception:
+            part_texts = {}
+
+        system_text = "".join(
+            [
+                part_texts.get("base_system_prompt", ""),
+                part_texts.get("collaboration_mode", ""),
+                self._software_development_prompt_append(),
+            ]
+        )
+        _add("system", system_text)
+        _add("skills", str(getattr(self.agent, "_skills_routing_prefix", "") or ""))
+        for key in (
+            "agents_md",
+            "user_preferences",
+            "tools",
+            "subagents",
+            "mcp",
+        ):
+            _add(key, part_texts.get(key, ""))
+        # The tool catalog text is only part of the tools cost: the JSON
+        # schemas sent via the API ``functions`` array also belong to the
+        # tools bucket (otherwise they leak into the history residual).
+        _add_tokens("tools", self._estimate_tool_schemas_tokens())
+        _add_tokens("history", history_tokens)
+        return [{"key": k, "tokens": v} for k, v in buckets.items()]
 
     def _auto_tail_count_within_budget(self, rows: List[Tuple[int, Dict[str, Any]]], max_tokens: int) -> int:
         if not rows or max_tokens <= 0:
@@ -1175,13 +1271,30 @@ class LLMContextManager:
             self._context_compaction_lock.release()
 
     # --- Usage snapshot ------------------------------------------------------
-    def _store_context_usage_snapshot(self, context_window: int, total_input_tokens: int) -> None:
+    def _store_context_usage_snapshot(
+        self,
+        context_window: int,
+        total_input_tokens: int,
+        parts: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         ctx_window = max(1, int(context_window or DEFAULT_CONTEXT_WINDOW))
         total = max(0, int(total_input_tokens or 0))
         usage_pct = max(0, min(999, int(round((total * 100.0) / ctx_window))))
         self.agent._last_context_window = ctx_window
         self.agent._last_context_input_tokens = total
         self.agent._last_context_usage_percent = usage_pct
+        # Only replace the per-component breakdown when a fresh one is provided;
+        # callers that store a snapshot mid-task (e.g. after aggressive
+        # compression) keep the last computed breakdown rather than clearing it.
+        if parts is not None:
+            self.agent._last_context_parts = [
+                {
+                    "key": str(p.get("key") or ""),
+                    "tokens": max(0, int(p.get("tokens") or 0)),
+                }
+                for p in parts
+                if isinstance(p, dict) and str(p.get("key") or "").strip()
+            ]
 
     def _persist_context_usage_snapshot(self) -> None:
         persisted = False
@@ -1259,8 +1372,15 @@ class LLMContextManager:
                     sys_tokens = self._estimate_message_tokens("system", sys_prompt)
                     tool_schemas_tokens = self._estimate_tool_schemas_tokens()
                     total_input_tokens = int(history_tokens + user_tokens + sys_tokens + tool_schemas_tokens)
+                    parts = [
+                        {"key": "system", "tokens": int(sys_tokens)},
+                        {"key": "tools", "tokens": int(tool_schemas_tokens)},
+                    ]
                 else:
                     total_input_tokens = int(history_tokens + user_tokens)
+                    parts = []
+                parts.append({"key": "history", "tokens": int(history_tokens)})
+                parts = [p for p in parts if int(p.get("tokens") or 0) > 0]
                 if expected:
                     current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
                     if current != expected:
@@ -1270,6 +1390,7 @@ class LLMContextManager:
                 self._store_context_usage_snapshot(
                     int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
                     total_input_tokens,
+                    parts,
                 )
                 self._persist_context_usage_snapshot()
                 return
@@ -1294,24 +1415,8 @@ class LLMContextManager:
                 f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
                 f"{system_prompt_snapshot}\n"
                 f"{self._software_development_prompt_append()}"
-                f"Current workspace name: {str(getattr(self.agent, 'workspace_name', '') or '')}\n"
-                f"Current chat name: {str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
             )
             system_tokens = self._estimate_message_tokens("system", sys_text)
-            force_new_requirement = bool(
-                getattr(self.agent, "_force_current_input_as_requirement_once", False)
-            )
-            requirement = (
-                str(user_input_hint or "").strip()
-                if force_new_requirement
-                else self._first_user_requirement(str(user_input_hint or "").strip())
-            )
-            user_anchor = (
-                f"User input: {str(user_input_hint or '').strip()}\n"
-            )
-            if context_hint:
-                user_anchor += f"Operation context: {str(context_hint)}\n"
-            user_tokens = self._estimate_message_tokens("user", user_anchor)
             # When history has _cache_stats, prompt_cache_hit_tokens +
             # prompt_cache_miss_tokens already include the system prompt.
             # Adding system_tokens separately would double-count it.
@@ -1321,9 +1426,23 @@ class LLMContextManager:
             )
             if has_cache_anchor:
                 total_input_tokens = int(history_tokens)
+                # history_tokens (anchored on the real API input_tokens)
+                # already includes the system prompt, tool schemas and skills
+                # prefix from the previous request; render the system-side
+                # buckets from the actual part texts. The history bucket shows
+                # the actual conversation messages (per-message text estimate)
+                # instead of the anchor residual, so a short chat with a cache
+                # anchor does not display a large "history" number; the
+                # provider-vs-estimate tokenizer gap is intentionally not
+                # attributed to any component.
+                parts = self._build_context_usage_parts(0)
+                history_display = self._context_usage_from_chat_record(messages_only=True)
+                if history_display > 0:
+                    parts.append({"key": "history", "tokens": history_display})
             else:
                 tool_schemas_tokens = self._estimate_tool_schemas_tokens()
                 total_input_tokens = int(system_tokens + history_tokens + tool_schemas_tokens)
+                parts = self._build_context_usage_parts(history_tokens)
             if expected:
                 current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
                 if current != expected:
@@ -1333,6 +1452,7 @@ class LLMContextManager:
             self._store_context_usage_snapshot(
                 int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
                 total_input_tokens,
+                parts,
             )
             self._persist_context_usage_snapshot()
         except Exception:
@@ -1423,8 +1543,6 @@ class LLMContextManager:
         default_install_skills_dir = (get_app_global_config_dir() / "skills").resolve()
         runtime_tail_raw = (
             f"Current OS info: {os_info}\n"
-            f"Current workspace name: {self.agent.workspace_name}\n"
-            f"Current chat name (weak hint, session label only, not this turn's task goal): {self.agent.active_chat_name}\n"
             f"Current workspace root (absolute path): {workspace_root_text}\n"
             f"Current workspace data directory (absolute path): {workspace_data_dir_text}\n"
             f"Default skill install path (absolute path): {default_install_skills_dir}\n"

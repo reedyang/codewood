@@ -35,6 +35,7 @@ class SessionState:
         "last_context_usage_percent",
         "last_context_input_tokens",
         "last_context_window",
+        "last_context_parts",
         "in_task_execution",
         "queued_user_input",
         "last_shell_output_visible_lines",
@@ -74,6 +75,7 @@ class SessionState:
         self.last_context_usage_percent: int = 0
         self.last_context_input_tokens: int = 0
         self.last_context_window: int = 0
+        self.last_context_parts: List[Any] = []
         self.in_task_execution: bool = False
         self.queued_user_input: Optional[str] = None
         self.last_shell_output_visible_lines: int = 0
@@ -112,6 +114,7 @@ SESSION_FIELD_MAP: Dict[str, str] = {
     "_last_context_usage_percent": "last_context_usage_percent",
     "_last_context_input_tokens": "last_context_input_tokens",
     "_last_context_window": "last_context_window",
+    "_last_context_parts": "last_context_parts",
     "_in_task_execution": "in_task_execution",
     "_queued_user_input": "queued_user_input",
     "_last_shell_output_visible_lines": "last_shell_output_visible_lines",

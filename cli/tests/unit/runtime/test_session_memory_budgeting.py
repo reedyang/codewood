@@ -1300,6 +1300,64 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertGreaterEqual(compose_calls["n"], 2)
         self.assertEqual(first, second)
 
+    def test_refresh_context_usage_snapshot_builds_per_component_breakdown(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 128000}
+        agent.conversation_history = [
+            {"role": "user", "content": "Implement feature A"},
+            {"role": "assistant", "content": "Got it"},
+        ]
+        svc = SessionMemoryService(agent)
+
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
+
+        parts = getattr(agent, "_last_context_parts", None)
+        self.assertIsInstance(parts, list)
+        self.assertTrue(parts)
+        keys = [str(p.get("key") or "") for p in parts]
+        for expected in ("system", "history"):
+            self.assertIn(expected, keys)
+        allowed = {
+            "system", "skills", "agents_md", "user_preferences", "tools",
+            "subagents", "mcp", "history",
+        }
+        for p in parts:
+            self.assertGreaterEqual(int(p.get("tokens") or 0), 0)
+            self.assertIn(str(p.get("key") or ""), allowed)
+
+    def test_refresh_context_usage_snapshot_tool_schemas_land_in_tools_bucket(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 128000}
+        agent.conversation_history = []
+        agent.tool_specs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "shell",
+                    "description": "Run a shell command.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+        svc = SessionMemoryService(agent)
+
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
+
+        parts = getattr(agent, "_last_context_parts", None) or []
+        tools_tokens = 0
+        for p in parts:
+            if str(p.get("key") or "") == "tools":
+                tools_tokens = int(p.get("tokens") or 0)
+        self.assertGreater(tools_tokens, 0)
+        # The JSON schema overhead must be folded into the tools bucket so it
+        # does not leak into the history residual.
+        raw = json.dumps(agent.tool_specs, ensure_ascii=False, sort_keys=True)
+        expected_schemas = svc.token_estimator.estimate_message_tokens("system", raw)
+        self.assertGreaterEqual(tools_tokens, expected_schemas)
+
     def test_history_tokens_cumulative_uses_last_cache_anchor_and_anchor_output(self):
         agent = _FakeAgent()
         svc = SessionMemoryService(agent)
@@ -1353,6 +1411,29 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         total = svc.llm_context_manager._history_tokens_cumulative(messages)
 
         self.assertEqual(total, 2000 + estimated_anchor + 33)
+
+    def test_history_tokens_cumulative_messages_only_ignores_cache_anchor(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+
+        messages = [
+            {"role": "user", "content": "你好", "_token_count": 9},
+            {
+                "role": "assistant",
+                "content": "",
+                "_cache_stats": {"prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 13840},
+                "_output_tokens": 13,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+                "_reply_records": [{"kind": "content", "data": "逍遥哥哥，你好！", "from": "native"}],
+            },
+        ]
+        cm = svc.llm_context_manager
+        anchored = cm._history_tokens_cumulative(messages)
+        messages_only = cm._history_tokens_cumulative(messages, use_cache_anchor=False)
+
+        self.assertEqual(anchored, 13840 + 13)
+        self.assertEqual(messages_only, 9 + 13)
 
     def test_history_tokens_cumulative_skips_precompaction_anchor_after_compaction(self):
         agent = _FakeAgent()
@@ -1647,6 +1728,22 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertTrue(bool(getattr(agent, "_last_context_aggressive_compression_applied", False)))
         self.assertLess(post, pre)
 
+    def test_system_prompt_excludes_mutable_labels_for_cache_stability(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+
+        messages, _ = svc.build_regular_task_messages("hi", context="ctx")
+        system_content = str(messages[0].get("content") or "")
+        self.assertNotIn("Current workspace name", system_content)
+        self.assertNotIn("Current chat name", system_content)
+
+        # Renaming either the workspace or the chat must not change the
+        # system prompt, otherwise the prompt-cache prefix is invalidated.
+        agent.workspace_name = "renamed-workspace"
+        agent.active_chat_name = "renamed-chat-名字"
+        messages_renamed, _ = svc.build_regular_task_messages("hi", context="ctx")
+        self.assertEqual(system_content, str(messages_renamed[0].get("content") or ""))
+
     def test_system_prompt_core_not_clipped_under_aggressive_compress(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}
@@ -1669,7 +1766,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("Continue moving forward", context="ctx-" + ("q" * 1200))
         system_content = str(messages[0].get("content") or "")
         self.assertIn("[SYSTEM_PROMPT_END_MARK]", system_content)
-        self.assertIn("Current workspace name: Default", system_content)
+        self.assertNotIn("Current workspace name", system_content)
         self.assertNotIn(str(agent._self_repo_root), system_content)
         self.assertNotIn(str(agent.work_directory), system_content)
         self.assertIn(f"Current workspace root (absolute path): {agent.workspace_root}", system_content)

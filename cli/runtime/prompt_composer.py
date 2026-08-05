@@ -479,14 +479,26 @@ def compose_system_prompt_snapshot(agent: Any, include_tools: bool) -> str:
     ahead of the MCP section, so the model attends to its available tools and
     sub-agents before the longer MCP catalog.
     """
+    return "".join(text for _, text in _render_context_parts(agent, include_tools))
+
+
+def _render_context_parts(agent: Any, include_tools: bool) -> List[Tuple[str, str]]:
+    """Render each ordered context part once, returning ``(part_name, text)`` pairs.
+
+    ``compose_system_prompt_snapshot`` and the per-component token breakdown
+    (dashboard) share this single render pass so no part is rendered twice and
+    the breakdown stays consistent with the composed system text.
+    """
     from .context import ordered_context_parts
 
-    rendered: List[str] = []
+    rendered: List[Tuple[str, str]] = []
     for part in ordered_context_parts():
         if not part.should_include(include_tools):
             continue
-        rendered.append(part.render(agent, include_tools))
-    return "".join(rendered)
+        text = part.render(agent, include_tools)
+        if text:
+            rendered.append((part.name, text))
+    return rendered
 
 
 def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> str:
