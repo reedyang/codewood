@@ -45,18 +45,8 @@ def _format_apply_patch_error(error_text: str) -> str:
 
 
 def _gui_mode_active(agent: Any) -> bool:
-    """True when running under the desktop GUI.
-
-    The confirmation provider controls interactive approval, not rendering.
-    GUI transcript rendering is controlled by the stream flags, so use those
-    as well.  Otherwise an execution that is already writing to the GUI stream
-    can take the TUI preview path and leak ANSI diff rows into the transcript.
-    """
-    return bool(
-        callable(getattr(agent, "_confirm_choice_provider", None))
-        or getattr(agent, "_gui_plain_stream", False)
-        or getattr(agent, "_gui_no_wrap", False)
-    )
+    """True when running under the desktop GUI (structured confirm provider)."""
+    return callable(getattr(agent, "_confirm_choice_provider", None))
 
 
 def _interactive_selector_available(agent: Any) -> bool:

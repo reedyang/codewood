@@ -2323,6 +2323,12 @@ def _reload_chat_history_after_aborted_command(agent: Any) -> None:
 
 
 def _reload_chat_history_after_streamed_assistant_output(agent: Any) -> None:
+    # This is a terminal-only repair for long streamed replies.  Replaying
+    # history writes TUI-formatted prompt and preview lines to stdout, which
+    # bypasses the GUI's structured tool-round rendering and leaves those rows
+    # non-expandable until the task later reloads from persisted history.
+    if bool(getattr(agent, "_gui_plain_stream", False)):
+        return
     try:
         remember = getattr(agent, "_remember_active_chat_history_tail_anchor", None)
         if callable(remember):
