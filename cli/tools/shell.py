@@ -644,6 +644,24 @@ def _wait_for_process_exit_or_interactive_timeout(
     return int(code if code is not None else -1), True
 
 
+def _abandoned_shell_return_code(process: Any) -> int:
+    """Return code to report when a shell round is abandoned on user interrupt.
+
+    The interrupt path already terminated the process tree; read the exit
+    status if it has landed, otherwise fall back to the conventional 130
+    (SIGINT) code like the direct ``!`` execution path.
+    """
+    try:
+        poller = getattr(process, "poll", None)
+        if callable(poller):
+            code = poller()
+            if code is not None:
+                return int(code)
+    except Exception:
+        pass
+    return 130
+
+
 def _resolve_shell_execution_cwd(agent: Any) -> Path:
     resolver = getattr(agent, "_shell_execution_cwd", None)
     if callable(resolver):
@@ -1648,6 +1666,10 @@ def action_shell_command(
                 stream_chunks_lock = threading.Lock()
                 create_streams = getattr(agent, "_create_direct_shell_output_streams", None)
                 process_ref: Dict[str, Any] = {"process": None}
+                # Set once the main flow abandons the round on a user interrupt:
+                # the background worker stops live display echo and discards the
+                # residual pipe output instead of waiting for it to drain.
+                abandoned = threading.Event()
                 live_tail_limit = _dynamic_tail_line_limit(sys.stdout, reserved_lines=1)
 
                 def _is_current_process_aborted() -> bool:
@@ -1800,6 +1822,8 @@ def action_shell_command(
                     realtime_started = False
 
                     def _write_display_chunk(text: str) -> None:
+                        if abandoned.is_set():
+                            return
                         try:
                             target.write(text)
                             target.flush()
@@ -1865,102 +1889,164 @@ def action_shell_command(
                         except Exception:
                             pass
 
-                try:
-                    process = None
-                    _winpty_obj = None
-                    # PowerShell -Command invocations don't need a pty;
-                    # winpty's ConPTY can interfere with output capture.
-                    _is_ps_command = bool(
-                        re.match(r"(?i)^powershell(?:\.exe)?\s", command.strip())
-                    )
-                    # pywinpty spawn() passes argv through subprocess.list2cmdline
-                    # which escapes internal double-quotes with backslashes (Unix
-                    # convention).  cmd.exe does not recognise that convention, so
-                    # commands that contain their own double quotes would receive
-                    # mangled arguments.  Skip the winpty path for those commands
-                    # and let them fall through to the regular pipe-based Popen
-                    # which uses shell=True and preserves quoting correctly.
-                    _command_has_quotes = '"' in command
-                    if (
-                        _WINPTY_PTYPROCESS is not None
-                        and subprocess.Popen is _ORIG_SUBPROCESS_POPEN
-                        and not _is_ps_command
-                        and not _command_has_quotes
-                    ):
-                        try:
-                            _comspec = run_env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
-                            _raw_pty = _WINPTY_PTYPROCESS.spawn(
-                                [_comspec, "/c", command],
-                                cwd=str(execution_cwd.resolve()),
-                                env=run_env,
-                            )
-                            _winpty_obj = _WinPtyProc(_raw_pty)
-                            _winpty_obj.stdin = _WinPtyWriter(_raw_pty)
-                            process = _winpty_obj
-                        except Exception:
-                            _winpty_obj = None
-                    if process is None:
-                        process = subprocess.Popen(
-                            command,
-                            shell=True,
-                            cwd=str(execution_cwd.resolve()),
-                            env=run_env,
-                            stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=False,
-                        )
-                    process_ref["process"] = process
-                    if run_input is not None:
-                        try:
-                            if process.stdin is not None:
-                                process.stdin.write(run_input)
-                                process.stdin.flush()
-                        except Exception:
-                            pass
-                        finally:
+                worker_state: Dict[str, Any] = {
+                    "done": threading.Event(),
+                    "return_code": -1,
+                    "timed_out": False,
+                }
+
+                def _run_shell_worker() -> None:
+                    # Bind the workspace-qualified chat key on the worker thread
+                    # so the interruptible-process registration lands under the
+                    # right chat bucket (serve-mode per-chat interrupt scoping).
+                    if _shell_session_key:
+                        _tls = agent.__dict__.get("_session_tls")
+                        if _tls is not None:
                             try:
-                                if process.stdin is not None:
-                                    process.stdin.close()
+                                _tls.chat_id = _shell_session_key
                             except Exception:
                                 pass
-                    reg_proc = getattr(agent, "_register_interruptible_process", None)
-                    if callable(reg_proc):
-                        reg_proc(process)
-                    t_out = threading.Thread(
-                        target=_stream_and_capture,
-                        args=(
-                            process.stdout,
-                            out_stream,
-                            stdout_chunks,
-                            stdout_completed_lines,
-                            stdout_pending_line_state,
-                        ),  # type: ignore[arg-type]
-                        daemon=True,
-                    )
-                    t_out.start()
-                    return_code, timed_out = _wait_for_process_exit_or_interactive_timeout(
-                        process,
-                        agent,
-                        activity_state,
-                    )
+                    process = None
+                    try:
+                        _winpty_obj = None
+                        # PowerShell -Command invocations don't need a pty;
+                        # winpty's ConPTY can interfere with output capture.
+                        _is_ps_command = bool(
+                            re.match(r"(?i)^powershell(?:\.exe)?\s", command.strip())
+                        )
+                        # pywinpty spawn() passes argv through subprocess.list2cmdline
+                        # which escapes internal double-quotes with backslashes (Unix
+                        # convention).  cmd.exe does not recognise that convention, so
+                        # commands that contain their own double quotes would receive
+                        # mangled arguments.  Skip the winpty path for those commands
+                        # and let them fall through to the regular pipe-based Popen
+                        # which uses shell=True and preserves quoting correctly.
+                        _command_has_quotes = '"' in command
+                        if (
+                            _WINPTY_PTYPROCESS is not None
+                            and subprocess.Popen is _ORIG_SUBPROCESS_POPEN
+                            and not _is_ps_command
+                            and not _command_has_quotes
+                        ):
+                            try:
+                                _comspec = run_env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
+                                _raw_pty = _WINPTY_PTYPROCESS.spawn(
+                                    [_comspec, "/c", command],
+                                    cwd=str(execution_cwd.resolve()),
+                                    env=run_env,
+                                )
+                                _winpty_obj = _WinPtyProc(_raw_pty)
+                                _winpty_obj.stdin = _WinPtyWriter(_raw_pty)
+                                process = _winpty_obj
+                            except Exception:
+                                _winpty_obj = None
+                        if process is None:
+                            process = subprocess.Popen(
+                                command,
+                                shell=True,
+                                cwd=str(execution_cwd.resolve()),
+                                env=run_env,
+                                stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=False,
+                            )
+                        process_ref["process"] = process
+                        if run_input is not None:
+                            try:
+                                if process.stdin is not None:
+                                    process.stdin.write(run_input)
+                                    process.stdin.flush()
+                            except Exception:
+                                pass
+                            finally:
+                                try:
+                                    if process.stdin is not None:
+                                        process.stdin.close()
+                                except Exception:
+                                    pass
+                        reg_proc = getattr(agent, "_register_interruptible_process", None)
+                        if callable(reg_proc):
+                            reg_proc(process)
+                        _abort_event_api = getattr(agent, "_register_process_abort_event", None)
+                        if callable(_abort_event_api):
+                            try:
+                                _abort_event_api(process, worker_state["done"])
+                            except Exception:
+                                pass
+                        t_out = threading.Thread(
+                            target=_stream_and_capture,
+                            args=(
+                                process.stdout,
+                                out_stream,
+                                stdout_chunks,
+                                stdout_completed_lines,
+                                stdout_pending_line_state,
+                            ),  # type: ignore[arg-type]
+                            daemon=True,
+                        )
+                        t_out.start()
+                        try:
+                            code, timed = _wait_for_process_exit_or_interactive_timeout(
+                                process,
+                                agent,
+                                activity_state,
+                            )
+                        finally:
+                            # Abandoned rounds (user interrupt) must not wait for
+                            # the pipe to drain: the main flow already returned
+                            # and the residual output is being discarded.
+                            if not abandoned.is_set():
+                                _checker = getattr(agent, "_is_process_aborted", None)
+                                _aborted_now = False
+                                if callable(_checker):
+                                    try:
+                                        _aborted_now = bool(_checker(process))
+                                    except Exception:
+                                        _aborted_now = False
+                                if not _aborted_now:
+                                    t_out.join(timeout=_SHELL_DRAIN_TIMEOUT)
+                        worker_state["return_code"] = int(code if code is not None else -1)
+                        worker_state["timed_out"] = bool(timed)
+                    except Exception:
+                        worker_state["return_code"] = -1
+                    finally:
+                        worker_state["done"].set()
+
+                worker_thread = threading.Thread(
+                    target=_run_shell_worker,
+                    name="codewood-shell-exec",
+                    daemon=True,
+                )
+                worker_thread.start()
+
+                # No polling: block on a single event that the worker sets on
+                # completion, or that the interrupt path sets directly (via the
+                # registered abort event) the moment it terminates the process.
+                # A user stop therefore returns immediately — the worker keeps
+                # cleaning up in the background and all residual output after
+                # this point is abandoned.
+                try:
+                    worker_state["done"].wait()
                     consume_abort = getattr(agent, "_consume_process_aborted", None)
                     if callable(consume_abort):
-                        aborted_by_user = bool(consume_abort(process))
+                        try:
+                            aborted_by_user = bool(consume_abort(process_ref.get("process")))
+                        except Exception:
+                            aborted_by_user = False
                     if aborted_by_user:
+                        abandoned.set()
                         live_stream_state["suspend_desync_detection"] = True
                         try:
                             agent._suppress_next_prompt_chat_reload_once = True
                         except Exception:
                             pass
-                    # Fully drain the pipe before closing the command-output
-                    # block. A short join timeout can leave the reader mid-drain
-                    # for large outputs, so its residual chunks stream into
-                    # later rounds and render as orphaned raw text in the GUI.
-                    # The reader terminates on EOF once the process tree exits,
-                    # so this normally returns immediately; the cap only guards
-                    # against a stuck inherited pipe handle.
-                    t_out.join(timeout=_SHELL_DRAIN_TIMEOUT)
+                        return_code = _abandoned_shell_return_code(process_ref.get("process"))
+                    else:
+                        # The round completed normally (or the idle watchdog
+                        # auto-terminated it): the worker already drained the pipe.
+                        return_code = int(worker_state.get("return_code", -1))
+                        timed_out = bool(worker_state.get("timed_out", False))
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
                     out = _collapse_cr_output(out)
@@ -1976,10 +2062,13 @@ def action_shell_command(
                             "if a human must operate it.\n"
                         )
                 finally:
+                    # The main flow owns unregistration: consume must happen
+                    # before the abort mark is discarded, and the worker may
+                    # still be running in the background when we return.
                     try:
                         unreg_proc = getattr(agent, "_unregister_interruptible_process", None)
                         if callable(unreg_proc):
-                            unreg_proc(process)
+                            unreg_proc(process_ref.get("process"))
                     except Exception:
                         pass
             _stop_status_ticker()
