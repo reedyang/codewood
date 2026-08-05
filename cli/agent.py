@@ -5701,6 +5701,12 @@ class Agent:
             marks = getattr(self, "_aborted_process_keys", None)
             if isinstance(marks, set):
                 marks.discard(key)
+            events = getattr(self, "_process_abort_events", None)
+            if isinstance(events, dict):
+                try:
+                    events.pop(key, None)
+                except Exception:
+                    pass
 
     def _terminate_single_process_tree(self, process: Any) -> bool:
         if process is None:
@@ -5768,6 +5774,42 @@ class Agent:
                 marks = set()
                 self._aborted_process_keys = marks
             marks.add(key)
+            events = getattr(self, "_process_abort_events", None)
+            if isinstance(events, dict):
+                evt = events.get(key)
+                if evt is not None:
+                    try:
+                        evt.set()
+                    except Exception:
+                        pass
+
+    def _register_process_abort_event(self, process: Any, event: Any) -> None:
+        """Let a shell round wake its waiting thread the instant the process
+        is marked aborted by the interrupt path — no polling required.
+
+        ``event`` is a ``threading.Event`` the round blocks on; it is also set
+        by the worker thread on normal completion.  If the process is already
+        marked aborted (e.g. the stop request landed while the process was
+        starting), the event is set immediately.
+        """
+        if process is None or event is None:
+            return
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        key = self._process_abort_key(process)
+        with lock:
+            events = getattr(self, "_process_abort_events", None)
+            if not isinstance(events, dict):
+                events = {}
+                self._process_abort_events = events
+            events[key] = event
+            marks = getattr(self, "_aborted_process_keys", None)
+            if isinstance(marks, set) and key in marks:
+                try:
+                    event.set()
+                except Exception:
+                    pass
 
     def _consume_process_aborted(self, process: Any) -> bool:
         if process is None:
