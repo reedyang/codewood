@@ -1216,6 +1216,21 @@ class RuntimeLoopTests(unittest.TestCase):
         _reload_chat_history_after_streamed_assistant_output(_Agent())
         self.assertEqual(calls, ["anchor", "reload"])
 
+    def test_reload_chat_history_after_streamed_assistant_output_skips_gui(self):
+        calls = []
+
+        class _Agent:
+            _gui_plain_stream = True
+
+            def _remember_active_chat_history_tail_anchor(self):
+                calls.append("anchor")
+
+            def _reload_chat_history_from_anchor_on_resize(self):
+                calls.append("reload")
+
+        _reload_chat_history_after_streamed_assistant_output(_Agent())
+        self.assertEqual(calls, [])
+
     def test_consume_streaming_ai_response_does_not_duplicate_text_before_plain_tool_json(self):
         class _FakeStdout:
             def __init__(self):
