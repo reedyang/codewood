@@ -1352,12 +1352,6 @@ class LLMContextManager:
             if self._should_use_simple_chat_context(budgets):
                 user_text = str(user_input_hint or "")
                 source_history = self.history_for_regular_context()
-                history_messages, _stats = self._build_history_messages_by_budget(
-                    int(budgets["history_budget"]),
-                    int(budgets["history_summary_budget"]),
-                    int(budgets["assistant_clip_tokens"]),
-                    source_history=source_history,
-                )
                 history_tokens = self._context_usage_from_chat_record()
                 user_tokens = self._estimate_message_tokens("user", user_text)
                 # When a cache anchor exists (_cache_stats on a prior assistant
@@ -1397,12 +1391,6 @@ class LLMContextManager:
                 return
 
             filtered_history = self.history_for_regular_context()
-            history_messages, _stats = self._build_history_messages_by_budget(
-                int(budgets["history_budget"]),
-                int(budgets["history_summary_budget"]),
-                int(budgets["assistant_clip_tokens"]),
-                source_history=filtered_history,
-            )
             history_tokens = self._context_usage_from_chat_record()
             compose_prompt = getattr(self.agent, "_compose_system_prompt_snapshot", None)
             if callable(compose_prompt):
