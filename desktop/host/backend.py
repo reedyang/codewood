@@ -187,6 +187,19 @@ class BackendProcess:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
+    def restart(self, timeout: float = 45.0) -> Tuple[int, str]:
+        """Stop the current backend (if any) and start a fresh process.
+
+        A fresh ``serve`` process binds a new ephemeral port and generates a
+        new token, so callers must re-publish the returned ``(port, token)``
+        to whatever depends on the old endpoint (e.g. the frontend).
+        """
+        self.stop()
+        self.proc = None
+        self.port = None
+        self.token = None
+        return self.start(timeout=timeout)
+
     def stop(self) -> None:
         if self.proc is None:
             return

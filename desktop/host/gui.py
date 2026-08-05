@@ -7,8 +7,10 @@ frontend, and tears the backend down when the window closes.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 
@@ -375,6 +377,7 @@ class HostApi:
         # until then (and stays a disabled instance when overlay mode is off),
         # so every overlay method is safe to call regardless.
         self._overlay: BrowserOverlay | None = None
+        self._backend_port: int = 0
         self._backend_url: str = ""
         self._backend_token: str = ""
 
@@ -382,8 +385,18 @@ class HostApi:
         self._overlay = overlay
 
     def set_backend(self, port: int, token: str) -> None:
+        self._backend_port = int(port)
         self._backend_url = f"http://127.0.0.1:{port}"
         self._backend_token = token
+
+    def backend_info(self) -> dict:
+        """Current backend endpoint for the frontend.
+
+        The serve process binds an ephemeral port and mints a fresh token on
+        every launch, so the frontend polls this after a disconnect and
+        rebuilds its API client when ``port``/``token`` change (crash-restart).
+        """
+        return {"port": self._backend_port, "token": self._backend_token}
 
     # -- embedded browser overlay (renderer-callable) ---------------------
     #
@@ -959,6 +972,65 @@ def main() -> int:
         except Exception:
             pass
 
+    backend_stop = threading.Event()
+
+    def _backend_supervisor() -> None:
+        """Watch the backend process and restart it after an unexpected exit.
+
+        Each restart binds a new ephemeral port and mints a new token, so the
+        frontend is told about the new endpoint (push + ``backend_info`` poll)
+        and rebuilds its API client to reconnect.
+        """
+        delay = 1.0
+        while not backend_stop.is_set():
+            proc = backend.proc
+            if proc is None:
+                return
+            rc = proc.poll()
+            if rc is None:
+                delay = 1.0
+                backend_stop.wait(1.0)
+                continue
+            # Backend exited while the GUI is still open — bring it back.
+            print(
+                f"[host] backend exited (rc={rc}); restarting...",
+                file=sys.stderr,
+            )
+            try:
+                new_port, new_token = backend.restart(timeout=45.0)
+            except Exception as exc:
+                print(
+                    f"[host] backend restart failed: {exc}; "
+                    f"retrying in {delay:.0f}s",
+                    file=sys.stderr,
+                )
+                backend_stop.wait(delay)
+                delay = min(delay * 2.0, 15.0)
+                continue
+            delay = 1.0
+            host_api.set_backend(new_port, new_token)
+            print(
+                f"[host] backend restarted on port {new_port}",
+                file=sys.stderr,
+            )
+            # Push the new endpoint so the frontend reconnects immediately
+            # instead of waiting for its next poll.
+            try:
+                window.evaluate_js(
+                    "window.dispatchEvent(new CustomEvent("
+                    "'codewood:backend-restarted',"
+                    f"{{detail: {{port: {int(new_port)}, "
+                    f"token: {json.dumps(new_token)}}}}}))"
+                )
+            except Exception:
+                pass
+
+    threading.Thread(
+        target=_backend_supervisor,
+        daemon=True,
+        name="backend-supervisor",
+    ).start()
+
     debug = str(os.environ.get("CODEWOOD_DEBUG", "")).strip() not in (
         "", "0", "false", "False"
     )
@@ -968,6 +1040,7 @@ def main() -> int:
     try:
         webview.start(gui=_preferred_gui(), debug=debug)
     finally:
+        backend_stop.set()
         backend.stop()
     if sys.platform != "win32":
         sys.stdout.flush()
