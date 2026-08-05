@@ -5867,6 +5867,11 @@ class Agent:
         ESC legacy global path). With ``chat_key`` only the subprocesses that
         chat registered are targeted, so a serve-mode interrupt scoped to one
         chat never kills another chat's running subprocess.
+
+        The round is marked aborted (and its waiting shell tool is woken)
+        BEFORE the kill: the process-tree termination (``taskkill /F /T`` on
+        Windows can take ~1s) runs on a temporary daemon thread so a stop
+        request returns immediately instead of blocking on the kill.
         """
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
@@ -5900,13 +5905,23 @@ class Agent:
                 self._mark_process_aborted(p)
                 continue
             requested_any = True
-            terminated = bool(self._terminate_single_process_tree(p))
+            # Wake the waiting round first; the kill follows on a temp thread
+            # so the interrupt latency does not include taskkill's runtime.
+            self._mark_process_aborted(p)
             try:
-                ended_after_request = hasattr(p, "poll") and p.poll() is not None
+                threading.Thread(
+                    target=self._terminate_single_process_tree,
+                    args=(p,),
+                    name="codewood-proc-kill",
+                    daemon=True,
+                ).start()
             except Exception:
-                ended_after_request = False
-            if terminated or ended_after_request:
-                self._mark_process_aborted(p)
+                # Thread spawn failed: fall back to a synchronous best-effort
+                # kill so the subprocess is still terminated.
+                try:
+                    self._terminate_single_process_tree(p)
+                except Exception:
+                    pass
         return bool(requested_any)
 
     def _request_task_interrupt(self, source: str = "esc", cancel_task: bool = False) -> None:

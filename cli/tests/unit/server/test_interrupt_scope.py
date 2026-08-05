@@ -7,6 +7,7 @@ that chat's loop thread consumes it.
 """
 
 import types
+import time
 import unittest
 
 from cli.agent import Agent
@@ -111,6 +112,11 @@ class ChatInterruptScopeTests(unittest.TestCase):
             agent, "_terminate_single_process_tree", return_value=True
         ) as terminate:
             agent._request_chat_interrupt("chat-b", "ws-1")
+            # The tree kill runs on a temporary daemon thread; wait for it so
+            # the assertion below is deterministic.
+            deadline = time.time() + 2
+            while not terminate.call_args_list and time.time() < deadline:
+                time.sleep(0.005)
         self.assertEqual(
             [call.args[0] for call in terminate.call_args_list],
             [proc_b],
