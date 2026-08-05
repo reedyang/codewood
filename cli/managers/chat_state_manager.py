@@ -1768,6 +1768,7 @@ class ChatStateManager:
                 # next runtime refresh recomputes it from the (now empty) history.
                 self._agent._last_context_usage_percent = 0
                 self._agent._last_context_input_tokens = 0
+                self._agent._last_context_parts = []
             self.mark_chat_dirty(cid)
             self.save_chat_state()
             self._notify_gui_context_usage_changed()

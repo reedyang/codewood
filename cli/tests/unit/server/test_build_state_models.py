@@ -33,8 +33,9 @@ class _FakeAgent:
         self._last_context_input_tokens = 0
         self._last_context_usage_percent = 0
         self._last_context_window = 0
+        self._last_context_parts = []
         self._session_values = {
-            "chat-1": {"window": 0, "tokens": 0, "percent": 0},
+            "chat-1": {"window": 0, "tokens": 0, "percent": 0, "parts": []},
         }
 
     def _workspace_root_path(self, entry):
@@ -71,16 +72,19 @@ class _FakeAgent:
         prev_window = self._last_context_window
         prev_tokens = self._last_context_input_tokens
         prev_percent = self._last_context_usage_percent
+        prev_parts = self._last_context_parts
         values = self._session_values.get(chat_id, {})
         self._last_context_window = int(values.get("window", 0) or 0)
         self._last_context_input_tokens = int(values.get("tokens", 0) or 0)
         self._last_context_usage_percent = int(values.get("percent", 0) or 0)
+        self._last_context_parts = list(values.get("parts", []) or [])
         try:
             yield
         finally:
             self._last_context_window = prev_window
             self._last_context_input_tokens = prev_tokens
             self._last_context_usage_percent = prev_percent
+            self._last_context_parts = prev_parts
 
 
 class BuildStateModelTests(unittest.TestCase):
@@ -101,6 +105,10 @@ class BuildStateModelTests(unittest.TestCase):
             "window": 128000,
             "tokens": 4096,
             "percent": 3,
+            "parts": [
+                {"key": "system", "tokens": 3000},
+                {"key": "history", "tokens": 1096},
+            ],
         }
         with patch("cli.server.serve_app._compute_chat_cache_stats", return_value={}):
             state = _build_state_inner(agent)
@@ -108,6 +116,16 @@ class BuildStateModelTests(unittest.TestCase):
         self.assertEqual(state["contextUsage"]["window"], 128000)
         self.assertEqual(state["contextUsage"]["tokens"], 4096)
         self.assertEqual(state["contextUsage"]["percent"], 3)
+        self.assertEqual(state["contextUsage"]["parts"], [
+            {"key": "system", "tokens": 3000},
+            {"key": "history", "tokens": 1096},
+        ])
+
+    def test_context_usage_parts_default_to_empty(self):
+        agent = _FakeAgent()
+        with patch("cli.server.serve_app._compute_chat_cache_stats", return_value={}):
+            state = _build_state_inner(agent)
+        self.assertEqual(state["contextUsage"]["parts"], [])
 
     def test_explicit_background_workspace_uses_its_own_metadata(self):
         agent = _FakeAgent()

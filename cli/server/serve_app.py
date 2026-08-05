@@ -1298,6 +1298,27 @@ def _safe_context_usage(agent: Any, chat_id: str, chat_record: Dict[str, Any]) -
         return _compute_context_usage_fresh_from_messages(agent, chat_record)
 
 
+def _safe_context_usage_parts(agent: Any) -> List[Dict[str, Any]]:
+    """Read the active chat's per-component context-usage breakdown.
+
+    The breakdown is populated by the runtime refresh in ``llm_context_manager``
+    (``agent._last_context_parts``); this helper only reads it, binding to the
+    primary chat's session so HTTP handler threads see the focused chat's data.
+    """
+    try:
+        with agent._session_scope(_primary_active_chat_id(agent)):
+            parts = getattr(agent, "_last_context_parts", None) or []
+            if not isinstance(parts, list):
+                return []
+            out: List[Dict[str, Any]] = []
+            for p in parts:
+                if isinstance(p, dict) and str(p.get("key") or "").strip():
+                    out.append({"key": str(p.get("key") or ""), "tokens": max(0, int(p.get("tokens") or 0))})
+            return out
+    except Exception:
+        return []
+
+
 def _safe_reasoning_effort(agent: Any) -> str:
     # Reasoning effort is session-scoped; bind to the active chat so HTTP
     # handler threads read the focused chat's saved selection (restored from
@@ -1708,6 +1729,7 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
             "percent": active_context_percent,
             "tokens": active_context_tokens,
             "window": active_context_window,
+            "parts": _safe_context_usage_parts(agent),
         },
         "cacheStats": _compute_chat_cache_stats(agent),
         "tokenStats": _compute_chat_token_stats(agent),
@@ -7504,6 +7526,7 @@ class ServeApp:
                     "tokens": int(getattr(self.agent, "_last_context_input_tokens", 0) or 0),
                     "window": int(getattr(self.agent, "_last_context_window", 0)
                               or getattr(self.agent, "context_window", 0) or 0),
+                    "parts": _safe_context_usage_parts(self.agent),
                 },
                 cacheStats=_compute_chat_cache_stats(self.agent),
                 tokenStats=_compute_chat_token_stats(self.agent),

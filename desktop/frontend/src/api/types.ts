@@ -29,6 +29,14 @@ export interface TokenStats {
   includesReasoning: boolean;
 }
 
+/** One component of the active chat's context-window usage breakdown. */
+export interface ContextUsagePart {
+  /** Stable component id, e.g. "system", "tools", "skills", "history". */
+  key: string;
+  /** Estimated tokens attributed to this component. */
+  tokens: number;
+}
+
 export interface IndexStatus {
   hidden: boolean;
   files_total: number;
@@ -178,6 +186,8 @@ export interface AppState {
     percent: number;
     tokens: number;
     window: number;
+    /** Per-component token breakdown (system, tools, skills, history, ...). */
+    parts?: ContextUsagePart[];
   };
   /** Cumulative cache-hit/miss statistics for the active chat's current model. */
   cacheStats?: CacheStats;

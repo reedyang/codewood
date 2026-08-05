@@ -1723,6 +1723,82 @@ body.resizing-x .browser-frame {
   color: var(--text-muted);
 }
 
+/* ── Context Usage (Dashboard) ── */
+.context-usage-section {
+  padding-bottom: 12px;
+}
+
+.context-usage-bar {
+  height: 6px;
+  margin: 8px 0 4px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.context-usage-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--green);
+  transition: width 0.3s ease;
+}
+
+.context-usage-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.context-usage-part {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 60px 90px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.context-usage-part-label {
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.context-usage-part-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.context-usage-part-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--text-muted);
+  opacity: 0.75;
+}
+
+.context-usage-part-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.context-usage-part-value em {
+  font-style: normal;
+  color: var(--text-muted);
+  margin-left: 4px;
+  font-size: 11px;
+}
+
+.context-usage-empty {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 /* ── Plan (To-dos list) ── */
 .plan-header {
   padding: 12px 16px 8px;
