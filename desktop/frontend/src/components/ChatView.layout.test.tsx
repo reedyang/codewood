@@ -17,7 +17,7 @@ vi.mock("../state/AppContext", () => ({
   }),
 }));
 
-import { HistoryRoundDetailView, LiveRoundView, orderTranscriptEntries, RoundShell, TurnView } from "./ChatView";
+import { compactNoticeInsertionIndex, HistoryRoundDetailView, LiveRoundView, orderTranscriptEntries, RoundShell, TurnView } from "./ChatView";
 import { StepsView } from "./Steps";
 
 describe("HistoryRoundDetailView", () => {
@@ -314,5 +314,22 @@ describe("orderTranscriptEntries", () => {
       "前一轮用户消息",
       "本轮用户消息",
     ]);
+  });
+
+  it("inserts an unanchored compact summary before a user turn sent after it", () => {
+    const entries = orderTranscriptEntries(
+      [{ userText: "旧消息", timestamp: "2026-08-05 12:00:00", rounds: [] }],
+      [{
+        id: 2,
+        userText: "compact 后的新消息",
+        rounds: [],
+        startedAt: new Date("2026-08-05T12:02:00").getTime(),
+        endedAt: null,
+      }],
+    );
+
+    expect(
+      compactNoticeInsertionIndex(entries, new Date("2026-08-05T12:01:00").getTime()),
+    ).toBe(1);
   });
 });
