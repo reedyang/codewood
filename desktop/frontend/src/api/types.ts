@@ -289,6 +289,8 @@ export interface CompactNoticeData {
   mode?: string;
   /** Live turn whose user entry immediately precedes this in-progress summary. */
   anchorTurnId?: number;
+  /** Client time of the first streamed summary notice, used as a timeline slot. */
+  createdAt?: number;
 }
 
 export type ServerEvent =

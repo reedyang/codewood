@@ -2497,6 +2497,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 state.chatKey === eventKey && state.notice?.anchorTurnId !== undefined
                   ? state.notice.anchorTurnId
                   : anchorTurnId,
+              // The final notice replaces its streamed predecessors. Keep the
+              // original slot so a later user turn cannot jump above it.
+              createdAt:
+                state.chatKey === eventKey && state.notice?.createdAt !== undefined
+                  ? state.notice.createdAt
+                  : Date.now(),
             },
             version: state.version + 1,
           }));

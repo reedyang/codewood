@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -413,6 +414,19 @@ export function orderTranscriptEntries(
     }
     return left.timestamp - right.timestamp || left.order - right.order;
   });
+}
+
+export function compactNoticeInsertionIndex(
+  entries: TranscriptEntry[],
+  createdAt: number | undefined,
+): number {
+  if (!Number.isFinite(createdAt)) {
+    return entries.length;
+  }
+  const nextEntryIndex = entries.findIndex(
+    (entry) => entry.timestamp !== undefined && entry.timestamp > createdAt!,
+  );
+  return nextEntryIndex === -1 ? entries.length : nextEntryIndex;
 }
 
 interface MessageHandlers {
@@ -1625,6 +1639,21 @@ export function ChatView() {
     () => orderTranscriptEntries(historyTurns, turns),
     [historyTurns, turns],
   );
+  const standaloneCompactNotice =
+    compactNotice?.anchorTurnId === undefined ? compactNotice : null;
+  const standaloneCompactNoticeIndex = compactNoticeInsertionIndex(
+    orderedTranscriptEntries,
+    standaloneCompactNotice?.createdAt,
+  );
+  const standaloneCompactNoticeNode = standaloneCompactNotice ? (
+    <div className="turn compact-notice-turn" role="alert" aria-live="polite">
+      <CompactNoticeView
+        title={standaloneCompactNotice.title}
+        body={standaloneCompactNotice.body}
+        stage={standaloneCompactNotice.stage}
+      />
+    </div>
+  ) : null;
 
   // While an ``request_user_input`` prompt is pending the agent is paused waiting
   // on the user's selection — it isn't actively working — so the action
@@ -1849,38 +1878,33 @@ export function ChatView() {
                 {historyLoading ? t("history.loading") : t("history.more")}
               </div>
             )}
-            {orderedTranscriptEntries.map((entry) => {
-              if (entry.source === "history") {
-                return (
+            {orderedTranscriptEntries.map((entry, renderIndex) => (
+              <Fragment key={`${entry.source}-${entry.index}`}>
+                {standaloneCompactNoticeNode && renderIndex === standaloneCompactNoticeIndex &&
+                  standaloneCompactNoticeNode}
+                {entry.source === "history" ? (
                   <HistoryTurnView
-                    key={`h-${entry.index}`}
                     turn={entry.turn}
                     negIndex={histNeg[entry.index]}
                     handlers={messageHandlers}
                   />
-                );
-              }
-              const turn = entry.turn;
-              return (
-                <TurnView
-                  key={turn.id}
-                  turn={turn}
-                  now={now}
-                  negIndex={liveNeg[entry.index]}
-                  handlers={messageHandlers}
-                  compactNotice={compactNotice?.anchorTurnId === turn.id ? compactNotice : null}
-                />
-              );
-            })}
-            {compactNotice && compactNotice.anchorTurnId === undefined && (
-              <div className="turn compact-notice-turn" role="alert" aria-live="polite">
-                <CompactNoticeView
-                  title={compactNotice.title}
-                  body={compactNotice.body}
-                  stage={compactNotice.stage}
-                />
-              </div>
-            )}
+                ) : (() => {
+                  const turn = entry.turn;
+                  return (
+                    <TurnView
+                      turn={turn}
+                      now={now}
+                      negIndex={liveNeg[entry.index]}
+                      handlers={messageHandlers}
+                      compactNotice={compactNotice?.anchorTurnId === turn.id ? compactNotice : null}
+                    />
+                  );
+                })()}
+              </Fragment>
+            ))}
+            {standaloneCompactNoticeNode &&
+              standaloneCompactNoticeIndex === orderedTranscriptEntries.length &&
+              standaloneCompactNoticeNode}
             {retryCountdown && (
               <div className="retry-countdown" role="status" aria-live="polite">
                 <span className="retry-countdown-icon">⏳</span>
