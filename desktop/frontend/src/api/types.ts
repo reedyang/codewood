@@ -59,6 +59,8 @@ export interface ChatSummary {
   active: boolean;
   /** Per-chat model selector ("provider/model"); empty if unset. */
   model?: string;
+  /** Reasoning-effort level recorded on the chat ("" when none). */
+  reasoning?: string;
   /** True while this chat's agent loop is actively streaming a turn. Lets the
    *  sidebar busy dot persist across focus changes and reloads. */
   running?: boolean;
@@ -83,6 +85,12 @@ export interface WorkspaceChatSummary {
   updatedAt?: string;
   archived?: boolean;
   hasUnread?: boolean;
+  /** Per-chat model selector ("provider/model"); empty if unset. Lets the GUI
+   *  prefill a fresh New Chat opened for this workspace with the model its
+   *  chat will inherit from the workspace's latest chat. */
+  model?: string;
+  /** Reasoning-effort level recorded on the chat ("" when none). */
+  reasoning?: string;
 }
 
 /** General-runtime settings exposed by the GUI's General settings page. */
