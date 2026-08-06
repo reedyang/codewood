@@ -1230,6 +1230,50 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("shows the target workspace's inherited model/reasoning for a fresh draft in another workspace", async () => {
+    // Workspace B's latest chat uses a different model + reasoning than the
+    // focused workspace A's chat-1 ("provider/model"). The backend's new_chat
+    // inherits from the target workspace AFTER switching, so the composer must
+    // display B's model — not A's — while composing (regression: it showed
+    // chat A's model but the sent chat used workspace B's).
+    apiMock.listWorkspaceChats.mockResolvedValue([
+      {
+        id: "chat-9",
+        name: "B chat",
+        updatedAt: "2026-01-02T00:00:00Z",
+        model: "openai/family/model/v2",
+        reasoning: "high",
+      },
+    ]);
+
+    render(
+      <AppProvider>
+        <DraftCreateProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(
+        screen.getByTestId("app-state").textContent || "{}",
+      ) as AppState;
+      expect(state.model.current).toBe("openai/family/model/v2");
+      expect(state.model.reasoningEffort).toBe("high");
+    });
+
+    // Materialization still passes empty selections so the backend computes
+    // the same inheritance atomically (no behavior change on send).
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "send draft" }));
+    });
+    expect(apiMock.newChat).toHaveBeenCalledWith("ws-2", "", "");
+  });
+
   it("accepts the target workspace idle snapshot after draft creation in another workspace", async () => {
     render(
       <AppProvider>

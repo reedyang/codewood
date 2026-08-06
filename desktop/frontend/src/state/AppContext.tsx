@@ -134,6 +134,34 @@ function buildModelChangePatch(
   return { current: selector, reasoningEfforts: efforts, reasoningEffort };
 }
 
+// Mirror the backend's ``_last_used_chat_model``: the most recently updated
+// chat that records a model selector. Returns that selector plus the reasoning
+// level recorded on the SAME chat (``undefined`` when the summary carries no
+// reasoning field, ``""`` when the chat explicitly had none). Used to display
+// on the composer what a fresh New Chat will actually inherit from the target
+// workspace, so the dropdown never promises a different model than the one the
+// materialized chat will use.
+function pickInheritedChatModel(
+  chats: Array<{ model?: string; reasoning?: string; updatedAt?: string }>,
+): { model: string; reasoning: string | undefined } {
+  let bestKey = "";
+  let bestModel = "";
+  let bestReasoning: string | undefined;
+  for (const c of chats) {
+    const model = String(c.model ?? "").trim();
+    if (!model) {
+      continue;
+    }
+    const key = String(c.updatedAt ?? "");
+    if (key >= bestKey) {
+      bestKey = key;
+      bestModel = model;
+      bestReasoning = c.reasoning !== undefined ? String(c.reasoning) : undefined;
+    }
+  }
+  return { model: bestModel, reasoning: bestReasoning };
+}
+
 interface AppContextValue {
   state: AppState | null;
   activeWorkspaceId: string;
@@ -3948,6 +3976,73 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client, clearTurns],
   );
 
+  // Resolve the model/reasoning a FRESH draft will inherit from the target
+  // workspace's latest chat (the backend's ``new_chat`` inherits via
+  // ``_last_used_chat_model`` AFTER switching workspace). Showing that on the
+  // composer keeps the dropdown honest: without it, a New Chat opened for
+  // workspace B while workspace A's chat is focused displays A's model until
+  // the first message is sent, while the materialized chat actually inherits
+  // B's latest model — the UI promised one model and used another.
+  const resolveInheritedDraftModel = useCallback(
+    async (wsId: string) => {
+      if (!wsId) {
+        return;
+      }
+      const activeWsId = stateRef.current?.workspace.id ?? "";
+      let chats:
+        | Array<{ model?: string; reasoning?: string; updatedAt?: string }>
+        | undefined;
+      if (wsId === activeWsId) {
+        chats = stateRef.current?.chats;
+      } else {
+        chats = workspaceChatsRef.current[wsId];
+        if (!Array.isArray(chats) || chats.length === 0) {
+          try {
+            const fetched = await client.listWorkspaceChats(wsId);
+            if (Array.isArray(fetched) && fetched.length > 0) {
+              chats = fetched;
+              setWorkspaceChats((prev) => ({ ...prev, [wsId]: fetched }));
+            }
+          } catch {
+            chats = undefined;
+          }
+        }
+      }
+      if (!Array.isArray(chats) || chats.length === 0) {
+        return;
+      }
+      const inherited = pickInheritedChatModel(chats);
+      if (!inherited.model) {
+        return;
+      }
+      setState((prev) => {
+        // If the user already picked a model/reasoning while the fetch was in
+        // flight, their explicit choice wins over the inherited default.
+        if (!prev || draftModelRef.current) {
+          return prev;
+        }
+        const patch = buildModelChangePatch(inherited.model, prev.model);
+        const nextModel = {
+          ...prev.model,
+          current: inherited.model,
+        };
+        if (patch) {
+          nextModel.reasoningEfforts = patch.reasoningEfforts;
+        }
+        if (!draftReasoningRef.current) {
+          nextModel.reasoningEffort =
+            inherited.reasoning !== undefined
+              ? inherited.reasoning
+              : patch
+                ? patch.reasoningEffort
+                : prev.model.reasoningEffort;
+        }
+        return { ...prev, model: nextModel };
+      });
+    },
+    [client],
+  );
+
   // Enter draft (compose) mode instead of creating a chat immediately. The chat
   // is materialized on the first send. ``workspaceId`` selects the target
   // workspace: from the sidebar's top New Chat button it defaults to the current
@@ -3976,6 +4071,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       } else {
         // Clear any selection left over from a previous draft session.
         resetDraftSelectionRef();
+        // Show the model/reasoning the materialized chat will actually inherit
+        // from this workspace's latest chat.
+        void resolveInheritedDraftModel(wsId);
       }
       historyChatRef.current = "\u0000";
       setHistoryTurns([]);
@@ -3986,7 +4084,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return { ...prev, contextUsage: undefined, plan: undefined, cacheStats: undefined, tokenStats: undefined };
       });
     },
-    [state?.workspace.id, applyDraftSelectionToState],
+    [state?.workspace.id, applyDraftSelectionToState, resolveInheritedDraftModel],
   );
 
   // Pick the target workspace for the pending draft chat (compose mode only).

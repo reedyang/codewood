@@ -147,9 +147,24 @@ def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
                 "updatedAt": str(c.get("updated_at") or ""),
                 "archived": bool(c.get("archived", False)),
                 "hasUnread": bool(c.get("has_unread", False)),
+                "model": _chat_model_selector(c),
+                "reasoning": str(c.get("reasoning_level") or ""),
             }
         )
     return out
+
+
+def _chat_model_selector(chat: Any) -> str:
+    """Return the ``provider/model_name`` selector recorded on a chat record,
+    or ``""`` when the chat has no usable model. Shared by the workspace chat
+    summaries so the GUI can prefill a fresh New Chat with the model its chat
+    will inherit."""
+    try:
+        provider = str(chat.get("model_provider") or "").strip()
+        model_name = str(chat.get("model_name") or "").strip()
+    except Exception:
+        return ""
+    return f"{provider}/{model_name}" if provider and model_name else ""
 
 
 # ---- File-change payload sizing ----------------------------------------
@@ -1550,6 +1565,8 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
                     # Per-chat model selector so the GUI can show the right model
                     # for the focused chat and prefill new chats from it.
                     "model": chat_model,
+                    # Reasoning-effort level recorded on the chat ("" when none).
+                    "reasoning": str(c.get("reasoning_level") or ""),
                     # True while this chat's agent loop is mid-turn, so the
                     # sidebar busy dot survives focus changes and reloads.
                     "running": cid in running_chat_ids,
@@ -6907,6 +6924,8 @@ class ServeApp:
                             "updatedAt": str(c.get("updated_at") or ""),
                             "archived": bool(c.get("archived", False)),
                             "hasUnread": bool(c.get("has_unread", False)),
+                            "model": _chat_model_selector(c),
+                            "reasoning": str(c.get("reasoning_level") or ""),
                         }
                     )
             except Exception:
