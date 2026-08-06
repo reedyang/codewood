@@ -2059,6 +2059,13 @@ class ServeApp:
         # renderer uses the envelope to decide which workspace cache to update;
         # if a background loop ever supplies A's chat list under B's envelope,
         # same-id chats (chat-1, chat-2, ...) visibly jump between workspaces.
+        # The snapshot is the authoritative payload — it carries the chat list
+        # the renderer caches — so when the envelope disagrees we RE-TAG the
+        # envelope to the snapshot's workspace instead of emitting a payload
+        # that would misroute. This happens when a chat record was resolved
+        # through a stale/ambient index while its loop thread's runtime carries
+        # a different workspace id (e.g. a workspace switch in flight), so the
+        # loop thread's ``idle``/``state`` event gets the wrong envelope.
         # Keep this warning in the normal app log so a reproduction includes
         # both ids and the affected list, without logging streamed content.
         snapshot = payload.get("state")
@@ -2069,7 +2076,8 @@ class ServeApp:
             route_ws_id = str(payload.get("workspaceId") or "")
             if snapshot_ws_id and route_ws_id and snapshot_ws_id != route_ws_id:
                 _WORKSPACE_ROUTE_LOGGER.warning(
-                    "state-route mismatch envelope_ws=%s snapshot_ws=%s chat=%s chats=%s",
+                    "state-route mismatch envelope_ws=%s snapshot_ws=%s chat=%s chats=%s "
+                    "-> re-routing envelope to snapshot workspace",
                     route_ws_id,
                     snapshot_ws_id,
                     cid,
@@ -2079,6 +2087,7 @@ class ServeApp:
                         if isinstance(item, dict)
                     ],
                 )
+                payload["workspaceId"] = snapshot_ws_id
         return payload
 
     def _runtime_for_thread(self) -> Optional["_ChatRuntime"]:
