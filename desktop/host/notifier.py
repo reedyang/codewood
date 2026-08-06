@@ -22,6 +22,7 @@ Set ``CODEWOOD_TASK_NOTIFY=0`` to disable the feature entirely.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import shutil
@@ -29,11 +30,49 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
 
-_APP_NAME = "Code Wood"
+
+def _app_name() -> str:
+    """Effective app display name from ``cli/config/app_info.py``.
+
+    Loaded by file path instead of ``import cli.config.app_info`` so the GUI
+    host never pulls in the heavy ``cli`` package (whose ``__init__`` imports
+    the full ``Agent``) just to read the branding constant. ``get_app_name``
+    honors the ``CODEWOOD_PROMPT_APP_NAME`` override, so notifications follow
+    whatever name the rest of the app surfaces. Returns ``""`` only when the
+    bundled ``app_info.py`` cannot be resolved (unreachable in practice).
+    """
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", "") or ".")
+        candidates = [
+            meipass / "cli" / "config" / "app_info.py",
+            Path(__file__).resolve().parents[2] / "cli" / "config" / "app_info.py",
+        ]
+    else:
+        candidates = [
+            Path(__file__).resolve().parents[2] / "cli" / "config" / "app_info.py",
+        ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "codewood_host_app_info", str(path)
+            )
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            getter = getattr(module, "get_app_name", None)
+            if callable(getter):
+                name = str(getter() or "").strip()
+                if name:
+                    return name
+        except Exception:
+            continue
+    return ""
 
 # How long a completed task may keep a notification from being raised again.
 # Guards against a reconnect replay / duplicate delivery of the same event.
@@ -183,7 +222,11 @@ def _windows_register_aumid() -> bool:
         with winreg.CreateKeyEx(
             winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
         ) as key:
-            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Code Wood")
+            display_name = _app_name()
+            if display_name:
+                winreg.SetValueEx(
+                    key, "DisplayName", 0, winreg.REG_SZ, display_name
+                )
             if icon_uri:
                 winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, icon_uri)
         _WINDOWS_AUMID_REGISTERED = True
@@ -355,16 +398,18 @@ def _linux_notify(title: str, text: str) -> None:
     """Show a notification via ``notify-send`` (libnotify)."""
     if not shutil.which("notify-send"):
         return
+    command = [
+        "notify-send",
+        "--expire-time",
+        "10000",
+        str(title)[:256],
+        str(text)[:512],
+    ]
+    app_name = _app_name()
+    if app_name:
+        command[1:1] = ["--app-name", app_name]
     subprocess.run(
-        [
-            "notify-send",
-            "--app-name",
-            _APP_NAME,
-            "--expire-time",
-            "10000",
-            str(title)[:256],
-            str(text)[:512],
-        ],
+        command,
         capture_output=True,
         timeout=10,
     )
@@ -439,29 +484,67 @@ class TaskNotifier:
             port, token = self._port, self._token
         if not port or not token:
             return
-        query = urlencode({"token": token})
-        url = f"http://127.0.0.1:{port}/events?{query}"
-        req = urllib.request.Request(
-            url, headers={"Accept": "text/event-stream"}
+        # A hand-rolled SSE client over a raw socket instead of
+        # ``urllib.request.urlopen``: the buffered ``http.client`` reader
+        # crashes the frozen GUI host when the bundle lives under the user
+        # profile (``C:\\Users\\<user>\\...``) on some Windows 10/11 builds,
+        # while a plain socket reads the same keep-alive stream reliably.
+        import socket
+
+        path = f"/events?{urlencode({'token': token})}"
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Accept: text/event-stream\r\n"
+            "Connection: close\r\n"
+            "\r\n"
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            for raw_line in resp:
-                if self._stop.is_set():
-                    break
-                line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
-                if not line.startswith("data: "):
-                    continue
+        sock = socket.create_connection(("127.0.0.1", port), timeout=20)
+        try:
+            sock.settimeout(20)
+            sock.sendall(request.encode("utf-8"))
+            buf = b""
+            # Read the response head so we only consume SSE after a 200.
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    return
+                buf += chunk
+            head, buf = buf.split(b"\r\n\r\n", 1)
+            status_line = head.split(b"\r\n", 1)[0]
+            status_parts = status_line.split(b" ", 2)
+            if len(status_parts) < 2 or status_parts[1] != b"200":
+                return
+            while not self._stop.is_set():
+                # Drain complete lines already buffered before the next recv.
+                while b"\n" in buf:
+                    raw_line, buf = buf.split(b"\n", 1)
+                    line = raw_line.rstrip(b"\r").decode("utf-8", "replace")
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        message = json.loads(line[len("data: "):])
+                    except Exception:
+                        continue
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("event") != "task_finished":
+                        continue
+                    data = message.get("data")
+                    if isinstance(data, dict):
+                        self._handle_task_finished(data)
                 try:
-                    message = json.loads(line[len("data: "):])
-                except Exception:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
                     continue
-                if not isinstance(message, dict):
-                    continue
-                if message.get("event") != "task_finished":
-                    continue
-                data = message.get("data")
-                if isinstance(data, dict):
-                    self._handle_task_finished(data)
+                if not chunk:
+                    return
+                buf += chunk
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
     def _window_visible(self) -> bool:
         """True when the Code Wood window is on screen and in front."""
