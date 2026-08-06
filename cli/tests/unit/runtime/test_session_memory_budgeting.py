@@ -1333,7 +1333,16 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent.params = {"context_window": 128000}
         agent.conversation_history = [
             {"role": "user", "content": "Implement feature A"},
-            {"role": "assistant", "content": "Got it"},
+            {
+                # A real model reply carries API-derived markers; without them
+                # the message is treated as a local bookkeeping entry and the
+                # whole history counts as "not sent yet".
+                "role": "assistant",
+                "content": "Got it",
+                "_output_tokens": 2,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+            },
         ]
         svc = SessionMemoryService(agent)
 
@@ -1626,6 +1635,94 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         plain_payload = svc.parse_context_compaction_summary_content(plain)
         self.assertNotIn("output_tokens", plain_payload)
         self.assertNotIn("reasoning_tokens", plain_payload)
+
+    def test_history_tokens_cumulative_excludes_unsent_tail_messages(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+        cm = svc.llm_context_manager
+
+        messages = [
+            {"role": "user", "content": "question 1", "_token_count": 10},
+            {
+                "role": "assistant",
+                "content": "",
+                "_cache_stats": {"input_tokens": 1000},
+                "_output_tokens": 50,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+                "_reply_records": [{"kind": "content", "data": "reply 1", "from": "native"}],
+            },
+            # A user message just typed but not sent to the model yet.
+            {"role": "user", "content": "question 2", "_token_count": 20},
+            # An auto-generated user message queued for the next model call.
+            {"role": "user", "content": "...", "_internal": True, "_token_count": 30},
+            # A tool result waiting to be sent back to the model.
+            {"role": "tool", "name": "shell", "content": "{}", "tool_call_id": "call_0", "_token_count": 40},
+        ]
+
+        # Default (send-budget path) counts every message: the queued messages
+        # are about to be sent, so they belong in the pre-send budget.
+        total = cm._history_tokens_cumulative(messages)
+        self.assertEqual(total, 1000 + 50 + 20 + 30 + 40)
+
+        # Dashboard path excludes everything after the last model output.
+        sent = cm._history_tokens_cumulative(messages, exclude_unsent=True)
+        self.assertEqual(sent, 1000 + 50)
+
+        # Same for the messages-only variant (no cache anchor).
+        sent_only = cm._history_tokens_cumulative(
+            messages,
+            use_cache_anchor=False,
+            exclude_unsent=True,
+        )
+        self.assertEqual(sent_only, 10 + 50)
+
+    def test_history_tokens_cumulative_counts_closed_tool_rounds(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+        cm = svc.llm_context_manager
+
+        messages = [
+            {"role": "user", "content": "run a tool", "_token_count": 5},
+            {
+                "role": "assistant",
+                "content": "",
+                "_output_tokens": 10,
+                "_reasoning_tokens": 0,
+                "_reply_records": [
+                    {"kind": "tool_call", "data": {"function": {"name": "shell"}}, "from": "native"}
+                ],
+            },
+            {"role": "tool", "content": "result", "tool_call_id": "c1", "_token_count": 25},
+            {
+                "role": "assistant",
+                "content": "done",
+                "_output_tokens": 8,
+                "_reasoning_tokens": 0,
+                "_reply_records": [{"kind": "content", "data": "done", "from": "native"}],
+            },
+        ]
+
+        # The tool result sits between two model outputs, so it was already
+        # sent to (and answered by) the model: it must be counted.
+        total = cm._history_tokens_cumulative(messages, exclude_unsent=True)
+        self.assertEqual(total, 5 + 10 + 25 + 8)
+
+    def test_context_usage_from_chat_record_ignores_unsent_only_history(self):
+        agent = _FakeAgent()
+        # No chat record available -> falls back to conversation_history. All
+        # messages are queued (no model output yet), so usage must be zero
+        # instead of inflating the dashboard with never-sent tokens.
+        agent.conversation_history = [
+            {"role": "user", "content": "just typed, not sent yet", "_token_count": 100},
+            {"role": "tool", "name": "shell", "content": "{}", "tool_call_id": "call_0", "_token_count": 50},
+        ]
+        svc = SessionMemoryService(agent)
+        self.assertEqual(svc.llm_context_manager._context_usage_from_chat_record(), 0)
+        self.assertEqual(
+            svc.llm_context_manager._context_usage_from_chat_record(messages_only=True),
+            0,
+        )
 
     def test_compact_context_records_output_tokens_on_summary(self):
         agent = _FakeAgent()

@@ -107,6 +107,31 @@ AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
 HISTORY_USAGE_FAST_PATH_THRESHOLD = 10_000
 
 
+def _is_model_output_message(msg: Any) -> bool:
+    """True when ``msg`` is a real model reply already produced by the API.
+
+    Real replies always carry at least one API-derived marker: a non-empty
+    ``_reply_records`` block, provider ``_output_tokens`` usage, or
+    ``_cache_stats``. Local bookkeeping assistant messages (task-worked
+    summaries, direct-shell results, model-error notices, slash results, ...)
+    never carry these markers, so they are NOT treated as model output even
+    though ``append_chat_message`` stamps every assistant message with
+    ``_model``.
+    """
+    if not isinstance(msg, dict):
+        return False
+    if str(msg.get("role") or "").strip().lower() != "assistant":
+        return False
+    records = msg.get("_reply_records")
+    if isinstance(records, list) and records:
+        return True
+    if msg.get("_output_tokens") is not None:
+        return True
+    if isinstance(msg.get("_cache_stats"), dict):
+        return True
+    return False
+
+
 class LLMContextManager:
     """Builds and budgets the LLM request context for a turn."""
 
@@ -225,11 +250,12 @@ class LLMContextManager:
             sys_prompt = ""
             sys_tokens = 0
         history_budget = max(0, input_budget - user_tokens)
+        source_history = self.history_for_regular_context()
         history_messages, history_stats = self._build_history_messages_by_budget(
             history_budget,
             int(budgets.get("history_summary_budget") or 80),
             int(budgets.get("assistant_clip_tokens") or 180),
-            source_history=self.history_for_regular_context(),
+            source_history=source_history,
         )
         messages: List[Dict[str, Any]] = list(history_messages)
         if sys_prompt:
@@ -252,7 +278,13 @@ class LLMContextManager:
             usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
             self.agent._last_context_usage_percent_precompression = usage_pct
             self.agent._last_context_aggressive_compression_applied = False
-            self._store_context_usage_snapshot(ctx_window, total_input_tokens)
+            # The dashboard snapshot must not count messages that have not been
+            # sent yet (the queued user input, auto-generated user messages,
+            # tool results waiting for the next model call) — the API usage of
+            # the next response will account for them with real numbers.
+            snapshot_history_tokens = self._history_tokens_cumulative(source_history, exclude_unsent=True)
+            snapshot_input_tokens = int(sys_tokens + snapshot_history_tokens + tool_schemas_tokens)
+            self._store_context_usage_snapshot(ctx_window, snapshot_input_tokens)
             if bool(getattr(self.agent, "_force_current_input_as_requirement_once", False)):
                 self.agent._force_current_input_as_requirement_once = False
             get_logger().info(
@@ -868,6 +900,7 @@ class LLMContextManager:
         self,
         messages: List[Dict[str, Any]],
         use_cache_anchor: bool = True,
+        exclude_unsent: bool = False,
     ) -> int:
         """Compute total history tokens using the cumulative formula.
 
@@ -881,12 +914,26 @@ class LLMContextManager:
         notices, slash results, etc.) are skipped — they are never sent to
         the model and should not inflate the usage display.
 
+        When ``exclude_unsent`` is True, messages that have not been sent to
+        the model yet are dropped: everything after the last real model output
+        (a user message just typed, an auto-generated user message, a
+        tool-result message queued for the next model call, ...). The model
+        output itself is always counted. This keeps the dashboard Used/History
+        numbers from growing with locally-estimated tokens that the next API
+        response (a fresh cache anchor) would then replace with smaller values.
+
         When ``use_cache_anchor`` is False the anchor is ignored and only the
         per-message text estimates are summed — used to show the actual
         conversation size in the dashboard instead of the anchor residual.
         """
         parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
+
+        last_model_output_idx = -1
+        if exclude_unsent:
+            for i, m in enumerate(messages):
+                if _is_model_output_message(m):
+                    last_model_output_idx = i
 
         def _is_internal_assistant(msg: Dict[str, Any]) -> bool:
             role = str(msg.get("role") or "").strip().lower()
@@ -984,6 +1031,8 @@ class LLMContextManager:
         for i, m in enumerate(messages):
             if _is_internal_assistant(m):
                 continue
+            if exclude_unsent and i > last_model_output_idx:
+                continue
             if i < start_idx:
                 continue
             total += _message_cost(m)
@@ -1003,9 +1052,17 @@ class LLMContextManager:
         chat = self.agent._find_chat_by_id(cid) if cid else None
         if not isinstance(chat, dict):
             hist = list(getattr(self.agent, "conversation_history", None) or [])
-            return self._history_tokens_cumulative(hist, use_cache_anchor=not messages_only)
+            return self._history_tokens_cumulative(
+                hist,
+                use_cache_anchor=not messages_only,
+                exclude_unsent=True,
+            )
         msgs = list(chat.get("messages") or [])
-        return self._history_tokens_cumulative(msgs, use_cache_anchor=not messages_only)
+        return self._history_tokens_cumulative(
+            msgs,
+            use_cache_anchor=not messages_only,
+            exclude_unsent=True,
+        )
 
     def _build_context_usage_parts(
         self,
@@ -1584,10 +1641,8 @@ class LLMContextManager:
                 return
             budgets = self._context_token_budgets()
             if self._should_use_simple_chat_context(budgets):
-                user_text = str(user_input_hint or "")
                 source_history = self.history_for_regular_context()
                 history_tokens = self._context_usage_from_chat_record()
-                user_tokens = self._estimate_message_tokens("user", user_text)
                 # When a cache anchor exists (_cache_stats on a prior assistant
                 # message), history_tokens already includes the system prompt
                 # and tool schemas from the previous API call.  Adding them
@@ -1600,13 +1655,13 @@ class LLMContextManager:
                     sys_prompt = self._build_small_model_system_prompt()
                     sys_tokens = self._estimate_message_tokens("system", sys_prompt)
                     tool_schemas_tokens = self._estimate_tool_schemas_tokens()
-                    total_input_tokens = int(history_tokens + user_tokens + sys_tokens + tool_schemas_tokens)
+                    total_input_tokens = int(history_tokens + sys_tokens + tool_schemas_tokens)
                     parts = [
                         {"key": "system", "tokens": int(sys_tokens)},
                         {"key": "tools", "tokens": int(tool_schemas_tokens)},
                     ]
                 else:
-                    total_input_tokens = int(history_tokens + user_tokens)
+                    total_input_tokens = int(history_tokens)
                     parts = []
                 parts.append({"key": "history", "tokens": int(history_tokens)})
                 parts = [p for p in parts if int(p.get("tokens") or 0) > 0]
@@ -1876,13 +1931,21 @@ class LLMContextManager:
                 isinstance(m.get("_cache_stats"), dict)
                 for m in filtered_history
             )
-            history_tokens_snapshot = (
-                self._history_tokens_cumulative(filtered_history)
-                if source_has_cache_anchor
-                else history_tokens
+            # Dashboard snapshot: exclude messages that have not been sent yet
+            # (the raw user input queued by ``_try_record_user_task_message``,
+            # auto-generated user messages, tool results waiting for the next
+            # model call). They are counted by the next API response's usage
+            # anchor with real numbers, so including local estimates here would
+            # make Used/History jump up and then settle back down.
+            history_tokens_snapshot = self._history_tokens_cumulative(
+                filtered_history, exclude_unsent=True
             )
             total_input_tokens = int(system_tokens + history_tokens + user_tokens + tool_schemas_tokens)
-            snapshot_input_tokens = int(history_tokens_snapshot + tool_schemas_tokens) if source_has_cache_anchor else int(total_input_tokens)
+            snapshot_input_tokens = (
+                int(history_tokens_snapshot + tool_schemas_tokens)
+                if source_has_cache_anchor
+                else int(system_tokens + history_tokens_snapshot + tool_schemas_tokens)
+            )
             ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
             usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
             self.agent._last_context_usage_percent_precompression = usage_pct
