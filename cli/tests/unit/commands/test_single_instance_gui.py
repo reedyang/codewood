@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import uuid
 from unittest.mock import patch
 
 import cli.main as main_mod
@@ -30,24 +31,34 @@ class SingleInstanceLockTests(unittest.TestCase):
             main_mod._GUI_INSTANCE_MUTEX_HANDLE = None
         _release_posix_instance_lock()
 
+    @staticmethod
+    def _test_mutex_name() -> str:
+        # A per-run, test-only mutex name keeps the tests hermetic: they must
+        # not collide with a real frozen codewood.exe GUI that may be running
+        # on the developer machine (nor leave one behind for it).
+        return f"Local\\codewood-gui-instance-test-{uuid.uuid4().hex}"
+
     def test_windows_mutex_acquired_first_time(self):
         if os.name != "nt":
             self.skipTest("named mutex is Windows-only")
-        self.assertTrue(_acquire_gui_single_instance_lock())
+        with patch.object(main_mod, "_GUI_INSTANCE_MUTEX_NAME", self._test_mutex_name()):
+            self.assertTrue(_acquire_gui_single_instance_lock())
 
     def test_windows_mutex_conflicts_while_held(self):
         if os.name != "nt":
             self.skipTest("named mutex is Windows-only")
-        self.assertTrue(_acquire_gui_single_instance_lock())
-        self.assertFalse(_acquire_gui_single_instance_lock())
+        with patch.object(main_mod, "_GUI_INSTANCE_MUTEX_NAME", self._test_mutex_name()):
+            self.assertTrue(_acquire_gui_single_instance_lock())
+            self.assertFalse(_acquire_gui_single_instance_lock())
 
     def test_windows_mutex_reacquirable_after_release(self):
         if os.name != "nt":
             self.skipTest("named mutex is Windows-only")
-        self.assertTrue(_acquire_gui_single_instance_lock())
-        self.assertFalse(_acquire_gui_single_instance_lock())
-        self.tearDown()  # close the held handle -> mutex released
-        self.assertTrue(_acquire_gui_single_instance_lock())
+        with patch.object(main_mod, "_GUI_INSTANCE_MUTEX_NAME", self._test_mutex_name()):
+            self.assertTrue(_acquire_gui_single_instance_lock())
+            self.assertFalse(_acquire_gui_single_instance_lock())
+            self.tearDown()  # close the held handle -> mutex released
+            self.assertTrue(_acquire_gui_single_instance_lock())
 
     def test_posix_lock_acquire_conflict_release(self):
         path = _posix_instance_lock_path()
@@ -75,7 +86,9 @@ class SingleInstanceLockTests(unittest.TestCase):
     def test_launch_gui_app_exits_when_instance_running(self):
         # A second launch must not start another GUI: it foregrounds the
         # running window and returns 0 without importing the gui host.
-        with patch.object(main_mod, "_acquire_gui_single_instance_lock", return_value=False), patch.object(
+        with patch.object(sys, "frozen", True, create=True), patch.object(
+            main_mod, "_acquire_gui_single_instance_lock", return_value=False
+        ), patch.object(
             main_mod, "_foreground_running_gui_window", return_value=True
         ) as mock_fg, patch.object(main_mod, "_free_own_console"), patch.object(
             main_mod, "_hide_owned_console_window"
@@ -91,15 +104,35 @@ class SingleInstanceLockTests(unittest.TestCase):
 
         fake_gui = MagicMock()
         fake_gui.main.return_value = 0
-        with patch.object(main_mod, "_acquire_gui_single_instance_lock", return_value=True), patch.object(
-            main_mod, "_foreground_running_gui_window"
-        ) as mock_fg, patch.object(main_mod, "_free_own_console"), patch.object(
+        with patch.object(sys, "frozen", True, create=True), patch.object(
+            main_mod, "_acquire_gui_single_instance_lock", return_value=True
+        ), patch.object(main_mod, "_foreground_running_gui_window") as mock_fg, patch.object(
+            main_mod, "_free_own_console"
+        ), patch.object(
             main_mod, "_hide_owned_console_window"
         ), patch.dict(sys.modules, {"gui": fake_gui}):
             result = _launch_gui_app()
         self.assertEqual(result, 0)
         fake_gui.main.assert_called_once()
         mock_fg.assert_not_called()
+
+    def test_launch_gui_app_skips_guard_in_dev_run(self):
+        # A source-tree run (`python ... app`) is not frozen, so the single-
+        # instance guard must not run and the GUI must start unconditionally.
+        from unittest.mock import MagicMock
+
+        fake_gui = MagicMock()
+        fake_gui.main.return_value = 0
+        with patch.object(main_mod, "_acquire_gui_single_instance_lock") as mock_lock, patch.object(
+            main_mod, "_foreground_running_gui_window"
+        ) as mock_fg, patch.object(main_mod, "_free_own_console"), patch.object(
+            main_mod, "_hide_owned_console_window"
+        ), patch.dict(sys.modules, {"gui": fake_gui}):
+            result = _launch_gui_app()
+        self.assertEqual(result, 0)
+        mock_lock.assert_not_called()
+        mock_fg.assert_not_called()
+        fake_gui.main.assert_called_once()
 
 
 class ForegroundHelperTests(unittest.TestCase):

@@ -1027,13 +1027,16 @@ def _launch_gui_app() -> int | None:
     else:
         _hide_owned_console_window()
 
-    # Single-instance guard: only the first process to take the lock starts
-    # the GUI. A later launch (second double-click, `codewood app`) raises the
-    # already-running window and exits instead of duplicating the window,
-    # backend, and data-dir locks.
-    if not _acquire_gui_single_instance_lock():
-        _foreground_running_gui_window(timeout=_GUI_FOREGROUND_TIMEOUT)
-        return 0
+    # Single-instance guard for the frozen build only: only the first
+    # codewood.exe to take the lock starts the GUI. A later launch (second
+    # double-click, `codewood app`) raises the already-running window and
+    # exits instead of duplicating the window, backend, and data-dir locks.
+    # Dev runs (``python ... app``) deliberately skip the guard so multiple
+    # source-tree instances and unit tests are unaffected.
+    if getattr(sys, "frozen", False):
+        if not _acquire_gui_single_instance_lock():
+            _foreground_running_gui_window(timeout=_GUI_FOREGROUND_TIMEOUT)
+            return 0
 
     # Force pywebview's EdgeChromium backend to host the .NET Framework
     # runtime (always present on Windows 10/11). Without this, pythonnet may
