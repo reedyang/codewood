@@ -1753,6 +1753,54 @@ def _parse_error_message_from_body(body: str) -> str:
     return ""
 
 
+_CONNECTION_ERROR_MARKERS = (
+    "connection aborted",
+    "connectionreseterror",
+    "connection reset",
+    "remotedisconnected",
+    "connection refused",
+    "max retries exceeded",
+    "protocolerror",
+    "timed out",
+    "readtimeout",
+    "connecttimeout",
+    "name or service not known",
+    "getaddrinfo failed",
+    "temporary failure in name resolution",
+    "connection closed by remote",
+)
+
+
+def _connection_error_text_match(text: str) -> bool:
+    """True when ``text`` looks like a transient connection-level failure."""
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _CONNECTION_ERROR_MARKERS)
+
+
+def _is_transient_connection_error(error: Exception) -> bool:
+    """Whether ``error`` is a transient connection-level failure worth retrying.
+
+    Covers connection resets (e.g. ``ConnectionResetError`` / requests'
+    ``('Connection aborted.', ConnectionResetError(10054, ...))``), refused
+    connections, DNS hiccups and timeouts — none of which carry an HTTP status
+    code, but all of which can succeed moments later, exactly like 429/503.
+    """
+    if isinstance(error, ConnectionResetError):
+        return True
+    if isinstance(error, TimeoutError):  # also covers socket.timeout (3.10+)
+        return True
+    try:
+        import requests
+        from requests.exceptions import ConnectionError as RequestsConnectionError
+        from requests.exceptions import Timeout as RequestsTimeout
+
+        if isinstance(error, (RequestsConnectionError, RequestsTimeout)):
+            return True
+    except Exception:
+        pass
+    return _connection_error_text_match(str(error))
+
+
 def _is_throttle_error(error: Exception) -> bool:
     """Check whether an error is a retryable throttle response (429 or 503)."""
     if not isinstance(error, OpenAIRequestError):
@@ -1761,7 +1809,7 @@ def _is_throttle_error(error: Exception) -> bool:
 
 
 def _model_call_error_throttle_code(error: "ModelCallError") -> Optional[int]:
-    """Return 429 or 503 when an attempt was a retryable throttle response.
+    """Return the retry code (429 / 503 / connection) for a failed attempt.
 
     Mirrors the text-matching style of the removed ``_model_call_error_contains_429``:
     ``requests`` formats HTTPError messages like
@@ -1769,6 +1817,9 @@ def _model_call_error_throttle_code(error: "ModelCallError") -> Optional[int]:
     ``503 Server Error: Service Unavailable for url: ...`` (with spaces), so
     each status token is matched with its surrounding spaces or a
     ``<code> Client Error`` marker to avoid false positives inside URLs.
+    Transient connection failures (no HTTP status, e.g. a reset connection)
+    map to ``_RETRY_CODE_CONNECTION`` so the same infinite backoff retry
+    applies. Returns ``None`` when the attempt is not retryable.
     """
     for attempt in (error.attempt_errors or []):
         err_text = str(attempt.get("error") or "")
@@ -1780,6 +1831,9 @@ def _model_call_error_throttle_code(error: "ModelCallError") -> Optional[int]:
                 or f"{token} Client Error" in err_text
             ):
                 return code
+    for attempt in (error.attempt_errors or []):
+        if _connection_error_text_match(str(attempt.get("error") or "")):
+            return _RETRY_CODE_CONNECTION
     return None
 
 
@@ -1822,6 +1876,13 @@ def _throttle_error_message(error: "ModelCallError", code: int) -> str:
 # ---------------------------------------------------------------------------
 _RETRY_INITIAL_WAIT_SECONDS = 3.0
 _RETRY_MAX_WAIT_SECONDS = 60.0
+
+# Internal retry code for transient connection-level failures (e.g. a peer
+# resetting the connection). Not a real HTTP status — it merely labels the
+# countdown line the same way 429/503 do, so the identical infinite backoff
+# retry (3s, then 2^n capped at 60s) applies to network hiccups too.
+_RETRY_CODE_CONNECTION = 521
+_CONNECTION_RETRY_MESSAGE = "Connection interrupted — retrying"
 
 
 def _retry_wait_seconds(retry_number: int) -> float:
@@ -2514,9 +2575,10 @@ def _call_with_openai_compatible(
     last_error: Optional[Exception] = None
     aggregated_attempts: List[Dict[str, str]] = []
     for api_kind in api_kinds:
-        # Throttle retries never exhaust: each 429/503 raises ModelCallError
-        # and the loop below backs off (3s, then 2^n capped at 60s) forever
-        # until the call succeeds or the user interrupts.
+        # Throttle (HTTP 429/503) and transient connection failures (e.g. a
+        # peer resetting the connection) never exhaust: each raises and the
+        # loop below backs off (3s, then 2^n capped at 60s) forever until the
+        # call succeeds or the user interrupts.
         retry_number = 0
         while True:
             try:
@@ -2546,49 +2608,57 @@ def _call_with_openai_compatible(
                     append_history=append_history,
                 )
             except ModelCallError as e:
-                throttle_code = _model_call_error_throttle_code(e)
-                if throttle_code is not None:
-                    retry_number += 1
-                    wait = _retry_wait_seconds(retry_number)
+                retry_code = _model_call_error_throttle_code(e)
+                if retry_code is None:
+                    last_error = e
+                    aggregated_attempts.extend(e.attempt_errors)
                     _OPENAI_ROUTE_LOG.warning(
-                        "openai-route throttled-retry model=%s api_kind=%s code=%s retry_number=%s wait=%.1fs",
+                        "openai-route kind-failed model=%s api_kind=%s error=%s",
                         model_name,
                         api_kind,
-                        throttle_code,
-                        retry_number,
-                        wait,
+                        str(e),
                     )
-                    _sleep_with_retry_countdown(
-                        wait,
-                        retry_number=retry_number,
-                        code=throttle_code,
-                        model_name=model_name,
-                        message=_throttle_error_message(e, throttle_code),
-                    )
-                    continue
-                last_error = e
-                aggregated_attempts.extend(e.attempt_errors)
-                _OPENAI_ROUTE_LOG.warning(
-                    "openai-route kind-failed model=%s api_kind=%s error=%s",
-                    model_name,
-                    api_kind,
-                    str(e),
+                    break
+                message = (
+                    _CONNECTION_RETRY_MESSAGE
+                    if retry_code == _RETRY_CODE_CONNECTION
+                    else _throttle_error_message(e, retry_code)
                 )
-                break
             except Exception as e:
-                last_error = e
-                aggregated_attempts.append({
-                    "label": api_kind,
-                    "url": str(base_url or ""),
-                    "error": str(e),
-                })
-                _OPENAI_ROUTE_LOG.warning(
-                    "openai-route kind-failed model=%s api_kind=%s error=%s",
-                    model_name,
-                    api_kind,
-                    str(e),
-                )
-                break
+                if not _is_transient_connection_error(e):
+                    last_error = e
+                    aggregated_attempts.append({
+                        "label": api_kind,
+                        "url": str(base_url or ""),
+                        "error": str(e),
+                    })
+                    _OPENAI_ROUTE_LOG.warning(
+                        "openai-route kind-failed model=%s api_kind=%s error=%s",
+                        model_name,
+                        api_kind,
+                        str(e),
+                    )
+                    break
+                retry_code = _RETRY_CODE_CONNECTION
+                message = _CONNECTION_RETRY_MESSAGE
+            retry_number += 1
+            wait = _retry_wait_seconds(retry_number)
+            _OPENAI_ROUTE_LOG.warning(
+                "openai-route throttled-retry model=%s api_kind=%s code=%s retry_number=%s wait=%.1fs",
+                model_name,
+                api_kind,
+                retry_code,
+                retry_number,
+                wait,
+            )
+            _sleep_with_retry_countdown(
+                wait,
+                retry_number=retry_number,
+                code=retry_code,
+                model_name=model_name,
+                message=message,
+            )
+            continue
 
     if last_error is not None:
         raise ModelCallError(str(last_error), attempt_errors=aggregated_attempts) from last_error
