@@ -1034,7 +1034,27 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertNotIn("do not proactively resume or redo the cancelled task", user_block)
         self.assertFalse(bool(getattr(agent, "_force_current_input_as_requirement_once", True)))
 
-    def test_degradation_adds_history_summary_before_full_drop(self):
+    def test_no_proactive_head_trimming_preserves_full_history(self):
+        agent = _FakeAgent()
+        agent.token_estimator = lambda s: len(str(s or ""))
+        agent.conversation_history.append({"role": "user", "content": "Initial request: build a task planner"})
+        for i in range(1, 100):
+            role = "assistant" if i % 2 == 0 else "user"
+            content = f"msg-{i} " + ("y" * 600)
+            agent.conversation_history.append({"role": role, "content": content})
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("Continue", context="ctx")
+        history_messages = messages[1:-1]
+        joined = "\n".join(str(m.get("content") or "") for m in history_messages)
+        # Proactive budget head-trimming is disabled: history larger than the
+        # old history_budget (~48% of the window) must be sent whole so the
+        # provider's prompt-prefix cache keeps hitting. No [History summary]
+        # may be synthesized and no oldest message may be dropped.
+        self.assertNotIn("[History summary]", joined)
+        self.assertIn("msg-99", joined)
+        self.assertIn("msg-1", joined)
+
+    def test_hard_overflow_guard_drops_oldest_without_summary(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}
         agent.token_estimator = lambda s: len(str(s or ""))
@@ -1047,7 +1067,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("Continue", context="ctx")
         history_messages = messages[1:-1]
         joined = "\n".join(str(m.get("content") or "") for m in history_messages)
-        self.assertIn("[History summary]", joined)
+        # Only the absolute last-resort hard ceiling may drop the oldest
+        # messages from the head; it must never synthesize a summary.
+        self.assertNotIn("[History summary]", joined)
         self.assertIn("msg-99", joined)
 
     def test_session_summary_prompt_is_experience_dense(self):
@@ -1786,7 +1808,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertTrue(hasattr(agent, "_last_context_usage_percent"))
         self.assertGreaterEqual(int(getattr(agent, "_last_context_usage_percent", -1)), 0)
 
-    def test_aggressive_compression_triggers_over_80_percent(self):
+    def test_over_80_percent_usage_builds_full_request_without_pre_compression(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}
         agent.token_estimator = lambda s: len(str(s or ""))  # deterministic pressure
@@ -1800,7 +1822,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc = SessionMemoryService(agent)
         svc._context_token_budgets = lambda: {
             "profile": "medium",
-            "context_window": 64000,
+            "context_window": 60000,
             "input_budget": 100000,
             "system_budget": 30000,
             "history_budget": 58000,
@@ -1810,12 +1832,18 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             "assistant_clip_tokens": 1800,
         }
         agent.operation_results = []
-        _messages, _ = svc.build_regular_task_messages("Continue moving forward", context="ctx-" + ("y" * 1200))
+        messages, _ = svc.build_regular_task_messages("Continue moving forward", context="ctx-" + ("y" * 1200))
         pre = int(getattr(agent, "_last_context_usage_percent_precompression", 0))
-        post = int(getattr(agent, "_last_context_usage_percent", 0))
         self.assertGreater(pre, 80)
-        self.assertTrue(bool(getattr(agent, "_last_context_aggressive_compression_applied", False)))
-        self.assertLess(post, pre)
+        # Budget head-trimming is gone: over-budget contexts are sent whole
+        # (only the absolute hard-overflow guard may cut the oldest messages),
+        # and auto-compact owns context reduction. No aggressive pre-compression
+        # runs, and the recent tail is preserved.
+        self.assertFalse(bool(getattr(agent, "_last_context_aggressive_compression_applied", False)))
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[-1]["role"], "user")
+        history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
+        self.assertIn("round-89", history_joined)
 
     def test_system_prompt_excludes_mutable_labels_for_cache_stability(self):
         agent = _FakeAgent()

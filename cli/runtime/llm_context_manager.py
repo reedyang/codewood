@@ -102,8 +102,6 @@ CONTEXT_SAFETY_MARGIN_RATIO = 0.10
 CONTEXT_SAFETY_MARGIN_MIN = 256
 SMALL_CTX_MAX = 16_000
 MEDIUM_CTX_MAX = 64_000
-AGGRESSIVE_COMPRESS_TRIGGER_PCT = 80
-AGGRESSIVE_COMPRESS_TARGET_PCT = 20
 AUTO_COMPACT_TRIGGER_PCT = 80
 AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
 HISTORY_USAGE_FAST_PATH_THRESHOLD = 10_000
@@ -333,23 +331,6 @@ class LLMContextManager:
         self._software_development_prompt_cache = text
         return text
 
-    def _summarize_history_excerpt(self, rows: List[Dict[str, Any]], summary_budget: int) -> str:
-        if not rows or summary_budget <= 0:
-            return ""
-        lines: List[str] = []
-        for item in rows:
-            role = "U" if str(item.get("role") or "").strip().lower() == "user" else "A"
-            c = str(item.get("content") or "").replace("\n", " ").strip()
-            if not c:
-                continue
-            lines.append(f"{role}:{c[:180]}")
-            if len(lines) >= 12:
-                break
-        if not lines:
-            return ""
-        summary = "[History summary]\n" + " | ".join(lines)
-        return self._clip_text_to_token_budget(summary, summary_budget)
-
     def _build_history_messages_by_budget(
         self,
         history_budget: int,
@@ -357,6 +338,18 @@ class LLMContextManager:
         assistant_clip_tokens: int,
         source_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+        """Assemble the model-visible history for one turn.
+
+        The full eligible history is returned un-trimmed so the request prefix
+        stays byte-stable across turns and the provider's automatic
+        prompt-prefix cache keeps hitting. Context overflow is owned by
+        auto-compact (``check_and_compact_if_needed`` /
+        ``maybe_auto_compact_before_user_message``); this function never
+        proactively re-summarizes or drops the head. The only trimming here is
+        an absolute last-resort hard guard that binds when the history alone
+        would overflow the provider's real context window (e.g. auto-compact
+        failed) — it drops the OLDEST messages without re-summarizing them.
+        """
         hist = list(source_history if source_history is not None else self._context_eligible_history())
         if not hist or history_budget <= 0:
             return [], {"assistant_trimmed": 0, "summary_messages": 0, "dropped_messages": 0}
@@ -372,41 +365,17 @@ class LLMContextManager:
             return sum(self._message_cost_for_tail_budget(i) for i in items)
 
         working = list(normalized)
-        dropped_for_summary: List[Dict[str, Any]] = []
-        summary_message: Optional[Dict[str, Any]] = None
-
-        # Stage 2: compress older dialogue into one summary message before dropping whole messages.
-        target_without_summary = max(24, history_budget - max(40, summary_budget))
-        while len(working) > 2 and _total_cost(working) > target_without_summary:
-            dropped_for_summary.append(working.pop(0))
-        if dropped_for_summary:
-            summary_text = self._summarize_history_excerpt(dropped_for_summary, summary_budget)
-            if summary_text:
-                summary_message = {"role": "assistant", "content": summary_text}
-                working.insert(0, summary_message)
-
-        # Stage 3: still too big -> drop whole oldest messages.
         dropped_messages = 0
-        while len(working) > 1 and _total_cost(working) > history_budget:
-            if summary_message is not None and len(working) > 2:
-                working.pop(1)
-            else:
-                working.pop(0)
-            dropped_messages += 1
 
-        if summary_message is not None and working and working[0] is summary_message and _total_cost(working) > history_budget:
-            other_cost = _total_cost(working[1:])
-            allowed = max(16, history_budget - other_cost - 6)
-            clipped_summary = self._clip_text_to_token_budget(str(summary_message.get("content") or ""), allowed)
-            if clipped_summary:
-                summary_message["content"] = clipped_summary
-            else:
-                working.pop(0)
+        hard_ceiling = self._hard_history_ceiling_tokens()
+        while len(working) > 1 and _total_cost(working) > hard_ceiling:
+            working.pop(0)
+            dropped_messages += 1
 
         if not working and normalized:
             # keep one latest message as last resort
             last = normalized[-1]
-            max_content_tokens = max(16, history_budget - 8)
+            max_content_tokens = max(16, hard_ceiling - 8)
             working = [
                 {
                     "role": str(last.get("role") or "assistant"),
@@ -416,7 +385,7 @@ class LLMContextManager:
 
         stats = {
             "assistant_trimmed": assistant_trimmed,
-            "summary_messages": 1 if summary_message else 0,
+            "summary_messages": 0,
             "dropped_messages": dropped_messages,
         }
         # Sanitize: remove tool_calls from assistant messages whose
@@ -469,6 +438,32 @@ class LLMContextManager:
                     else:
                         del _m["tool_calls"]
         return working, stats
+
+    def _hard_history_ceiling_tokens(self) -> int:
+        """Absolute last-resort ceiling for the *history* segment only.
+
+        Derived from the provider's real context window minus the output
+        reserve and safety margin, so it only binds when auto-compact has not
+        run and the history alone would overflow the window. This is a hard
+        overflow guard, not a proactive budget: under normal operation
+        auto-compact keeps total usage below its trigger, so the assembled
+        history is sent whole and the provider's prompt-prefix cache keeps
+        hitting. Falls back to effectively unlimited when the window cannot be
+        resolved.
+        """
+        try:
+            ctx_window = parse_context_window(
+                ((getattr(self.agent, "params", None) or {}).get("context_window")),
+                default_value=DEFAULT_CONTEXT_WINDOW,
+            )
+            output_reserve = max(
+                CONTEXT_OUTPUT_RESERVE_MIN,
+                min(CONTEXT_OUTPUT_RESERVE_MAX, int(ctx_window * CONTEXT_OUTPUT_RESERVE_RATIO)),
+            )
+            safety_margin = max(CONTEXT_SAFETY_MARGIN_MIN, int(ctx_window * CONTEXT_SAFETY_MARGIN_RATIO))
+            return max(1, ctx_window - output_reserve - safety_margin)
+        except Exception:
+            return 1 << 30
 
     def _assemble_history_messages(
         self,
@@ -1892,75 +1887,6 @@ class LLMContextManager:
             usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
             self.agent._last_context_usage_percent_precompression = usage_pct
             self.agent._last_context_aggressive_compression_applied = False
-            if usage_pct > AGGRESSIVE_COMPRESS_TRIGGER_PCT:
-                target_tokens = max(256, int((ctx_window * AGGRESSIVE_COMPRESS_TARGET_PCT) / 100))
-                aggressive_user_budget = max(120, int(target_tokens * 0.45))
-                aggressive_system_budget = max(80, int(target_tokens * 0.35))
-                aggressive_history_budget = max(40, int(target_tokens * 0.20))
-                aggressive_history_summary_budget = max(30, int(aggressive_history_budget * 0.55))
-                aggressive_assistant_clip = max(48, int(int(budgets.get("assistant_clip_tokens") or 180) * 0.35))
-                aggressive_op_context_budget = max(24, int(op_context_budget * 0.35))
-
-                tail_context2 = immutable_system_core + runtime_tail_raw
-                sys_prefix2 = tail_context2
-
-                history_messages2, history_stats2 = self._build_history_messages_by_budget(
-                    aggressive_history_budget,
-                    aggressive_history_summary_budget,
-                    aggressive_assistant_clip,
-                    source_history=filtered_history,
-                )
-                current_input2 = str(user_input or "").strip() + "\n"
-                mem_context2 = mem_context
-                if mem_context2:
-                    current_input2 = mem_context2.strip() + "\n" + current_input2
-                if interruption_line:
-                    current_input2 += f"Most recent interruption status: {interruption_line}\n"
-                if self.agent.operation_results:
-                    pass
-                if context:
-                    ctx_line2 = f"Operation context: {context}\n"
-                    current_input2 += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
-                # Hard anchors: never clip current input and time.
-                current_input2 += f"Local time reference: {date_time}"
-
-                system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
-                history_tokens2 = sum(
-                    self._message_cost_for_tail_budget(m)
-                    for m in history_messages2
-                )
-                user_tokens2 = self._estimate_message_tokens("user", current_input2)
-                total_input_tokens2 = int(system_tokens2 + history_tokens2 + user_tokens2)
-                has_cache_anchor2 = any(
-                    isinstance(m.get("_cache_stats"), dict)
-                    for m in history_messages2
-                )
-                snapshot_input_tokens2 = int(history_tokens2) if has_cache_anchor2 else int(total_input_tokens2)
-
-                if total_input_tokens2 < total_input_tokens:
-                    messages = [{"role": "system", "content": sys_prefix2}]
-                    messages += list(history_messages2)
-                    user_msg2 = {"role": "user", "content": current_input2}
-                    if mem_context2:
-                        user_msg2["_memory_context"] = mem_context2.strip()
-                    messages.append(user_msg2)
-                    sys_prefix = sys_prefix2
-                    history_messages = history_messages2
-                    current_input = current_input2
-                    history_stats = history_stats2
-                    system_tokens = system_tokens2
-                    history_tokens = history_tokens2
-                    user_tokens = user_tokens2
-                    total_input_tokens = total_input_tokens2
-                    snapshot_input_tokens = snapshot_input_tokens2
-                    self.agent._last_context_aggressive_compression_applied = True
-                    get_logger().info(
-                        "context-pack aggressive-compress triggered pre_pct=%s target_pct=%s post_pct=%s",
-                        usage_pct,
-                        AGGRESSIVE_COMPRESS_TARGET_PCT,
-                        int(round((total_input_tokens2 * 100.0) / max(1, ctx_window))),
-                    )
-
             self._store_context_usage_snapshot(ctx_window, snapshot_input_tokens)
             if force_new_requirement:
                 self.agent._force_current_input_as_requirement_once = False
