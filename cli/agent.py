@@ -1288,6 +1288,12 @@ class Agent:
         self._last_context_parts = []
         self._chat_state_manager.clear_chat_context(self.active_chat_id)
         try:
+            from .runtime.context_history_cache import clear_history_cache
+
+            clear_history_cache(self)
+        except Exception:
+            pass
+        try:
             self._persist_active_chat_usage_snapshot()
         except Exception:
             pass

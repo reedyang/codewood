@@ -304,7 +304,8 @@ class ReplyBlockRecordingTests(unittest.TestCase):
         self.assertEqual(len(assistants), 1)
         # Cache fidelity: single message, content = raw uncleaned text.
         self.assertEqual(assistants[0]["content"], "Answer text<think>hidden</think>")
-        self.assertEqual(assistants[0].get("_thinking"), "native think")
+        self.assertEqual(assistants[0].get("reasoning_content"), "native think")
+        self.assertNotIn("_thinking", assistants[0])
         self.assertEqual(assistants[0]["tool_calls"][0]["id"], "c1")
 
     def test_build_history_responses_interleaved_replay(self):
@@ -334,7 +335,8 @@ class ReplyBlockRecordingTests(unittest.TestCase):
         # Interleaved order preserved: [reasoning(raw content), tool_call].
         self.assertEqual(len(assistants), 2)
         self.assertEqual(assistants[0]["content"], "Answer text<think>hidden</think>")
-        self.assertEqual(assistants[0].get("_thinking"), "native think")
+        self.assertEqual(assistants[0].get("reasoning_content"), "native think")
+        self.assertNotIn("_thinking", assistants[0])
         self.assertEqual(assistants[1]["content"], "")
         self.assertEqual(assistants[1]["tool_calls"][0]["id"], "c1")
 
@@ -354,7 +356,8 @@ class ReplyBlockRecordingTests(unittest.TestCase):
         assistants = [m for m in built if m.get("role") == "assistant"]
         self.assertEqual(len(assistants), 1)
         self.assertEqual(assistants[0]["content"], "hello")
-        self.assertEqual(assistants[0].get("_thinking"), "think")
+        self.assertEqual(assistants[0].get("reasoning_content"), "think")
+        self.assertNotIn("_thinking", assistants[0])
         self.assertEqual(assistants[0]["tool_calls"][0]["id"], "t")
 
     def test_build_history_unsplit_responses_preserves_order(self):
@@ -374,7 +377,8 @@ class ReplyBlockRecordingTests(unittest.TestCase):
         # Unsplit block: [reasoning+content, tool_call] in recorded order.
         self.assertEqual(len(assistants), 2)
         self.assertEqual(assistants[0]["content"], "hello")
-        self.assertEqual(assistants[0].get("_thinking"), "think")
+        self.assertEqual(assistants[0].get("reasoning_content"), "think")
+        self.assertNotIn("_thinking", assistants[0])
         self.assertEqual(assistants[1]["content"], "")
         self.assertEqual(assistants[1]["tool_calls"][0]["id"], "t")
 
