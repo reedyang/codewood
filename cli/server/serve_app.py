@@ -39,6 +39,9 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from ..core.console_utils import (
+    GUI_CMD_OUTPUT_BEGIN,
+    GUI_CMD_PROMPT_BEGIN,
+    GUI_DIFF_BEGIN,
     GUI_FORCE_PROMPT_PREFIX,
     GUI_INTERNAL_COMMAND_PREFIX,
 )
@@ -1018,7 +1021,19 @@ class _OutputBridge(io.TextIOBase):
         # Keep SGR color runs (so the GUI can theme step output like the
         # terminal) but drop cursor/erase control sequences a non-TTY SSE
         # sink cannot honor. Normalize carriage returns to plain newlines.
-        return self.write_tagged(str(getattr(self._tls, "tag", "output") or "output"), s)
+        text = s if isinstance(s, str) else str(s or "")
+        # Tool envelopes are protocol-level output, even if an interrupted or
+        # exceptional model stream left this thread's assistant tag set.  If
+        # they were published as ``assistant`` events, the frontend would skip
+        # StepsView and expose the raw terminal-formatted rows indefinitely.
+        tag = str(getattr(self._tls, "tag", "output") or "output")
+        if any(marker in text for marker in (
+            GUI_CMD_PROMPT_BEGIN,
+            GUI_CMD_OUTPUT_BEGIN,
+            GUI_DIFF_BEGIN,
+        )):
+            tag = "output"
+        return self.write_tagged(tag, text)
 
     def writable(self) -> bool:  # type: ignore[override]
         return True
