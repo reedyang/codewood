@@ -1,9 +1,15 @@
 import unittest
 
-from cli.main import _parse_startup_cli_args
+from cli.main import _handle_toast_activation, _parse_startup_cli_args
 
 
 class MainCliArgsTests(unittest.TestCase):
+    def test_toast_activate_is_safe_noop(self):
+        # Clicking a notification runs the registered URL protocol, which
+        # launches this executable with --toast-activate. With no Code Wood
+        # window running (or on non-Windows) the handler must exit cleanly.
+        self.assertEqual(_handle_toast_activation(), 0)
+
     def test_empty_args(self):
         parsed, err = _parse_startup_cli_args([])
         self.assertIsNone(err)

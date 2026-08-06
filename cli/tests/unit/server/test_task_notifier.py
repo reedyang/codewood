@@ -145,6 +145,83 @@ class AppNameTests(unittest.TestCase):
         self.assertEqual(values["DisplayName"], "Code Wood")
 
 
+class ActivationTests(unittest.TestCase):
+    def test_activation_protocol_derived_from_real_slug(self):
+        self.assertEqual(notifier_mod._WINDOWS_ACTIVATION_PROTOCOL, "codewood-activate")
+
+    def test_activate_command_contains_toast_activate_flag(self):
+        command = notifier_mod._windows_activate_command()
+        self.assertIn("--toast-activate", command)
+
+    def test_toast_xml_carries_protocol_launch(self):
+        import base64
+        from types import SimpleNamespace
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(notifier_mod, "_windows_register_aumid", return_value=True), patch.object(
+            notifier_mod.subprocess, "run", side_effect=fake_run
+        ):
+            notifier_mod._windows_toast("My Chat", "Task finished")
+        encoded = captured["cmd"][captured["cmd"].index("-EncodedCommand") + 1]
+        script = base64.b64decode(encoded).decode("utf-16-le")
+        self.assertIn('activationType="protocol"', script)
+        self.assertIn("codewood-activate:activate", script)
+
+    def test_register_activation_protocol_writes_registry(self):
+        try:
+            import winreg
+        except ImportError:  # pragma: no cover - non-Windows
+            self.skipTest("winreg is Windows-only")
+
+        written = []
+
+        class _FakeKey:
+            def __init__(self, name):
+                self.name = name
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def SetValueEx(self, _key, name, _res, _type, value):
+                written.append((self.name, name, value))
+
+            def CreateKeyEx(self, _base, sub, _res, _access):
+                return _FakeKey(self.name + "\\" + sub)
+
+        root = _FakeKey("Software\\Classes\\codewood-activate")
+
+        def fake_create(base, path, res, access):
+            root.name = path
+            return root
+
+        with patch.object(winreg, "CreateKeyEx", side_effect=fake_create), patch.object(
+            winreg, "SetValueEx", side_effect=root.SetValueEx
+        ):
+            notifier_mod._windows_register_activation_protocol()
+
+        pairs = {(path, name): value for path, name, value in written}
+        self.assertEqual(
+            pairs[("Software\\Classes\\codewood-activate", "")],
+            "URL:codewood-activate",
+        )
+        self.assertEqual(
+            pairs[("Software\\Classes\\codewood-activate", "URL Protocol")],
+            "",
+        )
+        self.assertEqual(
+            pairs[("shell\\open\\command", "")],
+            notifier_mod._windows_activate_command(),
+        )
+
+
 class ShowNativeNotificationTests(unittest.TestCase):
     def test_windows_dispatch(self):
         with patch.object(notifier_mod, "_windows_notify") as notify:

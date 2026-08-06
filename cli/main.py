@@ -871,6 +871,81 @@ def _resolve_gui_launch(cli_args: dict) -> int | None:
     return _spawn_detached_gui()
 
 
+def _handle_toast_activation() -> int:
+    """Restore + foreground the running Code Wood GUI window and exit.
+
+    Invoked when the user clicks a task-completion notification: Windows runs
+    the registered ``<app>-activate`` URL protocol (see
+    ``desktop/host/notifier.py``), which launches this executable with
+    ``--toast-activate``. Notifications are only shown while the window is
+    minimized or covered, so the click should bring it back in front. No-op on
+    non-Windows or when no Code Wood window is running.
+    """
+    if os.name != "nt":
+        return 0
+    # The protocol normally launches the windowed launcher / pythonw, but when
+    # it falls back to this console-subsystem executable directly, hide and
+    # detach the console immediately so no window lingers.
+    _free_own_console()
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # Must match the desktop host's window title (desktop/host/gui.py).
+        title = "Code Wood"
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.BringWindowToTop.argtypes = [wintypes.HWND]
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+        ]
+        user32.keybd_event.argtypes = [
+            wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_ulong
+        ]
+
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return 0
+        # The click is a fresh user interaction, but Windows still enforces a
+        # foreground lock; release it (Alt-key trick) and attach to the target
+        # window's input queue so SetForegroundWindow is not refused.
+        VK_MENU = 0x12
+        KEYEVENTF_KEYUP = 0x0002
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+
+        kernel32 = ctypes.windll.kernel32
+        pid = wintypes.DWORD()
+        target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        current_thread = kernel32.GetCurrentThreadId()
+        attached = bool(
+            user32.AttachThreadInput(current_thread, target_thread, True)
+        )
+        try:
+            # Restore first, then bring it forward. ``SwitchToThisWindow`` is
+            # the legacy-but-reliable activation call; SetForegroundWindow is
+            # the documented one. Try both so a minimized window both restores
+            # and actually receives focus.
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            try:
+                user32.SwitchToThisWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
+                user32.SwitchToThisWindow(hwnd, True)
+            except Exception:
+                pass
+            if not user32.SetForegroundWindow(hwnd):
+                user32.BringWindowToTop(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(current_thread, target_thread, False)
+    except Exception:
+        pass
+    return 0
+
+
 def _force_utf8_std_streams() -> None:
     """Make stdout/stderr tolerate non-ASCII output on every platform.
 
@@ -944,6 +1019,15 @@ def _serve_without_valid_model(
 
 def main(argv: list[str] | None = None):
     """Main function."""
+    raw_argv = list(argv) if argv is not None else []
+    # A separate instance started by Windows when the user clicks a
+    # task-completion notification: free the (briefly shown) console, bring
+    # the running GUI window forward, and exit — before any console/config or
+    # model work. Handled first so it also works under pythonw / a windowed
+    # launcher with no console.
+    if "--toast-activate" in raw_argv:
+        return _handle_toast_activation()
+
     # Harden the console encoding before ANYTHING prints, so a non-UTF-8
     # system locale can't crash startup on the first Unicode symbol.
     _force_utf8_std_streams()
@@ -969,7 +1053,6 @@ def main(argv: list[str] | None = None):
     # priority for ``find.exe``/``sort.exe`` and friends.
     append_windows_git_tools_to_path()
 
-    raw_argv = list(argv) if argv is not None else []
     cli_args, cli_error = _parse_startup_cli_args(raw_argv)
     if cli_error:
         print(cli_error)

@@ -65,6 +65,14 @@ Name: "addtopath"; Description: "Add Code Wood to the &PATH environment variable
 ; and the shared _internal\ runtime + resources).
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+[Registry]
+; Runtime-created notification identity (see desktop/host/notifier.py): the
+; toast AppUserModelID and the toast-click activation URL scheme. Both live
+; under HKCU and are created on first launch, so they are only cleaned up on
+; uninstall (uninsdeletekey never creates them at install time).
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\CodeWood.Desktop"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\codewood-activate"; Flags: uninsdeletekey
+
 [Icons]
 ; Start Menu: terminal UI (opens with a console window) + GUI launcher.
 Name: "{group}\Code Wood (Terminal)"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"
