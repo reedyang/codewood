@@ -1169,6 +1169,17 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_sync.assert_called_once_with()
         mock_history.assert_called_once_with(start_index=2)
 
+    def test_terminal_history_reload_is_silent_in_gui_mode(self):
+        agent = self._build_agent()
+        agent._gui_plain_stream = True
+        with (
+            patch("cli.agent.os.system") as mock_clear,
+            patch.object(agent, "_print_chat_history") as mock_history,
+        ):
+            agent._reload_chat_history_from_anchor_on_resize()
+        mock_clear.assert_not_called()
+        mock_history.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

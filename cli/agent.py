@@ -1420,6 +1420,16 @@ class Agent:
         self,
         include_startup_overview: bool = True,
     ) -> None:
+        # This method redraws a terminal transcript by printing TUI-formatted
+        # history to stdout.  In serve mode stdout is the GUI event bridge;
+        # replaying here would inject non-structured tool rows into the live
+        # GUI stream.  The GUI owns transcript reloading through its history
+        # API, so every terminal-triggered reload must be a no-op there.
+        if bool(
+            getattr(self, "_gui_plain_stream", False)
+            or getattr(self, "_gui_no_wrap", False)
+        ):
+            return
         try:
             os.system("cls" if os.name == "nt" else "clear")
         except Exception:

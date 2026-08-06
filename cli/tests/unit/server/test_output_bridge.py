@@ -42,6 +42,15 @@ class OutputBridgeTests(unittest.TestCase):
         self.assertEqual(written, len("hidden"))
         self.assertEqual(broadcaster.published, [])
 
+    def test_tool_envelope_forces_output_event_after_assistant_tag_leaks(self):
+        broadcaster = _FakeBroadcaster()
+        bridge = _OutputBridge(broadcaster)
+
+        bridge.set_tag("assistant")
+        bridge.write("\ue004\u001b[32m•\u001b[0m Read demo.py\ue005")
+
+        self.assertEqual(broadcaster.published[0][0], "output")
+
 
 if __name__ == "__main__":
     unittest.main()
