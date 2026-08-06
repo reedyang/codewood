@@ -298,6 +298,17 @@ _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_widt
 _SHELL_DRAIN_TIMEOUT = 15.0
 
 
+# Abort notices appended to a shell round that was interrupted mid-flight. A
+# plain cancel (user Stop / ESC) reports ``command aborted by user`` (kept as a
+# stable marker several callers match). A *pause* — the GUI "send immediately"
+# queue-jump that interrupts the running task so a new message can be processed
+# first — reports that the user interrupted the call to add more information.
+SHELL_CANCEL_ABORT_NOTICE = "Command aborted by user\n"
+SHELL_PAUSE_ABORT_NOTICE = (
+    "User interrupted this call and is preparing to supplement more information\n"
+)
+
+
 # Non-interactive shell execution attaches no stdin, so an interactive command
 # (REPL, wizard, pager, editor, ...) blocks forever waiting for keys.  If the
 # process stays silent for ``_SHELL_INTERACTIVE_IDLE_TIMEOUT`` seconds it is
@@ -660,6 +671,24 @@ def _abandoned_shell_return_code(process: Any) -> int:
     except Exception:
         pass
     return 130
+
+
+def _shell_abort_notice(agent: Any, process: Any) -> str:
+    """Return the user-facing notice for an aborted shell round.
+
+    Consumes the per-process pause mark so exactly one notice is chosen: a
+    pause (GUI "send immediately" queue-jump) reports that the user
+    interrupted the call to add more information; anything else keeps the
+    stable ``command aborted by user`` cancel marker that callers match on.
+    """
+    consume_pause = getattr(agent, "_consume_process_pause", None)
+    if callable(consume_pause):
+        try:
+            if bool(consume_pause(process)):
+                return SHELL_PAUSE_ABORT_NOTICE
+        except Exception:
+            pass
+    return SHELL_CANCEL_ABORT_NOTICE
 
 
 def _resolve_shell_execution_cwd(agent: Any) -> Path:
@@ -1507,6 +1536,7 @@ def action_shell_command(
         out = ""
         displayed_out = ""
         aborted_by_user = False
+        pause_interrupt = False
         status_ticker: Optional[_WorkingStatusTicker] = None
         status_ticker_lock = threading.Lock()
 
@@ -1644,7 +1674,12 @@ def action_shell_command(
                     if callable(consume_abort):
                         aborted_by_user = bool(consume_abort(process))
                     if aborted_by_user:
-                        out = str(out) + ("command aborted by user\n")
+                        notice = _shell_abort_notice(agent, process)
+                        # The user terminated the call: drop the partial output
+                        # already read so only the abort notice is recorded.
+                        out = notice
+                        if notice == SHELL_PAUSE_ABORT_NOTICE:
+                            pause_interrupt = True
                 finally:
                     try:
                         unreg_proc = getattr(agent, "_unregister_interruptible_process", None)
@@ -2051,7 +2086,12 @@ def action_shell_command(
                         out = "".join(stdout_chunks)
                     out = _collapse_cr_output(out)
                     if aborted_by_user:
-                        out = str(out) + ("command aborted by user\n")
+                        notice = _shell_abort_notice(agent, process_ref.get("process"))
+                        # The user terminated the call: drop the partial output
+                        # already read so only the abort notice is recorded.
+                        out = notice
+                        if notice == SHELL_PAUSE_ABORT_NOTICE:
+                            pause_interrupt = True
                     if timed_out:
                         out = str(out) + (
                             "\n⚠️ Command was auto-terminated: it produced no output "
@@ -2198,6 +2238,7 @@ def action_shell_command(
                 "timed_out": bool(timed_out),
                 "interactive": interactive,
                 "aborted_by_user": bool(aborted_by_user),
+                "pause_interrupt": bool(pause_interrupt),
                 "display_output": replay_out_text,
                 "display_rendered_lines": int(replay_rendered_lines) + int(banner_lines),
             }

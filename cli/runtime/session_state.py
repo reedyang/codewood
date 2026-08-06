@@ -60,6 +60,9 @@ class SessionState:
         # remain the TUI / ESC legacy path and are untouched.
         "task_interrupt_requested",
         "process_interrupt_requested",
+        # Set by the GUI "send immediately" queue-jump: the task is interrupted
+        # like a stop, but no [CONVERSATION_INTERRUPTED] marker is recorded.
+        "pause_interrupt_requested",
     )
 
     def __init__(self) -> None:
@@ -97,6 +100,7 @@ class SessionState:
         self.session_injected_mcp_prompts: set = set()
         self.task_interrupt_requested: bool = False
         self.process_interrupt_requested: bool = False
+        self.pause_interrupt_requested: bool = False
 
 
 # Maps each public Agent attribute name to the SessionState slot backing it.

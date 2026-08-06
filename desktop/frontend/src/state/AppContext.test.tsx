@@ -19,6 +19,8 @@ const apiMock = vi.hoisted(() => {
   const sendInput = vi.fn(async () => undefined);
   const setChatModel = vi.fn(async () => true);
   const setChatReasoning = vi.fn(async () => true);
+  const savePendingInputs = vi.fn(async () => true);
+  const pause = vi.fn(async () => undefined);
   const syncModelPresets = vi.fn(async () => undefined);
   const deleteChat = vi.fn(async () => true);
   return {
@@ -34,6 +36,8 @@ const apiMock = vi.hoisted(() => {
     sendInput,
     setChatModel,
     setChatReasoning,
+    savePendingInputs,
+    pause,
     syncModelPresets,
     deleteChat,
     emit(event: ServerEvent) {
@@ -56,6 +60,8 @@ const apiMock = vi.hoisted(() => {
       sendInput.mockClear();
       setChatModel.mockClear();
       setChatReasoning.mockClear();
+      savePendingInputs.mockClear();
+      pause.mockClear();
       syncModelPresets.mockClear();
       deleteChat.mockClear();
     },
@@ -84,6 +90,8 @@ vi.mock("../api/client", () => ({
     sendInput = apiMock.sendInput;
     setChatModel = apiMock.setChatModel;
     setChatReasoning = apiMock.setChatReasoning;
+    savePendingInputs = apiMock.savePendingInputs;
+    pause = apiMock.pause;
     syncModelPresets = apiMock.syncModelPresets;
     deleteChat = apiMock.deleteChat;
   },
@@ -443,6 +451,22 @@ function HealthSendProbe() {
       <button onClick={() => { void sendInput("normal message"); }}>
         send normal
       </button>
+    </>
+  );
+}
+
+function PendingJumpProbe() {
+  const { pendingInputs, pendingAutoSend, sendInput, sendPendingInputNow, startPendingInputs } = useApp();
+  return (
+    <>
+      <button onClick={() => { void sendInput("msg-A"); }}>queue A</button>
+      <button onClick={() => { void sendInput("msg-B"); }}>queue B</button>
+      <button onClick={() => { void sendInput("msg-C"); }}>queue C</button>
+      <button onClick={() => { void sendPendingInputNow(1); }}>jump index 1</button>
+      <button onClick={() => { void startPendingInputs(); }}>start queue</button>
+      <pre data-testid="pending-state">
+        {JSON.stringify({ pendingInputs, pendingAutoSend })}
+      </pre>
     </>
   );
 }
@@ -1765,6 +1789,206 @@ describe("AppContext thinking rounds", () => {
 
     await waitFor(() => {
       expect(apiMock.sendInput).toHaveBeenNthCalledWith(1, "hello after switch", true, "chat-1", "ws-1");
+    });
+  });
+
+  it("jump-sends one message and defers draining until the jumped task finishes", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // The active chat is busy (a turn is streaming): messages queue up.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue A" }));
+      fireEvent.click(screen.getByRole("button", { name: "queue B" }));
+      fireEvent.click(screen.getByRole("button", { name: "queue C" }));
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A", "msg-B", "msg-C"]);
+    });
+
+    // Jump-send the middle message.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "jump index 1" }));
+    });
+
+    expect(apiMock.pause).toHaveBeenCalledWith("chat-1", "ws-1");
+    expect(apiMock.sendInput).toHaveBeenCalledWith("msg-B", true, "chat-1", "ws-1");
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A", "msg-C"]);
+      expect(st.pendingAutoSend).toBe(true);
+    });
+
+    // The paused turn's idle must NOT drain the queue: the remaining messages
+    // wait for the jumped task to finish.
+    await act(async () => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A", "msg-C"]);
+    });
+    expect(apiMock.sendInput).not.toHaveBeenCalledWith("msg-A", true, "chat-1", "ws-1");
+
+    // The jumped message B runs...
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "msg-B", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // ...and when B finishes, auto-send resumes and dequeues exactly one.
+    await act(async () => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(apiMock.sendInput).toHaveBeenCalledWith("msg-A", true, "chat-1", "ws-1");
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-C"]);
+    });
+  });
+
+  it("drains the remaining queue one per turn after the jumped task completes", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue A" }));
+      fireEvent.click(screen.getByRole("button", { name: "queue B" }));
+      fireEvent.click(screen.getByRole("button", { name: "queue C" }));
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A", "msg-B", "msg-C"]);
+    });
+
+    // Jump B: only B leaves the list immediately.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "jump index 1" }));
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A", "msg-C"]);
+      expect(st.pendingAutoSend).toBe(true);
+    });
+
+    // Paused turn unwinds: the marker suppresses this one drain.
+    await act(async () => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A", "msg-C"]);
+    });
+
+    // Jumped message B runs...
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "msg-B", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    // ...and finishes -> auto-send resumes and dequeues A.
+    await act(async () => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(apiMock.sendInput).toHaveBeenCalledWith("msg-A", true, "chat-1", "ws-1");
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-C"]);
+    });
+
+    // A runs and finishes -> auto-send sends C; the queue empties and
+    // auto-send is cleared.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "msg-A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(apiMock.sendInput).toHaveBeenCalledWith("msg-C", true, "chat-1", "ws-1");
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual([]);
+      expect(st.pendingAutoSend).toBe(false);
     });
   });
 

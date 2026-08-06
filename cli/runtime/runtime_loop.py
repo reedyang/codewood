@@ -3978,6 +3978,7 @@ def run_agent_loop(agent: Any):
             )
             self._start_interrupt_monitor(cancel_task_on_interrupt=True)
             self._consume_task_interrupt_requested()
+            self._consume_chat_pause_interrupt_requested()
             try:
                 self._conversation_interrupt_banner_recent = False
                 self._conversation_interrupt_banner_recent_at = 0.0
@@ -5007,20 +5008,25 @@ def run_agent_loop(agent: Any):
                         self._force_current_input_as_requirement_once = True
                         self._last_cancelled_task = str(original_user_task or "").strip()
                         self._mark_cancelled_unanswered_user_message()
-                        try:
-                            self._record_conversation_interrupted_history(
-                                interrupted_kind="task",
-                                reason="user_cancelled",
-                                detail=str(original_user_task or ""),
-                            )
-                        except Exception:
-                            pass
+                        # A message-jump PAUSE interrupts the task to insert a
+                        # new message — not a user cancellation — so no
+                        # [CONVERSATION_INTERRUPTED] marker is recorded.
+                        if not self._consume_chat_pause_interrupt_requested():
+                            try:
+                                self._record_conversation_interrupted_history(
+                                    interrupted_kind="task",
+                                    reason="user_cancelled",
+                                    detail=str(original_user_task or ""),
+                                )
+                            except Exception:
+                                pass
                         _refresh_context_usage_after_task_boundary(
                             self,
                             user_input_hint=str(original_user_task or ""),
                             context_hint="task cancelled",
                         )
-                        print(t("runtime.user_cancelled_task"))
+                        if not bool(getattr(self, "_gui_plain_stream", False)):
+                            print(t("runtime.user_cancelled_task"))
                         break_after_batch = True
                         break
 
@@ -5373,14 +5379,18 @@ def run_agent_loop(agent: Any):
                             retrofit()
                 except Exception:
                     pass
-                try:
-                    self._record_conversation_interrupted_history(
-                        interrupted_kind="task",
-                        reason="user_interrupt",
-                        detail=str(self._last_cancelled_task or ""),
-                    )
-                except Exception:
-                    pass
+                # A message-jump PAUSE (GUI "send immediately") interrupts the
+                # task to insert a new message — no [CONVERSATION_INTERRUPTED]
+                # marker is recorded for it.
+                if not self._consume_chat_pause_interrupt_requested():
+                    try:
+                        self._record_conversation_interrupted_history(
+                            interrupted_kind="task",
+                            reason="user_interrupt",
+                            detail=str(self._last_cancelled_task or ""),
+                        )
+                    except Exception:
+                        pass
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
                 self._active_skill_source = None
@@ -5395,12 +5405,15 @@ def run_agent_loop(agent: Any):
             self._in_task_execution = False
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             if self._consume_task_interrupt_requested():
-                self._record_conversation_interrupted_history(
-                    interrupted_kind="task",
-                    reason="user_interrupt",
-                )
-                if not self._consume_conversation_interrupted_banner_recent():
-                    self._print_conversation_interrupted_banner()
+                # Same pause handling: a queue-jump interrupt records no
+                # [CONVERSATION_INTERRUPTED] marker (and no banner).
+                if not self._consume_chat_pause_interrupt_requested():
+                    self._record_conversation_interrupted_history(
+                        interrupted_kind="task",
+                        reason="user_interrupt",
+                    )
+                    if not self._consume_conversation_interrupted_banner_recent():
+                        self._print_conversation_interrupted_banner()
                 continue
             print("")
             try:

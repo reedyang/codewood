@@ -156,6 +156,7 @@ export const en: Dict = {
   "chat.pendingListCount": "{count} pending",
   "chat.pendingListSendTip": "Send queued messages",
   "chat.pendingListCancel": "Remove from queue",
+  "chat.pendingListSendNow": "Pause current task and send this now",
   "msg.copy": "Copy",
   "msg.fork": "Fork",
   "msg.edit": "Edit",
