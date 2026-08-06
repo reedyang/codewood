@@ -34,15 +34,12 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 
-def _app_name() -> str:
-    """Effective app display name from ``cli/config/app_info.py``.
+def _load_app_info_module():
+    """Load ``cli/config/app_info.py`` by file path, or None.
 
     Loaded by file path instead of ``import cli.config.app_info`` so the GUI
     host never pulls in the heavy ``cli`` package (whose ``__init__`` imports
-    the full ``Agent``) just to read the branding constant. ``get_app_name``
-    honors the ``CODEWOOD_PROMPT_APP_NAME`` override, so notifications follow
-    whatever name the rest of the app surfaces. Returns ``""`` only when the
-    bundled ``app_info.py`` cannot be resolved (unreachable in practice).
+    the full ``Agent``) just to read branding constants.
     """
     if getattr(sys, "frozen", False):
         meipass = Path(getattr(sys, "_MEIPASS", "") or ".")
@@ -65,14 +62,48 @@ def _app_name() -> str:
                 continue
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            getter = getattr(module, "get_app_name", None)
-            if callable(getter):
-                name = str(getter() or "").strip()
-                if name:
-                    return name
+            return module
         except Exception:
             continue
-    return ""
+    return None
+
+
+def _app_name() -> str:
+    """Effective app display name from ``cli/config/app_info.py``.
+
+    ``get_app_name`` honors the ``CODEWOOD_PROMPT_APP_NAME`` override, so
+    notifications follow whatever name the rest of the app surfaces. Returns
+    ``""`` only when the bundled ``app_info.py`` cannot be resolved.
+    """
+    module = _load_app_info_module()
+    if module is None:
+        return ""
+    getter = getattr(module, "get_app_name", None)
+    if not callable(getter):
+        return ""
+    try:
+        return str(getter() or "").strip()
+    except Exception:
+        return ""
+
+
+def _app_real_slug() -> str:
+    """Stable slug of the real (non-overridden) app name, e.g. ``codewood``.
+
+    Used for internal identifiers (the activation URL scheme) that must stay
+    stable even when ``CODEWOOD_PROMPT_APP_NAME`` renames the display name.
+    """
+    module = _load_app_info_module()
+    if module is None:
+        return "codewood"
+    getter = getattr(module, "get_app_real_slug_compact", None)
+    if not callable(getter):
+        return "codewood"
+    try:
+        slug = str(getter() or "").strip()
+        return slug or "codewood"
+    except Exception:
+        return "codewood"
 
 # How long a completed task may keep a notification from being raised again.
 # Guards against a reconnect replay / duplicate delivery of the same event.
@@ -180,6 +211,54 @@ def _windows_powershell_path() -> str:
 _WINDOWS_AUMID = "CodeWood.Desktop"
 _WINDOWS_AUMID_REGISTERED = False
 
+# Custom URL scheme that toast clicks activate. Clicking a notification runs
+# the registered ``shell\open\command`` (codewood with ``--toast-activate``),
+# which restores + foregrounds the already-running GUI window. Using a URL
+# protocol avoids needing an AppUserModelID shortcut/COM activator, which
+# unpackaged apps would otherwise have to register for click activation.
+_WINDOWS_ACTIVATION_PROTOCOL = f"{_app_real_slug()}-activate"
+
+
+def _windows_activate_command() -> str:
+    """Command Windows runs when a task-completion notification is clicked.
+
+    ``%1`` receives the activation URL; the launched instance ignores it and
+    just foregrounds the running GUI window (see ``cli/main.py``).
+
+    The command targets a *windowed* entry point so clicking the toast never
+    flashes a console window:
+    - frozen: the windowed ``codewood-gui.exe`` launcher, which then spawns
+      ``codewood --toast-activate`` with ``CREATE_NO_WINDOW``;
+    - dev: ``pythonw.exe`` (no console), falling back to ``python.exe``.
+    """
+    exe_dir = Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False):
+        launcher = exe_dir / "codewood-gui.exe"
+        exe = str(launcher) if launcher.is_file() else str(Path(sys.executable).resolve())
+        return f'"{exe}" --toast-activate %1'
+    pythonw = exe_dir / "pythonw.exe"
+    exe = str(pythonw) if pythonw.is_file() else str(Path(sys.executable).resolve())
+    main_py = Path(__file__).resolve().parents[2] / "cli" / "main.py"
+    return f'"{exe}" "{main_py}" --toast-activate %1'
+
+
+def _windows_register_activation_protocol() -> None:
+    """Register the toast-click URL protocol under HKCU (no elevation)."""
+    import winreg
+
+    protocol = _WINDOWS_ACTIVATION_PROTOCOL
+    command = _windows_activate_command()
+    base = rf"Software\Classes\{protocol}"
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER, base, 0, winreg.KEY_SET_VALUE
+    ) as key:
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"URL:{protocol}")
+        winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKeyEx(
+            key, "shell\\open\\command", 0, winreg.KEY_SET_VALUE
+        ) as command_key:
+            winreg.SetValueEx(command_key, "", 0, winreg.REG_SZ, command)
+
 
 def _windows_app_icon_path() -> str:
     """Absolute path to the Code Wood icon used for toast registration.
@@ -229,6 +308,9 @@ def _windows_register_aumid() -> bool:
                 )
             if icon_uri:
                 winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, icon_uri)
+        # Toast clicks (see _windows_toast) activate this URL scheme, which
+        # restores + foregrounds the running GUI window.
+        _windows_register_activation_protocol()
         _WINDOWS_AUMID_REGISTERED = True
         return True
     except Exception:
@@ -260,7 +342,8 @@ def _windows_toast(title: str, text: str) -> bool:
     Returns ``True`` when the toast was handed to the shell.
     """
     xml = (
-        "<toast>"
+        f'<toast activationType="protocol" '
+        f'launch="{_WINDOWS_ACTIVATION_PROTOCOL}:activate">'
         "<visual><binding template=\"ToastGeneric\">"
         f"<text>{_xml_escape(title)}</text>"
         f"<text>{_xml_escape(text)}</text>"
