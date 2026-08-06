@@ -581,6 +581,18 @@ def _apply_startup_model_override(
 
 _GUI_DETACHED_ENV = "CODEWOOD_GUI_DETACHED"
 
+# Single-instance GUI guard (see _acquire_gui_single_instance_lock).
+# Windows uses a per-session named mutex, which Windows releases automatically
+# when the owning process dies (even on a crash); other platforms use a PID
+# lock file under the temp dir, with stale-file reclamation.
+_GUI_INSTANCE_MUTEX_NAME = "Local\\codewood-gui-instance"
+_GUI_INSTANCE_MUTEX_HANDLE: Optional[int] = None
+_GUI_FOREGROUND_TIMEOUT = 10.0
+_POSIX_INSTANCE_LOCK_PATH: Optional[Path] = None
+
+# Must match the desktop host's window title (desktop/host/gui.py).
+_GUI_WINDOW_TITLE = "Code Wood"
+
 
 def _launched_from_explorer() -> bool:
     """Return True when our nearest non-self ancestor is Explorer (Windows).
@@ -788,6 +800,215 @@ def _is_missing_webview_backend_error(exc: BaseException) -> bool:
     return any(n in text_blob for n in needles)
 
 
+def _posix_instance_lock_path() -> Path:
+    """Path of the POSIX single-instance lock file (temp dir, per user)."""
+    user = ""
+    try:
+        import getpass
+
+        user = getpass.getuser()
+    except Exception:
+        pass
+    safe = "".join(ch for ch in user if ch.isalnum() or ch in "-_.") or "user"
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / f"codewood-gui-{safe}.lock"
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """True when a process with ``pid`` still exists (cross-platform)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+            ]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False
+            kernel32.CloseHandle(handle)
+            return True
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    except Exception:
+        return True  # be conservative
+    return True
+
+
+def _acquire_posix_instance_lock() -> bool:
+    """POSIX single-instance lock via an ``O_EXCL`` PID file in the temp dir.
+
+    A crashed instance leaves a stale file; the PID written inside it is
+    checked and the file reclaimed when that process is gone.
+    """
+    global _POSIX_INSTANCE_LOCK_PATH
+    path = _posix_instance_lock_path()
+    for _ in range(2):  # at most one stale-file reclaim retry
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            stale_pid = 0
+            try:
+                stale_pid = int(path.read_text(encoding="utf-8").strip() or "0")
+            except Exception:
+                pass
+            if stale_pid and not _pid_is_alive(stale_pid):
+                try:
+                    path.unlink()
+                    continue
+                except OSError:
+                    pass
+            return False
+        except OSError:
+            return True  # temp dir unwritable: be permissive, allow startup
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        _POSIX_INSTANCE_LOCK_PATH = path
+        import atexit
+
+        atexit.register(_release_posix_instance_lock)
+        return True
+    return False
+
+
+def _release_posix_instance_lock() -> None:
+    """Remove the POSIX lock file if this process still owns it."""
+    global _POSIX_INSTANCE_LOCK_PATH
+    path, _POSIX_INSTANCE_LOCK_PATH = _POSIX_INSTANCE_LOCK_PATH, None
+    if path is None:
+        return
+    try:
+        if path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            path.unlink()
+    except Exception:
+        pass
+
+
+def _acquire_gui_single_instance_lock() -> bool:
+    """Try to become the single running GUI instance.
+
+    Returns True when this process now owns the lock and should start the
+    GUI; False when another instance already holds it and the caller should
+    foreground that window and exit. The lock lives for the whole process:
+    a Windows named mutex (auto-released when the process dies, even on a
+    crash) or a PID lock file elsewhere. Any lock-machinery failure is
+    treated as "acquired" so the GUI still starts.
+    """
+    global _GUI_INSTANCE_MUTEX_HANDLE
+    if os.name != "nt":
+        return _acquire_posix_instance_lock()
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [
+            wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR
+        ]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.CreateMutexW(None, False, _GUI_INSTANCE_MUTEX_NAME)
+        if not handle:
+            return True  # cannot tell: be permissive
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(handle)
+            return False
+        # Keep the handle open for the process lifetime; Windows releases it
+        # (and the mutex) when this process exits.
+        _GUI_INSTANCE_MUTEX_HANDLE = int(handle)
+        return True
+    except Exception:
+        return True
+
+
+def _foreground_running_gui_window(timeout: float = 0.0) -> bool:
+    """Restore + foreground the running Code Wood GUI window (Windows only).
+
+    Polls for the window by title for up to ``timeout`` seconds — the first
+    instance may still be starting up when a second launch races it — then
+    raises it. Returns True when a window was found and foregrounded, False
+    otherwise (e.g. non-Windows or no window running yet).
+    """
+    if os.name != "nt":
+        return False
+    import time
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.BringWindowToTop.argtypes = [wintypes.HWND]
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+        ]
+        user32.keybd_event.argtypes = [
+            wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_ulong
+        ]
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            hwnd = user32.FindWindowW(None, _GUI_WINDOW_TITLE)
+            if hwnd:
+                break
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.15)
+
+        # Windows enforces a foreground lock; release it (Alt-key trick) and
+        # attach to the target window's input queue so SetForegroundWindow is
+        # not refused.
+        VK_MENU = 0x12
+        KEYEVENTF_KEYUP = 0x0002
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+
+        kernel32 = ctypes.windll.kernel32
+        pid = wintypes.DWORD()
+        target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        current_thread = kernel32.GetCurrentThreadId()
+        attached = bool(
+            user32.AttachThreadInput(current_thread, target_thread, True)
+        )
+        try:
+            # Restore first, then bring it forward. ``SwitchToThisWindow`` is
+            # the legacy-but-reliable activation call; SetForegroundWindow is
+            # the documented one. Try both so a minimized window both restores
+            # and actually receives focus.
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            try:
+                user32.SwitchToThisWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
+                user32.SwitchToThisWindow(hwnd, True)
+            except Exception:
+                pass
+            if not user32.SetForegroundWindow(hwnd):
+                user32.BringWindowToTop(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(current_thread, target_thread, False)
+        return True
+    except Exception:
+        return False
+
+
 def _launch_gui_app() -> int | None:
     """Launch the desktop GUI host (which spawns the backend serve process).
 
@@ -805,6 +1026,14 @@ def _launch_gui_app() -> int | None:
         _free_own_console()
     else:
         _hide_owned_console_window()
+
+    # Single-instance guard: only the first process to take the lock starts
+    # the GUI. A later launch (second double-click, `codewood app`) raises the
+    # already-running window and exits instead of duplicating the window,
+    # backend, and data-dir locks.
+    if not _acquire_gui_single_instance_lock():
+        _foreground_running_gui_window(timeout=_GUI_FOREGROUND_TIMEOUT)
+        return 0
 
     # Force pywebview's EdgeChromium backend to host the .NET Framework
     # runtime (always present on Windows 10/11). Without this, pythonnet may
@@ -887,62 +1116,9 @@ def _handle_toast_activation() -> int:
     # it falls back to this console-subsystem executable directly, hide and
     # detach the console immediately so no window lingers.
     _free_own_console()
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        # Must match the desktop host's window title (desktop/host/gui.py).
-        title = "Code Wood"
-        user32 = ctypes.windll.user32
-        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-        user32.FindWindowW.restype = wintypes.HWND
-        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-        user32.SetForegroundWindow.restype = wintypes.BOOL
-        user32.BringWindowToTop.argtypes = [wintypes.HWND]
-        user32.GetForegroundWindow.restype = wintypes.HWND
-        user32.GetWindowThreadProcessId.argtypes = [
-            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
-        ]
-        user32.keybd_event.argtypes = [
-            wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_ulong
-        ]
-
-        hwnd = user32.FindWindowW(None, title)
-        if not hwnd:
-            return 0
-        # The click is a fresh user interaction, but Windows still enforces a
-        # foreground lock; release it (Alt-key trick) and attach to the target
-        # window's input queue so SetForegroundWindow is not refused.
-        VK_MENU = 0x12
-        KEYEVENTF_KEYUP = 0x0002
-        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-
-        kernel32 = ctypes.windll.kernel32
-        pid = wintypes.DWORD()
-        target_thread = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        current_thread = kernel32.GetCurrentThreadId()
-        attached = bool(
-            user32.AttachThreadInput(current_thread, target_thread, True)
-        )
-        try:
-            # Restore first, then bring it forward. ``SwitchToThisWindow`` is
-            # the legacy-but-reliable activation call; SetForegroundWindow is
-            # the documented one. Try both so a minimized window both restores
-            # and actually receives focus.
-            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            try:
-                user32.SwitchToThisWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
-                user32.SwitchToThisWindow(hwnd, True)
-            except Exception:
-                pass
-            if not user32.SetForegroundWindow(hwnd):
-                user32.BringWindowToTop(hwnd)
-        finally:
-            if attached:
-                user32.AttachThreadInput(current_thread, target_thread, False)
-    except Exception:
-        pass
+    # The window already exists here (notifications only show while the GUI
+    # runs), so no long poll is needed.
+    _foreground_running_gui_window(timeout=0.0)
     return 0
 
 
