@@ -2111,6 +2111,28 @@ class ServeApp:
         return _build_state_inner(self.agent,
             workspace_id=rt.workspace_id if rt is not None else "")
 
+    @staticmethod
+    def _chat_name_from_state(state: Any, chat_id: Any) -> str:
+        """Best-effort chat display name from a GUI state snapshot.
+
+        ``state`` is the snapshot built for the chat's OWN workspace (see
+        ``_state_for_loop_thread``), so looking the name up there is correct
+        even for a background chat whose workspace differs from the focused
+        one. Falls back to "" (the caller drops the event) when the chat is
+        not present in the snapshot.
+        """
+        if not isinstance(state, dict):
+            return ""
+        try:
+            for c in state.get("chats") or []:
+                if isinstance(c, dict) and str(c.get("id") or "") == str(
+                    chat_id or ""
+                ):
+                    return str(c.get("name") or "").strip()
+        except Exception:
+            pass
+        return ""
+
     @contextlib.contextmanager
     def _runtime_persistence_scope(self, rt: "_ChatRuntime"):
         """Bind an HTTP thread to *rt* before persisting its live session.
@@ -2287,6 +2309,7 @@ class ServeApp:
         # user's focus at completion time is still accurate: waiting longer
         # would let them switch to another chat and falsely flag this one.
         was_busy = rt is not None and rt.busy.is_set()
+        turn_finished = False
         if was_busy:
             rt.busy.clear()
             # Remember when this turn finished so the /chat-history handler
@@ -2305,16 +2328,37 @@ class ServeApp:
             pending = bool(getattr(rt, "turn_record_pending", False))
             started = getattr(rt, "turn_started_at", None) is not None
             if pending and started:
+                turn_finished = True
                 # If the chat that ran is NOT the one the user is currently
                 # viewing, leave a persistent unread flag (blue dot) on it —
                 # decided deterministically here, at the moment the turn ends,
                 # instead of by a frontend heuristic that raced with focus
                 # switches. Opening the chat (select_chat) clears the flag.
                 self._mark_completed_chat_unread(rt)
+        # Wall-clock time this turn took, read before ``_record_turn_elapsed``
+        # clears the per-turn start marker.
+        elapsed_seconds = 0
+        if rt is not None and rt.turn_started_at is not None:
+            elapsed_seconds = int(max(0, time.monotonic() - rt.turn_started_at))
         self._record_turn_elapsed(rt)
-        self.broadcaster.publish(
-            "idle", self._route(state=self._state_for_loop_thread())
-        )
+        state = self._state_for_loop_thread()
+        self.broadcaster.publish("idle", self._route(state=state))
+        # A genuine user turn finished. A separate lightweight event lets the
+        # desktop host raise a native "task finished" notification when the
+        # window is hidden, without the host having to watch every idle
+        # snapshot. GUI-internal commands (rename/edit/switch/...) never fire it.
+        if turn_finished and rt is not None:
+            self.broadcaster.publish(
+                "task_finished",
+                {
+                    "chatId": str(getattr(rt, "chat_id", "") or ""),
+                    "workspaceId": str(getattr(rt, "workspace_id", "") or ""),
+                    "chatName": self._chat_name_from_state(
+                        state, getattr(rt, "chat_id", "")
+                    ),
+                    "elapsedSeconds": elapsed_seconds,
+                },
+            )
         if rt is None:
             # No runtime bound (should not happen); block on a private queue so
             # the loop parks instead of busy-spinning.

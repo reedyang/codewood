@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('../skills', 'skills'), ('../additional-subagents', 'additional-subagents'), ('../cli', 'cli'), ('../desktop/frontend/dist', 'frontend'), ('../desktop/host', 'host'), ('../models', 'models')]
+datas = [('../skills', 'skills'), ('../additional-subagents', 'additional-subagents'), ('../cli', 'cli'), ('../desktop/frontend/dist', 'frontend'), ('../desktop/host', 'host'), ('../models', 'models'), ('../build/app_icon.ico', 'codewood_assets')]
 binaries = []
 hiddenimports = ['clr', 'winpty', 'winpty.ptyprocess', 'winpty.enums', 'tiktoken_ext', 'tiktoken_ext.openai_public']
 tmp_ret = collect_all('webview')
