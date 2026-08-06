@@ -1279,6 +1279,12 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent = _FakeAgent()
         agent.params = {"context_window": 100000}
         agent.system_prompt = "MUTATED-" + ("X" * 6000)
+        # Deterministic token counter: the real estimator warms up tiktoken on
+        # a background thread, so the first call can fall back to the CJK
+        # heuristic and the second use tiktoken — making the two counts differ
+        # purely from warmup timing. Pinning the counter keeps this test about
+        # the composed-prompt snapshot, not about the async warmup.
+        agent.token_estimator = lambda text: (len(str(text or "")) + 3) // 4
         compose_calls = {"n": 0}
 
         def _compose(include_tools=True):
