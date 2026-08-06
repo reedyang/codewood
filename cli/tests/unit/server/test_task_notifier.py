@@ -8,6 +8,7 @@ keep the tests deterministic without a GUI or a real display.
 
 import importlib.util
 import json
+import os
 import threading
 import time
 import unittest
@@ -95,6 +96,53 @@ class HandleTaskFinishedTests(unittest.TestCase):
         ) as show:
             notifier._handle_task_finished({"elapsedSeconds": 0})
         show.assert_not_called()
+
+
+class AppNameTests(unittest.TestCase):
+    def test_app_name_reads_app_info(self):
+        # The notifier must take the displayed app name from cli/config/
+        # app_info.py (not a hardcoded literal). Default is "Code Wood".
+        self.assertEqual(notifier_mod._app_name(), "Code Wood")
+
+    def test_app_name_honors_env_override(self):
+        # get_app_name() applies the CODEWOOD_PROMPT_APP_NAME override, so the
+        # notification must surface whatever name the rest of the app uses.
+        with patch.dict(
+            os.environ, {"CODEWOOD_PROMPT_APP_NAME": "TestWood"}
+        ):
+            self.assertEqual(notifier_mod._app_name(), "TestWood")
+
+    def test_windows_register_uses_app_info_display_name(self):
+        try:
+            import winreg
+        except ImportError:  # pragma: no cover - non-Windows
+            self.skipTest("winreg is Windows-only")
+
+        notifier_mod._WINDOWS_AUMID_REGISTERED = False
+
+        class _FakeKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __init__(self):
+                self.values = []
+
+            def SetValueEx(self, _key, name, _res, _type, value):
+                self.values.append((name, value))
+
+        fake_key = _FakeKey()
+
+        with patch.object(
+            notifier_mod, "_windows_app_icon_path", return_value=""
+        ), patch.object(
+            winreg, "CreateKeyEx", return_value=fake_key
+        ), patch.object(winreg, "SetValueEx", side_effect=fake_key.SetValueEx):
+            notifier_mod._windows_register_aumid()
+        values = dict(fake_key.values)
+        self.assertEqual(values["DisplayName"], "Code Wood")
 
 
 class ShowNativeNotificationTests(unittest.TestCase):
@@ -235,6 +283,13 @@ class SseConsumeTests(unittest.TestCase):
                 "elapsedSeconds": 42,
             },
         }
+        # The stream also carries keep-alive pings and unrelated events that the
+        # client must skip without erroring.
+        stream = (
+            b": ping\n\n"
+            + b'data: {"event": "idle", "data": {"state": {}}}\n\n'
+            + b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n"
+        )
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):  # silence test output
@@ -245,11 +300,11 @@ class SseConsumeTests(unittest.TestCase):
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                self.wfile.write(
-                    b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n"
-                )
+                self.wfile.write(stream)
                 self.wfile.flush()
-                self.wfile.close()
+                # The client sends "Connection: close", so the server closes
+                # the socket after this handler returns; do not close wfile
+                # here or the framework's post-handler flush raises.
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -263,6 +318,36 @@ class SseConsumeTests(unittest.TestCase):
             ) as show:
                 notifier._consume()
             show.assert_called_once_with("Refactor auth", 42)
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+    def test_sse_stream_without_task_finished_does_not_notify(self):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):  # silence test output
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(
+                    b'data: {"event": "idle", "data": {"state": {}}}\n\n'
+                )
+                self.wfile.flush()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            notifier = _make_notifier(
+                port=server.server_address[1], token="tok", window=_FakeWindow()
+            )
+            with patch.object(notifier, "_window_visible", return_value=False), patch.object(
+                notifier_mod, "_show_native_notification"
+            ) as show:
+                notifier._consume()
+            show.assert_not_called()
         finally:
             server.shutdown()
             thread.join(timeout=5)
