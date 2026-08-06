@@ -242,6 +242,45 @@ function DraftModelPreserveProbe() {
   );
 }
 
+function DraftModelSwitchResetProbe() {
+  const { state, newChat, sendInput, setModel, setReasoning } = useApp();
+  return (
+    <>
+      <button
+        onClick={() => {
+          void newChat("ws-1");
+        }}
+      >
+        enter draft
+      </button>
+      <button
+        onClick={() => {
+          void setReasoning("high");
+        }}
+      >
+        select draft reasoning
+      </button>
+      <button
+        onClick={() => {
+          void setModel("openai/family/model/v2");
+        }}
+      >
+        select draft model
+      </button>
+      <button
+        onClick={() => {
+          void sendInput("hello");
+        }}
+      >
+        send draft
+      </button>
+      <pre data-testid="draft-reset-state">
+        {JSON.stringify(state?.model)}
+      </pre>
+    </>
+  );
+}
+
 function HistoryReloadProbe() {
   const { state, selectWorkspace } = useApp();
   return (
@@ -991,6 +1030,68 @@ describe("AppContext thinking rounds", () => {
       // Local state is updated optimistically.
       expect(state.model.current).toBe("openai/family/model/v2");
     });
+  });
+
+  it("resets the reasoning effort when switching models in draft mode", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        model: {
+          current: "provider/model",
+          available: ["provider/model", "openai/family/model/v2"],
+          ready: true,
+          reasoningEffort: "high",
+          reasoningEfforts: ["low", "high"],
+          reasoningEffortsBySelector: {
+            "provider/model": ["low", "high"],
+            "openai/family/model/v2": ["low", "high"],
+          },
+        },
+      }),
+    );
+
+    render(
+      <AppProvider>
+        <DraftModelSwitchResetProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    // Pick a reasoning effort for the draft, then switch the model. The
+    // effort belonged to the previous model, so it must be discarded and
+    // never leak into the chat created on send.
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "select draft reasoning" }),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "select draft model" }));
+    });
+
+    await waitFor(() => {
+      const model = JSON.parse(
+        screen.getByTestId("draft-reset-state").textContent || "{}",
+      ) as AppState["model"];
+      expect(model.current).toBe("openai/family/model/v2");
+      // Switching models discards the previous effort choice.
+      expect(model.reasoningEffort).toBe("");
+      // The new model's supported levels are applied.
+      expect(model.reasoningEfforts).toEqual(["low", "high"]);
+    });
+
+    // Send the draft: the new chat is created with the model but no reasoning
+    // effort, matching what the composer showed.
+    apiMock.newChat.mockResolvedValueOnce("chat-2");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "send draft" }));
+    });
+
+    expect(apiMock.newChat).toHaveBeenCalledWith("", "openai/family/model/v2", "");
   });
 
   it("keeps the draft model/reasoning when re-entering a draft that still has content", async () => {

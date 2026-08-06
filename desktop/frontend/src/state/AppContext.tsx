@@ -4186,6 +4186,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // chat yet.  The selected model will be applied when the user sends
         // their first message (materializeDraftChat applies it afterwards).
         draftModelRef.current = value;
+        // Switching models resets the reasoning-effort selection: the level
+        // (if any) belonged to the previous model and must be re-picked for
+        // the new one. Keep the composer dropdown and the materialized draft
+        // in sync — otherwise the UI can show an effort the chat never got.
+        draftReasoningRef.current = "";
         setState((prev) => {
           if (!prev) return prev;
           const patch = buildModelChangePatch(value, prev.model);
@@ -4194,12 +4199,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             model: {
               ...prev.model,
               current: value,
-              ...(patch
-                ? {
-                    reasoningEfforts: patch.reasoningEfforts,
-                    reasoningEffort: patch.reasoningEffort,
-                  }
-                : {}),
+              reasoningEffort: "",
+              ...(patch ? { reasoningEfforts: patch.reasoningEfforts } : {}),
             },
           };
         });
