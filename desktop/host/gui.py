@@ -27,6 +27,7 @@ import webview  # noqa: E402
 from backend import BackendError, BackendProcess
 from bridge import resolve_frontend_url
 from browser_overlay import BrowserOverlay
+from notifier import TaskNotifier
 
 
 WINDOW_TITLE = "Code Wood"
@@ -41,6 +42,16 @@ def _preferred_gui() -> str | None:
     if sys.platform == "win32":
         return "edgechromium"
     return None
+
+
+def _task_notify_enabled() -> bool:
+    """Whether the native task-completion notification is enabled.
+
+    On by default so a task that finishes while the window is minimized or
+    covered still reaches the user; set ``CODEWOOD_TASK_NOTIFY=0`` to opt out.
+    """
+    raw = str(os.environ.get("CODEWOOD_TASK_NOTIFY", "")).strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 def _overlay_browser_enabled() -> bool:
@@ -925,6 +936,10 @@ def main() -> int:
     overlay = BrowserOverlay(webview, window, enabled=_overlay_browser_enabled())
     host_api.attach_overlay(overlay)
 
+    notifier = TaskNotifier(port, token, window) if _task_notify_enabled() else None
+    if notifier is not None:
+        notifier.start()
+
     if sys.platform == "win32":
 
         def _on_shown(*_args: object) -> None:
@@ -946,6 +961,11 @@ def main() -> int:
             overlay.destroy()
         except Exception:
             pass
+        if notifier is not None:
+            try:
+                notifier.stop()
+            except Exception:
+                pass
 
     window.events.closing += _on_closing
     window.events.closed += _on_closed
@@ -1009,6 +1029,11 @@ def main() -> int:
                 continue
             delay = 1.0
             host_api.set_backend(new_port, new_token)
+            if notifier is not None:
+                try:
+                    notifier.set_backend(new_port, new_token)
+                except Exception:
+                    pass
             print(
                 f"[host] backend restarted on port {new_port}",
                 file=sys.stderr,
@@ -1041,6 +1066,11 @@ def main() -> int:
         webview.start(gui=_preferred_gui(), debug=debug)
     finally:
         backend_stop.set()
+        if notifier is not None:
+            try:
+                notifier.stop()
+            except Exception:
+                pass
         backend.stop()
     if sys.platform != "win32":
         sys.stdout.flush()
