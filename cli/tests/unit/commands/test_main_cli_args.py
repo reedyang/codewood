@@ -1,5 +1,8 @@
+import os
 import unittest
+from unittest.mock import patch
 
+import cli.main as main_mod
 from cli.main import _handle_toast_activation, _parse_startup_cli_args
 
 
@@ -8,7 +11,18 @@ class MainCliArgsTests(unittest.TestCase):
         # Clicking a notification runs the registered URL protocol, which
         # launches this executable with --toast-activate. With no Code Wood
         # window running (or on non-Windows) the handler must exit cleanly.
-        self.assertEqual(_handle_toast_activation(), 0)
+        # The real implementation touches the desktop (it hides/detaches the
+        # caller's console via ``_free_own_console`` and foregrounds the Code
+        # Wood window), so those are stubbed: running them from a pytest
+        # session attached to the user's PowerShell console would hide that
+        # very console window mid-run.
+        with patch.object(main_mod, "_free_own_console"), patch.object(
+            main_mod, "_foreground_running_gui_window", return_value=True
+        ) as mock_fg:
+            result = _handle_toast_activation()
+        self.assertEqual(result, 0)
+        if os.name == "nt":
+            mock_fg.assert_called_once()
 
     def test_empty_args(self):
         parsed, err = _parse_startup_cli_args([])
