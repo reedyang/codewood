@@ -385,6 +385,24 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
             agent._sync_active_chat_messages()
         except Exception:
             pass
+        # The history was rewound, so the cached assembled-history prefix is only
+        # valid up to the new tail.  Trim the cache to the surviving head instead
+        # of dropping it wholesale: the next context pack then reuses the cached
+        # prefix and re-assembles only the (now shorter) tail.  When the truncation
+        # shifted the eligible-history head (e.g. it removed a compaction summary)
+        # the reconcile drops the cache so the next pack rebuilds correctly.
+        try:
+            svc = getattr(agent, "session_memory_service", None)
+            prune = getattr(svc, "llm_context_manager", None)
+            pruner = getattr(prune, "prune_history_cache_after_truncation", None)
+            if callable(pruner):
+                pruner()
+            else:
+                from ..runtime.context_history_cache import clear_history_cache
+
+                clear_history_cache(agent)
+        except Exception:
+            pass
         # Persist the truncated chat to disk so _reload_chat_from_top (which
         # reloads from disk) sees the post-edit state instead of discarding it.
         try:

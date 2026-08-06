@@ -14,6 +14,7 @@ thin same-named wrappers so existing call sites and tests are unchanged.
 
 from __future__ import annotations
 
+import copy
 import json
 import platform
 import sys
@@ -23,6 +24,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .context_history_cache import (
+    CACHE_REV,
+    _message_sig,
+    build_api_key,
+    clear_history_cache,  # noqa: F401
+    load_history_cache,
+    prune_history_cache,
+    save_history_message_cache,
+    to_send_message,
+)
 from .prompt_preprocessor import preprocess_prompt
 
 from ..config.app_info import (
@@ -350,171 +361,10 @@ class LLMContextManager:
         if not hist or history_budget <= 0:
             return [], {"assistant_trimmed": 0, "summary_messages": 0, "dropped_messages": 0}
 
-        # Only messages at or after the last cache-stats message contribute
-        # to the token count — earlier ones are covered by the cumulative
-        # input tokens from the cache-stats anchor.  Pre-scan to find that
-        # position so we only compute _token_count for messages that matter.
-        last_cache_src_idx = -1
-        for _i, _msg in enumerate(hist):
-            if isinstance(_msg, dict) and isinstance(_msg.get("_cache_stats"), dict):
-                last_cache_src_idx = _i
-
-        normalized: List[Dict[str, Any]] = []
-        assistant_trimmed = 0
-        use_interleaved_replay = _assistant_replay_mode_from_agent(self.agent) == "interleaved"
-        parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
-        parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
-        for idx, msg in enumerate(hist):
-            role = str(msg.get("role") or "").strip().lower()
-            if role not in ("user", "assistant", "tool"):
-                continue
-            if role == "assistant" and _sms._is_reply_block(msg):
-                if not use_interleaved_replay:
-                    # Chat Completions (incl. DeepSeek): replay the block as a
-                    # single flattened assistant message (reasoning_content +
-                    # content + tool_calls), reproducing the original message
-                    # boundary for prompt-prefix cache hits. Falls through to
-                    # the single-entry path below via model_view.
-                    effective = _sms._assistant_model_view(msg)
-                    raw_content = str(effective.get("content") or "")
-                    content = self._normalize_history_content_for_model("assistant", raw_content, message=effective)
-                    content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
-                    entry: Dict[str, Any] = {"role": "assistant", "content": content}
-                    tcs = effective.get("tool_calls")
-                    if isinstance(tcs, list) and tcs:
-                        entry["tool_calls"] = tcs
-                    thinking = str(effective.get("_thinking") or "").strip()
-                    if thinking:
-                        entry["_thinking"] = thinking
-                        if effective.get("_thinking_from_content"):
-                            entry["_thinking_from_content"] = True
-                    msg_model = str(msg.get("_model") or "").strip()
-                    if msg_model:
-                        entry["_model"] = msg_model
-                    cs = msg.get("_cache_stats")
-                    if isinstance(cs, dict) and cs:
-                        entry["_cache_stats"] = cs
-                    from ..services.session_memory_service import _message_effective_token_count
-                    outer_tc = _message_effective_token_count(msg)
-                    if outer_tc is not None:
-                        entry["_token_count"] = outer_tc
-                    elif idx >= last_cache_src_idx:
-                        local = self._estimate_message_tokens("assistant", raw_content)
-                        msg["_token_count"] = local
-                        entry["_token_count"] = local
-                    normalized.append(entry)
-                    continue
-                # Responses / Anthropic preserve multi-segment reasoning: emit
-                # one provider assistant message per recorded node (reasoning
-                # merged with its following content), never merged across
-                # kinds. Split-out nodes are skipped (their data lives in the
-                # raw node). Tool results follow the tool-calls message.
-                from ..services.session_memory_service import _message_effective_token_count
-                sub_messages = _sms._assistant_model_messages(msg)
-                msg_model = str(msg.get("_model") or "").strip()
-                outer_tc = _message_effective_token_count(msg)
-                for _si, sub in enumerate(sub_messages):
-                    sub_role = str(sub.get("role") or "assistant").strip().lower()
-                    raw_content = str(sub.get("content") or "")
-                    content = self._normalize_history_content_for_model(sub_role, raw_content, message=sub)
-                    content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
-                    entry: Dict[str, Any] = {"role": sub_role, "content": content}
-                    tcs = sub.get("tool_calls")
-                    if isinstance(tcs, list) and tcs:
-                        entry["tool_calls"] = tcs
-                    thinking = str(sub.get("_thinking") or "").strip()
-                    if thinking:
-                        entry["_thinking"] = thinking
-                        if sub.get("_thinking_from_content"):
-                            entry["_thinking_from_content"] = True
-                    if msg_model:
-                        entry["_model"] = msg_model
-                    if _si == len(sub_messages) - 1:
-                        cs = msg.get("_cache_stats")
-                        if isinstance(cs, dict) and cs:
-                            entry["_cache_stats"] = cs
-                        if outer_tc is not None:
-                            entry["_token_count"] = outer_tc
-                        elif idx >= last_cache_src_idx:
-                            local = self._estimate_message_tokens(sub_role, raw_content)
-                            msg["_token_count"] = local
-                            entry["_token_count"] = local
-                    normalized.append(entry)
-                continue
-            # Reply blocks keep content/reasoning/tool_calls inside
-            # ``_reply_records``; flatten them via the model view so the
-            # provider payload reproduces the original call exactly (split
-            # blocks use the raw node's uncleaned content for cache fidelity).
-            effective = _sms._assistant_model_view(msg) if role == "assistant" else msg
-            raw_content = str(effective.get("content") or "")
-            # When the message carries ``_api_content`` (the exact text that was
-            # sent to the provider), use it for the model context so replayed
-            # history prefixes match upstream cache units.
-            api_content = effective.get("_api_content")
-            if isinstance(api_content, str) and api_content.strip():
-                raw_content = api_content
-            # ``_context_suffix`` carries auto-injected content (evidence block,
-            # local time, etc.) that was previously stored as a separate _internal
-            # user message. Append it to the message content so the model still
-            # receives it during history replay.
-            context_suffix = effective.get("_context_suffix")
-            if role == "user" and isinstance(context_suffix, str) and context_suffix.strip():
-                if raw_content.strip():
-                    raw_content = raw_content + "\n\n" + context_suffix.strip()
-                else:
-                    raw_content = context_suffix.strip()
-            if role == "user" and self._is_excluded_user_message_for_model_context(effective):
-                continue
-            if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
-                continue
-            if role == "assistant" and callable(parse_slash_result):
-                try:
-                    slash_payload = parse_slash_result(raw_content)
-                except Exception:
-                    slash_payload = None
-                if isinstance(slash_payload, dict):
-                    continue
-            if role == "assistant" and callable(parse_worked_summary):
-                try:
-                    worked_payload = parse_worked_summary(raw_content)
-                except Exception:
-                    worked_payload = None
-                if isinstance(worked_payload, dict):
-                    continue
-            content = self._normalize_history_content_for_model(role, raw_content, message=effective)
-            if role == "assistant":
-                before = content
-                content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
-                if content != before:
-                    assistant_trimmed += 1
-            entry: Dict[str, Any] = {"role": role, "content": content}
-            if role == "tool":
-                tid = str(msg.get("tool_call_id") or "").strip()
-                if tid:
-                    entry["tool_call_id"] = tid
-                tname = str(msg.get("name") or "").strip()
-                if tname:
-                    entry["name"] = tname
-            if role == "assistant":
-                tcs = effective.get("tool_calls")
-                if isinstance(tcs, list) and tcs:
-                    entry["tool_calls"] = tcs
-                msg_model = str(effective.get("_model") or "").strip()
-                if msg_model:
-                    entry["_model"] = msg_model
-                cs = effective.get("_cache_stats")
-                if isinstance(cs, dict) and cs:
-                    entry["_cache_stats"] = cs
-            from ..services.session_memory_service import _message_effective_token_count
-            tc = _message_effective_token_count(msg)
-            if tc is not None:
-                entry["_token_count"] = tc
-            elif idx >= last_cache_src_idx:
-                local = self._estimate_message_tokens(role, raw_content)
-                msg["_token_count"] = local
-                entry["_token_count"] = local
-            normalized.append(entry)
-
+        normalized, assistant_trimmed = self._assemble_history_messages(
+            assistant_clip_tokens,
+            source_history=source_history,
+        )
         if not normalized:
             return [], {"assistant_trimmed": assistant_trimmed, "summary_messages": 0, "dropped_messages": 0}
 
@@ -619,6 +469,395 @@ class LLMContextManager:
                     else:
                         del _m["tool_calls"]
         return working, stats
+
+    def _assemble_history_messages(
+        self,
+        assistant_clip_tokens: int,
+        source_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Assemble the eligible history into the clean wire messages sent to the
+        model, reusing the persisted per-chat cache where the history prefix is
+        unchanged.
+
+        The cached rows hold the *send form* of every message (``{role, content,
+        tool_calls, ...}``, with no internal bookkeeping such as ``_model`` /
+        ``_cache_stats`` / ``_token_count``). New messages only append to the
+        cached prefix (byte-stable for provider prompt-prefix cache hits). The
+        cache carries a single ``tail_sig`` signature of its last covered source
+        message: because an edit always truncates the history and clears the
+        cache, matching that one boundary signature (with a history that has not
+        shrunk) is enough to trust the entire prefix and append only the new
+        tail. Different API kinds serialize history differently, so the cache is
+        keyed by API kind (+ clip budget) via ``api_key``.
+
+        Returns ``(clean_history, assistant_trimmed)``.
+        """
+        hist = list(
+            source_history if source_history is not None else self._context_eligible_history()
+        )
+        if not hist:
+            return [], 0
+
+        # Absolute index into the eligible history where this assembled segment
+        # begins. The cache/prune logic keys rows by *relative* position inside
+        # ``hist`` (``idx`` fields), so a single ``start_idx`` — consistently
+        # derived here for both save sites — lets a post-edit prune decide
+        # whether the surviving prefix still lines up (e.g. an edit that removed
+        # a compaction summary shifts the head, so the cached rows no longer
+        # correspond to the same eligible history and must be dropped).
+        start_idx = self._eligible_start_index(hist)
+
+        use_interleaved_replay = _assistant_replay_mode_from_agent(self.agent) == "interleaved"
+        replay_mode = _assistant_replay_mode_from_agent(self.agent)
+        parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
+        parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
+
+        # Only messages at or after the last cache-stats message contribute
+        # to the token count — earlier ones are covered by the cumulative
+        # input tokens from the cache-stats anchor.  Pre-scan to find that
+        # position so we only compute _token_count for messages that matter.
+        last_cache_src_idx = -1
+        for _i, _msg in enumerate(hist):
+            if isinstance(_msg, dict) and isinstance(_msg.get("_cache_stats"), dict):
+                last_cache_src_idx = _i
+
+        api_key = build_api_key(replay_mode, assistant_clip_tokens)
+        cache = load_history_cache(self.agent)
+        cache_valid = False
+        rows: List[Dict[str, Any]] = []
+        tail_sig = ""
+        if cache is not None:
+            meta = cache.get("meta") or {}
+            try:
+                params_match = (
+                    meta.get("rev") == CACHE_REV
+                    and meta.get("api_key") == api_key
+                )
+            except Exception:
+                params_match = False
+            if params_match:
+                cache_valid = True
+                rows = list(cache.get("rows") or [])
+                tail_sig = str(meta.get("tail_sig") or "")
+                try:
+                    cached_start_idx = int(meta.get("start_idx") or 0)
+                except Exception:
+                    cached_start_idx = 0
+
+        normalized: List[Dict[str, Any]] = []
+        assistant_trimmed = 0
+
+        def _assemble_rows(start_idx: int, end_idx: int) -> List[Dict[str, Any]]:
+            """Assemble hist[start:end]; returns the rebuilt rows for them."""
+            tail_rows: List[Dict[str, Any]] = []
+            nonlocal assistant_trimmed
+            for h_i in range(start_idx, end_idx):
+                entries, trimmed = self._assemble_history_entry(
+                    h_i,
+                    hist[h_i],
+                    assistant_clip_tokens=assistant_clip_tokens,
+                    use_interleaved_replay=use_interleaved_replay,
+                    parse_slash_result=parse_slash_result,
+                    parse_worked_summary=parse_worked_summary,
+                    last_cache_src_idx=last_cache_src_idx,
+                )
+                assistant_trimmed += trimmed
+                tail_rows.append(
+                    {
+                        "idx": h_i,
+                        "msg": [to_send_message(e) for e in entries],
+                    }
+                )
+                for e in entries:
+                    normalized.append(to_send_message(e))
+            return tail_rows
+
+        def _new_tail_sig(idx: int) -> str:
+            # Signature computed after assembly: assembly may attach
+            # ``msg["_token_count"]``; the stored signature must match the
+            # one computed on the next build of the (now-mutated) message.
+            return _message_sig(hist[idx])
+
+        # Fast path — pure append: edits always truncate + clear the cache, so
+        # the only legitimately reusable cache is one whose *last* covered
+        # source message still matches the current history tail and whose
+        # history has not shrunk since. A single tail signature is enough to
+        # trust the whole prefix (identical-length rebuilds included).
+        if cache_valid and rows and len(hist) >= len(rows) and tail_sig:
+            try:
+                boundary_matches = tail_sig == _message_sig(hist[len(rows) - 1])
+            except Exception:
+                boundary_matches = False
+            if boundary_matches and cached_start_idx == start_idx:
+                for row in rows:
+                    cached_msg = row.get("msg")
+                    if isinstance(cached_msg, list) and cached_msg:
+                        normalized.extend(copy.deepcopy(cached_msg))
+                if len(hist) > len(rows):
+                    tail_rows = _assemble_rows(len(rows), len(hist))
+                    save_history_message_cache(
+                        self.agent,
+                        rows=(list(rows) + tail_rows),
+                        api_key=api_key,
+                        tail_sig=_new_tail_sig(len(hist) - 1),
+                        start_idx=start_idx,
+                    )
+                return normalized, assistant_trimmed
+
+        # Full path — history did not grow cleanly off the cached tail (edited /
+        # rewound without a cache clear, prefix shrink, api-key/rev switch, or
+        # cross-process drift): rebuild the whole prefix and re-cache.
+        rebuilt_rows = _assemble_rows(0, len(hist))
+        save_history_message_cache(
+            self.agent,
+            rows=rebuilt_rows,
+            api_key=api_key,
+            tail_sig=_new_tail_sig(len(hist) - 1),
+            start_idx=start_idx,
+        )
+        return normalized, assistant_trimmed
+
+    def _eligible_start_index(self, hist: List[Dict[str, Any]]) -> int:
+        """Absolute index into the *eligible* history where ``hist`` begins.
+
+        ``hist`` is either the full eligible history (``start_idx == 0``) or the
+        compaction-truncated suffix returned by ``history_for_regular_context()``
+        (in which case it starts at the latest compaction summary). The index is
+        located by object identity so both save sites in
+        ``_assemble_history_messages`` and a post-edit prune agree on the same
+        value for the same underlying messages. Falls back to ``0`` (safe
+        default) when the head cannot be located.
+        """
+        if not hist:
+            return 0
+        try:
+            eligible = self._context_eligible_history()
+        except Exception:
+            return 0
+        if not eligible:
+            return 0
+        first = hist[0]
+        try:
+            for _i, _m in enumerate(eligible):
+                if _m is first:
+                    return _i
+        except Exception:
+            return 0
+        return 0
+
+    def prune_history_cache_after_truncation(self) -> None:
+        """Reconcile the persisted history cache after an edit truncated
+        ``conversation_history``.
+
+        The cache rows are keyed by their position inside the *eligible* history
+        (``history_for_regular_context()``), so after a truncation the surviving
+        rows are simply the head of the cache — *provided* the surviving history
+        still starts at the same eligible position (``start_idx``) and is built
+        under the same ``api_key``. When that holds, ``prune_history_cache``
+        keeps the head rows (and updates ``tail_sig``) so the next context pack
+        reuses the cached prefix instead of re-assembling it; otherwise it drops
+        the whole cache so the next pack rebuilds correctly rather than serving a
+        misaligned prefix (e.g. an edit that removed a compaction summary).
+        """
+        try:
+            hist = self.history_for_regular_context()
+        except Exception:
+            hist = []
+        if not hist:
+            return
+        try:
+            replay_mode = _assistant_replay_mode_from_agent(self.agent)
+        except Exception:
+            replay_mode = "merged"
+        try:
+            budgets = self._context_token_budgets()
+            assistant_clip_tokens = int(budgets.get("assistant_clip_tokens") or 0)
+        except Exception:
+            assistant_clip_tokens = 0
+        api_key = build_api_key(replay_mode, assistant_clip_tokens)
+        start_idx = self._eligible_start_index(hist)
+        tail_sig = ""
+        try:
+            tail_sig = _message_sig(hist[-1])
+        except Exception:
+            pass
+        try:
+            prune_history_cache(
+                self.agent,
+                api_key=api_key,
+                keep_count=len(hist),
+                tail_sig=tail_sig,
+                start_idx=start_idx,
+            )
+        except Exception:
+            pass
+
+    def _assemble_history_entry(
+        self,
+        idx: int,
+        msg: Dict[str, Any],
+        *,
+        assistant_clip_tokens: int,
+        use_interleaved_replay: bool,
+        parse_slash_result: Any,
+        parse_worked_summary: Any,
+        last_cache_src_idx: int,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Normalize one source history message into model-context entries.
+
+        Returns ``(entries, assistant_trimmed_delta)``; an empty ``entries``
+        list means the message is excluded from model context.
+        """
+        role = str(msg.get("role") or "").strip().lower()
+        if role not in ("user", "assistant", "tool"):
+            return [], 0
+        if role == "assistant" and _sms._is_reply_block(msg):
+            if not use_interleaved_replay:
+                # Chat Completions (incl. DeepSeek): replay the block as a
+                # single flattened assistant message (reasoning_content +
+                # content + tool_calls), reproducing the original message
+                # boundary for prompt-prefix cache hits. Falls through to
+                # the single-entry path below via model_view.
+                effective = _sms._assistant_model_view(msg)
+                raw_content = str(effective.get("content") or "")
+                content = self._normalize_history_content_for_model("assistant", raw_content, message=effective)
+                content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
+                entry: Dict[str, Any] = {"role": "assistant", "content": content}
+                tcs = effective.get("tool_calls")
+                if isinstance(tcs, list) and tcs:
+                    entry["tool_calls"] = tcs
+                thinking = str(effective.get("_thinking") or "").strip()
+                if thinking:
+                    entry["_thinking"] = thinking
+                    if effective.get("_thinking_from_content"):
+                        entry["_thinking_from_content"] = True
+                msg_model = str(msg.get("_model") or "").strip()
+                if msg_model:
+                    entry["_model"] = msg_model
+                cs = msg.get("_cache_stats")
+                if isinstance(cs, dict) and cs:
+                    entry["_cache_stats"] = cs
+                from ..services.session_memory_service import _message_effective_token_count
+                outer_tc = _message_effective_token_count(msg)
+                if outer_tc is not None:
+                    entry["_token_count"] = outer_tc
+                elif idx >= last_cache_src_idx:
+                    local = self._estimate_message_tokens("assistant", raw_content)
+                    msg["_token_count"] = local
+                    entry["_token_count"] = local
+                return [entry], 0
+            # Responses / Anthropic preserve multi-segment reasoning: emit
+            # one provider assistant message per recorded node (reasoning
+            # merged with its following content), never merged across
+            # kinds. Split-out nodes are skipped (their data lives in the
+            # raw node). Tool results follow the tool-calls message.
+            from ..services.session_memory_service import _message_effective_token_count
+            sub_messages = _sms._assistant_model_messages(msg)
+            msg_model = str(msg.get("_model") or "").strip()
+            outer_tc = _message_effective_token_count(msg)
+            sub_entries: List[Dict[str, Any]] = []
+            for _si, sub in enumerate(sub_messages):
+                sub_role = str(sub.get("role") or "assistant").strip().lower()
+                raw_content = str(sub.get("content") or "")
+                content = self._normalize_history_content_for_model(sub_role, raw_content, message=sub)
+                content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
+                entry: Dict[str, Any] = {"role": sub_role, "content": content}
+                tcs = sub.get("tool_calls")
+                if isinstance(tcs, list) and tcs:
+                    entry["tool_calls"] = tcs
+                thinking = str(sub.get("_thinking") or "").strip()
+                if thinking:
+                    entry["_thinking"] = thinking
+                    if sub.get("_thinking_from_content"):
+                        entry["_thinking_from_content"] = True
+                if msg_model:
+                    entry["_model"] = msg_model
+                if _si == len(sub_messages) - 1:
+                    cs = msg.get("_cache_stats")
+                    if isinstance(cs, dict) and cs:
+                        entry["_cache_stats"] = cs
+                    if outer_tc is not None:
+                        entry["_token_count"] = outer_tc
+                    elif idx >= last_cache_src_idx:
+                        local = self._estimate_message_tokens(sub_role, raw_content)
+                        msg["_token_count"] = local
+                        entry["_token_count"] = local
+                sub_entries.append(entry)
+            return sub_entries, 0
+        # Reply blocks keep content/reasoning/tool_calls inside
+        # ``_reply_records``; flatten them via the model view so the
+        # provider payload reproduces the original call exactly (split
+        # blocks use the raw node's uncleaned content for cache fidelity).
+        effective = _sms._assistant_model_view(msg) if role == "assistant" else msg
+        raw_content = str(effective.get("content") or "")
+        # When the message carries ``_api_content`` (the exact text that was
+        # sent to the provider), use it for the model context so replayed
+        # history prefixes match upstream cache units.
+        api_content = effective.get("_api_content")
+        if isinstance(api_content, str) and api_content.strip():
+            raw_content = api_content
+        # ``_context_suffix`` carries auto-injected content (evidence block,
+        # local time, etc.) that was previously stored as a separate _internal
+        # user message. Append it to the message content so the model still
+        # receives it during history replay.
+        context_suffix = effective.get("_context_suffix")
+        if role == "user" and isinstance(context_suffix, str) and context_suffix.strip():
+            if raw_content.strip():
+                raw_content = raw_content + "\n\n" + context_suffix.strip()
+            else:
+                raw_content = context_suffix.strip()
+        if role == "user" and self._is_excluded_user_message_for_model_context(effective):
+            return [], 0
+        if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
+            return [], 0
+        if role == "assistant" and callable(parse_slash_result):
+            try:
+                slash_payload = parse_slash_result(raw_content)
+            except Exception:
+                slash_payload = None
+            if isinstance(slash_payload, dict):
+                return [], 0
+        if role == "assistant" and callable(parse_worked_summary):
+            try:
+                worked_payload = parse_worked_summary(raw_content)
+            except Exception:
+                worked_payload = None
+            if isinstance(worked_payload, dict):
+                return [], 0
+        content = self._normalize_history_content_for_model(role, raw_content, message=effective)
+        trimmed_delta = 0
+        if role == "assistant":
+            before = content
+            content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
+            if content != before:
+                trimmed_delta = 1
+        entry: Dict[str, Any] = {"role": role, "content": content}
+        if role == "tool":
+            tid = str(msg.get("tool_call_id") or "").strip()
+            if tid:
+                entry["tool_call_id"] = tid
+            tname = str(msg.get("name") or "").strip()
+            if tname:
+                entry["name"] = tname
+        if role == "assistant":
+            tcs = effective.get("tool_calls")
+            if isinstance(tcs, list) and tcs:
+                entry["tool_calls"] = tcs
+            msg_model = str(effective.get("_model") or "").strip()
+            if msg_model:
+                entry["_model"] = msg_model
+            cs = effective.get("_cache_stats")
+            if isinstance(cs, dict) and cs:
+                entry["_cache_stats"] = cs
+        from ..services.session_memory_service import _message_effective_token_count
+        tc = _message_effective_token_count(msg)
+        if tc is not None:
+            entry["_token_count"] = tc
+        elif idx >= last_cache_src_idx:
+            local = self._estimate_message_tokens(role, raw_content)
+            msg["_token_count"] = local
+            entry["_token_count"] = local
+        return [entry], trimmed_delta
 
     def _message_cost_for_tail_budget(self, msg: Dict[str, Any]) -> int:
         from ..services.session_memory_service import _message_effective_token_count
@@ -1625,16 +1864,30 @@ class LLMContextManager:
         user_tokens = 0
         tool_schemas_tokens = 0
         try:
+            # The budgeted ``history_messages`` are the clean send-form list
+            # (bookkeeping stripped by assembly), so ``_history_tokens_cumulative``
+            # over them falls back to per-message text estimates. That scoped,
+            # small sum is what feeds ``usage_pct`` (so the degradation path that
+            # keeps ``[History summary]`` never cross the aggressive trigger).
+            # For the usage snapshot, when the *source* history has a cache
+            # anchor we account against ``filtered_history`` (which still carries
+            # ``_cache_stats``/``_token_count``) so the reported input tokens are
+            # the real anchored residual rather than a text guess.
             system_tokens = self._estimate_message_tokens("system", sys_prefix)
             history_tokens = self._history_tokens_cumulative(history_messages)
             user_tokens = self._estimate_message_tokens("user", current_input)
             tool_schemas_tokens = self._estimate_tool_schemas_tokens()
-            has_cache_anchor = any(
+            source_has_cache_anchor = any(
                 isinstance(m.get("_cache_stats"), dict)
-                for m in history_messages
+                for m in filtered_history
+            )
+            history_tokens_snapshot = (
+                self._history_tokens_cumulative(filtered_history)
+                if source_has_cache_anchor
+                else history_tokens
             )
             total_input_tokens = int(system_tokens + history_tokens + user_tokens + tool_schemas_tokens)
-            snapshot_input_tokens = int(history_tokens + tool_schemas_tokens) if has_cache_anchor else int(total_input_tokens)
+            snapshot_input_tokens = int(history_tokens_snapshot + tool_schemas_tokens) if source_has_cache_anchor else int(total_input_tokens)
             ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
             usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
             self.agent._last_context_usage_percent_precompression = usage_pct
