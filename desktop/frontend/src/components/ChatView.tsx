@@ -1082,6 +1082,7 @@ export function ChatView() {
     pendingAutoSend,
     startPendingInputs,
     cancelPendingInput,
+    sendPendingInputNow,
     todoDockVisible,
     setTodoDockVisible,
     t,
@@ -1695,7 +1696,15 @@ export function ChatView() {
           >
             <span className="pending-list-item-text">{text}</span>
             <button
-              className="pending-list-cancel"
+              className={`pending-list-jump${pendingHoverIdx === i ? " visible" : ""}`}
+              title={t("chat.pendingListSendNow")}
+              aria-label={t("chat.pendingListSendNow")}
+              onClick={() => void sendPendingInputNow(i)}
+            >
+              <Icon name="send" size={12} />
+            </button>
+            <button
+              className={`pending-list-cancel${pendingHoverIdx === i ? " visible" : ""}`}
               title={t("chat.pendingListCancel")}
               aria-label={t("chat.pendingListCancel")}
               onClick={() => {

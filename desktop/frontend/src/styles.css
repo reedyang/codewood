@@ -5704,6 +5704,15 @@ h6.md-h {
   line-height: 20px;
 }
 
+.pending-list-item:hover {
+  /* Hover backdrop for the queued message row: ``--bg-hover`` is a translucent
+     black (light theme) / white (dark theme) wash so the highlight is visible
+     in both themes. The jump/cancel buttons keep their own backgrounds and
+     remain fully clickable above it. */
+  background: var(--bg-hover);
+  border-radius: 4px;
+}
+
 .pending-list-item-text {
   white-space: nowrap;
   overflow: hidden;
@@ -5726,6 +5735,7 @@ h6.md-h {
   background: var(--accent);
 }
 
+.pending-list-jump,
 .pending-list-cancel {
   display: inline-flex;
   align-items: center;
@@ -5737,6 +5747,21 @@ h6.md-h {
   padding: 2px;
   border-radius: 4px;
   flex-shrink: 0;
+  /* Hidden by default; revealed when the row is hovered (or the pointer is
+     already inside the row, e.g. the mouse entered over the button area). */
+  visibility: hidden;
+}
+
+.pending-list-item:hover .pending-list-jump,
+.pending-list-item:hover .pending-list-cancel,
+.pending-list-jump.visible,
+.pending-list-cancel.visible {
+  visibility: visible;
+}
+
+.pending-list-jump:hover {
+  background: var(--user-bg);
+  color: var(--accent);
 }
 
 .pending-list-cancel:hover {

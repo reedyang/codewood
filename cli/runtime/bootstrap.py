@@ -112,6 +112,7 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._posix_interrupt_applied = False
     agent._posix_interrupt_tty = None
     agent._aborted_process_keys = set()
+    agent._pause_aborted_process_keys = set()
     agent._process_interrupt_requested = False
     agent._conversation_interrupt_banner_recent = False
     agent._conversation_interrupt_banner_recent_at = 0.0

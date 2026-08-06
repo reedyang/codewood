@@ -9,7 +9,7 @@
   "status.worked_for": "已运行",
   "status.ran": "执行",
   "status.call": "调用",
-  "status.apply_patch": "修改文件",
+  "status.apply_patch": "修改",
   "status.create_file": "新增",
   "tool.label.read": "读取",
   "tool.label.grep": "搜索",

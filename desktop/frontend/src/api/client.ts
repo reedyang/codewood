@@ -165,6 +165,24 @@ export class ApiClient {
     }
   }
 
+  /** Pause the running task so a queued message can jump ahead of it. */
+  async pause(chatId = "", workspaceId = ""): Promise<void> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      await fetch(`${this.base}/pause`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, workspaceId }),
+        signal: controller.signal,
+      });
+    } catch {
+      // Best-effort: the pause flag is already set optimistically in the UI.
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async compactContext(
     chatId = "",
     workspaceId = "",

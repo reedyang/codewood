@@ -3142,6 +3142,46 @@ class ServeApp:
             except Exception:
                 pass
 
+    def pause(self, chat_id: str = "", workspace_id: str = "") -> None:
+        """Pause an in-flight turn for the GUI's "send immediately" queue-jump.
+
+        Semantically identical to :meth:`interrupt` — the cooperative task
+        interrupt flag is set and any running interruptible subprocess is
+        terminated so the loop unwinds promptly — except that the terminated
+        subprocesses are additionally marked as *paused*. The shell tool then
+        reports that the user interrupted the call to supplement more
+        information instead of the plain "command aborted by user" cancel
+        notice (see ``_request_chat_pause`` / ``_shell_abort_notice``).
+        """
+        agent = self.agent
+        cid = str(chat_id or "").strip()
+        if cid:
+            # Validate the pair so a same-id chat in the wrong workspace is
+            # never paused; an unresolvable pair is a safe no-op.
+            cid, wsid = self._resolve_chat_scope(cid, workspace_id)
+            if cid:
+                try:
+                    agent._request_chat_pause(cid, wsid)
+                except Exception:
+                    pass
+            return
+        try:
+            lock = getattr(agent, "_interrupt_state_lock", None)
+            if lock is not None:
+                with lock:
+                    agent._task_interrupt_requested = True
+            else:
+                agent._task_interrupt_requested = True
+        except Exception:
+            pass
+        for name in ("_mark_process_interrupt_requested", "_terminate_interruptible_processes"):
+            try:
+                fn = getattr(agent, name, None)
+                if callable(fn):
+                    fn()
+            except Exception:
+                pass
+
     def save_pending_inputs(self, chat_id: str, ws_id: str, inputs: List[str]) -> bool:
         """Persist pending input queue for a chat so it survives a restart."""
         cid = str(chat_id or "").strip()
@@ -8218,6 +8258,12 @@ def _make_handler(app: ServeApp):
                 cid = str(body.get("chatId") or "")[:256]
                 wsid = str(body.get("workspaceId") or "")[:256]
                 app.interrupt(chat_id=cid, workspace_id=wsid)
+                self._send_json(200, {"ok": True})
+                return
+            if path == "/pause":
+                cid = str(body.get("chatId") or "")[:256]
+                wsid = str(body.get("workspaceId") or "")[:256]
+                app.pause(chat_id=cid, workspace_id=wsid)
                 self._send_json(200, {"ok": True})
                 return
             if path == "/compact":

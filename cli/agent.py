@@ -2617,6 +2617,14 @@ class Agent:
     def _print_conversation_interrupted_banner(self) -> int:
         from .core.localization import get_display_language, translate
 
+        # TUI-only banner: in GUI serve mode stdout is the SSE bridge, so this
+        # red "conversation interrupted" line would flash inside the transcript
+        # whenever a task is stopped / jump-paused. The GUI renders its own
+        # interrupt affordances, so the banner is suppressed entirely.
+        if bool(getattr(self, "_gui_plain_stream", False)) or bool(
+            getattr(self, "_gui_no_wrap", False)
+        ):
+            return 0
         msg = translate("runtime.conversation_interrupted", get_display_language(self))
         print("")
         try:
@@ -3945,9 +3953,14 @@ class Agent:
         output = self._extract_tool_result_output(t, r)
         # If the tool was cancelled by the user, set a localized output so
         # the tool step shows "User cancelled" in the GUI transcript.
+        # A message-jump PAUSE interrupts the shell call so the user can add
+        # more information — its notice already reads "user interrupted this
+        # call and is preparing to supplement more information", so it must
+        # NOT be replaced by the plain "Cancelled by user" text.
         if not success and self._result_indicates_user_cancelled(r):
-            from .core.localization import translate
-            output = translate("tool.cancelled_by_user", self._ui_language())
+            if not bool(r.get("pause_interrupt", False)):
+                from .core.localization import translate
+                output = translate("tool.cancelled_by_user", self._ui_language())
         raw_entry = {
             "tool": t,
             "args": dict(args) if isinstance(args, dict) else {},
@@ -5789,6 +5802,27 @@ class Agent:
                     except Exception:
                         pass
 
+    def _mark_process_paused(self, process: Any) -> None:
+        """Mark an aborted subprocess as a user *pause* (not a cancel).
+
+        A pause is the GUI "send immediately" queue-jump: the running task is
+        interrupted so the user's new message can be processed first, but the
+        interrupted shell call should report that the user is preparing to
+        supplement more information instead of a plain cancel.
+        """
+        if process is None:
+            return
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        key = self._process_abort_key(process)
+        with lock:
+            marks = getattr(self, "_pause_aborted_process_keys", None)
+            if not isinstance(marks, set):
+                marks = set()
+                self._pause_aborted_process_keys = marks
+            marks.add(key)
+
     def _register_process_abort_event(self, process: Any, event: Any) -> None:
         """Let a shell round wake its waiting thread the instant the process
         is marked aborted by the interrupt path — no polling required.
@@ -5833,6 +5867,29 @@ class Agent:
                 return True
             return False
 
+    def _consume_process_pause(self, process: Any) -> bool:
+        """Consume the per-process pause mark, if any.
+
+        Call right after ``_consume_process_aborted`` returned True so exactly
+        one notice (pause vs. cancel) is chosen per aborted shell round. The
+        mark lives alongside the abort mark and dies with it, so it can never
+        leak into a later round.
+        """
+        if process is None:
+            return False
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return False
+        key = self._process_abort_key(process)
+        with lock:
+            marks = getattr(self, "_pause_aborted_process_keys", None)
+            if not isinstance(marks, set):
+                return False
+            if key in marks:
+                marks.discard(key)
+                return True
+            return False
+
     def _is_process_aborted(self, process: Any) -> bool:
         if process is None:
             return False
@@ -5866,7 +5923,9 @@ class Agent:
         chat_wanted = self._consume_chat_process_interrupt_requested()
         return bool(wanted or chat_wanted)
 
-    def _terminate_interruptible_processes(self, chat_key: Optional[str] = None) -> bool:
+    def _terminate_interruptible_processes(
+        self, chat_key: Optional[str] = None, pause: bool = False
+    ) -> bool:
         """Terminate running interruptible subprocesses.
 
         Without ``chat_key`` every tracked subprocess is targeted (the TUI /
@@ -5878,6 +5937,9 @@ class Agent:
         BEFORE the kill: the process-tree termination (``taskkill /F /T`` on
         Windows can take ~1s) runs on a temporary daemon thread so a stop
         request returns immediately instead of blocking on the kill.
+
+        When ``pause`` is True the aborted rounds are additionally marked as
+        user pauses so their shell output reports the supplement intent.
         """
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
@@ -5909,11 +5971,15 @@ class Agent:
                 # round, so record the process as aborted too — otherwise the
                 # recorded tool result looks like a plain command failure.
                 self._mark_process_aborted(p)
+                if pause:
+                    self._mark_process_paused(p)
                 continue
             requested_any = True
             # Wake the waiting round first; the kill follows on a temp thread
             # so the interrupt latency does not include taskkill's runtime.
             self._mark_process_aborted(p)
+            if pause:
+                self._mark_process_paused(p)
             try:
                 threading.Thread(
                     target=self._terminate_single_process_tree,
@@ -5948,6 +6014,38 @@ class Agent:
                 _thread.interrupt_main()
             except Exception:
                 pass
+
+    def _request_chat_pause(self, chat_id: str, workspace_id: str = "") -> bool:
+        """Pause ONE chat (GUI "send immediately" queue-jump).
+
+        Same cooperative mechanism as :meth:`_request_chat_interrupt` so the
+        chat's loop unwinds the current turn and its running subprocesses are
+        terminated. The only difference is that the terminated subprocesses are
+        also marked as *paused*: an interrupted shell call then reports that
+        the user interrupted it to supplement more information instead of the
+        plain "command aborted by user" cancel notice.
+        """
+        try:
+            wsid = str(workspace_id or "").strip()
+            key = (
+                self._session_registry_key_for(chat_id, wsid)
+                if wsid
+                else self._session_registry_key(chat_id)
+            )
+        except Exception:
+            return False
+        try:
+            sess = self._session_for_key(key)
+            sess.task_interrupt_requested = True
+            sess.process_interrupt_requested = True
+            sess.pause_interrupt_requested = True
+        except Exception:
+            pass
+        try:
+            self._terminate_interruptible_processes(key, pause=True)
+        except Exception:
+            pass
+        return True
 
     def _request_chat_interrupt(self, chat_id: str, workspace_id: str = "") -> bool:
         """Interrupt ONE chat (serve-mode stop / ``/chat edit``).
@@ -5994,6 +6092,29 @@ class Agent:
         if sess is None:
             return False
         return bool(getattr(sess, "task_interrupt_requested", False))
+
+    def _consume_chat_pause_interrupt_requested(self) -> bool:
+        """Consume the bound session's per-chat pause flag (if any).
+
+        A pause is the GUI "send immediately" queue-jump: the running task is
+        interrupted the same way as a stop, but no ``[CONVERSATION_INTERRUPTED]``
+        marker is recorded because the user is inserting a message ahead of
+        the task, not cancelling it. The flag is set by
+        :meth:`_request_chat_pause` and consumed exactly once by whichever
+        interrupt path unwinds the turn.
+        """
+        try:
+            sess = self._session()
+        except Exception:
+            return False
+        if sess is None:
+            return False
+        try:
+            wanted = bool(getattr(sess, "pause_interrupt_requested", False))
+            sess.pause_interrupt_requested = False
+            return wanted
+        except Exception:
+            return False
 
     def _consume_chat_task_interrupt_requested(self) -> bool:
         """Consume the bound session's per-chat task-interrupt flag (if any)."""

@@ -911,8 +911,11 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertFalse(result.get("success", True))
         self.assertTrue(bool(result.get("aborted_by_user", False)))
         self.assertEqual(result.get("error"), "Command aborted by user")
-        self.assertEqual(result.get("display_rendered_lines"), 4)
-        self.assertIn("line1\ncommand aborted by user\n", str(result.get("output") or ""))
+        self.assertEqual(result.get("display_rendered_lines"), 3)
+        # The partial output already read is dropped on abort: only the
+        # notice line (plus the interrupted banner) is recorded.
+        self.assertEqual(str(result.get("output") or ""), "Command aborted by user\n")
+        self.assertNotIn("line1", str(result.get("output") or ""))
 
     def test_non_interactive_mode_prints_no_output_marker_when_stdout_stderr_empty(self):
         agent = _DummyAgent()
