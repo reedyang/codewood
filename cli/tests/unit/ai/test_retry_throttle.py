@@ -1,4 +1,4 @@
-"""Unit tests for the 429/503 infinite retry with countdown hook."""
+"""Unit tests for the 429/503/connection infinite retry with countdown hook."""
 
 import unittest
 from unittest.mock import patch
@@ -6,7 +6,10 @@ from unittest.mock import patch
 from cli.ai.ai_provider_clients import (
     ModelCallError,
     OpenAIRequestError,
+    _CONNECTION_RETRY_MESSAGE,
+    _RETRY_CODE_CONNECTION,
     _call_with_openai_compatible,
+    _is_transient_connection_error,
     _is_throttle_error,
     _model_call_error_throttle_code,
     _retry_wait_seconds,
@@ -31,6 +34,11 @@ def _throttle_attempt(code: int) -> dict:
         "error": f"{code} Client Error: boom for url: http://x",
         "response_body": f'{{"error":{{"message":"rpm exhausted ({code})"}}}}',
     }
+
+
+def _connection_reset_attempt() -> dict:
+    error = "('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))"
+    return {"label": "chat with-suffix", "url": "http://x", "error": error}
 
 
 class RetryWaitSequenceTests(unittest.TestCase):
@@ -97,6 +105,41 @@ class ThrottleDetectionTests(unittest.TestCase):
             ],
         )
         self.assertEqual(_throttle_error_message(err, 429), "")
+
+
+class ConnectionErrorDetectionTests(unittest.TestCase):
+    def test_transient_connection_error_types(self):
+        self.assertTrue(_is_transient_connection_error(ConnectionResetError(10054, "reset")))
+        self.assertTrue(_is_transient_connection_error(TimeoutError("timed out")))
+
+        import requests
+
+        reset = requests.exceptions.ConnectionError(
+            "('Connection aborted.', ConnectionResetError(10054, 'reset', None, 10054, None))"
+        )
+        self.assertTrue(_is_transient_connection_error(reset))
+        self.assertTrue(_is_transient_connection_error(requests.exceptions.Timeout("timed out")))
+        self.assertFalse(_is_transient_connection_error(RuntimeError("boom")))
+        self.assertFalse(_is_transient_connection_error(OSError(2, "no such file")))
+        self.assertFalse(_is_transient_connection_error(ValueError("bad request")))
+
+    def test_transient_connection_error_matches_text(self):
+        self.assertTrue(_is_transient_connection_error(
+            RuntimeError("('Connection aborted.', ConnectionResetError(10054, 'reset'))")
+        ))
+        self.assertTrue(_is_transient_connection_error(
+            RuntimeError("Max retries exceeded with url: /v1/chat/completions")
+        ))
+        self.assertFalse(_is_transient_connection_error(RuntimeError("HTTP 500 boom")))
+
+    def test_throttle_code_parses_connection_reset_attempt_text(self):
+        err = ModelCallError("failed", attempt_errors=[_connection_reset_attempt()])
+        self.assertEqual(_model_call_error_throttle_code(err), _RETRY_CODE_CONNECTION)
+
+    def test_throttle_code_prefers_http_status_over_connection_text(self):
+        attempts = [_connection_reset_attempt(), _throttle_attempt(429)]
+        err = ModelCallError("failed", attempt_errors=attempts)
+        self.assertEqual(_model_call_error_throttle_code(err), 429)
 
 
 class CountdownSleepTests(unittest.TestCase):
@@ -212,6 +255,82 @@ class InfiniteRetryLoopTests(unittest.TestCase):
                     {"label": "chat", "error": "400 Client Error: Bad Request for url: http://x"}
                 ],
             )
+
+        waits = []
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: waits.append(wait),
+        ):
+            with self.assertRaises(ModelCallError):
+                self._call({"api_key": "k", "base_url": "http://x", "api_mode": "chat"})
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(waits, [])
+
+    def test_connection_reset_retries_with_backoff_then_succeeds(self):
+        import requests
+
+        calls = {"n": 0}
+        sleeps = []
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 3:
+                raise requests.exceptions.ConnectionError(
+                    "('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None))"
+                )
+            return "ok"
+
+        waits = []
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: (waits.append(wait), sleeps.append(kw)),
+        ):
+            result = self._call({"api_key": "k", "base_url": "http://x", "api_mode": "chat"})
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls["n"], 4)
+        self.assertEqual(waits, [3, 4, 8])
+        for kw in sleeps:
+            self.assertEqual(kw["code"], _RETRY_CODE_CONNECTION)
+            self.assertEqual(kw["message"], _CONNECTION_RETRY_MESSAGE)
+        self.assertEqual(sleeps[0]["retry_number"], 1)
+        self.assertEqual(sleeps[2]["retry_number"], 3)
+
+    def test_connection_reset_inside_model_call_error_retries(self):
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise ModelCallError(
+                    "('Connection aborted.', ConnectionResetError(10054, 'reset', None, 10054, None))",
+                    attempt_errors=[_connection_reset_attempt()],
+                )
+            return "ok"
+
+        waits = []
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: waits.append(wait),
+        ):
+            result = self._call({"api_key": "k", "base_url": "http://x", "api_mode": "chat"})
+        self.assertEqual(result, "ok")
+        self.assertEqual(waits, [3, 4])
+
+    def test_plain_exception_not_connection_is_not_retried(self):
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            raise RuntimeError("boom")
 
         waits = []
         with patch(
