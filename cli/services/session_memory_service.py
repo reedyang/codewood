@@ -45,8 +45,6 @@ OP_CONTEXT_BUCKET_RATIO = 0.12
 
 SMALL_CTX_MAX = 16_000
 MEDIUM_CTX_MAX = 64_000
-AGGRESSIVE_COMPRESS_TRIGGER_PCT = 80
-AGGRESSIVE_COMPRESS_TARGET_PCT = 20
 AUTO_COMPACT_TRIGGER_PCT = 80
 AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
 CONTEXT_COMPACTION_SUMMARY_PREFIX = "[CONTEXT_COMPACTION_SUMMARY]"
@@ -1723,9 +1721,6 @@ class SessionMemoryService:
 
     def _software_development_prompt_append(self) -> str:
         return self.llm_context_manager._software_development_prompt_append()
-
-    def _summarize_history_excerpt(self, rows: List[Dict[str, Any]], summary_budget: int) -> str:
-        return self.llm_context_manager._summarize_history_excerpt(rows, summary_budget)
 
     def _build_history_messages_by_budget(
         self,
