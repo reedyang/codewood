@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import { FileChangeSummary, FileChangeRecord } from "../api/types";
 import { FileChangeDetails } from "./FileChangeDetails";
+import { Collapsible } from "./Collapsible";
 import { Icon } from "./Icon";
 import { useApp } from "../state/AppContext";
 
@@ -243,8 +244,10 @@ function FileChangeItem({ file, isExpanded, isUndone, onToggle, t, workspaceRoot
           <Icon name="chevron" size={14} className={`chevron ${isExpanded ? "open" : ""}`} />
         )}
       </div>
-      {!isDelete && !isBinary && isExpanded && file.patch && (
-        <FileChangeDetails file={file} t={t} />
+      {!isDelete && !isBinary && file.patch && (
+        <Collapsible open={isExpanded} className="file-change-collapse">
+          <FileChangeDetails file={file} t={t} />
+        </Collapsible>
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { liveTurnToHistoryTurn } from "./ChatView";
 import type { Turn } from "../api/types";
@@ -151,6 +151,149 @@ describe("RoundShell", () => {
 
     expect(screen.getByText("Working...")).toBeTruthy();
     expect(screen.getByText("details")).toBeTruthy();
+  });
+
+  it("mounts expanded and auto-collapses (animated) after the settle delay", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <RoundShell
+          timerText="Worked for 4s"
+          running={false}
+          showTimer={true}
+          autoExpand={true}
+          autoCollapseDelayMs={900}
+          detailsNode={<div>details</div>}
+          textNode={null}
+        />,
+      );
+
+      // The just-settled turn shows the expanded "Worked for" body first.
+      expect(screen.getByText("details")).toBeTruthy();
+
+      // After the hold delay the close animation starts; the body is still
+      // mounted while it animates closed.
+      act(() => {
+        vi.advanceTimersByTime(900);
+      });
+      expect(screen.getByText("details")).toBeTruthy();
+
+      // Once the close animation would have finished, the body unmounts.
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.queryByText("details")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the shell collapsed when it mounts already settled", () => {
+    render(
+      <RoundShell
+        timerText="Worked for 4s"
+        running={false}
+        showTimer={true}
+        autoExpand={false}
+        detailsNode={<div>details</div>}
+        textNode={null}
+      />,
+    );
+
+    expect(screen.queryByText("details")).toBeNull();
+  });
+});
+
+describe("TurnView settle animation", () => {
+  it("shows the settled \"Worked for\" shell expanded, then auto-collapses it", () => {
+    vi.useFakeTimers();
+    try {
+      const runningTurn: Turn = {
+        id: 1,
+        userText: "hi",
+        rounds: [
+          {
+            id: 11,
+            waitStartedAt: 1000,
+            waitEndedAt: 5000,
+            segments: [
+              {
+                id: 111,
+                kind: "step",
+                text: "\\uE004• Ran request_skill_prompt codex-usage\\uE005",
+              },
+            ],
+          },
+        ],
+        startedAt: 1000,
+        endedAt: null,
+      };
+      const handlers = { onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() };
+
+      const { rerender } = render(
+        <TurnView turn={runningTurn} now={2000} negIndex={-1} handlers={handlers} />,
+      );
+
+      // Task settles: the live turn gets an endedAt.
+      rerender(
+        <TurnView
+          turn={{ ...runningTurn, endedAt: 20000 }}
+          now={20000}
+          negIndex={-1}
+          handlers={handlers}
+        />,
+      );
+
+      // The "Worked for" block is shown expanded first (tool row visible).
+      expect(screen.getByText(/Ran request_skill_prompt/)).toBeTruthy();
+
+      // After the settle hold delay + close animation it collapses away.
+      act(() => {
+        vi.advanceTimersByTime(900);
+      });
+      // (Effects flush at the end of each act(), so the unmount timer is
+      // scheduled on the next advance — advance again past the close animation.)
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(screen.queryByText(/Ran request_skill_prompt/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders settled turns collapsed when they mount already ended", () => {
+    const handlers = { onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() };
+    render(
+      <TurnView
+        turn={{
+          id: 2,
+          userText: "hi",
+          rounds: [
+            {
+              id: 21,
+              waitStartedAt: 1000,
+              waitEndedAt: 5000,
+              segments: [
+                {
+                  id: 211,
+                  kind: "step",
+                  text: "\\uE004• Ran request_skill_prompt codex-usage\\uE005",
+                },
+              ],
+            },
+          ],
+          startedAt: 1000,
+          endedAt: 20000,
+        }}
+        now={20000}
+        negIndex={-1}
+        handlers={handlers}
+      />,
+    );
+
+    // Already-settled turns (history reload) stay collapsed — no animation.
+    expect(screen.queryByText(/Ran request_skill_prompt/)).toBeNull();
   });
 });
 

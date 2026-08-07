@@ -7,6 +7,7 @@ import { SyntaxOutput, resolveToolOutputLang } from "./SyntaxOutput";
 import { Icon } from "./Icon";
 import { useApp } from "../state/AppContext";
 import type { DiffRow } from "../api/types";
+import { Collapsible } from "./Collapsible";
 
 /** Process \\b within a single line (no \\r, no \\n).
  *  Each \\b moves the cursor back one column; the following character
@@ -712,45 +713,47 @@ function PromptWithAttachment({
           </span>
         </HoverTooltip>
       </div>
-      {!isSubAgent && expanded && hasCmd && syntaxNode}
-      {!isSubAgent && expanded && hasCmd && !syntaxNode && (() => {
-        const tw = getLongestTableBorderWidth(cmdPayload);
-        const cleaned = handleCarriageReturn(cmdPayload);
-        return (
-          <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
-            {tw ? (
-              <div style={{ width: `${tw + 2}ch`, maxWidth: "100%", wordBreak: "break-word" }}>
-                <AnsiText text={cleaned} />
-              </div>
-            ) : (
-              <AnsiText text={cleaned} />
-            )}
-          </div>
-        );
-      })()}
-      {!isSubAgent && expanded && hasDiff && (
-        <div className="diff-files-container">
-          {diffs.map((d, i) => {
-            const rows = d.diffRows ?? [];
-            const fname = (d.file || "").split(/[\\/]/).pop() || d.file || "";
-            const added = countByType(rows, ["add", "change"]);
-            const deleted = countByType(rows, ["del", "change"]);
-            return (
-              <div className="diff-step" key={i}>
-                <div className="diff-step-header">
-                  <span className="diff-step-title">{fname}</span>
-                  <span className="diff-step-stats">
-                    <span className="file-change-added">+{added}</span>
-                    {" "}
-                    <span className="file-change-deleted">-{deleted}</span>
-                  </span>
+      <Collapsible open={expanded && !isSubAgent} className="step-attachment">
+        {hasCmd && syntaxNode}
+        {hasCmd && !syntaxNode && (() => {
+          const tw = getLongestTableBorderWidth(cmdPayload);
+          const cleaned = handleCarriageReturn(cmdPayload);
+          return (
+            <div className="cmd-output" style={tw ? { overflowX: "auto" } : undefined}>
+              {tw ? (
+                <div style={{ width: `${tw + 2}ch`, maxWidth: "100%", wordBreak: "break-word" }}>
+                  <AnsiText text={cleaned} />
                 </div>
-                <DiffPreview rows={rows} lang={langFromPath(d.file)} />
-              </div>
-            );
-          })}
-        </div>
-      )}
+              ) : (
+                <AnsiText text={cleaned} />
+              )}
+            </div>
+          );
+        })()}
+        {hasDiff && (
+          <div className="diff-files-container">
+            {diffs.map((d, i) => {
+              const rows = d.diffRows ?? [];
+              const fname = (d.file || "").split(/[\\/]/).pop() || d.file || "";
+              const added = countByType(rows, ["add", "change"]);
+              const deleted = countByType(rows, ["del", "change"]);
+              return (
+                <div className="diff-step" key={i}>
+                  <div className="diff-step-header">
+                    <span className="diff-step-title">{fname}</span>
+                    <span className="diff-step-stats">
+                      <span className="file-change-added">+{added}</span>
+                      {" "}
+                      <span className="file-change-deleted">-{deleted}</span>
+                    </span>
+                  </div>
+                  <DiffPreview rows={rows} lang={langFromPath(d.file)} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Collapsible>
       {trailingStatusText && (
         <span className="tool-inline-working">
           <span className="activity-text marquee">{trailingStatusText}</span>
@@ -806,9 +809,9 @@ function DiffStep({
           <span className="file-change-deleted">-{deleted}</span>
         </span>
       </button>
-      {expanded ? (
+      <Collapsible open={expanded} className="diff-step-collapse">
         <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />
-      ) : null}
+      </Collapsible>
     </div>
   );
 }

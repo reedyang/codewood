@@ -4501,6 +4501,30 @@ html[data-has-bg] .select {
   margin: 4px 0;
 }
 
+/* Animated expand/collapse regions (Collapsible component). The wrapper is a
+   grid whose single row animates 0fr -> 1fr; the inner wrapper clips content
+   while the row is collapsed. */
+.collapsible {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.24s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.collapsible.open {
+  grid-template-rows: 1fr;
+}
+
+.collapsible-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collapsible {
+    transition: none;
+  }
+}
+
 .activity-divider {
   height: 1px;
   background: var(--border);
@@ -5849,7 +5873,6 @@ h6.md-h {
 
 .todo-dock-body {
   overflow: hidden;
-  transition: max-height 0.25s ease;
 }
 
 .todo-dock-body .todo-dock-steps {
