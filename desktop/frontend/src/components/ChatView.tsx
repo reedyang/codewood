@@ -17,6 +17,7 @@ import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView, countToolCalls, textContainsSubAgentSession } from "./Steps";
+import { Collapsible } from "./Collapsible";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -946,9 +947,7 @@ function TodoDock({
 }) {
   const { t } = useApp();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(true);
-  const [bodyHeight, setBodyHeight] = useState<string>("auto");
 
   const total = steps.length;
   const completed = steps.filter((s) => s.status === "completed").length;
@@ -959,41 +958,6 @@ function TodoDock({
       setExpanded(true);
     }
   }, [visible, total]);
-
-  // Measure and animate body height when expanded state changes.
-  useEffect(() => {
-    if (expanded) {
-      setBodyHeight("auto");
-    } else {
-      // Measure current height before collapsing.
-      if (bodyRef.current) {
-        setBodyHeight(`${bodyRef.current.scrollHeight}px`);
-      }
-    }
-  }, [expanded]);
-
-  // After setting a fixed height for collapse, trigger the 0 in next frame.
-  useLayoutEffect(() => {
-    if (!expanded && bodyRef.current) {
-      const el = bodyRef.current;
-      // Force a layout so the browser picks up the fixed height before animating.
-      el.offsetHeight;
-      requestAnimationFrame(() => setBodyHeight("0px"));
-    }
-  }, [bodyHeight, expanded]);
-
-  // Re-measure when expanded and content changes.
-  useEffect(() => {
-    if (expanded && bodyRef.current) {
-      const observer = new ResizeObserver(() => {
-        if (expanded && bodyRef.current) {
-          setBodyHeight(`${bodyRef.current.scrollHeight}px`);
-        }
-      });
-      observer.observe(bodyRef.current);
-      return () => observer.disconnect();
-    }
-  }, [expanded]);
 
   if (total === 0 || !visible) {
     return null;
@@ -1012,29 +976,24 @@ function TodoDock({
           <span className="todo-dock-count">{completed}/{total}</span>
         </button>
       </div>
-      <div
-        ref={bodyRef}
-        className={`todo-dock-body${expanded ? " expanded" : ""}`}
-        style={{ maxHeight: bodyHeight }}
-      >
-        <div
-          className="todo-dock-steps"
-          ref={scrollRef}
-        >
-          {steps.map((step, idx) => {
-            const { name, className } = statusIcon(step.status);
-            return (
-              <div
-                key={idx}
-                className={`todo-dock-step ${step.status === "completed" ? "completed" : ""}`}
-              >
-                <Icon name={name} size={14} className={className} />
-                <span className="todo-dock-step-text">{step.step}</span>
-              </div>
-            );
-          })}
+      <Collapsible open={expanded} className="todo-dock-collapse">
+        <div className="todo-dock-body">
+          <div className="todo-dock-steps" ref={scrollRef}>
+            {steps.map((step, idx) => {
+              const { name, className } = statusIcon(step.status);
+              return (
+                <div
+                  key={idx}
+                  className={`todo-dock-step ${step.status === "completed" ? "completed" : ""}`}
+                >
+                  <Icon name={name} size={14} className={className} />
+                  <span className="todo-dock-step-text">{step.step}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      </Collapsible>
     </div>
   );
 }
@@ -2104,6 +2063,10 @@ function ConsoleDock({ open }: { open: boolean }) {
   );
 }
 
+/** How long a just-settled live turn's "Worked for" shell stays expanded
+ *  before it auto-collapses (the task end / terminate / pause transition). */
+const SETTLE_COLLAPSE_DELAY_MS = 900;
+
 /** One model round laid out in natural order. The round can render either as
  *  "answer first, then tools" (live streaming) or "collapsed details first,
  *  then the final paragraph" (history / completed rounds). */
@@ -2116,6 +2079,7 @@ export function RoundShell({
   detailsBeforeText = false,
   detailsNode,
   textNode,
+  autoCollapseDelayMs = 0,
 }: {
   timerText: string;
   expandedTimerText?: string;
@@ -2125,15 +2089,31 @@ export function RoundShell({
   detailsBeforeText?: boolean;
   detailsNode: ReactNode;
   textNode: ReactNode;
+  /** When > 0 the shell mounts expanded and auto-collapses (with animation)
+   *  after this many ms — used for the task-settle transition. One-shot per
+   *  mount; manual toggling never re-arms it. */
+  autoCollapseDelayMs?: number;
 }) {
   const hasDetails = Boolean(detailsNode);
   const [expanded, setExpanded] = useState(autoExpand && hasDetails);
+  const autoCollapseFiredRef = useRef(false);
   // Expand (but never auto-collapse) when autoExpand is requested.
   useEffect(() => {
     if (autoExpand && hasDetails) {
       setExpanded(true);
     }
   }, [autoExpand, hasDetails]);
+
+  // One-shot delayed auto-collapse after a task settles (ended / interrupted /
+  // paused): show the expanded "Worked for" block first, then animate closed.
+  useEffect(() => {
+    if (autoCollapseDelayMs <= 0 || !hasDetails || !expanded || autoCollapseFiredRef.current) {
+      return;
+    }
+    autoCollapseFiredRef.current = true;
+    const timer = setTimeout(() => setExpanded(false), autoCollapseDelayMs);
+    return () => clearTimeout(timer);
+  }, [autoCollapseDelayMs, hasDetails, expanded]);
 
   const timer = showTimer ? (
     <div className="activity">
@@ -2150,8 +2130,10 @@ export function RoundShell({
         )}
       </button>
       {hasDetails && <div className="activity-divider" />}
-      {hasDetails && expanded && (
-        <>{detailsNode}</>
+      {hasDetails && (
+        <Collapsible open={expanded} className="round-collapse">
+          {detailsNode}
+        </Collapsible>
       )}
     </div>
   ) : null;
@@ -2605,10 +2587,15 @@ function CompletedTurnView({
   turn,
   negIndex,
   handlers,
+  settle = false,
 }: {
   turn: HistoryTurn;
   negIndex: number;
   handlers: MessageHandlers;
+  /** True while a live turn has just settled (finished / interrupted /
+   *  paused): the "Worked for" shell is shown expanded first, then
+   *  auto-collapses with an animation. */
+  settle?: boolean;
 }) {
   const { t, pendingExpandSubAgentId, state } = useApp();
   const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
@@ -2715,7 +2702,8 @@ function CompletedTurnView({
             timerText={timerText}
             running={false}
             showTimer={true}
-            autoExpand={turnHasTarget}
+            autoExpand={turnHasTarget || settle}
+            autoCollapseDelayMs={settle ? SETTLE_COLLAPSE_DELAY_MS : 0}
             detailsBeforeText={true}
             detailsNode={<div className="worked-for-body">{detailNodes}</div>}
             textNode={null}
@@ -2771,15 +2759,23 @@ function ThinkingPanel({
           </span>
           <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
         </button>
-        {expanded && (
-          <>
-            <div className="thinking-scroll" ref={scrollRef}>
-              <div className="thinking-content">
-                <MarkdownText text={thinkingText} />
-              </div>
+        <Collapsible
+          open={expanded}
+          className="thinking-collapse"
+          onInnerMount={() => {
+            // Content mounts one render after the header click; scroll to the
+            // newest line so a freshly expanded streaming thought shows its tail.
+            if (expanded && running && scrollRef.current) {
+              scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+            }
+          }}
+        >
+          <div className="thinking-scroll" ref={scrollRef}>
+            <div className="thinking-content">
+              <MarkdownText text={thinkingText} />
             </div>
-          </>
-        )}
+          </div>
+        </Collapsible>
       </div>
     </div>
   );
@@ -3467,6 +3463,21 @@ export function TurnView({
   compactNotice: CompactNoticeData | null;
 }) {
   const { t, state } = useApp();
+  const [settle, setSettle] = useState(false);
+  const wasRunningRef = useRef(turn.endedAt === null);
+
+  // When a running live turn settles (task finished / interrupted / paused),
+  // render the "Worked for" shell expanded first, then let RoundShell
+  // auto-collapse it with an animation. useLayoutEffect keeps the transition
+  // from flashing the collapsed state for a frame, and the ref makes it a
+  // one-shot so later re-renders (timer ticks, etc.) don't re-trigger it.
+  useLayoutEffect(() => {
+    if (wasRunningRef.current && turn.endedAt !== null) {
+      wasRunningRef.current = false;
+      setSettle(true);
+    }
+  }, [turn.endedAt]);
+
   // A finished live turn (``endedAt`` set) must render collapsed into the
   // "Worked for" shell exactly like a reloaded history turn — otherwise the
   // finished task's tool calls stay expanded in the live layout until a manual
@@ -3479,6 +3490,7 @@ export function TurnView({
           turn={liveTurnToHistoryTurn(turn)}
           negIndex={negIndex}
           handlers={handlers}
+          settle={settle}
         />
         {compactNotice && (
           <div className="turn compact-notice-turn" role="alert" aria-live="polite">
