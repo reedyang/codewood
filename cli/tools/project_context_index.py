@@ -1378,11 +1378,17 @@ class ProjectContextIndex:
                 done = int(st.get("progress_done", 0) or 0)
                 expected_total = int(st.get("expected_total", 0) or 0)
                 checkpointed_done = int(st.get("checkpointed_done", 0) or 0)
-                display = (
-                    max(self._index_expected_total, expected_total, checkpointed_done, len(self.files))
-                    if phase in ("scanning", "indexing", "")
-                    else (total if phase == "done" else done)
-                )
+                if phase == "":
+                    # Idle: report the real deduplicated indexed count. Fall back to
+                    # the worker's last checkpointed count only if we have no loaded
+                    # files yet (brief window between proc.join() and _load()).
+                    display = len(self.files) or checkpointed_done
+                elif phase in ("scanning", "indexing"):
+                    display = max(
+                        self._index_expected_total, expected_total, checkpointed_done, len(self.files)
+                    )
+                else:
+                    display = total if phase == "done" else done
                 return {
                     "success": True,
                     "workspace_root": str(self.workspace_root) if self.workspace_root else "",
@@ -1406,9 +1412,9 @@ class ProjectContextIndex:
         elif phase == "indexing":
             files_display = self._refresh_progress_done
         else:
+            # Idle: report the real deduplicated indexed count, never the
+            # (monotonic, scan-time) expected total.
             files_display = len(self.files)
-            if files_display < self._index_expected_total:
-                files_display = self._index_expected_total
         return {
             "success": True,
             "workspace_root": str(self.workspace_root) if self.workspace_root else "",

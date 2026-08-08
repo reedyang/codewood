@@ -56,6 +56,22 @@ class ProjectContextIndexTests(unittest.TestCase):
             index._refresh_progress_phase = ""
             self.assertEqual(index.status()["refresh_progress_percent"], 0)
 
+    def test_status_files_total_is_deduped_indexed_count_when_idle(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            index = ProjectContextIndex(
+                workspace_root=Path(td_workspace), storage_dir=Path(td_storage)
+            )
+            entry = _FileEntry(
+                path="a.py", mtime_ns=1, size=1, symbols=[], imports=[], tokens=[]
+            )
+            with index._lock:
+                index.files = {"a.py": entry, "b.py": entry}
+            # A stale scan-time expected total must NOT inflate the idle count.
+            index._index_expected_total = 500
+
+            st = index.status()
+            self.assertEqual(st["files_total"], 2)
+
     def test_refresh_writes_index_file_even_when_workspace_has_no_code_files(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
             workspace = Path(td_workspace)
