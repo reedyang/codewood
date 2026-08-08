@@ -93,6 +93,17 @@ export interface WorkspaceChatSummary {
   reasoning?: string;
 }
 
+/** Response of the /delete-workspace endpoint. */
+export interface DeleteWorkspaceResult {
+  ok: boolean;
+  /** Id of the deleted workspace. */
+  id: string;
+  /** True when the deleted workspace was the active one. */
+  wasActive: boolean;
+  /** Workspace the backend fell back to after an active delete ("" otherwise). */
+  fallbackId: string;
+}
+
 /** General-runtime settings exposed by the GUI's General settings page. */
 export interface GeneralConfig {
   auto_compact_trigger_percent: number;

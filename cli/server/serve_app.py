@@ -6782,6 +6782,7 @@ class ServeApp:
         if isinstance(workspaces, dict):
             workspaces.pop(wsid, None)
 
+        fallback_id = ""
         if active_deleted:
             default_ws_id = _default_workspace_id()
             default_entry = (
@@ -6796,6 +6797,7 @@ class ServeApp:
             # draft mode when the fallback workspace has no chats.
             agent._save_current_workspace_position(sync_messages=False)
             agent._refresh_workspace_runtime(create_default_chat=False)
+            fallback_id = default_ws_id
         else:
             agent._save_workspace_state()
 
@@ -6803,7 +6805,7 @@ class ServeApp:
         self.broadcaster.publish(
             "idle", self._route(state=_build_state(agent))
         )
-        return {"id": wsid, "wasActive": active_deleted}
+        return {"id": wsid, "wasActive": active_deleted, "fallbackId": fallback_id}
 
     def new_chat(self, workspace_id: str = "", model: str = "", reasoning: str = "") -> Optional[str]:
         """Silently create and activate a new chat; return its id.

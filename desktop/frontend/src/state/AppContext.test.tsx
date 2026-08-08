@@ -23,6 +23,7 @@ const apiMock = vi.hoisted(() => {
   const pause = vi.fn(async () => undefined);
   const syncModelPresets = vi.fn(async () => undefined);
   const deleteChat = vi.fn(async () => true);
+  const deleteWorkspace = vi.fn(async () => ({ ok: true, id: "", wasActive: false, fallbackId: "" }));
   return {
     getState,
     connectEvents,
@@ -40,6 +41,7 @@ const apiMock = vi.hoisted(() => {
     pause,
     syncModelPresets,
     deleteChat,
+    deleteWorkspace,
     emit(event: ServerEvent) {
       if (!eventHandler) {
         throw new Error("Event handler not connected");
@@ -64,6 +66,7 @@ const apiMock = vi.hoisted(() => {
       pause.mockClear();
       syncModelPresets.mockClear();
       deleteChat.mockClear();
+      deleteWorkspace.mockClear();
     },
   };
 });
@@ -94,6 +97,7 @@ vi.mock("../api/client", () => ({
     pause = apiMock.pause;
     syncModelPresets = apiMock.syncModelPresets;
     deleteChat = apiMock.deleteChat;
+    deleteWorkspace = apiMock.deleteWorkspace;
   },
 }));
 
@@ -337,6 +341,21 @@ function DeleteChatProbe() {
       </button>
       <pre data-testid="delete-state">{JSON.stringify(state)}</pre>
       <pre data-testid="delete-chats">{JSON.stringify(activeChats)}</pre>
+    </>
+  );
+}
+
+function DeleteWorkspaceProbe() {
+  const { state, deleteWorkspace } = useApp();
+  return (
+    <>
+      <button onClick={() => { void deleteWorkspace("ws-2"); }}>
+        delete ws-2
+      </button>
+      <button onClick={() => { void deleteWorkspace("ws-1"); }}>
+        delete active workspace
+      </button>
+      <pre data-testid="delete-ws-state">{JSON.stringify(state)}</pre>
     </>
   );
 }
@@ -2093,6 +2112,114 @@ describe("AppContext thinking rounds", () => {
       const chats = JSON.parse(screen.getByTestId("delete-chats").textContent || "[]") as Array<{ id: string }>;
       expect(chats.map((c) => c.id)).toEqual(["chat-1"]);
     });
+  });
+
+  it("removes a deleted workspace immediately while the focused chat is still streaming", async () => {
+    render(
+      <AppProvider>
+        <DeleteWorkspaceProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // The focused chat starts a streaming turn (sets the streaming key).
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "working", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // A /delete-workspace idle broadcast arrives while that turn is still
+    // running: the snapshot's workspace list no longer contains ws-2 and the
+    // chat is still marked running, so the still-running merge path runs. It
+    // must merge the authoritative workspace list, otherwise the deleted
+    // workspace lingers in the sidebar until the turn's terminal idle event.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            workspaces: [{
+              id: "ws-1",
+              name: "Workspace",
+              root: "D:/workspace",
+              active: true,
+              isDefault: false,
+            }],
+            chats: [{
+              index: 0,
+              id: "chat-1",
+              name: "Chat 1",
+              messageCount: 0,
+              active: true,
+              running: true,
+              archived: false,
+              planMode: false,
+              model: "provider/model",
+            }],
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(screen.getByTestId("delete-ws-state").textContent || "{}") as AppState;
+      expect(state.workspaces.map((w) => w.id)).toEqual(["ws-1"]);
+    });
+  });
+
+  it("applies the fallback workspace immediately after deleting the active workspace", async () => {
+    apiMock.deleteWorkspace.mockResolvedValueOnce({
+      ok: true,
+      id: "ws-1",
+      wasActive: true,
+      fallbackId: "ws-2",
+    });
+    // First getState feeds the initial render; the second one returns the
+    // post-delete fallback state that the delete handler re-fetches because
+    // the SSE idle broadcast would be discarded (workspace mismatch).
+    apiMock.getState.mockResolvedValueOnce(buildState());
+    apiMock.getState.mockResolvedValueOnce(
+      buildState({
+        workspace: {
+          id: "ws-2",
+          name: "Workspace B",
+          root: "D:/workspace-b",
+          workDirectory: "D:/workspace-b",
+        },
+        workspaces: [{
+          id: "ws-2",
+          name: "Workspace B",
+          root: "D:/workspace-b",
+          active: true,
+          isDefault: false,
+        }],
+        chats: [],
+        activeChatId: "",
+      }),
+    );
+    render(
+      <AppProvider>
+        <DeleteWorkspaceProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "delete active workspace" }));
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(screen.getByTestId("delete-ws-state").textContent || "{}") as AppState;
+      expect(state.workspace.id).toBe("ws-2");
+      expect(state.workspaces.map((w) => w.id)).toEqual(["ws-2"]);
+    });
+    expect(apiMock.getState).toHaveBeenCalledTimes(2);
   });
 
   it("drops a chat from the sidebar when an idle SSE event omits it (merge path)", async () => {
