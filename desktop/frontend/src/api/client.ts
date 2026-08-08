@@ -4,6 +4,7 @@ import type {
   ChatSearchResult,
   ConfirmAllowlist,
   CompletionCatalog,
+  DeleteWorkspaceResult,
   GeneralConfig,
   SecurityAuditConfig,
   IndexStatus,
@@ -321,13 +322,26 @@ export class ApiClient {
   }
 
   /** Delete a workspace (GUI-only), handling fallback when the active one is removed. */
-  async deleteWorkspace(id: string): Promise<boolean> {
+  async deleteWorkspace(id: string): Promise<DeleteWorkspaceResult> {
     const res = await fetch(`${this.base}/delete-workspace`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ id }),
     });
-    return res.ok;
+    try {
+      const data = await res.json();
+      if (data && typeof data === "object") {
+        return {
+          ok: Boolean(data.ok),
+          id: String(data.id || ""),
+          wasActive: Boolean(data.wasActive),
+          fallbackId: String(data.fallbackId || ""),
+        };
+      }
+    } catch {
+      // Non-JSON response; fall through to the status-based result.
+    }
+    return { ok: res.ok, id: "", wasActive: false, fallbackId: "" };
   }
 
   /** Delete a chat, allowing the workspace to become chat-less (GUI-only). */

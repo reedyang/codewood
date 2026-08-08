@@ -2293,6 +2293,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
               if (!prev) return next;
               return {
                 ...prev,
+                // The workspace registry may have changed while the task ran
+                // (e.g. a workspace was deleted from the sidebar). The
+                // snapshot's list is authoritative; merge it so the deletion
+                // is reflected immediately instead of waiting for the turn's
+                // terminal idle event.
+                ...(next.workspaces !== undefined
+                  ? { workspaces: next.workspaces }
+                  : {}),
                 ...(next.background !== undefined
                   ? { background: next.background }
                   : {}),
@@ -4292,7 +4300,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *  endpoint that bypasses the chat runtime to avoid session-bleed. */
   const deleteWorkspaceViaApi = useCallback(
     async (id: string) => {
-      return await client.deleteWorkspace(id);
+      const result = await client.deleteWorkspace(id);
+      if (!result.ok) {
+        return false;
+      }
+      if (result.fallbackId) {
+        // The backend fell back to another workspace (active delete); tag it
+        // as the pending focus so follow-up SSE events route to it. Without
+        // this the idle broadcast from /delete-workspace is discarded by the
+        // SSE handler (its envelope points at the fallback workspace while
+        // the frontend still focuses the deleted one) and the UI never
+        // updates until some later event arrives.
+        pendingFocusWsIdRef.current = result.fallbackId;
+      }
+      // Re-fetch state because the SSE idle event from /delete-workspace can
+      // be dropped or partially merged by the SSE handler: an active delete
+      // broadcasts a state tagged with the fallback workspace (idleForFocused
+      // is false), and while a task is streaming in the focused chat the idle
+      // takes the still-running merge path, which never touches the workspace
+      // list. Fetching here makes the deletion respond immediately regardless.
+      try {
+        const next = await client.getState();
+        setState(next);
+        if (!next.activeChatId) {
+          setDraftMode(true);
+          setDraftWorkspaceId(next.workspace.id);
+          historyChatRef.current = "\u0000";
+          setHistoryTurns([]);
+          setHistoryStart(0);
+          setHistoryTotal(0);
+        }
+      } catch {
+        // getState failure is non-fatal; the workspace was deleted.
+      }
+      return true;
     },
     [client],
   );
