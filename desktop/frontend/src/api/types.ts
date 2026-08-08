@@ -532,6 +532,36 @@ export interface ChatHistoryPage {
   total: number;
 }
 
+/** One full-text search hit across all workspaces' chats. */
+export interface ChatSearchHit {
+  wsId: string;
+  wsName: string;
+  chatId: string;
+  chatName: string;
+  /** Absolute (0-based, oldest first) turn index inside the chat, matching
+   *  the turn grouping of ``GET /chat-history`` so the GUI can jump to it. */
+  turnIdx: number;
+  /** Index of the matched message within the chat record. */
+  msgIdx: number;
+  role: "user" | "assistant";
+  /** Display snippet around the best match (may contain leading/trailing …). */
+  snippet: string;
+  /** Highlight ranges (start, end) into ``snippet``, already merged. */
+  ranges: Array<[number, number]>;
+  /** Query keywords that this hit actually matched (in query order). */
+  keywords: string[];
+  score: number;
+  updatedAt: string;
+}
+
+/** Response from GET /chat-search. */
+export interface ChatSearchResult {
+  ok: boolean;
+  keywords: string[];
+  total: number;
+  results: ChatSearchHit[];
+}
+
 /** File change record for tracking modifications */
 export interface FileChangeRecord {
   filePath: string;

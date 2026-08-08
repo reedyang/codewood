@@ -48,6 +48,11 @@ export const en: Dict = {
   "tool.label.console_info": "Get console info",
   "history.more": "Scroll up to load earlier messages",
   "history.loading": "Loading earlier messages…",
+  "search.placeholder": "Search all chats (Ctrl+K)",
+  "search.clear": "Clear search",
+  "search.loading": "Searching…",
+  "search.empty": "No results",
+  "search.results": "{n} results",
   "minimap.loading": "Loading…",
 
   "menu.pinProject": "Pin workspace",

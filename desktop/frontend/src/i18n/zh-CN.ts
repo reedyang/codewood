@@ -48,6 +48,11 @@ export const zhCN: Dict = {
   "tool.label.console_info": "获取控制台信息",
   "history.more": "向上滚动加载更早的消息",
   "history.loading": "正在加载更早的消息……",
+  "search.placeholder": "搜索所有聊天 (Ctrl+K)",
+  "search.clear": "清除搜索",
+  "search.loading": "搜索中…",
+  "search.empty": "没有匹配结果",
+  "search.results": "{n} 条结果",
   "minimap.loading": "加载中…",
 
   "menu.pinProject": "置顶工作区",

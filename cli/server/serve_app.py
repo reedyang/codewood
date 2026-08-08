@@ -1853,6 +1853,10 @@ class ServeApp:
         )
         self._apply_saved_console_options()
         self._shutdown_event = threading.Event()
+        # Global cross-workspace chat search index (lazy; background refresher).
+        self._chat_search = None
+        self._chat_search_refresher_started = False
+        self._chat_search_wake = threading.Event()
         self._token = secrets.token_urlsafe(32)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._mcp_reconnect_threads: Dict[str, threading.Thread] = {}
@@ -5495,6 +5499,121 @@ class ServeApp:
             candidates = []
         return {"ok": True, "candidates": candidates}
 
+    # ----- global chat search -------------------------------------------
+
+    def _chat_search_index(self) -> Any:
+        """Lazily create the cross-workspace chat search index and start its
+        background refresher. Returns ``None`` when the index is unavailable."""
+        if self._chat_search is None:
+            try:
+                from ..services.chat_search_index import ChatSearchIndex
+
+                self._chat_search = ChatSearchIndex()
+            except Exception:
+                self._chat_search = None
+            self._start_chat_search_refresher()
+        return self._chat_search
+
+    def _start_chat_search_refresher(self) -> None:
+        if self._chat_search_refresher_started:
+            return
+        self._chat_search_refresher_started = True
+        try:
+            thread = threading.Thread(
+                target=self._chat_search_refresh_loop,
+                name="chat-search-refresh",
+                daemon=True,
+            )
+            thread.start()
+        except Exception:
+            self._chat_search_refresher_started = False
+
+    def _chat_search_refresh_loop(self) -> None:
+        import time as _time
+
+        wait = 3.0
+        while not self._shutdown_event.is_set():
+            try:
+                self._chat_search_refresh_once()
+            except Exception:
+                pass
+            try:
+                self._chat_search_wake.wait(wait)
+            except Exception:
+                break
+            self._chat_search_wake.clear()
+            wait = 15.0
+
+    def _chat_search_refresh_once(self) -> None:
+        idx = self._chat_search
+        if idx is None:
+            return
+        # Preload the jieba dictionary off the HTTP path (first index build).
+        idx.warmup()
+        for ws in self._enumerate_search_workspaces():
+            try:
+                idx.refresh_workspace(ws["id"], ws["name"], ws["storage"])
+            except Exception:
+                pass
+
+    def _enumerate_search_workspaces(self) -> List[Dict[str, Any]]:
+        """Enumerate every known workspace (default + registered) with its
+        on-disk storage dir for the chat search indexer."""
+        agent = self.agent
+        out: List[Dict[str, Any]] = []
+        try:
+            raw = getattr(agent, "_workspaces_state", {})
+            entries = raw.get("workspaces") if isinstance(raw, dict) else {}
+        except Exception:
+            entries = {}
+        if not isinstance(entries, dict):
+            return out
+        for entry in entries.values():
+            if not isinstance(entry, dict):
+                continue
+            ws_id = str(entry.get("id") or "").strip()
+            if not ws_id:
+                continue
+            try:
+                storage = agent._workspace_storage_path(entry)
+            except Exception:
+                continue
+            out.append(
+                {
+                    "id": ws_id,
+                    "name": str(entry.get("name") or ""),
+                    "storage": Path(storage),
+                }
+            )
+        return out
+
+    def search_chats(self, query: str, limit: int = 20) -> Dict[str, Any]:
+        """Full-text search across all workspaces' non-archived chats."""
+        idx = self._chat_search_index()
+        if idx is None:
+            return {"ok": False, "keywords": [], "total": 0, "results": []}
+        try:
+            result = idx.search(str(query or ""), max(1, min(50, int(limit) or 20)))
+            result["ok"] = True
+            return result
+        except Exception:
+            return {"ok": False, "keywords": [], "total": 0, "results": []}
+
+    def _invalidate_chat_search(self, chat_id: str, ws_id: str = "") -> None:
+        """Drop a chat from the global search index immediately (archive /
+        delete) and wake the refresher so un-archive re-indexes promptly."""
+        idx = self._chat_search
+        if idx is None:
+            return
+        wsid = str(ws_id or "").strip()
+        if not wsid:
+            wsid = str(getattr(self.agent, "workspace_id", "") or "")
+        try:
+            idx.invalidate_chat(wsid, str(chat_id or ""))
+            self._chat_search_wake.set()
+        except Exception:
+            pass
+
     def get_mcp_overview(self) -> Dict[str, Any]:
         """Return a snapshot of every configured MCP server for the GUI page.
 
@@ -6854,6 +6973,7 @@ class ServeApp:
         self.broadcaster.publish(
             "idle", self._route(state=_build_state(agent))
         )
+        self._invalidate_chat_search(rid, wsid)
         return True
 
     def toggle_chat_archive(self, chat_id: str, ws_id: str = "") -> bool:
@@ -6890,6 +7010,7 @@ class ServeApp:
                 self.broadcaster.publish(
                     "idle", self._route(state=_build_state(agent))
                 )
+                self._invalidate_chat_search(rid, ws_id)
                 return True
 
             # Non-active workspace: update its chat index directly on disk
@@ -6919,6 +7040,7 @@ class ServeApp:
                     c["updated_at"] = now
                     with open(index_path, "w", encoding="utf-8") as f:
                         json.dump(index, f, ensure_ascii=False, indent=2)
+                    self._invalidate_chat_search(cid, ws_id)
                     return True
             return False
         except Exception:
@@ -8078,6 +8200,17 @@ def _make_handler(app: ServeApp):
                 self._send_json(
                     200, app.chat_history(before, limit, chat_id, ws_id)
                 )
+                return
+            if path == "/chat-search":
+                q = str((query.get("q") or [""])[0] or "")[:512]
+                lim = 20
+                try:
+                    lim_vals = query.get("limit") or []
+                    if lim_vals and str(lim_vals[0]).strip():
+                        lim = max(1, min(50, int(str(lim_vals[0])[:4])))
+                except (ValueError, TypeError):
+                    lim = 20
+                self._send_json(200, app.search_chats(q, lim))
                 return
             if path == "/background-image":
                 result = app.read_background_image()

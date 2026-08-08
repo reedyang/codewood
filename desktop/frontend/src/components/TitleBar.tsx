@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
+import { GlobalChatSearch } from "./GlobalChatSearch";
 import { Icon } from "./Icon";
 
 interface HostWindowApi {
@@ -225,6 +226,8 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
           </div>
         ))}
       </div>
+
+      <GlobalChatSearch />
 
       <div
         className={`titlebar-drag ${hostOs === "win32" ? "pywebview-drag-region" : ""}`}
