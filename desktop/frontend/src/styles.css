@@ -5001,6 +5001,7 @@ html[data-has-bg] .select {
 .activity-steps .cmd-prompt-body {
   flex: 0 1 auto;
   min-width: 0;
+  align-self: baseline;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
