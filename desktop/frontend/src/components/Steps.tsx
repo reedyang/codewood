@@ -442,7 +442,19 @@ function SpinnerChar() {
     const id = setInterval(() => setI((n) => (n + 1) % SPINNER_CHARS.length), 100);
     return () => clearInterval(id);
   }, []);
-  return <span style={{ color: "var(--accent)", marginLeft: "0.5ch", verticalAlign: "-2px" }}>{SPINNER_CHARS[i]}</span>;
+  return (
+    <span
+      style={{
+        color: "var(--accent)",
+        marginLeft: "0.5ch",
+        transform: "translateY(2px)",
+        flexShrink: 0,
+        alignSelf: "baseline",
+      }}
+    >
+      {SPINNER_CHARS[i]}
+    </span>
+  );
 }
 
 /** Render collapsible execution steps, isolating command output blocks. */
@@ -627,13 +639,13 @@ function PromptWithAttachment({
         <HoverTooltip content={<span style={{ fontFamily: "inherit", whiteSpace: "pre-wrap" }}>{stripAnsi(body)}</span>}>
           <span className="cmd-prompt-body">
             <AnsiText text={body} onPathPreview={onPathPreview} />
-            {running && <SpinnerChar />}
             {trailingStatusText && (
               <span className="tool-inline-working">
                 <span className="activity-text marquee">{trailingStatusText}</span>
               </span>
             )}
           </span>
+          {running && <SpinnerChar />}
         </HoverTooltip>
       </div>
     );
@@ -660,13 +672,13 @@ function PromptWithAttachment({
         <HoverTooltip content={<span style={{ fontFamily: "inherit", whiteSpace: "pre-wrap" }}>{stripAnsi(body)}</span>}>
           <span className="cmd-prompt-body">
             <AnsiText text={body} onPathPreview={onPathPreview} />
-            {running && <SpinnerChar />}
             {trailingStatusText && (
               <span className="tool-inline-working">
                 <span className="activity-text marquee">{trailingStatusText}</span>
               </span>
             )}
           </span>
+          {running && <SpinnerChar />}
           <span className="cmd-prompt-diff-toggle subagent-view-btn">
             <Icon name="chevron" size={14} className="chevron" />
           </span>
@@ -701,8 +713,8 @@ function PromptWithAttachment({
         <HoverTooltip content={<span style={{ fontFamily: "inherit", whiteSpace: "pre-wrap" }}>{stripAnsi(body)}</span>}>
           <span className="cmd-prompt-body">
             <AnsiText text={body} onPathPreview={onPathPreview} />
-            {running && <SpinnerChar />}
           </span>
+          {running && <SpinnerChar />}
           {isSubAgent && (
             <span className="cmd-prompt-diff-toggle subagent-view-btn">
               <Icon name="chevron" size={14} className="chevron" />
