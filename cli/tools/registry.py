@@ -50,6 +50,10 @@ from .console import (
     ConsoleExecTool,
     ConsoleReadTool,
     ConsoleInfoTool,
+    ConsoleSendTool,
+    ConsoleWaitTool,
+    ConsoleInterruptTool,
+    ConsoleResizeTool,
 )
 from .webfetch import WebFetchTool
 
@@ -87,6 +91,10 @@ ALL_TOOLS: List[Type[BaseTool]] = [
     ConsoleExecTool,
     ConsoleReadTool,
     ConsoleInfoTool,
+    ConsoleSendTool,
+    ConsoleWaitTool,
+    ConsoleInterruptTool,
+    ConsoleResizeTool,
     WebFetchTool,
 ]
 
