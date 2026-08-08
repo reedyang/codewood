@@ -999,11 +999,12 @@ function TodoDock({
 }
 
 // ── Global chat search highlighting ─────────────────────────────────────
-// Elements whose text must never be wrapped with <mark> (code blocks, UI
-// chrome, tool-step transcripts — only user prompts and model replies were
-// indexed, so highlighting is scoped to plain visible text).
+// Elements whose text must never be wrapped with <mark> (UI chrome,
+// tool-step transcripts and thinking blocks — those were never indexed, so
+// highlighting them would only produce noise). Code blocks ARE highlighted:
+// hits often land inside code examples, so skipping them would hide matches.
 const SEARCH_SKIP_SELECTOR =
-  "pre, code, button, textarea, input, select, .steps, .thinking-panel, .file-change-list";
+  "button, textarea, input, select, .steps, .thinking-panel, .file-change-list";
 
 /** Wrap every occurrence of *keywords* in *root* with ``<mark.search-term>``.
  *  Idempotent: previous marks are unwrapped first so re-runs never nest. */
@@ -1234,15 +1235,18 @@ export function ChatView() {
       "\u0001",
     )}`;
     const first = appliedSearchRef.current !== sig;
+    // Re-apply marks every time the transcript re-renders (React reconciliation
+    // can drop the DOM-level marks), then scroll precisely to the first hit.
+    applySearchHighlights(target, activeSearchHit.keywords);
     if (first) {
       appliedSearchRef.current = sig;
-      target.scrollIntoView({ block: "center", behavior: "smooth" });
+      const hit = target.querySelector<HTMLElement>("mark.search-term");
+      (hit ?? target).scrollIntoView({ block: "center", behavior: "smooth" });
       target.classList.add("search-hit-flash");
       window.setTimeout(() => {
         target.classList.remove("search-hit-flash");
       }, 2000);
     }
-    applySearchHighlights(target, activeSearchHit.keywords);
   }, [
     activeSearchHit,
     historyTurns,
@@ -1987,6 +1991,12 @@ export function ChatView() {
                       turn={entry.turn}
                       negIndex={histNeg[entry.index]}
                       handlers={messageHandlers}
+                      searchTarget={
+                        activeSearchHit !== null &&
+                        activeSearchHit.chatKey ===
+                          chatKey(activeWorkspaceId, activeChatId) &&
+                        activeSearchHit.turnIdx === historyStart + entry.index
+                      }
                     />
                   </div>
                 ) : (() => {
@@ -2721,6 +2731,7 @@ function CompletedTurnView({
   negIndex,
   handlers,
   settle = false,
+  searchTarget = false,
 }: {
   turn: HistoryTurn;
   negIndex: number;
@@ -2729,6 +2740,10 @@ function CompletedTurnView({
    *  paused): the "Worked for" shell is shown expanded first, then
    *  auto-collapses with an animation. */
   settle?: boolean;
+  /** True when this turn is the destination of a global chat search hit:
+   *  its collapsed "Worked for" sections are force-expanded so the matched
+   *  message content is visible before the jump/highlight runs. */
+  searchTarget?: boolean;
 }) {
   const { t, pendingExpandSubAgentId, state } = useApp();
   const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
@@ -2835,7 +2850,7 @@ function CompletedTurnView({
             timerText={timerText}
             running={false}
             showTimer={true}
-            autoExpand={turnHasTarget || settle}
+            autoExpand={turnHasTarget || settle || searchTarget}
             autoCollapseDelayMs={settle ? SETTLE_COLLAPSE_DELAY_MS : 0}
             detailsBeforeText={true}
             detailsNode={<div className="worked-for-body">{detailNodes}</div>}
@@ -2918,12 +2933,21 @@ function HistoryTurnView({
   turn,
   negIndex,
   handlers,
+  searchTarget = false,
 }: {
   turn: HistoryTurn;
   negIndex: number;
   handlers: MessageHandlers;
+  searchTarget?: boolean;
 }) {
-  return <CompletedTurnView turn={turn} negIndex={negIndex} handlers={handlers} />;
+  return (
+    <CompletedTurnView
+      turn={turn}
+      negIndex={negIndex}
+      handlers={handlers}
+      searchTarget={searchTarget}
+    />
+  );
 }
 
 type LiveRoundGroup =

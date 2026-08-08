@@ -29,15 +29,17 @@ describe("applySearchHighlights", () => {
     expect(root.querySelectorAll("mark.search-term").length).toBe(2);
   });
 
-  it("skips code blocks and UI chrome", () => {
+  it("highlights inside code blocks but skips UI chrome and tool steps", () => {
     const root = document.createElement("div");
     root.innerHTML =
       '<div class="answer">搜索框 <pre><code>搜索框</code></pre></div>' +
-      '<button type="button">搜索框</button>';
+      '<button type="button">搜索框</button>' +
+      '<div class="steps">搜索框</div>';
     applySearchHighlights(root, ["搜索"]);
-    expect(root.querySelectorAll("mark.search-term").length).toBe(1);
-    expect(root.querySelector("pre code")?.textContent).toBe("搜索框");
+    expect(root.querySelectorAll("mark.search-term").length).toBe(2);
+    expect(root.querySelector("pre code mark.search-term")?.textContent).toBe("搜索");
     expect(root.querySelector("button mark.search-term")).toBeNull();
+    expect(root.querySelector(".steps mark.search-term")).toBeNull();
   });
 
   it("is idempotent and never nests marks", () => {
