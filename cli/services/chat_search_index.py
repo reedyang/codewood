@@ -86,6 +86,14 @@ _WEIGHT_CHAR = 0.3
 def _get_jieba() -> Any:
     global _jieba
     if _jieba is None:
+        # jieba 0.42.1 imports the long-deprecated pkg_resources in
+        # ``jieba/_compat.py``; setuptools>=81 then emits a UserWarning on
+        # every import. Filter exactly that message so search logs stay clean.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"pkg_resources is deprecated as an API.*",
+            category=UserWarning,
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             import jieba

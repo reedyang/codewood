@@ -8071,6 +8071,25 @@ def _make_handler(app: ServeApp):
         def log_message(self, *_args: Any) -> None:  # noqa: N802
             return None
 
+        # A client that aborts mid-request (frontend AbortController on a
+        # debounced search, page unload tearing down an EventSource/SSE, or a
+        # fetch cancelled by navigation) makes the socket raise
+        # ConnectionAbortedError/ConnectionResetError while reading the
+        # request line or writing the response. socketserver would otherwise
+        # print a scary-but-harmless "Exception occurred during processing of
+        # request" traceback; the request is abandoned anyway, so swallow the
+        # connection errors and close the socket cleanly.
+        def handle_one_request(self) -> None:  # noqa: N802
+            try:
+                super().handle_one_request()
+            except (
+                ConnectionAbortedError,
+                ConnectionResetError,
+                BrokenPipeError,
+                TimeoutError,
+            ):
+                self.close_connection = True
+
         # ----- helpers -----
         def _is_loopback(self) -> bool:
             try:
