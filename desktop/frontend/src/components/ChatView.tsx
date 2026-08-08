@@ -998,6 +998,92 @@ function TodoDock({
   );
 }
 
+// ── Global chat search highlighting ─────────────────────────────────────
+// Elements whose text must never be wrapped with <mark> (code blocks, UI
+// chrome, tool-step transcripts — only user prompts and model replies were
+// indexed, so highlighting is scoped to plain visible text).
+const SEARCH_SKIP_SELECTOR =
+  "pre, code, button, textarea, input, select, .steps, .thinking-panel, .file-change-list";
+
+/** Wrap every occurrence of *keywords* in *root* with ``<mark.search-term>``.
+ *  Idempotent: previous marks are unwrapped first so re-runs never nest. */
+export function applySearchHighlights(root: HTMLElement, keywords: string[]): void {
+  if (!keywords || keywords.length === 0) {
+    return;
+  }
+  root.querySelectorAll("mark.search-term").forEach((m) => {
+    const parent = m.parentNode;
+    if (!parent) {
+      return;
+    }
+    parent.replaceChild(document.createTextNode(m.textContent ?? ""), m);
+    parent.normalize();
+  });
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node): number {
+      const el = node.parentElement;
+      if (!el || el.closest(SEARCH_SKIP_SELECTOR)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) {
+    textNodes.push(walker.currentNode as Text);
+  }
+  const lowerKeywords = keywords
+    .map((k) => k.toLowerCase())
+    .filter((k) => k.length > 0);
+  if (lowerKeywords.length === 0) {
+    return;
+  }
+  for (const node of textNodes) {
+    const text = node.data;
+    if (!text) {
+      continue;
+    }
+    const lower = text.toLowerCase();
+    const intervals: Array<[number, number]> = [];
+    for (const kw of lowerKeywords) {
+      let idx = lower.indexOf(kw);
+      while (idx >= 0) {
+        intervals.push([idx, idx + kw.length]);
+        idx = lower.indexOf(kw, idx + kw.length);
+      }
+    }
+    if (intervals.length === 0) {
+      continue;
+    }
+    intervals.sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const [s, e] of intervals) {
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1]) {
+        last[1] = Math.max(last[1], e);
+      } else {
+        merged.push([s, e]);
+      }
+    }
+    const frag = document.createDocumentFragment();
+    let cursor = 0;
+    for (const [s, e] of merged) {
+      if (s > cursor) {
+        frag.appendChild(document.createTextNode(text.slice(cursor, s)));
+      }
+      const mark = document.createElement("mark");
+      mark.className = "search-term";
+      mark.textContent = text.slice(s, e);
+      frag.appendChild(mark);
+      cursor = e;
+    }
+    if (cursor < text.length) {
+      frag.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+    node.parentNode?.replaceChild(frag, node);
+  }
+}
+
 export function ChatView() {
   const {
     state,
@@ -1045,6 +1131,7 @@ export function ChatView() {
     todoDockVisible,
     setTodoDockVisible,
     t,
+    activeSearchHit,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
   // between chats never bleeds an unsent message into a sibling. A synthetic
@@ -1122,6 +1209,47 @@ export function ChatView() {
   }, [draftHasContent, setDraftHasContent]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
+  // ── Global chat search: scroll to the hit turn + highlight keywords ──
+  const appliedSearchRef = useRef<string>("");
+  useEffect(() => {
+    if (!activeSearchHit) {
+      appliedSearchRef.current = "";
+      return;
+    }
+    const key = chatKey(activeWorkspaceId, activeChatId);
+    if (activeSearchHit.chatKey !== key || historyLoading) {
+      return;
+    }
+    const container = scrollRef.current;
+    if (!container) {
+      return;
+    }
+    const target = container.querySelector<HTMLElement>(
+      `[data-turn-abs="${activeSearchHit.turnIdx}"]`,
+    );
+    if (!target) {
+      return;
+    }
+    const sig = `${key}:${activeSearchHit.turnIdx}:${activeSearchHit.keywords.join(
+      "\u0001",
+    )}`;
+    const first = appliedSearchRef.current !== sig;
+    if (first) {
+      appliedSearchRef.current = sig;
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+      target.classList.add("search-hit-flash");
+      window.setTimeout(() => {
+        target.classList.remove("search-hit-flash");
+      }, 2000);
+    }
+    applySearchHighlights(target, activeSearchHit.keywords);
+  }, [
+    activeSearchHit,
+    historyTurns,
+    historyLoading,
+    activeWorkspaceId,
+    activeChatId,
+  ]);
   // Whether the transcript should auto-stick to the bottom on live updates.
   // Starts true (a fresh/switched chat opens pinned to the latest message)
   // and flips off the moment the user scrolls away from the bottom, so an
@@ -1851,11 +1979,16 @@ export function ChatView() {
                 {standaloneCompactNoticeNode && renderIndex === standaloneCompactNoticeIndex &&
                   standaloneCompactNoticeNode}
                 {entry.source === "history" ? (
-                  <HistoryTurnView
-                    turn={entry.turn}
-                    negIndex={histNeg[entry.index]}
-                    handlers={messageHandlers}
-                  />
+                  <div
+                    data-turn-abs={historyStart + entry.index}
+                    className="search-turn-anchor"
+                  >
+                    <HistoryTurnView
+                      turn={entry.turn}
+                      negIndex={histNeg[entry.index]}
+                      handlers={messageHandlers}
+                    />
+                  </div>
                 ) : (() => {
                   const turn = entry.turn;
                   return (

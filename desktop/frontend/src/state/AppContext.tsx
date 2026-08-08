@@ -12,6 +12,7 @@ import { ApiClient } from "../api/client";
 import type {
   AppState,
   AskMoreInfoRequest,
+  ChatSearchHit,
   ChatSummary,
   CompactNoticeData,
   ConfirmAllowlist,
@@ -162,6 +163,13 @@ function pickInheritedChatModel(
   return { model: bestModel, reasoning: bestReasoning };
 }
 
+/** Active full-text search jump: which chat/turn to scroll to and highlight. */
+export interface SearchHitState {
+  chatKey: string;
+  turnIdx: number;
+  keywords: string[];
+}
+
 interface AppContextValue {
   state: AppState | null;
   activeWorkspaceId: string;
@@ -288,8 +296,15 @@ interface AppContextValue {
   /** Resolve the active ``request_user_input`` prompt with the user's answer. */
   answerAskMoreInfo: (answer: string) => Promise<void>;
   clearTurns: (chatId?: string) => void;
-  switchToChat: (chatId: string, workspaceId?: string) => Promise<void>;
+  switchToChat: (
+    chatId: string,
+    workspaceId?: string,
+    opts?: { before?: number },
+  ) => Promise<void>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
+  openSearchHit: (hit: ChatSearchHit) => Promise<void>;
+  clearSearchHit: () => void;
+  activeSearchHit: SearchHitState | null;
   /** Enter compose mode for a new chat (created on first send). */
   newChat: (workspaceId?: string) => Promise<void>;
   /** True while composing a not-yet-created chat. */
@@ -3612,7 +3627,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // right after a switch before the idle state arrives); its live turns are
   // dropped since they are now part of the persisted history.
   const loadChatHistory = useCallback(
-    async (target?: { chatId?: string; wsId?: string }) => {
+    async (target?: { chatId?: string; wsId?: string; before?: number }) => {
       const cid = target?.chatId ?? activeChatIdRef.current;
       const wsId = target?.wsId ?? activeWorkspaceIdRef.current;
       // ``getChatHistory`` always returns the focused chat's history, so the
@@ -3635,7 +3650,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : state,
       );
       try {
-        const page = await client.getChatHistory(undefined, INITIAL_HISTORY, cid, wsId);
+        const page = await client.getChatHistory(target?.before, INITIAL_HISTORY, cid, wsId);
         // The user switched to a different chat while we were fetching.
         if (historyChatRef.current !== expectedKey) {
           return;
@@ -3876,7 +3891,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [state?.workspace.id, state?.activeChatId, loadChatHistory]);
 
   const switchToChat = useCallback(
-    async (chatId: string, workspaceId = "") => {
+    async (chatId: string, workspaceId = "", opts?: { before?: number }) => {
+      setActiveSearchHit(null);
       // If we're viewing a sub-agent session, return to the main chat first.
       const currentSub = activeSubAgentSessionRef.current;
       if (currentSub) {
@@ -3942,7 +3958,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // that we intentionally ignore to protect segment accumulation, so carry
       // an optimistic focus override until the backend's terminal idle snapshot
       // catches up.
-      await loadChatHistory({ chatId, wsId: targetWsId });
+      await loadChatHistory({
+        chatId,
+        wsId: targetWsId,
+        before: opts?.before,
+      });
     },
     [client, dropSettledLiveTurns, loadChatHistory, t],
   );
@@ -3958,6 +3978,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       setFocusOverride(null);
       setOptimisticChatFocus(null);
+      setActiveSearchHit(null);
       setCompactNoticeState((state) =>
         state.notice
           ? { chatKey: "", notice: null, version: state.version + 1 }
@@ -3974,6 +3995,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearTurns();
     },
     [client, clearTurns],
+  );
+
+  // ── Global chat search: jump + highlight ------------------------------
+  const [activeSearchHit, setActiveSearchHit] = useState<SearchHitState | null>(null);
+
+  const clearSearchHit = useCallback(() => {
+    setActiveSearchHit(null);
+  }, []);
+
+  const openSearchHit = useCallback(
+    async (hit: ChatSearchHit) => {
+      const key = chatKey(hit.wsId, hit.chatId);
+      setActiveSearchHit({
+        chatKey: key,
+        turnIdx: hit.turnIdx,
+        keywords: hit.keywords,
+      });
+      if (
+        activeChatIdRef.current === hit.chatId &&
+        activeWorkspaceIdRef.current === hit.wsId
+      ) {
+        // Already viewing this chat: reload a window ending at the target turn
+        // so the transcript contains it, then the ChatView effect scrolls.
+        await loadChatHistory({
+          chatId: hit.chatId,
+          wsId: hit.wsId,
+          before: hit.turnIdx + 1,
+        });
+        return;
+      }
+      await switchToChat(hit.chatId, hit.wsId, { before: hit.turnIdx + 1 });
+    },
+    [switchToChat, loadChatHistory],
   );
 
   // Resolve the model/reasoning a FRESH draft will inherit from the target
@@ -4792,6 +4846,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearTurns,
     switchToChat,
     selectWorkspace,
+    openSearchHit,
+    clearSearchHit,
+    activeSearchHit,
     newChat,
     draftMode,
     draftWorkspaceId,

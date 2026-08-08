@@ -1,6 +1,7 @@
 import type {
   AppState,
   ChatHistoryPage,
+  ChatSearchResult,
   ConfirmAllowlist,
   CompletionCatalog,
   GeneralConfig,
@@ -245,6 +246,29 @@ export class ApiClient {
       return (await res.json()) as ChatHistoryPage;
     } catch {
       return { turns: [], start: 0, total: 0 };
+    }
+  }
+
+  /** Full-text search across all workspaces' non-archived chats. */
+  async searchChats(
+    query: string,
+    limit = 20,
+    signal?: AbortSignal,
+  ): Promise<ChatSearchResult> {
+    const params = new URLSearchParams();
+    params.set("q", query);
+    params.set("limit", String(limit));
+    const res = await fetch(`${this.base}/chat-search?${params.toString()}`, {
+      headers: this.headers(),
+      signal,
+    });
+    if (!res.ok) {
+      return { ok: false, keywords: [], total: 0, results: [] };
+    }
+    try {
+      return (await res.json()) as ChatSearchResult;
+    } catch {
+      return { ok: false, keywords: [], total: 0, results: [] };
     }
   }
 
