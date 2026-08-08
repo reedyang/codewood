@@ -501,6 +501,40 @@ class AiOutputDisplayTests(unittest.TestCase):
         )
         self.assertEqual(out, "1. Prod\n2. Stg")
 
+    def test_extract_tool_result_output_browser_eval_uses_result_field(self):
+        out = self.agent._extract_tool_result_output(
+            "browser_eval",
+            {"success": True, "result": "document.title"},
+        )
+        self.assertEqual(out, "document.title")
+
+    def test_extract_tool_result_output_browser_eval_serializes_structured_result(self):
+        out = self.agent._extract_tool_result_output(
+            "browser_eval",
+            {"success": True, "result": {"count": 3, "items": ["a", "b"]}},
+        )
+        self.assertEqual(out, '{"count": 3, "items": ["a", "b"]}')
+
+    def test_extract_tool_result_output_browser_dom_console_url(self):
+        self.assertEqual(
+            self.agent._extract_tool_result_output(
+                "browser_read_dom", {"success": True, "dom": "<html></html>"}
+            ),
+            "<html></html>",
+        )
+        self.assertEqual(
+            self.agent._extract_tool_result_output(
+                "browser_read_console", {"success": True, "console": [{"level": "log", "text": "hi"}]}
+            ),
+            '[{"level": "log", "text": "hi"}]',
+        )
+        self.assertEqual(
+            self.agent._extract_tool_result_output(
+                "browser_get_url", {"success": True, "url": "https://example.com"}
+            ),
+            "https://example.com",
+        )
+
     def test_format_direct_shell_command_feedback_line_uses_shared_highlighter(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
