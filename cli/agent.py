@@ -3677,6 +3677,29 @@ class Agent:
                     if s:
                         lines.append(f"{i + 1}. {s}")
             return "\n".join(lines) if lines else str(r.get("message") or "")
+        if t.startswith("browser_"):
+            # The browser tools return structured payloads instead of an
+            # ``output``/``content``/``message`` field: ``browser_eval``
+            # yields ``result``, ``browser_read_dom`` yields ``dom``,
+            # ``browser_read_console`` yields ``console`` and
+            # ``browser_open``/``browser_get_url`` yield ``url``. Serialize
+            # whichever field is present so the tool's output stays
+            # expandable in the GUI transcript and _tool_rounds_raw.
+            payload = r.get("result")
+            if payload is None:
+                payload = r.get("dom")
+            if payload is None:
+                payload = r.get("console")
+            if payload is None:
+                payload = r.get("url")
+            if payload is not None:
+                if isinstance(payload, str):
+                    return payload
+                try:
+                    return json.dumps(payload, ensure_ascii=False)
+                except Exception:
+                    return str(payload)
+            return str(r.get("error") or "")
         out = str(r.get("output") or "")
         if not out:
             out = str(r.get("content") or "")
