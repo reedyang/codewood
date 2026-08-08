@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applySearchHighlights } from "./ChatView";
+import { applySearchHighlights, removeSearchMarks } from "./ChatView";
 
 describe("applySearchHighlights", () => {
   it("wraps every keyword occurrence in <mark class=\"search-term\">", () => {
@@ -58,5 +58,16 @@ describe("applySearchHighlights", () => {
     root.innerHTML = "搜索框";
     applySearchHighlights(root, []);
     expect(root.querySelectorAll("mark.search-term").length).toBe(0);
+  });
+
+  it("removeSearchMarks unwraps marks and restores the original text", () => {
+    const root = document.createElement("div");
+    root.innerHTML = "搜索框";
+    applySearchHighlights(root, ["搜索"]);
+    expect(root.querySelectorAll("mark.search-term").length).toBe(1);
+    removeSearchMarks(root);
+    expect(root.querySelectorAll("mark.search-term").length).toBe(0);
+    expect(root.textContent).toBe("搜索框");
+    expect(root.innerHTML).toBe("搜索框");
   });
 });
