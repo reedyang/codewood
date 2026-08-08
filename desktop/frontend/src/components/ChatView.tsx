@@ -1006,10 +1006,9 @@ function TodoDock({
 const SEARCH_SKIP_SELECTOR =
   "button, textarea, input, select, .steps, .thinking-panel, .file-change-list";
 
-/** Wrap every occurrence of *keywords* in *root* with ``<mark.search-term>``.
- *  Idempotent: previous marks are unwrapped first so re-runs never nest. */
-export function applySearchHighlights(root: HTMLElement, keywords: string[]): void {
-  if (!keywords || keywords.length === 0) {
+/** Unwrap every ``mark.search-term`` under *root* (idempotent). */
+export function removeSearchMarks(root: Element | null | undefined): void {
+  if (!root) {
     return;
   }
   root.querySelectorAll("mark.search-term").forEach((m) => {
@@ -1020,6 +1019,15 @@ export function applySearchHighlights(root: HTMLElement, keywords: string[]): vo
     parent.replaceChild(document.createTextNode(m.textContent ?? ""), m);
     parent.normalize();
   });
+}
+
+/** Wrap every occurrence of *keywords* in *root* with ``<mark.search-term>``.
+ *  Idempotent: previous marks are unwrapped first so re-runs never nest. */
+export function applySearchHighlights(root: HTMLElement, keywords: string[]): void {
+  if (!keywords || keywords.length === 0) {
+    return;
+  }
+  removeSearchMarks(root);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node: Node): number {
       const el = node.parentElement;
@@ -1215,6 +1223,7 @@ export function ChatView() {
   useEffect(() => {
     if (!activeSearchHit) {
       appliedSearchRef.current = "";
+      removeSearchMarks(scrollRef.current);
       return;
     }
     const key = chatKey(activeWorkspaceId, activeChatId);

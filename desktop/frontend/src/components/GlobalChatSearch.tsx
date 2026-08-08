@@ -74,6 +74,7 @@ export function GlobalChatSearch() {
     abortRef.current?.abort();
     const trimmed = q.trim();
     if (!trimmed) {
+      clearSearchHit();
       setResults([]);
       setTotal(0);
       setLoading(false);
