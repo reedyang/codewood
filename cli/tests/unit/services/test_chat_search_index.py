@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import tempfile
@@ -13,12 +14,9 @@ from cli.services.chat_search_index import (
     tokenize_text,
 )
 
-try:
-    import jieba  # noqa: F401
-
-    _HAS_JIEBA = True
-except Exception:
-    _HAS_JIEBA = False
+# Detect without importing (importing jieba would execute its pkg_resources
+# import and emit a deprecation warning before our filter is installed).
+_HAS_JIEBA = importlib.util.find_spec("jieba") is not None
 
 needs_jieba = unittest.skipUnless(_HAS_JIEBA, "jieba is not installed")
 
