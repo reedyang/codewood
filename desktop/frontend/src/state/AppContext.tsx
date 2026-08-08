@@ -4007,17 +4007,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const openSearchHit = useCallback(
     async (hit: ChatSearchHit) => {
       const key = chatKey(hit.wsId, hit.chatId);
-      setActiveSearchHit({
-        chatKey: key,
-        turnIdx: hit.turnIdx,
-        keywords: hit.keywords,
-      });
       if (
         activeChatIdRef.current === hit.chatId &&
         activeWorkspaceIdRef.current === hit.wsId
       ) {
         // Already viewing this chat: reload a window ending at the target turn
         // so the transcript contains it, then the ChatView effect scrolls.
+        setActiveSearchHit({
+          chatKey: key,
+          turnIdx: hit.turnIdx,
+          keywords: hit.keywords,
+        });
         await loadChatHistory({
           chatId: hit.chatId,
           wsId: hit.wsId,
@@ -4026,6 +4026,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
       await switchToChat(hit.chatId, hit.wsId, { before: hit.turnIdx + 1 });
+      // switchToChat clears activeSearchHit for normal navigation, so set it
+      // AFTER the switch — otherwise the ChatView jump/highlight never fires.
+      setActiveSearchHit({
+        chatKey: key,
+        turnIdx: hit.turnIdx,
+        keywords: hit.keywords,
+      });
     },
     [switchToChat, loadChatHistory],
   );
