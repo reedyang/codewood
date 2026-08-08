@@ -16,8 +16,10 @@ allowlist and never interpolate caller-supplied strings into the launcher.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+import time
 import threading
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional
@@ -148,6 +150,53 @@ def kind_label(kind: str) -> str:
     return _KIND_LABELS.get(kind, kind)
 
 
+def _collapse_cr(line: str) -> str:
+    """Collapse in-place carriage-return refreshes into the final visible line.
+
+    Progress output like ``50%\\r60%\\r70%`` rewrites the same line from the
+    column start; the terminal shows only ``70%``. Each ``\\r``-separated
+    segment is overlaid from the start of the line (later segments win), so
+    ``abc\\rX`` becomes ``Xbc`` and ``50%\\r60%`` becomes ``60%``. Without
+    this, repeated refreshes pile up inside the pending line.
+    """
+    if "\r" not in line:
+        return line
+    # A trailing ``\r`` means the program parked the cursor at the column
+    # start expecting to overwrite the line later (progress output). Keep it
+    # so the next appended segment still has a refresh boundary to fold on.
+    trailing = line.endswith("\r")
+    result = ""
+    for segment in line.split("\r"):
+        if len(segment) >= len(result):
+            result = segment
+        else:
+            result = segment + result[len(segment) :]
+    return result + ("\r" if trailing else "")
+
+
+_ANSI_RE = re.compile(
+    # CSI sequences: ESC [ params intermediate final
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"
+    # OSC sequences: ESC ] ... BEL or ST
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    # Single-character ESC sequences (ESC 7 / 8 / ( ...)
+    r"|\x1b[\x30-\x7e]"
+)
+
+
+def _strip_ansi(line: str) -> str:
+    """Remove ANSI escape sequences so model-facing lines are readable.
+
+    The raw PTY bytes are still kept for the frontend (which renders them);
+    only the line buffer consumed by ``console_read`` / ``console_wait`` is
+    cleaned. Cursor positioning from full-screen/progress programs therefore
+    shows as plain text instead of ``\\x1b[...`` noise.
+    """
+    if "\x1b" not in line:
+        return line
+    return _ANSI_RE.sub("", line)
+
+
 class ConsoleSession:
     """A single PTY-backed terminal session.
 
@@ -177,12 +226,26 @@ class ConsoleSession:
         self._lines: Deque[str] = deque(maxlen=self._buffer_lines)
         self._pending = ""
         self._total = 0
+        # Absolute line index the model has consumed so far. ``console_wait``
+        # without an explicit ``start`` waits for output past this position.
+        self._seen_total = 0
+        # Monotonic timestamp of the last buffered-output change, used by
+        # stable-wait to detect when a refresh stream (e.g. progress bar) ends.
+        self._last_change_ts = 0.0
+        # Settle window for stable-wait; overridable so tests can shrink it.
+        self._settle_quiet = 3.0
+        # Bumped whenever buffered output changes (new line or in-place
+        # ``\\r`` refresh) so ``wait_lines`` can wake on progress updates too.
+        self._rev = 0
         # Bounded raw-byte tail of recent PTY output. A newly attached xterm
         # view replays this so the shell banner/prompt printed before it
         # connected is visible (otherwise the terminal shows only a cursor).
         self._raw = bytearray()
         self._raw_cap = 256 * 1024
         self._lock = threading.RLock()
+        # Signaled on every ingested chunk so ``wait_lines`` can block until
+        # new output arrives instead of busy-polling.
+        self._cond = threading.Condition(self._lock)
         self._subscribers: List[Callable[[bytes], None]] = []
         self._closed = False
         self._proc: Any = None
@@ -253,8 +316,6 @@ class ConsoleSession:
         self._reader.start()
 
     def _read_winpty(self) -> None:
-        import time
-
         proc = self._proc
         while not self._closed:
             try:
@@ -303,7 +364,9 @@ class ConsoleSession:
             if len(self._raw) > self._raw_cap:
                 # Keep the most recent window; drop the oldest bytes.
                 del self._raw[: len(self._raw) - self._raw_cap]
+            prev_pending = self._pending
             self._pending += text
+            changed = False
             # Split on newlines; keep the trailing partial line as pending.
             while True:
                 idx = self._pending.find("\n")
@@ -311,8 +374,19 @@ class ConsoleSession:
                     break
                 line = self._pending[:idx].rstrip("\r")
                 self._pending = self._pending[idx + 1 :]
-                self._lines.append(line)
+                self._lines.append(_strip_ansi(_collapse_cr(line)))
                 self._total += 1
+                changed = True
+            # Collapse any in-place ``\r`` refresh in the unfinished line so
+            # progress bars don't grow the pending buffer unboundedly.
+            collapsed = _strip_ansi(_collapse_cr(self._pending))
+            if collapsed != prev_pending:
+                self._pending = collapsed
+                changed = True
+            if changed:
+                self._rev += 1
+                self._last_change_ts = time.monotonic()
+            self._cond.notify_all()
 
     def _broadcast(self, chunk: bytes) -> None:
         with self._lock:
@@ -360,15 +434,20 @@ class ConsoleSession:
     # ------------------------------------------------------------------
     # Input / control
     def write(self, data: str) -> None:
-        if self._closed or not self._proc:
-            return
-        try:
-            if self._backend == "winpty":
-                self._proc.write(data)
-            elif self._backend == "pty":
-                os.write(self._posix_fd, data.encode("utf-8", "replace"))
-        except Exception:
-            pass
+        with self._lock:
+            if self._closed or not self._proc:
+                return
+            try:
+                if self._backend == "winpty":
+                    self._proc.write(data)
+                elif self._backend == "pty":
+                    os.write(self._posix_fd, data.encode("utf-8", "replace"))
+            except Exception:
+                pass
+
+    def interrupt(self) -> None:
+        """Send Ctrl+C (SIGINT) to the foreground process in the PTY."""
+        self.write("\x03")
 
     def resize(self, cols: int, rows: int) -> None:
         try:
@@ -431,6 +510,82 @@ class ConsoleSession:
 
     # ------------------------------------------------------------------
     # Reads for the model
+    def wait_lines(
+        self,
+        start: Optional[int],
+        count: int,
+        timeout: float,
+        stable: bool = False,
+    ) -> Dict[str, Any]:
+        """Block until new output passes ``start`` (or the timeout / exit),
+        then return the same shape as :meth:`read_lines`.
+
+        ``start`` is an absolute line index (typically the ``totalLines`` of
+        the previous read); when ``None`` the session's last-consumed position
+        (advanced by every ``read_lines`` / ``wait_lines`` call) is used, so a
+        bare ``console_wait`` waits for output the model has not seen yet.
+        Waits at most ``timeout`` seconds; returns immediately when the
+        session closes so a dead program never hangs the caller. ``timedOut``
+        is set when the deadline expired without new lines.
+
+        With ``stable=True`` a content change only satisfies the wait once the
+        output has been quiet for a 3s settle window, so a stream of in-place
+        refreshes (progress bars, percentages) or newline-separated refresh
+        frames is awaited until it stops instead of returning on every update.
+        Lines already produced before the wait started are returned at once.
+        """
+        with self._lock:
+            rev0 = self._rev
+            if start is None:
+                start = self._seen_total
+            else:
+                try:
+                    start = max(0, int(start))
+                except (TypeError, ValueError):
+                    start = self._seen_total
+        try:
+            timeout = max(0.0, min(30.0, float(timeout)))
+        except (TypeError, ValueError):
+            timeout = 5.0
+        stable = bool(stable)
+        quiet = float(self._settle_quiet)
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while not self._closed:
+                now = time.monotonic()
+                has_new = self._total > start
+                changed = self._rev != rev0
+                if stable:
+                    # Only changes that arrive AFTER this wait started count,
+                    # and they satisfy the wait once the output has been quiet
+                    # for the settle window. Output already sitting in the
+                    # buffer when the wait began (e.g. the echo of a command
+                    # just sent) must not short-circuit the wait — the caller
+                    # is waiting for what comes next.
+                    if changed and now - self._last_change_ts >= quiet:
+                        break
+                else:
+                    if has_new or changed:
+                        break
+                remaining = deadline - now
+                if remaining <= 0:
+                    break
+                self._cond.wait(min(quiet if stable else remaining, remaining))
+            if stable:
+                settled = (
+                    self._rev != rev0
+                ) and time.monotonic() - self._last_change_ts >= quiet
+                timed_out = (not settled) and not self._closed
+            else:
+                timed_out = (
+                    self._total <= start and self._rev == rev0
+                ) and not self._closed
+        result = self.read_lines(start, count)
+        with self._lock:
+            self._seen_total = max(self._seen_total, self._total)
+        result["timedOut"] = timed_out
+        return result
+
     def read_lines(self, start: int, count: int) -> Dict[str, Any]:
         """Return retained lines in ``[start, start + count)`` (absolute index).
 
@@ -441,7 +596,8 @@ class ConsoleSession:
         with self._lock:
             total = self._total
             retained = list(self._lines)
-            pending = self._pending
+            # Strip the refresh marker so callers see the current line text.
+            pending = self._pending.rstrip("\r")
         retained_count = len(retained)
         first_retained = total - retained_count
         try:
@@ -458,6 +614,8 @@ class ConsoleSession:
             lo = clip_start - first_retained
             hi = clip_end - first_retained
             out = retained[lo:hi]
+        with self._lock:
+            self._seen_total = max(self._seen_total, total)
         return {
             "lines": out,
             "start": clip_start,

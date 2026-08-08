@@ -93,6 +93,42 @@ def _strip_bom(text: str) -> str:
     return text
 
 
+def _format_console_read(r: Dict[str, Any]) -> Dict[str, Any]:
+    """Render a ``ConsoleSession.read_lines`` result into a compact text summary.
+
+    Returns the original dict plus a human-readable ``output`` field used as
+    the model-facing text for ``console_read`` / ``console_wait``.
+    """
+    out_lines = list(r.get("lines") or [])
+    pending = str(r.get("pending") or "")
+    total_lines = r.get("totalLines", 0)
+    truncated = r.get("truncated", False)
+    timed_out = r.get("timedOut", False)
+    if truncated:
+        out_lines.insert(0, "(truncated: oldest lines dropped)")
+    if out_lines:
+        output_text = "\n".join(out_lines)
+    elif pending:
+        output_text = f"[partial] {pending}"
+    else:
+        output_text = "(no output yet)"
+    if pending and out_lines:
+        output_text += f"\n[pending] {pending}"
+    if total_lines:
+        clip_start = r.get("start", 0)
+        clip_end = clip_start + len(out_lines) - (1 if truncated else 0)
+        output_text += f"\n(totalLines: {total_lines}, showing lines {clip_start}-{clip_end})"
+    else:
+        output_text += "\n(totalLines: 0)"
+    if timed_out:
+        output_text += " [timed out waiting for new output]"
+    # Cap output at 12 000 characters to avoid blowing the context window.
+    if len(output_text) > 12000:
+        output_text = output_text[:11980] + "\n... (output truncated at 12000 chars) ...\n"
+    r["output"] = output_text
+    return r
+
+
 def _open_in_file_manager(path: str) -> bool:
     """Open a validated directory in the OS file manager (no shell).
 
@@ -4741,6 +4777,24 @@ class ServeApp:
             # Send into the live interactive shell, terminated with a newline.
             session.write(command.rstrip("\n") + "\r")
             return {"success": True, "id": session.id}
+        if act == "send":
+            text = str(data.get("data") or "")
+            if not text:
+                return {"success": False, "error": "missing data"}
+            # Raw interactive input (e.g. a gdb command, a y/n answer, control
+            # keys). Nothing is appended; escape decoding happens tool-side.
+            session.write(text)
+            return {"success": True, "id": session.id, "sent": text}
+        if act == "interrupt":
+            session.interrupt()
+            return {"success": True, "id": session.id}
+        if act == "resize":
+            session.resize(data.get("cols"), data.get("rows"))
+            return {
+                "success": True,
+                "cols": session.cols,
+                "rows": session.rows,
+            }
         if act == "read":
             try:
                 start = int(data.get("start") or 0)
@@ -4751,31 +4805,27 @@ class ServeApp:
             except (TypeError, ValueError):
                 count = 200
             r = session.read_lines(start, count)
-            out_lines = list(r.get("lines") or [])
-            pending = str(r.get("pending") or "")
-            total_lines = r.get("totalLines", 0)
-            truncated = r.get("truncated", False)
-            if truncated:
-                out_lines.insert(0, "(truncated: oldest lines dropped)")
-            if out_lines:
-                output_text = "\n".join(out_lines)
-            elif pending:
-                output_text = f"[partial] {pending}"
+            return {"success": True, **_format_console_read(r)}
+        if act == "wait":
+            raw_start = data.get("start")
+            if raw_start is None:
+                start = None
             else:
-                output_text = "(no output yet)"
-            if pending and out_lines:
-                output_text += f"\n[pending] {pending}"
-            if total_lines:
-                clip_start = r.get("start", 0)
-                clip_end = clip_start + len(out_lines) - (1 if truncated else 0)
-                output_text += f"\n(totalLines: {total_lines}, showing lines {clip_start}-{clip_end})"
-            else:
-                output_text += f"\n(totalLines: 0)"
-            # Cap output at 12 000 characters to avoid blowing the context window.
-            if len(output_text) > 12000:
-                output_text = output_text[:11980] + "\n... (output truncated at 12000 chars) ...\n"
-            r["output"] = output_text
-            return {"success": True, **r}
+                try:
+                    start = int(raw_start)
+                except (TypeError, ValueError):
+                    start = None
+            try:
+                count = int(data.get("count") or 200)
+            except (TypeError, ValueError):
+                count = 200
+            try:
+                timeout = float(data.get("timeout") or 5)
+            except (TypeError, ValueError):
+                timeout = 5
+            stable = bool(data.get("stable"))
+            r = session.wait_lines(start, count, timeout, stable=stable)
+            return {"success": True, **_format_console_read(r)}
         if act == "info":
             r = session.info()
             r["output"] = (
