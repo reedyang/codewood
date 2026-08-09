@@ -729,8 +729,8 @@ mark.search-term {
 
 /* Sidebar */
 .sidebar {
-  width: var(--sidebar-width, 267px);
-  min-width: var(--sidebar-width, 267px);
+  width: var(--sidebar-width, 240px);
+  min-width: var(--sidebar-width, 240px);
   flex-shrink: 0;
   overflow: hidden;
   transition: width 0.2s ease, min-width 0.2s ease;
@@ -4169,7 +4169,7 @@ html[data-has-bg] .select {
 
 /* Cursor-style sidebar */
 .sidebar {
-  width: var(--sidebar-width, 248px);
+  width: var(--sidebar-width, 240px);
   padding: 14px 10px 0;
 }
 

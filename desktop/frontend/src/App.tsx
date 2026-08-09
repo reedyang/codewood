@@ -9,7 +9,7 @@ import { TitleBar } from "./components/TitleBar";
 import { ResizeGrips } from "./components/ResizeGrips";
 import { StatusBar } from "./components/StatusBar";
 
-const SIDEBAR_MIN = 180;
+const SIDEBAR_MIN = 240;
 const SIDEBAR_MAX = 480;
 const SIDEBAR_WIDTH_KEY = "codewood.sidebarWidth";
 
@@ -22,7 +22,7 @@ function loadSidebarWidth(): number {
   if (Number.isFinite(raw) && raw >= SIDEBAR_MIN && raw <= SIDEBAR_MAX) {
     return raw;
   }
-  return 267;
+  return 240;
 }
 
 function loadRightPanelWidth(): number {
