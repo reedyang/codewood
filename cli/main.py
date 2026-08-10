@@ -554,6 +554,12 @@ def _apply_startup_workspace(agent: Any, selector: str | None) -> tuple[bool, st
 
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
+    try:
+        from .core.sandbox import refresh_workspace_acls
+
+        refresh_workspace_acls(agent, str(entry.get("root") or ""))
+    except Exception:
+        pass
     agent._refresh_workspace_runtime()
     # Post-apply: globals point at the new workspace but the session still
     # carries the previous chat; save position metadata only to avoid
@@ -1196,6 +1202,98 @@ def _serve_without_valid_model(
                 pass
 
 
+def _handle_sandbox_command(argv: list) -> int:
+    """Handle ``codewood sandbox setup|status`` (setup must run elevated)."""
+    import json
+
+    args = list(argv or [])
+    if not args:
+        print(
+            "Usage: codewood sandbox setup|status "
+            "[--config-dir DIR] [--workspace DIR] "
+            "[--level read_only|workspace_write|full_access]"
+        )
+        return 1
+    sub = str(args[0]).strip().lower()
+    rest = args[1:]
+    config_dir: Optional[str] = None
+    workspace: Optional[str] = None
+    level = "workspace_write"
+    gui_launched = False
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token == "--gui":
+            gui_launched = True
+            i += 1
+            continue
+        if token in ("--config-dir", "--workspace", "--level"):
+            if i + 1 >= len(rest):
+                print(f"❌ Missing value for {token}")
+                return 1
+            value = rest[i + 1]
+            if token == "--config-dir":
+                config_dir = value
+            elif token == "--workspace":
+                workspace = value
+            else:
+                level = value
+            i += 2
+            continue
+        print(f"❌ Unknown option: {token}")
+        return 1
+
+    from cli.core.sandbox import (
+        SANDBOX_LEVEL_FULL_ACCESS,
+        get_sandbox_backend,
+        normalize_sandbox_level,
+    )
+
+    if not config_dir:
+        config_dir = str(get_app_global_config_dir())
+    if not workspace:
+        workspace = os.getcwd()
+    level = normalize_sandbox_level(level)
+    backend = get_sandbox_backend()
+
+    if sub == "status":
+        status = backend.status(config_dir, workspace)
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 0 if status.get("provisioned") else 1
+    if sub == "setup":
+        if level == SANDBOX_LEVEL_FULL_ACCESS:
+            # full_access needs no sandboxing itself, but the sandbox users /
+            # firewall / runtime dirs must still be provisioned so the user
+            # can switch to read_only / workspace_write later without
+            # re-running setup. ACLs are applied for workspace_write grants.
+            level = "workspace_write"
+            print(
+                "Sandbox level is full_access; provisioning users with "
+                "workspace_write grants so levels can be switched later."
+            )
+        # Stream each step to the console as it happens (the elevated setup
+        # window otherwise stays blank for a long time and only prints the
+        # result at the end).
+        result = backend.provision(
+            config_dir, workspace, level,
+            progress=lambda msg: print(msg, flush=True),
+        )
+        for error in result.get("errors", []):
+            print(f"  ✗ {error}")
+        print(result.get("message", ""))
+        # A successful GUI-launched setup should return control to the app
+        # without leaving an elevated console window behind.  Keep failures
+        # visible so their diagnostics are not lost immediately.
+        if gui_launched and not result.get("ok"):
+            try:
+                input("\nSandbox setup failed. Press Enter to close this window...")
+            except Exception:
+                pass
+        return 0 if result.get("ok") else 1
+    print(f"❌ Unknown sandbox subcommand: {sub}")
+    return 1
+
+
 def main(argv: list[str] | None = None):
     """Main function."""
     raw_argv = list(argv) if argv is not None else []
@@ -1211,6 +1309,9 @@ def main(argv: list[str] | None = None):
     # system locale can't crash startup on the first Unicode symbol.
     _force_utf8_std_streams()
     restore_app_console_title()
+
+    if raw_argv and str(raw_argv[0]).strip().lower() == "sandbox":
+        return _handle_sandbox_command(raw_argv[1:])
 
     # Prepend the bundled ``bin/`` directory to PATH so pre-shipped
     # executables such as ``rg.exe`` resolve transparently in shell

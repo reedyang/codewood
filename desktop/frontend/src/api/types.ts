@@ -120,6 +120,29 @@ export interface SecurityAuditConfig {
   security_audit_model: string;
 }
 
+/** Sandbox settings + provisioning status (Settings > Security). */
+export interface SandboxConfig {
+  /** "read_only" | "workspace_write" | "full_access" */
+  sandbox_level: string;
+  /** Whether sandboxed commands may access the network (workspace_write). */
+  sandbox_network: boolean;
+  /** Whether the platform supports sandboxing. */
+  supported: boolean;
+  /** Whether the one-time sandbox setup completed. */
+  provisioned: boolean;
+  backend: string;
+  message?: string | null;
+  users_exist?: boolean;
+  /** Whether THIS data directory has generated sandbox user passwords. */
+  secret_exists?: boolean;
+  /** Users exist but this data directory never provisioned them (likely from another Code Wood data directory). */
+  users_foreign?: boolean;
+  /** Whether the stored secret can log on both sandbox users (undefined when not verifiable). */
+  passwords_ok?: boolean;
+  offline_user?: string;
+  online_user?: string;
+}
+
 /** Confirm allowlist data backed by ``confirm_allowlist.json``. */
 export interface ConfirmAllowlist {
   version: number;

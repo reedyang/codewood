@@ -2996,6 +2996,14 @@ html[data-has-bg] .select {
   margin-top: 24px;
 }
 
+/* Sandbox setup action row: left-aligned like the rest of the page. */
+.sandbox-setup-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
 /* Archived Chats settings page. */
 .archived-chats-header {
   display: flex;

@@ -58,6 +58,35 @@ class RuntimePreferencesTests(unittest.TestCase):
 
             self.assertEqual(agent.display_language, "zh-CN")
 
+    def test_missing_sandbox_network_uses_the_documented_true_default(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            cfg_dir = Path(td)
+            (cfg_dir / CONFIG_JSONC_FILENAME).write_text(
+                json.dumps({"sandbox_level": "workspace_write"}) + "\n",
+                encoding="utf-8",
+            )
+            agent = _FakeAgent(cfg_dir)
+
+            setup_runtime_preferences(agent)
+
+            self.assertEqual(agent.sandbox_level, "workspace_write")
+            self.assertTrue(agent.sandbox_network)
+
+    def test_explicit_sandbox_network_false_is_preserved(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            cfg_dir = Path(td)
+            (cfg_dir / CONFIG_JSONC_FILENAME).write_text(
+                json.dumps(
+                    {"sandbox_level": "workspace_write", "sandbox_network": False}
+                ) + "\n",
+                encoding="utf-8",
+            )
+            agent = _FakeAgent(cfg_dir)
+
+            setup_runtime_preferences(agent)
+
+            self.assertFalse(agent.sandbox_network)
+
 
 if __name__ == "__main__":
     unittest.main()

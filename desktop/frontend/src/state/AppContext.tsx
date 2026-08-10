@@ -19,6 +19,7 @@ import type {
   CompletionCatalog,
   ConfirmRequest,
   SecurityAuditConfig,
+  SandboxConfig,
   FileChangeSummary,
   GeneralConfig,
   HistoryTurn,
@@ -347,6 +348,11 @@ interface AppContextValue {
   saveGeneralConfig: (general: Partial<GeneralConfig>) => Promise<boolean>;
   getSecurityAuditConfig: () => Promise<SecurityAuditConfig | null>;
   saveSecurityAuditConfig: (audit: Partial<SecurityAuditConfig>) => Promise<boolean>;
+  getSandboxConfig: () => Promise<SandboxConfig | null>;
+  saveSandboxConfig: (
+    sandbox: Partial<SandboxConfig>,
+  ) => Promise<{ ok: boolean; sandbox?: SandboxConfig }>;
+  setupSandbox: () => Promise<{ ok: boolean; message?: string }>;
   getModelSelectors: () => Promise<string[]>;
   getConfirmAllowlist: () => Promise<ConfirmAllowlist | null>;
   saveConfirmAllowlist: (
@@ -4930,6 +4936,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     getSecurityAuditConfig: () => client.getSecurityAuditConfig(),
     saveSecurityAuditConfig: (audit: Partial<SecurityAuditConfig>) =>
       client.saveSecurityAuditConfig(audit),
+    getSandboxConfig: () => client.getSandboxConfig(),
+    saveSandboxConfig: (sandbox: Partial<SandboxConfig>) =>
+      client.saveSandboxConfig(sandbox),
+    setupSandbox: () => client.setupSandbox(),
     getModelSelectors: () => client.getModelSelectors(),
     getConfirmAllowlist: () => client.getConfirmAllowlist(),
     saveConfirmAllowlist: (allowlist: ConfirmAllowlist) =>

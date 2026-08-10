@@ -7,6 +7,7 @@ import type {
   DeleteWorkspaceResult,
   GeneralConfig,
   SecurityAuditConfig,
+  SandboxConfig,
   IndexStatus,
   McpServerConfigEntry,
   McpServerDetails,
@@ -875,6 +876,55 @@ export class ApiClient {
       body: JSON.stringify({ audit }),
     });
     return res.ok;
+  }
+
+  /** Sandbox settings (Settings > Security). */
+  async getSandboxConfig(): Promise<SandboxConfig | null> {
+    const res = await fetch(`${this.base}/sandbox-config`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+    if (!res.ok) return null;
+    try {
+      const data = (await res.json()) as { sandbox?: SandboxConfig };
+      return data.sandbox ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveSandboxConfig(
+    sandbox: Partial<SandboxConfig>,
+  ): Promise<{ ok: boolean; sandbox?: SandboxConfig }> {
+    const res = await fetch(`${this.base}/save-sandbox-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ sandbox }),
+    });
+    if (!res.ok) return { ok: false };
+    try {
+      const data = (await res.json()) as {
+        ok: boolean;
+        sandbox?: SandboxConfig;
+      };
+      return { ok: true, sandbox: data.sandbox };
+    } catch {
+      return { ok: true };
+    }
+  }
+
+  async setupSandbox(): Promise<{ ok: boolean; message?: string }> {
+    const res = await fetch(`${this.base}/sandbox-setup`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    try {
+      const data = (await res.json()) as { ok: boolean; message?: string };
+      return { ok: !!data.ok, message: data.message };
+    } catch {
+      return { ok: res.ok };
+    }
   }
 
   /** Available model selectors for dropdowns. */

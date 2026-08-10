@@ -1860,6 +1860,13 @@ class _ChatRuntime:
         self.idle_since: Optional[float] = None
 
 
+#: Last-seen mtime of the per-config-dir ``sandbox_provisioned.flag``. The
+#: elevated setup rewrites the flag when provisioning completes; comparing the
+#: mtime lets the settings page drop a stale (pre-setup) credential-check
+#: cache result and re-verify right after a successful setup.
+_sandbox_flag_mtime: Dict[str, float] = {}
+
+
 class ServeApp:
     """Owns the agent loop, the event broadcaster, and the HTTP server."""
 
@@ -5228,6 +5235,143 @@ class ServeApp:
         agent._resolved_config_data = {}
         return True
 
+    def get_sandbox_config(self) -> Dict[str, Any]:
+        """Return the current sandbox settings plus provisioning status."""
+        from ..core.sandbox.config import read_sandbox_settings
+        from ..core.sandbox import get_sandbox_backend
+
+        agent = self.agent
+        settings = read_sandbox_settings(agent.config_dir)
+        backend = get_sandbox_backend()
+        workspace_root = getattr(agent, "workspace_root", None) or getattr(
+            agent, "work_directory", None
+        )
+        status = backend.status(agent.config_dir, workspace_root)
+        out = dict(settings)
+        # Live agent values (diagnostic): the file may be correct while the
+        # running process still holds a stale level.
+        out["agent_level"] = str(
+            getattr(agent, "sandbox_level", "") or ""
+        )
+        out["agent_network"] = bool(getattr(agent, "sandbox_network", False))
+        out["supported"] = bool(status.get("supported", False))
+        out["provisioned"] = bool(status.get("provisioned", False))
+        out["backend"] = str(status.get("name") or backend.name or "")
+        out["message"] = status.get("message")
+        if status.get("users_exist") is not None:
+            out["users_exist"] = bool(status.get("users_exist"))
+            out["offline_user"] = status.get("offline_user")
+            out["online_user"] = status.get("online_user")
+            out["secret_exists"] = bool(status.get("secret_exists"))
+            out["users_foreign"] = bool(status.get("users_foreign"))
+        from ..core.sandbox.windows import _flag_path
+
+        flag_mtime: Optional[float] = None
+        try:
+            flag_mtime = _flag_path(agent.config_dir).stat().st_mtime
+        except Exception:
+            pass
+        key = str(agent.config_dir)
+        prev_flag_mtime = _sandbox_flag_mtime.get(key)
+        if flag_mtime is not None:
+            _sandbox_flag_mtime[key] = flag_mtime
+        pw_ok = backend.verify_credentials(agent.config_dir)
+        if (
+            pw_ok is False
+            and flag_mtime is not None
+            and prev_flag_mtime is not None
+            and flag_mtime > prev_flag_mtime
+        ):
+            # The provisioning flag was rewritten since the last status load:
+            # a setup just completed, so the cached False predates it.  Verify
+            # once without the cache so the page reflects the new passwords.
+            pw_ok = backend.verify_credentials(agent.config_dir, fresh=True)
+        if pw_ok is not None:
+            out["passwords_ok"] = bool(pw_ok)
+        return out
+
+    def save_sandbox_config(self, payload: Dict[str, Any]) -> bool:
+        """Persist sandbox settings to ``config.jsonc`` and apply live."""
+        if not isinstance(payload, dict):
+            return False
+        agent = self.agent
+        try:
+            from ..core.sandbox.config import (
+                CONFIG_KEY_LEVEL,
+                CONFIG_KEY_NETWORK,
+                persist_sandbox_settings,
+            )
+
+            level = payload.get(CONFIG_KEY_LEVEL)
+            network = payload.get(CONFIG_KEY_NETWORK)
+            if level is not None and not isinstance(level, str):
+                return False
+            if network is not None and not isinstance(network, bool):
+                return False
+            settings = persist_sandbox_settings(
+                agent.config_dir,
+                level=level,
+                network=network,
+            )
+        except Exception:
+            return False
+        # Apply to the live agent so the change takes effect immediately.
+        try:
+            agent.sandbox_level = settings[CONFIG_KEY_LEVEL]
+            agent.sandbox_network = settings[CONFIG_KEY_NETWORK]
+        except Exception:
+            pass
+        agent._resolved_config_data = {}
+        # Best-effort workspace ACL refresh (no elevation needed; the files
+        # belong to the current user). Ignored when not provisioned yet.
+        try:
+            from ..core.sandbox import refresh_workspace_acls
+
+            refresh_workspace_acls(agent, level=settings[CONFIG_KEY_LEVEL])
+        except Exception:
+            pass
+        return True
+
+    def setup_sandbox(self) -> Dict[str, Any]:
+        """Launch the elevated provisioning helper via UAC (best effort)."""
+        agent = self.agent
+        try:
+            from ..core.sandbox.config import read_sandbox_settings
+            from ..core.sandbox.windows import launch_elevated_setup
+            # A status load that predates this setup may have cached a password
+            # mismatch; the elevated helper recreates the users, so drop it now
+            # and let the settings page re-verify once provisioning completes.
+            try:
+                from ..core.sandbox.windows import _credential_check_cache
+
+                _credential_check_cache.pop(
+                    str(Path(agent.config_dir).resolve()), None
+                )
+            except Exception:
+                pass
+            settings = read_sandbox_settings(agent.config_dir)
+            level = settings["sandbox_level"]
+            if level not in ("read_only", "workspace_write"):
+                level = "workspace_write"
+            workspace_root = getattr(agent, "workspace_root", None) or getattr(
+                agent, "work_directory", None
+            )
+            ok = launch_elevated_setup(
+                agent.config_dir, workspace_root, level
+            )
+            return {
+                "ok": ok,
+                "message": (
+                    "Sandbox setup started in an elevated window; accept the "
+                    "UAC prompt and refresh this page afterwards."
+                    if ok
+                    else "Could not start the elevated setup (UAC declined?). "
+                    "Run 'codewood sandbox setup' from an admin terminal instead."
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "message": f"setup failed: {exc}"}
+
     def get_model_selectors(self) -> List[str]:
         """Return the list of configured model selector strings for dropdowns."""
         agent = self.agent
@@ -6762,6 +6906,12 @@ class ServeApp:
                 wsid = str(existing.get("id") or "")
                 agent._save_current_workspace_position()
                 agent._apply_workspace_entry(existing, agent.work_directory)
+                try:
+                    from ..core.sandbox import refresh_workspace_acls
+
+                    refresh_workspace_acls(agent, str(root))
+                except Exception:
+                    pass
                 agent._refresh_workspace_runtime(create_default_chat=False)
                 agent._save_current_workspace_position(sync_messages=False)
                 self.broadcaster.publish(
@@ -6794,6 +6944,12 @@ class ServeApp:
             agent._apply_workspace_entry(
                 workspaces[workspace_id], agent.work_directory
             )
+            try:
+                from ..core.sandbox import refresh_workspace_acls
+
+                refresh_workspace_acls(agent, str(root))
+            except Exception:
+                pass
             # Don't auto-create a default chat — the GUI enters draft mode.
             agent._refresh_workspace_runtime(create_default_chat=False)
             agent._save_current_workspace_position(sync_messages=False)
@@ -6832,6 +6988,16 @@ class ServeApp:
         if isinstance(workspaces, dict):
             workspaces.pop(wsid, None)
 
+        # The workspace is forgotten: revoke the sandbox users/group/capability
+        # SIDs' ACLs on its directory tree so the sandbox keeps no access to a
+        # directory the app no longer tracks. Best-effort, never raises.
+        try:
+            from ..core.sandbox import cleanup_workspace_acls
+
+            cleanup_workspace_acls(agent, str(entry.get("root") or ""))
+        except Exception:
+            pass
+
         fallback_id = ""
         if active_deleted:
             default_ws_id = _default_workspace_id()
@@ -6843,6 +7009,16 @@ class ServeApp:
             if isinstance(workspaces, dict):
                 workspaces[default_ws_id] = default_entry
             agent._apply_workspace_entry(default_entry, agent.work_directory)
+            try:
+                from ..core.sandbox import refresh_workspace_acls
+
+                refresh_workspace_acls(
+                    agent,
+                    str(default_entry.get("root") or "")
+                    or str(getattr(agent, "workspace_root", "") or ""),
+                )
+            except Exception:
+                pass
             # Don't auto-create a default chat; the frontend will enter
             # draft mode when the fallback workspace has no chats.
             agent._save_current_workspace_position(sync_messages=False)
@@ -8336,6 +8512,9 @@ def _make_handler(app: ServeApp):
             if path == "/confirm-allowlist":
                 self._send_json(200, {"ok": True, "allowlist": app.get_confirm_allowlist()})
                 return
+            if path == "/sandbox-config":
+                self._send_json(200, {"ok": True, "sandbox": app.get_sandbox_config()})
+                return
             self._send_json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
@@ -8685,6 +8864,20 @@ def _make_handler(app: ServeApp):
                 if ok:
                     result["allowlist"] = app.get_confirm_allowlist()
                 self._send_json(200 if ok else 400, result)
+                return
+            if path == "/save-sandbox-config":
+                sandbox = body.get("sandbox")
+                ok = app.save_sandbox_config(
+                    sandbox if isinstance(sandbox, dict) else {}
+                )
+                result = {"ok": ok}
+                if ok:
+                    result["sandbox"] = app.get_sandbox_config()
+                self._send_json(200 if ok else 400, result)
+                return
+            if path == "/sandbox-setup":
+                result = app.setup_sandbox()
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/mcp-overview":
                 self._send_json(200, {"ok": True, **app.get_mcp_overview()})

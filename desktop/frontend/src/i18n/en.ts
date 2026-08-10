@@ -212,6 +212,27 @@ export const en: Dict = {
   "security.removeAll": "Remove All",
   "security.removeAllConfirm": "Remove all entries from the confirm allowlist?",
   "security.errSave": "Failed to save confirm allowlist.",
+  "sandbox.settings": "Sandbox settings",
+  "sandbox.levelHint": "Choose how much Code Wood can do when running commands",
+  "sandbox.readOnly": "Read only — can read files, but cannot edit them",
+  "sandbox.workspaceWrite": "Workspace write — can edit files, but only in this workspace",
+  "sandbox.fullAccess": "Full access — can edit files outside this workspace",
+  "sandbox.fullAccessWarning":
+    "⚠ Full access runs commands with your full user permissions — only use it when you trust the current task.",
+  "sandbox.allowNetwork": "Allow network access",
+  "sandbox.allowNetworkHint":
+    "Allow network access when the sandbox is set to workspace write",
+  "sandbox.notProvisioned": "The sandbox is not set up yet.",
+  "sandbox.setup": "Set up sandbox",
+  "sandbox.settingUp": "Setting up…",
+  "sandbox.passwordsMismatch":
+    "The sandbox users exist but their passwords no longer match current config, so sandboxed commands may fail to start. Re-run setup to recreate the sandbox users.",
+  "sandbox.passwordsMismatchHint":
+    "Re-run setup to recreate the sandbox users.",
+  "sandbox.setupFailed": "Could not start sandbox setup.",
+  "sandbox.errSave": "Failed to save sandbox settings.",
+  "sandbox.loadFailed": "Could not load sandbox settings.",
+  "sandbox.unsupported": "Sandboxing is not supported on this platform yet.",
   "archivedChats.empty": "No archived chats.",
   "archivedChats.unarchive": "Unarchive",
   "archivedChats.removeAll": "Remove All",

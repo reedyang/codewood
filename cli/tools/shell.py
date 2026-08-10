@@ -1386,6 +1386,47 @@ def action_shell_command(
         return {"success": False, "error": decision.get("error", "")}
     agent._load_confirm_allowlist()
 
+    # Resolve the sandbox plan (None => full access / unsupported platform).
+    # A configured sandbox that is not provisioned fails closed: the command
+    # is refused instead of silently running unsandboxed.
+    sandbox_plan = None
+    try:
+        # Load the sandbox implementation by absolute path: the GUI backend
+        # must run the exact code from this repository regardless of any
+        # sys.path / .pyc caching ambiguity.
+        import importlib.util
+
+        _sb_init = (
+            Path(__file__).resolve().parent.parent / "core" / "sandbox" / "__init__.py"
+        )
+        _sb_spec = importlib.util.spec_from_file_location(
+            "codewood_sandbox_runtime",
+            _sb_init,
+            submodule_search_locations=[str(_sb_init.parent)],
+        )
+        if _sb_spec is None or _sb_spec.loader is None:
+            raise ImportError(f"cannot load sandbox module from {_sb_init}")
+        _sb = importlib.util.module_from_spec(_sb_spec)
+        # Register before exec_module: @dataclass looks up the class module in
+        # sys.modules while the module body is still executing.
+        sys.modules[_sb.__name__] = _sb
+        _sb_spec.loader.exec_module(_sb)
+
+        _sandbox_block = _sb.sandbox_block_error(agent)
+        if _sandbox_block:
+            _log.warning("sandbox fail-closed: %s", _sandbox_block)
+            return {"success": False, "error": _sandbox_block}
+        sandbox_plan = _sb.sandbox_plan_for_agent(agent)
+        _log.info(
+            "sandbox plan: level=%r network=%r plan=%s",
+            getattr(agent, "sandbox_level", None),
+            getattr(agent, "sandbox_network", None),
+            sandbox_plan,
+        )
+    except Exception as exc:
+        _log.warning("sandbox plan resolution failed: %s", exc)
+        sandbox_plan = None
+
     # Determine which files this command targets for deletion *before* the
     # confirmation prompt so we can auto-skip approval when the model is
     # merely cleaning up files it created during the current task.
@@ -1943,6 +1984,80 @@ def action_shell_command(
                                 pass
                     process = None
                     try:
+                        _sandbox_spawn_error = None
+                        _log.info(
+                            "sandbox worker branch: sandbox_plan=%s",
+                            sandbox_plan,
+                        )
+                        try:
+                            import inspect as _inspect
+
+                            _backend_cls = type(sandbox_plan.backend)
+                            _log.info(
+                                "sandbox pre-spawn: backend=%s.%s source=%s",
+                                _backend_cls.__module__,
+                                _backend_cls.__name__,
+                                _inspect.getsourcefile(_backend_cls),
+                            )
+                        except Exception as _sb_diag:
+                            _log.info("sandbox pre-spawn diag failed: %s", _sb_diag)
+                        if sandbox_plan is not None:
+                            try:
+                                process = sandbox_plan.spawn(
+                                    command,
+                                    cwd=str(execution_cwd.resolve()),
+                                    env=run_env,
+                                    stdin_data=run_input,
+                                )
+                                _log.info(
+                                    "sandbox spawn returned: process=%s pid=%s",
+                                    type(process).__name__,
+                                    getattr(process, "pid", "?"),
+                                )
+                                try:
+                                    _sb_win = sys.modules.get(
+                                        "codewood_sandbox_runtime.windows"
+                                    )
+                                    if _sb_win is not None:
+                                        _sb_user = _sb_win._process_user_sid(
+                                            int(getattr(process, "pid", 0) or 0)
+                                        )
+                                        _log.info(
+                                            "sandbox spawned process user: %s",
+                                            _sb_user,
+                                        )
+                                        # Hard fail-closed: the spawned process
+                                        # must run as a sandbox user; anything
+                                        # else means the sandbox did not apply.
+                                        if _sb_user and (
+                                            "codewoodsand" not in _sb_user.lower()
+                                        ):
+                                            try:
+                                                process.kill()
+                                            except Exception:
+                                                pass
+                                            raise RuntimeError(
+                                                "sandbox process user mismatch: "
+                                                f"{_sb_user} (expected sandbox user)"
+                                            )
+                                except Exception as _sb_user_err:
+                                    _log.info(
+                                        "sandbox user lookup failed: %s",
+                                        _sb_user_err,
+                                    )
+                            except Exception as _sandbox_err:
+                                # Fail closed: a sandboxed command must never
+                                # fall back to an unsandboxed run.
+                                _sandbox_spawn_error = str(_sandbox_err)
+                                process = None
+                                _log.info(
+                                    "sandbox spawn raised: %s", _sandbox_err
+                                )
+                        if _sandbox_spawn_error is not None:
+                            worker_state["spawn_error"] = _sandbox_spawn_error
+                            worker_state["return_code"] = -1
+                            worker_state["done"].set()
+                            return
                         _winpty_obj = None
                         # PowerShell -Command invocations don't need a pty;
                         # winpty's ConPTY can interfere with output capture.
@@ -1958,7 +2073,12 @@ def action_shell_command(
                         # which uses shell=True and preserves quoting correctly.
                         _command_has_quotes = '"' in command
                         if (
-                            _WINPTY_PTYPROCESS is not None
+                            # A sandbox plan has already supplied a process.
+                            # Never replace it with WinPTY: WinPTY starts the
+                            # command as the desktop user and would bypass the
+                            # sandbox identity and its ACL restrictions.
+                            process is None
+                            and _WINPTY_PTYPROCESS is not None
                             and subprocess.Popen is _ORIG_SUBPROCESS_POPEN
                             and not _is_ps_command
                             and not _command_has_quotes
@@ -2085,6 +2205,13 @@ def action_shell_command(
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
                     out = _collapse_cr_output(out)
+                    _log.info("sandbox shell captured out: %r", out[:300])
+                    _spawn_error = str(worker_state.get("spawn_error") or "")
+                    if _spawn_error:
+                        out = (
+                            "⚠️ Sandboxed command could not be started: "
+                            f"{_spawn_error}"
+                        )
                     if aborted_by_user:
                         notice = _shell_abort_notice(agent, process_ref.get("process"))
                         # The user terminated the call: drop the partial output
@@ -2682,6 +2809,20 @@ def action_shell_command(
             return {
                 "success": False,
                 "error": "Command aborted by user",
+                **base_out,
+            }
+        # Include the command's own output in the error so the model can see
+        # why it failed (e.g. an "Access is denied" from the sandbox) instead
+        # of only an opaque exit code.
+        _failure_tail = str(_shell_rendered or "").strip()
+        if _failure_tail and not rg_error:
+            _failure_tail = _failure_tail[-1200:]
+            return {
+                "success": False,
+                "error": (
+                    f"Command execution failed, exit code: {return_code}. "
+                    f"Output:\n{_failure_tail}"
+                ),
                 **base_out,
             }
         return {
