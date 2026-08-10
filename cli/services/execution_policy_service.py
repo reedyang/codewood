@@ -45,6 +45,8 @@ def load_freedom_script_review_cache(agent: Any) -> None:
         data = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return
+        if data.get("version") != 2:
+            return
         ent = data.get("entries")
         if isinstance(ent, dict):
             agent._freedom_script_review_entries = {
@@ -66,7 +68,7 @@ def save_freedom_script_review_cache(agent: Any) -> bool:
     try:
         p = freedom_script_review_cache_path(agent)
         payload = {
-            "version": 1,
+            "version": 2,
             "entries": dict(sorted(agent._freedom_script_review_entries.items())),
         }
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -423,10 +425,10 @@ def prompt_confirm_yes_no_maybe_always(
     return raw in ("y", "yes")
 
 
-def parse_reversibility_response(text: str, agent: Any = None) -> Tuple[bool, str]:
-    """Parse model JSON; on failure treat as irreversible (still require confirm)."""
+def parse_writes_files_response(text: str, agent: Any = None) -> Tuple[bool, str]:
+    """Parse model JSON; on failure treat as writes_files (still require confirm)."""
     if not text or not isinstance(text, str):
-        return False, _t(agent, "execution_policy.reversible.empty_response", fallback="Empty response")
+        return True, _t(agent, "execution_policy.writes_files.empty_response", fallback="Empty response")
     s = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
     if fence:
@@ -444,8 +446,8 @@ def parse_reversibility_response(text: str, agent: Any = None) -> Tuple[bool, st
                     chunk = s[i : j + 1]
                     try:
                         obj = json.loads(chunk)
-                        if "reversible" in obj:
-                            r = obj["reversible"]
+                        if "writes_files" in obj:
+                            r = obj["writes_files"]
                             if isinstance(r, str):
                                 r = r.strip().lower() in ("true", "1", "yes", "yes")
                             reason = str(obj.get("reason", "")).strip()[:200]
@@ -454,19 +456,19 @@ def parse_reversibility_response(text: str, agent: Any = None) -> Tuple[bool, st
                     except json.JSONDecodeError:
                         pass
                     break
-    return False, _t(agent, "execution_policy.reversible.unable_to_parse", fallback="Unable to parse safety classification")
+    return True, _t(agent, "execution_policy.writes_files.unable_to_parse", fallback="Unable to parse safety classification")
 
 
 def parse_combined_freedom_response(
     text: str,
     agent: Any = None,
 ) -> Tuple[bool, bool, Optional[bool], str]:
-    """Parse one-shot freedom JSON: safe_auto, reversible, manipulation (optional), reason."""
+    """Parse one-shot freedom JSON: safe_auto, writes_files, manipulation (optional), reason."""
     if not text or not isinstance(text, str):
-        return False, False, True, _t(agent, "execution_policy.combined.empty_response", fallback="Empty response")
+        return False, True, True, _t(agent, "execution_policy.combined.empty_response", fallback="Empty response")
     s = text.strip()
     if s.startswith("❌"):
-        return False, False, True, s[:120]
+        return False, True, True, s[:120]
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
     if fence:
         s = fence.group(1)
@@ -483,13 +485,13 @@ def parse_combined_freedom_response(
                     chunk = s[i : j + 1]
                     try:
                         obj = json.loads(chunk)
-                        if "safe_auto" in obj and "reversible" in obj:
+                        if "safe_auto" in obj and "writes_files" in obj:
                             sa = obj["safe_auto"]
-                            rev = obj["reversible"]
+                            wf = obj["writes_files"]
                             if isinstance(sa, str):
                                 sa = sa.strip().lower() in ("true", "1", "yes", "yes")
-                            if isinstance(rev, str):
-                                rev = rev.strip().lower() in ("true", "1", "yes", "yes")
+                            if isinstance(wf, str):
+                                wf = wf.strip().lower() in ("true", "1", "yes", "yes")
                             reason = str(obj.get("reason", "")).strip()[:240]
                             manip_raw = obj.get("manipulation", None)
                             manip: Optional[bool]
@@ -506,7 +508,7 @@ def parse_combined_freedom_response(
                                 manip = bool(manip_raw)
                             return (
                                 bool(sa),
-                                bool(rev),
+                                bool(wf),
                                 manip,
                                 reason or "classified",
                             )
@@ -556,14 +558,14 @@ def freedom_script_prompt_injection(content: str) -> Tuple[bool, str]:
         "override system prompt",
         "always return",
         '"safe_auto": true',
-        '"reversible": true',
+        '"writes_files": true',
         "you are the reviewer",
         "you are the classifier",
         "ignore the previous instructions",
         "ignore the above rules",
         "override the system prompt",
         "always return true",
-        "must be judged reversible",
+        "must be judged writes_files",
         "must be judged safe",
         "let the reviewer pass",
     )
@@ -589,7 +591,7 @@ def ai_assess_ephemeral_script_combined(
     command: Dict[str, Any],
 ) -> Tuple[bool, str, bool]:
     """
-    Single AI call: safe_auto + reversible + manipulation.
+    Single AI call: safe_auto + writes_files + manipulation.
     Returns (skip_confirm, reason, manipulation_risk).
     """
     keys = sorted(agent._ai_created_path_keys)[:120]
@@ -615,7 +617,7 @@ def ai_assess_ephemeral_script_combined(
         )
     if raw.strip().startswith("❌"):
         return combined_review_on_model_failure(content, raw.strip()[:120])
-    safe_auto, reversible, manip, reason = parse_combined_freedom_response(raw, agent)
+    safe_auto, writes_files, manip, reason = parse_combined_freedom_response(raw, agent)
     if "Unable to parse" in reason:
         return combined_review_on_model_failure(content, reason)
     if manip is None:
@@ -629,20 +631,20 @@ def ai_assess_ephemeral_script_combined(
                 reason=reason,
                 token=tok,
             )
-    skip = (not manip) and (safe_auto or ((not safe_auto) and reversible))
+    skip = (not manip) and (not writes_files) and safe_auto
     return skip, reason, bool(manip)
 
 
-def ai_assess_reversible(agent: Any, command: Dict[str, Any]) -> Tuple[bool, str]:
+def ai_assess_writes_files(agent: Any, command: Dict[str, Any]) -> Tuple[bool, str]:
     payload = json.dumps(command, ensure_ascii=False)
     raw = agent.call_ai(
         payload, context="", stream=False, minimal_classifier=True
     )
     if not isinstance(raw, str):
-        return False, _t(agent, "execution_policy.review.model_invalid_type", fallback="Model returned an invalid type")
+        return True, _t(agent, "execution_policy.review.model_invalid_type", fallback="Model returned an invalid type")
     if raw.strip().startswith("❌"):
-        return False, raw.strip()[:120]
-    return parse_reversibility_response(raw, agent)
+        return True, raw.strip()[:120]
+    return parse_writes_files_response(raw, agent)
 
 
 def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
@@ -717,12 +719,9 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                         agent,
                         f"{mode_prefix} {_t(agent, 'execution_policy.review.high_risk_heuristics', fallback='script content matched high-risk heuristics (for example registry/system config related), falling back to operation safety classification.')}",
                     )
-                    reversible, reason = ai_assess_reversible(agent, command)
-                    if reversible:
-                        agent._manual_confirm_required_shell_once = False
-                    else:
-                        agent._manual_confirm_required_shell_once = True
-                    return reversible
+                    writes_files, reason = ai_assess_writes_files(agent, command)
+                    agent._manual_confirm_required_shell_once = bool(writes_files)
+                    return not writes_files
                 use_cache = not session_ephemeral
                 if use_cache:
                     cached = freedom_try_cached_user_script_review(agent, k, body, command)
@@ -763,13 +762,10 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 agent._manual_confirm_required_shell_once = False
                 return True
 
-        reversible, reason = ai_assess_reversible(agent, command)
-        if reversible:
-            agent._manual_confirm_required_shell_once = False
-        else:
-            agent._manual_confirm_required_shell_once = True
-        return reversible
+        writes_files, reason = ai_assess_writes_files(agent, command)
+        agent._manual_confirm_required_shell_once = bool(writes_files)
+        return not writes_files
 
-    reversible, _ = ai_assess_reversible(agent, command)
-    return reversible
+    writes_files, _ = ai_assess_writes_files(agent, command)
+    return not writes_files
 
