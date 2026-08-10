@@ -250,6 +250,16 @@ def workspace_switch_command(
     # messages would duplicate the previous chat's history into a same-id chat
     # of the target workspace.
     agent._save_current_workspace_position(sync_messages=False)
+    # Keep the sandbox usable in the newly activated workspace: a brand-new
+    # root has no capability-SID grants, so sandboxed shell commands would be
+    # unable to write it. Best-effort, no elevation needed; no-op when the
+    # sandbox is not provisioned or the level is full_access.
+    try:
+        from ..core.sandbox import refresh_workspace_acls
+
+        refresh_workspace_acls(agent, target_root)
+    except Exception:
+        pass
     logger.info(
         "workspace_switch done: target_ws=%s target_root=%s",
         target_ws, target_root,
@@ -331,6 +341,14 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
     if active_workspace:
         agent._apply_workspace_entry(entry, agent.work_directory)
         agent._refresh_workspace_runtime()
+        # The workspace root may have moved; re-grant the sandbox capability
+        # SIDs on the new root so sandboxed shell commands stay writable.
+        try:
+            from ..core.sandbox import refresh_workspace_acls
+
+            refresh_workspace_acls(agent, str(new_root))
+        except Exception:
+            pass
     details = ", ".join(messages) if messages else ""
     return _t(agent, "workspace.update.success", name=entry.get("name"), workspace_id=workspace_id, details=details)
 
@@ -381,6 +399,14 @@ def workspace_delete_command(agent: Any, arg_text: str) -> str:
     workspaces = agent._workspaces_state.get("workspaces", {})
     if isinstance(workspaces, dict):
         workspaces.pop(workspace_id, None)
+    # Revoke the sandbox users/group/capability SIDs' ACLs on the forgotten
+    # workspace tree (best-effort, never raises).
+    try:
+        from ..core.sandbox import cleanup_workspace_acls
+
+        cleanup_workspace_acls(agent, str(entry.get("root") or ""))
+    except Exception:
+        pass
     if active_deleted:
         default_entry = (
             workspaces.get(default_workspace_id)

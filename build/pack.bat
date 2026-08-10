@@ -97,6 +97,9 @@ rem resolved relative to --specpath. So the venv path must NOT use "../../".
 rem 1) codewood.exe (console, one-dir) carries ALL terminal-UI and GUI
 rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
 rem    Uses the pre-generated spec file which includes the application manifest.
+rem    The same build also emits shell-runner.exe into the SAME one-dir folder
+rem    (see build\codewood.spec): the sandbox command runner spawned by
+rem    CreateProcessWithLogonW, sharing one _internal\ runtime with codewood.exe.
 "%PYINSTALLER%" --noconfirm "build\\codewood.spec"
 if errorlevel 1 (
   echo codewood.exe build failed.
@@ -117,11 +120,12 @@ if errorlevel 1 (
 rem ---- Remove Mark of the Web from built executables (motw can cause
 rem ---- "untrusted mount point" errors when accessing junctions/symlinks) ----
 echo Removing Mark of the Web from executables...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem dist\codewood\*.exe | Unblock-File -ErrorAction SilentlyContinue"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem dist\codewood -Recurse -Filter *.exe | Unblock-File -ErrorAction SilentlyContinue"
 
 echo PyInstaller build completed. The shippable folder is "dist\codewood".
 echo   codewood\codewood.exe       - terminal UI (default) and "codewood app" for the GUI
 echo   codewood\codewood-gui.exe   - double-click to open the GUI without a console window
+echo   codewood\shell-runner.exe   - sandbox command runner (shared _internal)
 
 rem ---- Resolve the application version so the artifact filenames carry the
 rem ---- version + platform info (e.g. CodeWood-0.0.1-windows-x64-...).

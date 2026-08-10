@@ -144,6 +144,18 @@ def setup_workspace_and_history(
         active_workspace = agent._default_workspace_entry()
         agent._workspaces_state["active"] = default_workspace_id
     agent._apply_workspace_entry(active_workspace, startup_work_directory)
+    # Keep the sandbox usable in the startup workspace: grant its capability
+    # SIDs on the root so sandboxed shell commands can write it right away.
+    # Best-effort and no-op when the sandbox is not provisioned or the level
+    # is full_access.
+    try:
+        from ..core.sandbox import refresh_workspace_acls
+
+        refresh_workspace_acls(
+            agent, getattr(agent, "workspace_root", None) or startup_work_directory
+        )
+    except Exception:
+        pass
     try:
         cleanup = getattr(agent, "_cleanup_workspace_shell_stashes_if_needed", None)
         if callable(cleanup):
@@ -251,6 +263,19 @@ def setup_runtime_preferences(agent: Any) -> None:
             else:
                 _sam = ""
             agent._security_audit_model_selector = _sam
+
+            from ..core.sandbox import (
+                DEFAULT_SANDBOX_NETWORK,
+                normalize_sandbox_level,
+                normalize_sandbox_network,
+            )
+
+            agent.sandbox_level = normalize_sandbox_level(
+                cfg_data.get("sandbox_level")
+            )
+            agent.sandbox_network = normalize_sandbox_network(
+                cfg_data.get("sandbox_network", DEFAULT_SANDBOX_NETWORK)
+            )
 
     except Exception as e:
         print(

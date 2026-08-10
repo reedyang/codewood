@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
 import { groupModelsByProvider } from "./ChatView";
-import type { ConfirmAllowlist } from "../api/types";
+import type { ConfirmAllowlist, SandboxConfig } from "../api/types";
 
 export function SecuritySettings() {
-  const { getConfirmAllowlist, saveConfirmAllowlist, getSecurityAuditConfig, saveSecurityAuditConfig, getModelSelectors, t } = useApp();
+  const { getConfirmAllowlist, saveConfirmAllowlist, getSecurityAuditConfig, saveSecurityAuditConfig, getModelSelectors, getSandboxConfig, saveSandboxConfig, setupSandbox, t } = useApp();
   const [data, setData] = useState<ConfirmAllowlist | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -16,6 +16,10 @@ export function SecuritySettings() {
   const [newScriptPath, setNewScriptPath] = useState("");
   const [newExeToken, setNewExeToken] = useState("");
   const [confirmRemoveAll, setConfirmRemoveAll] = useState(false);
+  const [sandbox, setSandbox] = useState<SandboxConfig | null>(null);
+  const [sandboxLoaded, setSandboxLoaded] = useState(false);
+  const [sandboxError, setSandboxError] = useState("");
+  const [sandboxBusy, setSandboxBusy] = useState(false);
 
   const getConfirmAllowlistRef = useRef(getConfirmAllowlist);
   getConfirmAllowlistRef.current = getConfirmAllowlist;
@@ -23,6 +27,24 @@ export function SecuritySettings() {
   getSecurityAuditConfigRef.current = getSecurityAuditConfig;
   const saveConfirmAllowlistRef = useRef(saveConfirmAllowlist);
   saveConfirmAllowlistRef.current = saveConfirmAllowlist;
+  const getSandboxConfigRef = useRef(getSandboxConfig);
+  getSandboxConfigRef.current = getSandboxConfig;
+  const saveSandboxConfigRef = useRef(saveSandboxConfig);
+  saveSandboxConfigRef.current = saveSandboxConfig;
+  const setupSandboxRef = useRef(setupSandbox);
+  setupSandboxRef.current = setupSandbox;
+
+  useEffect(() => {
+    let alive = true;
+    void getSandboxConfigRef.current().then((cfg) => {
+      if (!alive) return;
+      setSandbox(cfg);
+      setSandboxLoaded(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -69,6 +91,59 @@ export function SecuritySettings() {
     void saveSecurityAuditConfig({ security_audit_model: value }).then((ok) => {
       if (!ok) setAuditError(t("security.errSaveAuditModel"));
     });
+  };
+
+  const handleSandboxLevelChange = (level: string) => {
+    if (!sandbox) return;
+    setSandbox({ ...sandbox, sandbox_level: level });
+    setSandboxError("");
+    void saveSandboxConfigRef.current({ sandbox_level: level }).then((result) => {
+      if (!result.ok) {
+        setSandboxError(t("sandbox.errSave"));
+        return;
+      }
+      if (result.sandbox) setSandbox(result.sandbox);
+    });
+  };
+
+  const handleSandboxNetworkChange = (checked: boolean) => {
+    if (!sandbox) return;
+    setSandbox({ ...sandbox, sandbox_network: checked });
+    setSandboxError("");
+    void saveSandboxConfigRef.current({ sandbox_network: checked }).then(
+      (result) => {
+        if (!result.ok) {
+          setSandboxError(t("sandbox.errSave"));
+          return;
+        }
+        if (result.sandbox) setSandbox(result.sandbox);
+      },
+    );
+  };
+
+  const handleSetupSandbox = async () => {
+    setSandboxBusy(true);
+    setSandboxError("");
+    try {
+      const result = await setupSandboxRef.current();
+      if (!result.ok) {
+        setSandboxError(result.message || t("sandbox.setupFailed"));
+        return;
+      }
+      // The elevated helper recreates users and can take up to a minute;
+      // poll for completion and refresh the page state as soon as the
+      // sandbox is provisioned with working credentials.
+      for (let i = 0; i < 24; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const cfg = await getSandboxConfigRef.current();
+        if (cfg) {
+          setSandbox(cfg);
+          if (cfg.provisioned && cfg.passwords_ok !== false) break;
+        }
+      }
+    } finally {
+      setSandboxBusy(false);
+    }
   };
 
   // Auto-save on every data change after the initial load.
@@ -155,6 +230,90 @@ export function SecuritySettings() {
   return (
     <div className="settings-page">
       <h2 className="settings-page-title">{t("settings.page.security")}</h2>
+
+      <section style={{ marginBottom: 24 }}>
+        <h3 className="setting-section-title">{t("sandbox.settings")}</h3>
+        <p
+          className="setting-hint"
+          style={{ textAlign: "left", marginBottom: 12, marginTop: 4 }}
+        >
+          {t("sandbox.levelHint")}
+        </p>
+        {!sandboxLoaded ? (
+          <p className="setting-hint">Loading…</p>
+        ) : !sandbox ? (
+          <p className="setting-error">{t("sandbox.loadFailed")}</p>
+        ) : !sandbox.supported ? (
+          <p className="setting-hint" style={{ textAlign: "left" }}>
+            {t("sandbox.unsupported")}
+          </p>
+        ) : (
+          <>
+            <select
+              className="select"
+              title={t("sandbox.settings")}
+              value={sandbox.sandbox_level}
+              onChange={(e) => handleSandboxLevelChange(e.target.value)}
+            >
+              <option value="read_only">{t("sandbox.readOnly")}</option>
+              <option value="workspace_write">{t("sandbox.workspaceWrite")}</option>
+              <option value="full_access">{t("sandbox.fullAccess")}</option>
+            </select>
+            {sandbox.sandbox_level === "full_access" && (
+              <p className="setting-error" style={{ marginTop: 8 }}>
+                {t("sandbox.fullAccessWarning")}
+              </p>
+            )}
+            {sandbox.sandbox_level === "workspace_write" && (
+              <div className="setting-row" style={{ marginTop: 12 }}>
+                <label htmlFor="sandbox-network">
+                  {t("sandbox.allowNetwork")}
+                </label>
+                <div className="setting-control">
+                  <div className="setting-input-row">
+                    <input
+                      id="sandbox-network"
+                      type="checkbox"
+                      checked={sandbox.sandbox_network}
+                      onChange={(e) => handleSandboxNetworkChange(e.target.checked)}
+                    />
+                  </div>
+                  <p className="setting-hint">{t("sandbox.allowNetworkHint")}</p>
+                </div>
+              </div>
+            )}
+            {(!sandbox.provisioned || sandbox.passwords_ok === false) && (
+              <>
+                {sandbox.passwords_ok === false && (
+                  <p className="setting-error" style={{ marginTop: 8 }}>
+                    {t("sandbox.passwordsMismatch")}
+                  </p>
+                )}
+                <div className="sandbox-setup-row">
+                  <button
+                    className="btn"
+                    onClick={handleSetupSandbox}
+                    disabled={sandboxBusy}
+                  >
+                    {sandboxBusy ? t("sandbox.settingUp") : t("sandbox.setup")}
+                  </button>
+                  <span className="setting-hint">
+                    {sandbox.passwords_ok === false
+                      ? t("sandbox.passwordsMismatchHint")
+                      : t("sandbox.notProvisioned")}
+                  </span>
+                </div>
+              </>
+            )}
+            {sandboxError && (
+              <p className="setting-error" style={{ marginTop: 8 }}>
+                {sandboxError}
+              </p>
+            )}
+          </>
+        )}
+      </section>
+
       <section>
         <h3 className="setting-section-title">
           {t("security.auditModel")}
