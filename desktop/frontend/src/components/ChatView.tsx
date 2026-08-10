@@ -2427,6 +2427,15 @@ const MINIMAP_LINE_MAX = 24;
 const MINIMAP_LINE_HEIGHT = 3;
 const MINIMAP_LINE_GAP = 6;
 
+// DOM slots that correspond 1:1 with the minimap's memoized turn list:
+// each loaded history turn renders one `.search-turn-anchor` wrapper and each
+// live turn renders one root `.turn` element. `.turn.compact-notice-turn`
+// nodes (standalone notices or the sibling notice of a settled live turn) are
+// extra DOM nodes the memoized list does not count, so they are excluded.
+const MINIMAP_TURN_SELECTOR =
+  ':scope > .transcript-inner > .search-turn-anchor, ' +
+  ':scope > .transcript-inner > .turn:not(.compact-notice-turn)';
+
 function snapToDevicePixel(value: number) {
   const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
   return Math.round(value * dpr) / dpr;
@@ -2512,8 +2521,15 @@ function TranscriptMinimap({
 
   const totalLines = userTurns.length;
   const lineStep = MINIMAP_LINE_HEIGHT + MINIMAP_LINE_GAP;
-  const lineHeight = snapToDevicePixel(MINIMAP_LINE_HEIGHT);
-  const getLineTop = (idx: number) => snapToDevicePixel(idx * lineStep);
+  // With many turns a fixed pitch would push the bottom lines (including the
+  // marker for the latest message) outside the minimap box, which is capped at
+  // the transcript height. Scale the pitch down so every line stays inside.
+  const effStep =
+    totalLines > 0 && minimapHeight > 0
+      ? Math.min(lineStep, minimapHeight / totalLines)
+      : lineStep;
+  const lineHeight = snapToDevicePixel(Math.min(MINIMAP_LINE_HEIGHT, Math.max(1, effStep * 0.5)));
+  const getLineTop = (idx: number) => snapToDevicePixel(idx * effStep);
 
   const measureLayout = () => {
     const container = scrollRef.current;
@@ -2543,7 +2559,7 @@ function TranscriptMinimap({
     const di = domIndicesRef.current;
     const userCount = ut.length;
 
-    const turnEls = Array.from(container.querySelectorAll(':scope > .transcript-inner > .turn'));
+    const turnEls = Array.from(container.querySelectorAll(MINIMAP_TURN_SELECTOR));
     const scrollTop = container.scrollTop;
     const viewBottom = scrollTop + container.clientHeight;
     let domStart = turnEls.length;
@@ -2601,7 +2617,7 @@ function TranscriptMinimap({
     const rect = minimapRef.current?.getBoundingClientRect();
     if (!rect || totalLines === 0) return;
     const y = e.clientY - rect.top;
-    const idx = Math.round(y / lineStep);
+    const idx = Math.round(y / effStep);
     setHoveredIdx(Math.max(0, Math.min(idx, totalLines - 1)));
   };
 
@@ -2636,7 +2652,7 @@ function TranscriptMinimap({
     const rect = minimapRef.current?.getBoundingClientRect();
     if (!rect || totalLines === 0) return;
     const y = e.clientY - rect.top;
-    const idx = Math.round(y / lineStep);
+    const idx = Math.round(y / effStep);
     const clickedIdx = Math.max(0, Math.min(idx, totalLines - 1));
     const container = scrollRef.current;
     if (!container) return;
@@ -2646,7 +2662,7 @@ function TranscriptMinimap({
       container.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-    const turnEls = Array.from(container.querySelectorAll(':scope > .transcript-inner > .turn'));
+    const turnEls = Array.from(container.querySelectorAll(MINIMAP_TURN_SELECTOR));
     const target = turnEls[domIdx] as HTMLElement | undefined;
     if (target) {
       const scrollTop = target.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
