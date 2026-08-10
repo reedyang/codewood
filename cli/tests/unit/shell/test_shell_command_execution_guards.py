@@ -430,11 +430,11 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         finally:
             script_path.unlink(missing_ok=True)
 
-    def test_freedom_auto_confirm_marks_manual_when_ai_says_not_reversible(self):
+    def test_freedom_auto_confirm_marks_manual_when_ai_says_writes_files(self):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("cli.services.execution_policy_service.ai_assess_reversible", return_value=(False, "not reversible")), patch(
+        with patch("cli.services.execution_policy_service.ai_assess_writes_files", return_value=(True, "writes files")), patch(
             "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
             "cli.services.execution_policy_service.shell_command_in_allowlist", return_value=False
@@ -451,7 +451,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+        with patch("cli.services.execution_policy_service.ai_assess_writes_files") as assess, patch(
             "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
             "cli.services.execution_policy_service.shell_command_in_allowlist", return_value=True
@@ -730,7 +730,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertEqual(len(agent.prompt_calls), 1)
         self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
 
-    def test_allowlisted_command_skips_prompt_even_when_non_reversible(self):
+    def test_allowlisted_command_skips_prompt_even_when_ai_would_confirm(self):
         agent = _DummyAgent()
         agent.execution_policy = "unlimited"
         agent.allowlist_hit = True
@@ -1104,7 +1104,7 @@ class SafeReadOnlyCommandBypassTests(unittest.TestCase):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+        with patch("cli.services.execution_policy_service.ai_assess_writes_files") as assess, patch(
             "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
             "cli.services.execution_policy_service.shell_command_in_allowlist",
@@ -1123,7 +1123,7 @@ class SafeReadOnlyCommandBypassTests(unittest.TestCase):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+        with patch("cli.services.execution_policy_service.ai_assess_writes_files") as assess, patch(
             "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
             "cli.services.execution_policy_service.shell_command_in_allowlist",
@@ -1142,7 +1142,7 @@ class SafeReadOnlyCommandBypassTests(unittest.TestCase):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+        with patch("cli.services.execution_policy_service.ai_assess_writes_files") as assess, patch(
             "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
             "cli.services.execution_policy_service.shell_command_in_allowlist",
@@ -1161,7 +1161,7 @@ class SafeReadOnlyCommandBypassTests(unittest.TestCase):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("cli.services.execution_policy_service.ai_assess_reversible", return_value=(False, "not reversible")) as assess, patch(
+        with patch("cli.services.execution_policy_service.ai_assess_writes_files", return_value=(True, "writes files")) as assess, patch(
             "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
             "cli.services.execution_policy_service.shell_command_in_allowlist",
