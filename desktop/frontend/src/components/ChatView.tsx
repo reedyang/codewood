@@ -57,7 +57,6 @@ function ChatLoadingSplash() {
   return (
     <div className="chat-loading-splash" aria-hidden="true">
       <div className="chat-loading-splash-orb">
-        <div className="chat-loading-splash-ripple" />
         <img
           className="chat-loading-splash-icon"
           src={appIconUrl}
