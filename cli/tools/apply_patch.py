@@ -629,8 +629,12 @@ def action_apply_unified_patch(
                     ),
                 }
 
+        # unlimited: every operation executes directly without confirmations,
+        # even for files outside the workspace root. moderate: only workspace
+        # writes skip the y/n prompt; outside-workspace paths still confirm.
         skip_preview_and_confirm = (
-            execution_policy in ("moderate", "unlimited") and in_workspace_root
+            execution_policy == "unlimited"
+            or (execution_policy == "moderate" and in_workspace_root)
         )
         need_confirm = not skip_preview_and_confirm
 

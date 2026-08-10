@@ -462,6 +462,29 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertEqual(agent.prompt_calls, 0)
             self.assertEqual(target.read_text(encoding="utf-8"), "hello_mod\n")
 
+    def test_unlimited_mode_outside_workspace_skips_confirm(self):
+        # Regression: unlimited policy must skip the y/n confirmation even
+        # when the target file lives outside the workspace root.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workspace_root = root / "workspace"
+            ai_workspace = root / "ai_workspace"
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            ai_workspace.mkdir(parents=True, exist_ok=True)
+            target = root / "outside_demo.txt"
+            target.write_text("hello\n", encoding="utf-8")
+            agent = _DummyAgent(workspace_root)
+            agent.workspace_config_dir = ai_workspace
+            agent.workspace_root = workspace_root
+            agent.execution_policy = "unlimited"
+
+            patch = "@@ -1,1 +1,1 @@\n-hello\n+hello_mod\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(agent.prompt_calls, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "hello_mod\n")
+
     def test_moderate_mode_gui_still_emits_live_diff_block(self):
         # Regression: under moderate policy the confirm prompt is skipped, but
         # the diff data must still be present in the result so
