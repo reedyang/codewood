@@ -2763,9 +2763,12 @@ body.resizing-x .browser-frame {
 .message-body {
   display: block;
   line-height: 1.55;
+  min-width: 0;
 }
 .message-text {
   white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .composer-actions {
@@ -4859,6 +4862,7 @@ html[data-has-bg] .select {
 .compact-notice-text {
   min-width: 0;
   white-space: pre-wrap;
+  word-break: break-word;
   user-select: text;
 }
 
@@ -4889,11 +4893,13 @@ html[data-has-bg] .select {
 }
 
 .compact-notice-body {
+  min-width: 0;
   padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--surface-alt, #f0f0f0) 82%, transparent);
   color: var(--text);
+  overflow-wrap: anywhere;
   user-select: text;
 }
 
@@ -5136,6 +5142,11 @@ html[data-has-bg] .select {
 }
 
 /* Markdown-rendered model reply */
+.md {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .md > :first-child {
   margin-top: 0;
 }
