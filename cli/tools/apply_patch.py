@@ -1018,6 +1018,9 @@ def action_apply_unified_patch(
                 code_language=ChangePreviewFormatter.language_from_path(abs_path),
             )
             if not ok:
+                builder = getattr(agent, "_confirm_declined_result", None)
+                if callable(builder):
+                    return builder("Operation cancelled by user")
                 return {"success": False, "error": "Operation cancelled by user"}
         # Snapshot file content before modification for change tracking
         content_before = source if file_exists else None

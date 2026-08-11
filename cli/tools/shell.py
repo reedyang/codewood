@@ -1524,6 +1524,9 @@ def action_shell_command(
             confirm_reason=confirm_reason,
         )
         if not ok:
+            builder = getattr(agent, "_confirm_declined_result", None)
+            if callable(builder):
+                return builder("Operation cancelled by user")
             return {"success": False, "error": "Operation cancelled by user"}
 
     import subprocess

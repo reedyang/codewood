@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { DiffPreview, langFromPath } from "./DiffPreview";
 
@@ -24,6 +24,11 @@ function extractPatchPath(prompt: string): string {
 export function ConfirmDialog() {
   const { confirmRequest, answerConfirm, t } = useApp();
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const rejectInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectText, setRejectText] = useState("");
+  const [rejectSubmitting, setRejectSubmitting] = useState(false);
+  const promptId = confirmRequest?.id ?? "";
 
   // Scroll the dialog into view when it appears so the user sees all
   // options, even if the command preview or diff is tall.  Defer to rAF
@@ -35,6 +40,20 @@ export function ConfirmDialog() {
       panelRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
     });
   }, [confirmRequest]);
+
+  useEffect(() => {
+    // Each new confirm prompt starts collapsed and empty so a stale
+    // reject-supplement draft from a previous question never leaks in.
+    setRejectOpen(false);
+    setRejectText("");
+    setRejectSubmitting(false);
+  }, [promptId]);
+
+  useEffect(() => {
+    if (rejectOpen && rejectInputRef.current) {
+      rejectInputRef.current.focus();
+    }
+  }, [rejectOpen]);
 
   if (!confirmRequest) {
     return null;
@@ -62,6 +81,24 @@ export function ConfirmDialog() {
     if (idx === 0) return "y";
     if (confirmRequest.offerAlways && idx === options.length - 1) return "a";
     return "n";
+  };
+
+  const submitReject = async () => {
+    const trimmed = rejectText.trim();
+    if (!trimmed || rejectSubmitting) {
+      return;
+    }
+    setRejectSubmitting(true);
+    try {
+      // The backend maps this JSON payload to a reject-with-supplement
+      // confirm answer; the supplementary text lands in the role:tool
+      // result of the tool that was waiting for approval.
+      await answerConfirm(JSON.stringify({ reject_with_supplement: trimmed }));
+    } finally {
+      // The panel unmounts on a successful submit because confirmRequest
+      // flips to null, so this only matters on a network error.
+      setRejectSubmitting(false);
+    }
   };
 
   return (
@@ -105,7 +142,64 @@ export function ConfirmDialog() {
             <span className="ask-more-info-option-label">{label}</span>
           </button>
         ))}
+        {confirmRequest.rejectSupplement && (
+          <button
+            type="button"
+            className="ask-more-info-option ask-more-info-option-other"
+            disabled={rejectSubmitting}
+            onClick={() => setRejectOpen((v) => !v)}
+          >
+            <span className="ask-more-info-option-index">{options.length + 1}</span>
+            <span className="ask-more-info-option-label">
+              {t("confirm.rejectSupplement")}
+            </span>
+          </button>
+        )}
       </div>
+      {rejectOpen && (
+        <div className="ask-more-info-freeform">
+          <textarea
+            ref={rejectInputRef}
+            className="ask-more-info-textarea"
+            value={rejectText}
+            placeholder={t("confirm.rejectSupplementPlaceholder")}
+            rows={2}
+            disabled={rejectSubmitting}
+            onChange={(e) => setRejectText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submitReject();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setRejectOpen(false);
+                setRejectText("");
+              }
+            }}
+          />
+          <div className="ask-more-info-freeform-actions">
+            <button
+              type="button"
+              className="btn"
+              disabled={rejectSubmitting}
+              onClick={() => {
+                setRejectOpen(false);
+                setRejectText("");
+              }}
+            >
+              {t("askMoreInfo.cancel")}
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={rejectSubmitting || !rejectText.trim()}
+              onClick={() => void submitReject()}
+            >
+              {t("confirm.submit")}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -418,6 +418,8 @@ export const zhCN: Dict = {
   "confirm.yes": "是",
   "confirm.no": "否",
   "confirm.always": "总是",
+  "confirm.rejectSupplement": "拒绝并补充信息",
+  "confirm.rejectSupplementPlaceholder": "输入补充信息……",
   "confirm.answerPlaceholder": "输入回复……",
   "confirm.submit": "提交",
 
