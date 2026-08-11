@@ -1,6 +1,10 @@
 import os
+import queue
+import threading
+import time
 import unittest
 from typing import Any, Dict, Optional
+from unittest.mock import Mock
 
 from cli.server.serve_app import ServeApp
 from cli.server.console_manager import ConsoleSession, _collapse_cr, _strip_ansi
@@ -643,6 +647,232 @@ class ConsoleDispatchTests(unittest.TestCase):
         stub._console._active = ConsoleSession("a", "cmd", "t", "/tmp", 100)
         res = stub.dispatch_console_command("explode")
         self.assertFalse(res.get("success"))
+
+
+class ConsoleExecConfirmChoiceTests(unittest.TestCase):
+    """The console_exec execution-policy confirm must route through the
+    structured ``_confirm_choice_provider`` (the GUI panel that carries the
+    ``rejectSupplement`` flag) instead of the legacy y/n text fallback."""
+
+    def test_confirm_uses_structured_choice_provider(self):
+        from cli.services.execution_policy_service import prompt_confirm_yes_no_maybe_always
+
+        class _A:
+            calls = []
+
+            def _ui_language(self) -> str:
+                return "en"
+
+            def _confirm_choice_provider(
+                self,
+                prompt: str,
+                options: Any,
+                offer_always: bool = False,
+                command: Optional[str] = None,
+                preview_segments: Optional[Any] = None,
+            ) -> str:
+                self.calls.append(
+                    {
+                        "prompt": prompt,
+                        "options": list(options),
+                        "offer_always": offer_always,
+                        "command": command,
+                    }
+                )
+                return "n"
+
+            def _suspended_input(self, prompt: str = "") -> str:
+                self.text_fallback_calls = getattr(self, "text_fallback_calls", 0) + 1
+                return ""
+
+        agent = _A()
+        agent.calls = []
+        ok = prompt_confirm_yes_no_maybe_always(
+            agent,
+            "Run this command?",
+            offer_always=False,
+            kind="console",
+            shell_command="echo hi",
+            display_command="echo hi",
+        )
+        self.assertFalse(ok)
+        # The structured provider must be the one rendering the confirm, so
+        # the frontend receives ``rejectSupplement: true`` and shows the
+        # "Reject & supplement info" action.
+        self.assertEqual(len(agent.calls), 1)
+        self.assertEqual(agent.calls[0]["command"], "echo hi")
+        self.assertEqual(len(agent.calls[0]["options"]), 2)
+        self.assertFalse(agent.calls[0]["offer_always"])
+        self.assertFalse(getattr(agent, "text_fallback_calls", 0))
+
+    def test_confirm_falls_back_to_text_when_provider_fails(self):
+        """When the structured provider raises (e.g. a transport error), the
+        legacy ``_suspended_input`` path takes over and the frontend confirm
+        event carries no ``rejectSupplement`` flag — the user then sees only
+        the plain Yes/No(/Always) options."""
+        from cli.services.execution_policy_service import prompt_confirm_yes_no_maybe_always
+
+        class _A:
+            def _ui_language(self) -> str:
+                return "en"
+
+            def _confirm_choice_provider(self, *args: Any, **kwargs: Any) -> str:
+                raise RuntimeError("transport down")
+
+            def _suspended_input(self, prompt: str = "") -> str:
+                self.text_fallback_calls = getattr(self, "text_fallback_calls", 0) + 1
+                return ""
+
+        agent = _A()
+        ok = prompt_confirm_yes_no_maybe_always(
+            agent,
+            "Run this command?",
+            offer_always=False,
+            kind="console",
+            shell_command="echo hi",
+            display_command="echo hi",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(agent.text_fallback_calls, 1)
+
+    def test_console_exec_tool_confirm_routes_to_structured_provider(self):
+        """End-to-end: ConsoleExecTool.execute() with the real execution-policy
+        confirm chain must reach ``_confirm_choice_provider`` (the GUI source
+        of the ``rejectSupplement`` flag), never the legacy text prompt."""
+        from cli.services.execution_policy_service import prompt_confirm_yes_no_maybe_always
+
+        class _A:
+            execution_policy = "confirmation"
+            calls = []
+
+            def _load_confirm_allowlist(self) -> None:
+                pass
+
+            def _shell_command_in_allowlist(self, _command: str) -> bool:
+                return False
+
+            def _shell_confirm_should_offer_always(self, _command: str) -> bool:
+                return False
+
+            def _ui_language(self) -> str:
+                return "en"
+
+            def _confirm_choice_provider(
+                self,
+                prompt: str,
+                options: Any,
+                offer_always: bool = False,
+                command: Optional[str] = None,
+                preview_segments: Optional[Any] = None,
+            ) -> str:
+                self.calls.append(
+                    {"options": list(options), "offer_always": offer_always, "command": command}
+                )
+                return "y"
+
+            def _suspended_input(self, prompt: str = "") -> str:
+                self.text_fallback_calls = getattr(self, "text_fallback_calls", 0) + 1
+                return ""
+
+            def _console_dispatch(self, action: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                return {"success": True}
+
+        agent = _A()
+        agent.calls = []
+        agent._prompt_confirm_yes_no_maybe_always = (
+            lambda prompt_core, **kw: prompt_confirm_yes_no_maybe_always(agent, prompt_core, **kw)
+        )
+        res = ConsoleExecTool().execute(agent, {"command": "echo hi"})
+        self.assertTrue(res.get("success"), res.get("error"))
+        self.assertEqual(len(agent.calls), 1)
+        self.assertEqual(agent.calls[0]["command"], "echo hi")
+        self.assertFalse(getattr(agent, "text_fallback_calls", 0))
+
+
+class ServeAppConfirmChoiceBroadcastTests(unittest.TestCase):
+    """The real serve_app ``_confirm_choice_provider`` must broadcast the
+    ``rejectSupplement`` flag for every execution-policy confirm (including
+    console_exec), so the frontend always shows the reject-with-supplement
+    action."""
+
+    def _app(self):
+        from cli.server.serve_app import ServeApp
+
+        class _Stub(ServeApp):
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        agent = Mock()
+        agent.active_chat_id = "chat-1"
+        agent.active_chat_name = "Chat 1"
+        agent.workspace_id = "ws-1"
+        agent.workspace_name = "Workspace 1"
+        agent.execution_policy = "confirmation"
+        agent._gui_plain_stream = True
+
+        broadcaster = Mock()
+        broadcaster._subscribers = []
+
+        runtime = Mock()
+        runtime.chat_id = "chat-1"
+        runtime.workspace_id = "ws-1"
+        runtime.busy = threading.Event()
+        runtime.busy.set()
+        runtime.input_queue = queue.Queue()
+        runtime.thread = threading.current_thread()
+        runtime.turn_started_at = 123.0
+
+        httpd = Mock()
+        httpd.server_address = ("127.0.0.1", 8123)
+
+        app = _Stub(
+            agent=agent,
+            broadcaster=broadcaster,
+            _runtimes_lock=threading.RLock(),
+            _runtimes={"ws-1::chat-1": runtime},
+            _confirms_lock=threading.Lock(),
+            _confirms={},
+            _request_user_input_lock=threading.Lock(),
+            _request_user_input={},
+            _browser_cmds_lock=threading.Lock(),
+            _browser_cmds={},
+            _httpd=httpd,
+            _shutdown_event=threading.Event(),
+            _token="test",
+        )
+        return app, broadcaster
+
+    def test_console_confirm_broadcast_includes_reject_supplement(self):
+        app, broadcaster = self._app()
+
+        def _answer():
+            for _ in range(200):
+                with app._confirms_lock:
+                    cid = next(iter(app._confirms), None)
+                if cid:
+                    with app._confirms_lock:
+                        app._confirms[cid].put("n")
+                    return
+                time.sleep(0.01)
+
+        t = threading.Thread(target=_answer, daemon=True)
+        t.start()
+        result = app._confirm_choice_provider(
+            "Run this command?",
+            ["Yes, execute", "No, cancel"],
+            False,
+            "echo hi",
+            None,
+        )
+        t.join(timeout=5)
+        self.assertEqual(result, "n")
+        self.assertEqual(broadcaster.publish.call_count, 1)
+        event, payload = broadcaster.publish.call_args[0]
+        self.assertEqual(event, "confirm")
+        self.assertTrue(payload.get("rejectSupplement"))
+        self.assertEqual(payload.get("command"), "echo hi")
+        self.assertEqual(payload.get("options"), ["Yes, execute", "No, cancel"])
 
 
 if __name__ == "__main__":
