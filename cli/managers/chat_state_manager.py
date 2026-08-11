@@ -275,6 +275,38 @@ class ChatStateManager:
         state = getattr(self._agent, "_chat_state", None)
         return state if isinstance(state, dict) else {}
 
+    def _expected_workspace_id(self) -> str:
+        """Workspace id of the directory/state the current thread persists to.
+
+        When the thread has a persistence override for a NON-focused workspace
+        (a background chat loop), that workspace's id applies; otherwise the
+        agent's focused workspace id is the target. Empty when unknown (e.g.
+        bare test agents), which disables the workspace-id guards.
+        """
+        ctx = self._persist_ctx()
+        if ctx is not None:
+            wsid = str(ctx.get("workspace_id") or "").strip()
+            if wsid:
+                return wsid
+        try:
+            return str(getattr(self._agent, "workspace_id", "") or "").strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _read_index_workspace_id(index_path: Path) -> str:
+        """Read the ``workspace_id`` recorded in a ``chats.json`` index."""
+        try:
+            if not index_path.exists():
+                return ""
+            with open(index_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                return str(loaded.get("workspace_id") or "").strip()
+        except Exception:
+            pass
+        return ""
+
     def _active_chat_state_lock(self):
         ctx = self._persist_ctx()
         if ctx is not None:
@@ -691,9 +723,47 @@ class ChatStateManager:
             entry["has_unread"] = raw["has_unread"]
         return entry
 
-    def default_chat_state(self) -> Dict[str, Any]:
+    def default_chat_state(self, workspace_id: Optional[str] = None) -> Dict[str, Any]:
         default_chat = self.new_chat_entry("chat-1")
-        return {"version": CHAT_STATE_VERSION, "active": "chat-1", "chats": [default_chat]}
+        wsid = str(workspace_id or "").strip() or self._expected_workspace_id()
+        return {
+            "version": CHAT_STATE_VERSION,
+            "active": "chat-1",
+            "workspace_id": wsid,
+            "chats": [default_chat],
+        }
+
+    def _quarantine_foreign_index(self, index_path: Path, foreign_wsid: str) -> None:
+        """Move a ``chats.json`` that belongs to another workspace out of the way.
+
+        Called when the index at ``index_path`` carries a ``workspace_id``
+        that differs from the workspace whose config dir it lives in — the
+        signature of a cross-workspace write (see the save guard). The foreign
+        file is renamed (never silently deleted) to
+        ``chats.json.foreign-ws.<wsid>.<ts>`` so the workspace can rebuild a
+        fresh index while the evidence is kept for forensics/recovery.
+        Best-effort: on failure the caller still raises and the reset path
+        simply won't persist until the file is removed manually.
+        """
+        try:
+            backup = index_path.with_name(
+                "{}.foreign-ws.{}.{}".format(
+                    index_path.name, foreign_wsid, int(time.time())
+                )
+            )
+            os.replace(str(index_path), str(backup))
+            logger.error(
+                "load_chat_state: quarantined foreign-workspace index %s "
+                "(workspace_id=%r) -> %s; rebuilding a fresh index for the "
+                "current workspace",
+                index_path, foreign_wsid, backup,
+            )
+        except OSError as exc:
+            logger.error(
+                "load_chat_state: could not quarantine foreign index %s "
+                "(workspace_id=%r): %s",
+                index_path, foreign_wsid, exc,
+            )
 
     def _apply_chat_usage_snapshot(self, chat: Dict[str, Any]) -> None:
         # Context usage is no longer persisted on the chat record, so there is
@@ -859,6 +929,52 @@ class ChatStateManager:
             records_dir.mkdir(parents=True, exist_ok=True)
 
             state = self._active_chat_state()
+            # Workspace-ownership guard: refuse to persist when either the
+            # on-disk index or the in-memory chat state belongs to a DIFFERENT
+            # workspace than the directory we are about to write. A whole-index
+            # mismatch means the in-memory chat list was loaded from another
+            # workspace's same-id chats; writing it here would replace this
+            # workspace's ``chats.json`` AND copy every foreign chat record
+            # file over — the exact "all chats replaced by another workspace"
+            # failure. Check BEFORE the per-record loop so no record file is
+            # ever copied. Legacy files/state without a ``workspace_id`` cannot
+            # be validated and pass through unchanged.
+            expected_wsid = self._expected_workspace_id()
+            if expected_wsid:
+                disk_wsid = self._read_index_workspace_id(index_path)
+                if disk_wsid and disk_wsid != expected_wsid:
+                    logger.error(
+                        "save_chat_state: refusing to write %s — on-disk "
+                        "workspace_id=%r != expected workspace_id=%r. The "
+                        "in-memory chat state was likely loaded from another "
+                        "workspace; nothing was written (no record files "
+                        "copied over). workspace=%s ws_root=%s records_dir=%s "
+                        "active_chat_id=%s\n%s",
+                        index_path.name, disk_wsid, expected_wsid,
+                        getattr(self._agent, "workspace_id", "?"),
+                        getattr(self._agent, "workspace_root", "?"),
+                        records_dir,
+                        getattr(self._agent, "active_chat_id", "?"),
+                        "".join(traceback.format_stack()),
+                    )
+                    return
+                mem_wsid = str(state.get("workspace_id") or "").strip()
+                if mem_wsid and mem_wsid != expected_wsid:
+                    logger.error(
+                        "save_chat_state: refusing to write %s — in-memory "
+                        "chat state carries workspace_id=%r != expected "
+                        "workspace_id=%r. The chat list in memory belongs to "
+                        "another workspace; nothing was written (no record "
+                        "files copied over). workspace=%s ws_root=%s "
+                        "records_dir=%s active_chat_id=%s\n%s",
+                        index_path.name, mem_wsid, expected_wsid,
+                        getattr(self._agent, "workspace_id", "?"),
+                        getattr(self._agent, "workspace_root", "?"),
+                        records_dir,
+                        getattr(self._agent, "active_chat_id", "?"),
+                        "".join(traceback.format_stack()),
+                    )
+                    return
             chats = state.get("chats", [])
             if not isinstance(chats, list):
                 chats = []
@@ -1177,6 +1293,7 @@ class ChatStateManager:
                 index_payload = {
                     "version": CHAT_STATE_VERSION,
                     "active": active,
+                    "workspace_id": expected_wsid,
                     "chats": index_chats,
                 }
                 tmp_index = index_path.with_name(index_path.name + ".tmp")
@@ -1293,6 +1410,10 @@ class ChatStateManager:
     def load_chat_state(self, create_default_chat: bool = True) -> None:
         p = self.chat_state_path()
         self._agent._startup_chat_state_warning = ""
+        # Workspace this index is expected to belong to. ``load_chat_state``
+        # always targets the agent's focused workspace (startup or workspace
+        # switch), so the global id applies on every branch below.
+        expected_wsid = str(getattr(self._agent, "workspace_id", "") or "").strip()
         try:
             if not p.exists():
                 self.reset_chat_dirty()
@@ -1308,7 +1429,12 @@ class ChatStateManager:
                         persist=True,
                     )
                 else:
-                    self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
+                    self._agent._chat_state = {
+                        "version": CHAT_STATE_VERSION,
+                        "active": "",
+                        "workspace_id": expected_wsid,
+                        "chats": [],
+                    }
                     self._agent._last_saved_index_count = 0
                     self._agent._last_saved_active = ""
                     self._agent.active_chat_name = "New Chat"
@@ -1317,6 +1443,19 @@ class ChatStateManager:
                 loaded = json.load(f)
             if not isinstance(loaded, dict):
                 raise ValueError("chat state root must be object")
+            # Workspace-ownership check: a ``chats.json`` whose recorded
+            # ``workspace_id`` differs from the workspace being loaded was
+            # written there by a cross-workspace save. Loading it into memory
+            # would make the NEXT save re-persist the foreign chat list (and
+            # copy its record files) here, so quarantine the file and let the
+            # reset path rebuild a fresh index for this workspace.
+            file_wsid = str(loaded.get("workspace_id") or "").strip()
+            if file_wsid and expected_wsid and file_wsid != expected_wsid:
+                self._quarantine_foreign_index(p, file_wsid)
+                raise ValueError(
+                    "chat state workspace_id=%r != expected workspace_id=%r"
+                    % (file_wsid, expected_wsid)
+                )
             if int(loaded.get("version") or 0) != CHAT_STATE_VERSION:
                 raise ValueError("chat state version mismatch")
             chats_raw = loaded.get("chats")
@@ -1366,7 +1505,12 @@ class ChatStateManager:
                 # Empty chat list is valid (new workspace with no chats).
                 # No ``activate_chat`` needed; the frontend will enter
                 # draft mode when there is no active chat.
-                self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
+                self._agent._chat_state = {
+                    "version": CHAT_STATE_VERSION,
+                    "active": "",
+                    "workspace_id": expected_wsid,
+                    "chats": [],
+                }
                 self._agent.active_chat_name = "New Chat"
                 return
             # Seed the set of record files this process is aware of, so the
@@ -1396,7 +1540,12 @@ class ChatStateManager:
                     active, len(chats),
                 )
                 active = str(chats[0].get("id") or "")
-            self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": active, "chats": chats}
+            self._agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": active,
+                "workspace_id": expected_wsid,
+                "chats": chats,
+            }
             self._agent._last_saved_index_count = len(chats)
             self._agent._last_saved_active = active
             # Freshly loaded records match disk; seed clean-tracking so the next
@@ -1442,7 +1591,9 @@ class ChatStateManager:
                 persist=True,
             )
 
-    def load_chat_state_snapshot(self, config_dir: Path) -> Dict[str, Any]:
+    def load_chat_state_snapshot(
+        self, config_dir: Path, expected_workspace_id: str = ""
+    ) -> Dict[str, Any]:
         """Load a workspace's chat index+records into a standalone dict.
 
         Unlike :meth:`load_chat_state` this neither mutates the agent's global
@@ -1452,15 +1603,26 @@ class ChatStateManager:
         persistence context so its turns persist to ITS OWN workspace while the
         agent's globals point at the focused workspace. Falls back to a default
         single-chat state if the index is missing/corrupt, so a background save
-        never raises.
+        never raises. ``expected_workspace_id`` is the workspace the caller
+        resolved ``config_dir`` for; when the index on disk records a
+        DIFFERENT workspace id the file is contaminated (cross-workspace
+        write) and is treated as corrupt instead of being loaded, so a
+        background save can never re-persist another workspace's chats here.
         """
         records_dir = Path(config_dir) / "chats"
         index_path = records_dir / self._chat_state_file
+        expected_wsid = str(expected_workspace_id or "").strip()
         try:
             with open(index_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             if not isinstance(loaded, dict):
                 raise ValueError("chat state root must be object")
+            file_wsid = str(loaded.get("workspace_id") or "").strip()
+            if expected_wsid and file_wsid and file_wsid != expected_wsid:
+                raise ValueError(
+                    "chat state workspace_id=%r != expected workspace_id=%r"
+                    % (file_wsid, expected_wsid)
+                )
             if int(loaded.get("version") or 0) != CHAT_STATE_VERSION:
                 raise ValueError("chat state version mismatch")
             chats_raw = loaded.get("chats")
@@ -1511,10 +1673,11 @@ class ChatStateManager:
             return {
                 "version": CHAT_STATE_VERSION,
                 "active": active,
+                "workspace_id": expected_wsid or file_wsid,
                 "chats": chats,
             }
         except Exception:
-            return self.default_chat_state()
+            return self.default_chat_state(workspace_id=expected_workspace_id)
 
     def refresh_chat_record_from_disk(self, chat_id: str) -> bool:
         """Re-read a single chat record from disk and merge it into memory.

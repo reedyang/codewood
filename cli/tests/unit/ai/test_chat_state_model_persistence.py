@@ -23,7 +23,7 @@ def _chat_index_entry(chat):
     }
 
 
-def _write_chat_store(workspace: Path, payload):
+def _write_chat_store(workspace: Path, payload, workspace_id: str = ""):
     chats_dir = workspace / "chats"
     chats_dir.mkdir(parents=True, exist_ok=True)
     chats = [c for c in payload.get("chats", []) if isinstance(c, dict)]
@@ -32,6 +32,8 @@ def _write_chat_store(workspace: Path, payload):
         "active": payload.get("active", ""),
         "chats": [_chat_index_entry(c) for c in chats],
     }
+    if workspace_id:
+        index["workspace_id"] = workspace_id
     for chat in chats:
         record_file = _chat_index_entry(chat)["record_file"]
         record_payload = {k: v for k, v in chat.items() if not str(k).startswith("_")}
@@ -497,6 +499,130 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(save_calls, ["saved"])
             self.assertEqual(agent.active_chat_id, "chat-1")
             self.assertEqual(agent._chat_state.get("version"), CHAT_STATE_VERSION)
+
+    def test_save_round_trips_workspace_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-1",
+                "workspace_id": "ws-A",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Chat 1",
+                        "_record_file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+                    }
+                ],
+            }
+            manager.save_chat_state()
+            index = _read_chat_index(workspace)
+            self.assertEqual(index.get("workspace_id"), "ws-A")
+
+    def test_save_refuses_when_disk_index_belongs_to_other_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Existing"}]},
+                workspace_id="ws-B",
+            )
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-1",
+                "workspace_id": "ws-A",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Foreign",
+                        "_record_file": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+                    }
+                ],
+            }
+            manager.save_chat_state()
+            index = _read_chat_index(workspace)
+            # The on-disk index must be untouched — no whole-index replacement.
+            self.assertEqual(index.get("workspace_id"), "ws-B")
+            self.assertEqual(index["chats"][0]["name"], "Existing")
+            # And no foreign record file may have been copied over.
+            self.assertFalse(
+                (workspace / "chats" / "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json").exists()
+            )
+
+    def test_save_refuses_when_in_memory_state_belongs_to_other_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Existing"}]},
+                workspace_id="ws-A",
+            )
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-1",
+                "workspace_id": "ws-B",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Foreign",
+                        "_record_file": "cccccccccccccccccccccccccccccccc.json",
+                    }
+                ],
+            }
+            manager.save_chat_state()
+            index = _read_chat_index(workspace)
+            self.assertEqual(index["chats"][0]["name"], "Existing")
+            self.assertFalse(
+                (workspace / "chats" / "cccccccccccccccccccccccccccccccc.json").exists()
+            )
+
+    def test_load_quarantines_foreign_workspace_index(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Foreign"}]},
+                workspace_id="ws-B",
+            )
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            manager.load_chat_state()
+            index = _read_chat_index(workspace)
+            # The workspace recovers with a fresh index stamped for itself.
+            self.assertEqual(index.get("workspace_id"), "ws-A")
+            self.assertEqual(agent._chat_state.get("workspace_id"), "ws-A")
+            # The foreign index is preserved for forensics, never deleted.
+            backups = list((workspace / "chats").glob("chats.json.foreign-ws.ws-B.*"))
+            self.assertEqual(len(backups), 1)
+
+    def test_load_chat_state_snapshot_refuses_foreign_index(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Foreign"}]},
+                workspace_id="ws-B",
+            )
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            snapshot = manager.load_chat_state_snapshot(
+                workspace, expected_workspace_id="ws-A"
+            )
+            # The foreign chat list must NOT be loaded; the snapshot falls back
+            # to a fresh default stamped for the expected workspace.
+            self.assertEqual(snapshot.get("workspace_id"), "ws-A")
+            self.assertEqual([c.get("id") for c in snapshot.get("chats", [])], ["chat-1"])
 
     def test_clear_chat_context_clears_messages(self):
         with tempfile.TemporaryDirectory() as td:

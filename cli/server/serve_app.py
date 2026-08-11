@@ -7343,6 +7343,14 @@ class ServeApp:
                 index = json.load(f)
             if not isinstance(index, dict):
                 return False
+            file_wsid = str(index.get("workspace_id") or "").strip()
+            if file_wsid and file_wsid != wsid:
+                logger.warning(
+                    "toggle_chat_archive: refusing to modify %s — index "
+                    "workspace_id=%r != requested workspace_id=%r",
+                    index_path, file_wsid, wsid,
+                )
+                return False
             chats = index.get("chats")
             if not isinstance(chats, list):
                 return False
@@ -8318,10 +8326,13 @@ class ServeApp:
             if cfg is None:
                 return None
             try:
-                snapshot = self.agent._chat_state_manager.load_chat_state_snapshot(cfg)
+                snapshot = self.agent._chat_state_manager.load_chat_state_snapshot(
+                    cfg, expected_workspace_id=wsid
+                )
             except Exception:
                 return None
             ctx = {
+                "workspace_id": wsid,
                 "config_dir": cfg,
                 "chat_state": snapshot,
                 # RLock: sync_active_chat_messages holds it then re-enters via
