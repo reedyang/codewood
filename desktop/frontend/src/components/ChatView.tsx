@@ -2080,8 +2080,13 @@ export function ChatView() {
                 for (let ti = turns.length - 1; ti >= 0; ti--) {
                   const rounds = turns[ti].rounds;
                   for (let ri = rounds.length - 1; ri >= 0; ri--) {
+                    // Scan the round's FULL visible text, not just ``answer``
+                    // segments. A plan reply can reach the GUI tagged as step
+                    // output (non-streamed / reframed delivery), in which case
+                    // the ``<proposed_plan>`` block lives in a step segment and
+                    // an answer-only scan would hide the execute chooser even
+                    // though the plan is rendered (seen after a plan revision).
                     const ans = rounds[ri].segments
-                      .filter((s) => s.kind === "answer")
                       .map((s) => s.text)
                       .join("");
                     if (ans.trim().length > 0) return ans;
