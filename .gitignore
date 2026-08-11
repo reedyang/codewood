@@ -11,3 +11,4 @@ build/codewood-gui
 todos.md
 todos
 models/
+__pycache__
