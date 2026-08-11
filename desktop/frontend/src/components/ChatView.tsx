@@ -1217,6 +1217,11 @@ export function ChatView() {
   }, [draftHasContent, setDraftHasContent]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
+  // Transcript height recorded at the last committed historyTurns layout.
+  // Used to anchor the user's viewport when a routine history replacement
+  // lands while they are reading earlier messages (e.g. the post-completion
+  // reload), instead of yanking them back to the bottom.
+  const prevScrollHeightRef = useRef<number | null>(null);
   // ── Global chat search: scroll to the hit turn + highlight keywords ──
   const appliedSearchRef = useRef<string>("");
   useEffect(() => {
@@ -1317,6 +1322,10 @@ export function ChatView() {
   // Cleanup on unmount or draftKey change.
   const prevDraftKeyRef = useRef(draftKey);
   if (draftKey !== prevDraftKeyRef.current) {
+    // Switching chats resets the pin state so the new chat's history load
+    // opens at the latest message (the old chat may have been scrolled up).
+    stickToBottomRef.current = true;
+    prevScrollHeightRef.current = null;
     // When materializing a draft chat (New Chat → real chat), there is no
     // history to load — suppress the splash that would flash during the
     // idle-triggered history reload.
@@ -1448,7 +1457,11 @@ export function ChatView() {
   }, [turns, now, compactNotice, confirmRequest]);
 
   // When history turns change: a prepend (older page) preserves the viewport;
-  // a replacement (initial load / switch) jumps to the bottom.
+  // a replacement (initial load / switch) jumps to the bottom. A routine
+  // replacement that lands while the user is reading earlier messages must
+  // NOT yank them back down — anchor their viewport to the content instead
+  // (otherwise the post-completion history reload fights their scroll for a
+  // few seconds until the update burst settles).
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) {
@@ -1459,10 +1472,21 @@ export function ChatView() {
       // up, so keep them away from the bottom — don't re-pin).
       el.scrollTop = el.scrollHeight - prevHeightRef.current;
       prevHeightRef.current = null;
-    } else {
-      // Initial load / chat switch: jump to the latest message and re-pin.
+      prevScrollHeightRef.current = el.scrollHeight;
+    } else if (stickToBottomRef.current || prevScrollHeightRef.current == null) {
+      // Initial load / chat switch, or the user is still pinned to the
+      // bottom: jump to the latest message and re-pin.
       el.scrollTop = el.scrollHeight;
       stickToBottomRef.current = true;
+      prevScrollHeightRef.current = el.scrollHeight;
+    } else {
+      // Routine history replacement while the user reads earlier messages:
+      // keep their viewport anchored instead of jumping to the bottom.
+      el.scrollTop = Math.max(
+        0,
+        el.scrollTop + (el.scrollHeight - prevScrollHeightRef.current),
+      );
+      prevScrollHeightRef.current = el.scrollHeight;
     }
   }, [historyTurns]);
 

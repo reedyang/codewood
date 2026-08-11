@@ -205,3 +205,102 @@ describe("plan execute row across a revision", () => {
     console.log("[step3] execute row visible after revision plan B: FIXED");
   }, 30000);
 });
+
+describe("transcript scroll anchoring after task completion", () => {
+  beforeEach(() => {
+    apiMock.reset();
+    apiMock.getState.mockResolvedValue(buildState());
+  });
+
+  it("keeps the viewport when the post-completion history reload lands while the user is reading earlier messages", async () => {
+    let currentScrollTop = 0;
+    const scrollHeightDesc = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollHeight",
+    );
+    const scrollTopDesc = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollTop",
+    );
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        return 2000;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        return currentScrollTop;
+      },
+      set(value) {
+        currentScrollTop = Number(value);
+      },
+    });
+
+    try {
+      // History content: a FRESH array identity on every fetch, so the
+      // post-completion reload is a real "replacement" from React's view
+      // (same content, new array), not a bailed-out no-op.
+      apiMock.getChatHistory.mockImplementation(async () => ({
+        turns: [
+          {
+            userText: "hello",
+            rounds: [{ waitSeconds: 0, text: "hi", tools: "" }],
+            timestamp: new Date().toISOString(),
+          },
+        ],
+        start: 0,
+        total: 1,
+      }));
+
+      render(
+        <AppProvider>
+          <ChatView />
+        </AppProvider>,
+      );
+      await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+      await waitFor(() => expect(apiMock.getChatHistory).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(document.querySelector(".transcript")).toBeTruthy(),
+      );
+      // Initial load pins the transcript to the bottom.
+      expect(currentScrollTop).toBe(2000);
+
+      // The user scrolls up to read earlier messages (away from the bottom).
+      const transcript = document.querySelector(
+        ".transcript",
+      ) as HTMLElement;
+      act(() => {
+        currentScrollTop = 500;
+        fireEvent.scroll(transcript);
+      });
+
+      // Task completes: the backend idle event triggers a history reload
+      // that replaces the turns array.
+      act(() => {
+        emitIdle(idleState(1, false));
+      });
+      await waitFor(() => {
+        expect(apiMock.getChatHistory.mock.calls.length).toBeGreaterThanOrEqual(
+          2,
+        );
+      });
+
+      // The reload must NOT yank the viewport back to the bottom.
+      expect(currentScrollTop).toBeGreaterThanOrEqual(400);
+      expect(currentScrollTop).toBeLessThan(2000);
+    } finally {
+      if (scrollHeightDesc) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDesc);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollHeight;
+      }
+      if (scrollTopDesc) {
+        Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDesc);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
+      }
+    }
+  }, 30000);
+});
