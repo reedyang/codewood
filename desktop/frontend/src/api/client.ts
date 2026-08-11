@@ -125,6 +125,15 @@ export class ApiClient {
     return res.ok;
   }
 
+  async renameChat(chatId: string, name: string, workspaceId = ""): Promise<boolean> {
+    const res = await fetch(`${this.base}/rename-chat`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ chatId, name, workspaceId }),
+    });
+    return res.ok;
+  }
+
   async savePendingInputs(chatId: string, inputs: string[], workspaceId = ""): Promise<boolean> {
     const res = await fetch(`${this.base}/save-pending-inputs`, {
       method: "POST",

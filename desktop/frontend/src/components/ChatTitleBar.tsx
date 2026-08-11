@@ -4,10 +4,6 @@ import { Icon } from "./Icon";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { buildChatMenuItems, chatKey } from "./chatMenu";
 
-function quote(value: string): string {
-  return `"${value.replace(/"/g, "")}"`;
-}
-
 interface MenuState {
   x: number;
   y: number;
@@ -23,7 +19,6 @@ export function ChatTitleBar() {
     activeChats,
     uiPrefs,
     t,
-    runCommand,
     deleteChat,
     toggleChatPin,
     toggleChatArchive,
@@ -80,7 +75,10 @@ export function ChatTitleBar() {
     setRenaming(false);
     if (value && value !== activeChat.name) {
       setOptimisticName(value);
-      await runCommand(`/chat rename ${activeChat.id} ${quote(value)}`);
+      const ok = await client.renameChat(activeChat.id, value, wsId);
+      if (!ok) {
+        setOptimisticName(null);
+      }
     }
   };
 

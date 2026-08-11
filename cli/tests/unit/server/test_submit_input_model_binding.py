@@ -156,6 +156,7 @@ def _app():
     stub._route = lambda **payload: payload
     stub.set_chat_model = getattr(ServeApp, "set_chat_model").__get__(stub, _Stub)
     stub.set_chat_reasoning = getattr(ServeApp, "set_chat_reasoning").__get__(stub, _Stub)
+    stub.rename_chat = getattr(ServeApp, "rename_chat").__get__(stub, _Stub)
     stub._session_scope_for_chat = getattr(ServeApp, "_session_scope_for_chat").__get__(stub, _Stub)
     return stub
 
@@ -192,6 +193,37 @@ class ServeAppImmediateModelBindingTests(unittest.TestCase):
         self.assertEqual(chat2["reasoning_level"], "high")
         self.assertEqual(session2.reasoning_level, "high")
         self.assertTrue(session2.call_model_set)
+
+    def test_rename_chat_persists_exact_name(self):
+        app = _app()
+        app.agent._bind_session("chat-2")
+
+        with patch("cli.server.serve_app._build_state", return_value={"ok": True}):
+            ok = app.rename_chat("chat-2", "My Chat Name", "ws-1")
+
+        self.assertTrue(ok)
+        chat2 = app.agent._find_chat_by_id("chat-2")
+        self.assertEqual(chat2["name"], "My Chat Name")
+        self.assertEqual(chat2["name_source"], "manual")
+
+    def test_rename_chat_keeps_quotes_inside_name(self):
+        # The dedicated endpoint must store the raw name verbatim — unlike the
+        # old slash-command path, it must never add or strip quote characters.
+        app = _app()
+        app.agent._bind_session("chat-1")
+
+        with patch("cli.server.serve_app._build_state", return_value={"ok": True}):
+            ok = app.rename_chat("chat-1", 'renamed "quoted" chat', "ws-1")
+
+        self.assertTrue(ok)
+        chat1 = app.agent._find_chat_by_id("chat-1")
+        self.assertEqual(chat1["name"], 'renamed "quoted" chat')
+
+    def test_rename_chat_rejects_empty_name(self):
+        app = _app()
+        self.assertFalse(app.rename_chat("chat-1", "   ", "ws-1"))
+        chat1 = app.agent._find_chat_by_id("chat-1")
+        self.assertEqual(chat1["name"], "Chat 1")
 
 
 if __name__ == "__main__":
