@@ -2573,9 +2573,15 @@ function TranscriptMinimap({
     if (chatView) {
       const containerRect = container.getBoundingClientRect();
       const chatViewRect = chatView.getBoundingClientRect();
-      const h = containerRect.height;
-      const contentHeight = Math.min(h, userCount * lineStep);
-      const nextTop = (containerRect.top - chatViewRect.top) + (h - contentHeight) / 2;
+      // Center the minimap in the whole message area — the transcript plus the
+      // composer dock (todo list, pending tasks, input box) — so it stays
+      // visually balanced with the composer below instead of hugging only the
+      // transcript.
+      const dock = chatView.querySelector('.composer-dock');
+      const regionBottom = dock ? dock.getBoundingClientRect().bottom : containerRect.bottom;
+      const regionHeight = Math.max(containerRect.height, regionBottom - containerRect.top);
+      const contentHeight = Math.min(regionHeight, userCount * lineStep);
+      const nextTop = (containerRect.top - chatViewRect.top) + (regionHeight - contentHeight) / 2;
       setMinimapHeight(contentHeight);
       setMinimapTop(nextTop);
     }
@@ -2634,6 +2640,9 @@ function TranscriptMinimap({
       measureScroll();
     });
     ro.observe(container);
+    const chatView = container.closest('.chat-view');
+    const dock = chatView?.querySelector('.composer-dock');
+    if (dock) ro.observe(dock);
     return () => {
       if (raf) cancelAnimationFrame(raf);
       container.removeEventListener('scroll', onScroll);
