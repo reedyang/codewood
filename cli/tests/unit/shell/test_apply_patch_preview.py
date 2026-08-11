@@ -1,9 +1,12 @@
 ﻿import json
+import json
 import re
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from unittest.mock import patch
 
 from cli.core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
 from cli.tools.apply_patch import ApplyPatchTool, action_apply_unified_patch
@@ -738,6 +741,57 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
                     }
                 )
             self.assertEqual(buf.getvalue(), "")
+
+    def test_preview_store_is_cached_until_sidecar_changes(self):
+        """History builds look the preview sidecar up once per tool round; the
+        store must be parsed at most once per on-disk revision (the sidecar can
+        be several MB) and reloaded only when the file's mtime changes."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            agent = self._agent(cfg, gui=True)
+            sidecar = cfg / "chats" / "data" / "record-chat-1" / "previews.json"
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(
+                json.dumps({"k1": {"file": "a.py", "diffRows": []}}),
+                encoding="utf-8",
+            )
+
+            # Repeated reads with an unchanged file must not re-parse it.
+            with patch("json.load", wraps=json.load) as load:
+                first = agent._load_apply_patch_preview_store()
+                second = agent._load_apply_patch_preview_store()
+            self.assertEqual(load.call_count, 1)
+            self.assertEqual(first, {"k1": {"file": "a.py", "diffRows": []}})
+            self.assertIs(first, second)
+
+            # A new revision on disk (e.g. a live task persisted a fresh diff)
+            # bumps the mtime, so the next read must reload from disk.
+            time.sleep(0.01)
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "k1": {"file": "a.py", "diffRows": []},
+                        "k2": {"file": "b.py", "diffRows": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("json.load", wraps=json.load) as load:
+                third = agent._load_apply_patch_preview_store()
+            self.assertEqual(load.call_count, 1)
+            self.assertIn("k2", third)
+
+            # Switching to another chat points at a different sidecar path, so
+            # the old cache entry must not leak across chats.
+            sidecar2 = cfg / "chats" / "data" / "record-chat-2" / "previews.json"
+            sidecar2.parent.mkdir(parents=True, exist_ok=True)
+            sidecar2.write_text(
+                json.dumps({"z": {"file": "z.py", "diffRows": []}}),
+                encoding="utf-8",
+            )
+            agent.active_chat_id = "chat-2"
+            other = agent._load_apply_patch_preview_store()
+            self.assertEqual(other, {"z": {"file": "z.py", "diffRows": []}})
 
     def test_prune_drops_entries_absent_from_chat(self):
         with tempfile.TemporaryDirectory() as d:

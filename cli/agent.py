@@ -8483,13 +8483,43 @@ class Agent:
             return None
 
     def _load_apply_patch_preview_store(self) -> Dict[str, Any]:
+        """Load the per-chat apply_patch preview sidecar, cached by path+mtime.
+
+        History builds look previews up once per tool round
+        (``_rerender_tool_rounds`` / ``_replay_apply_patch_gui_diff_block``),
+        and the sidecar can be several MB, so re-parsing it on every call can
+        make loading a long chat's first history page take seconds. The cache is
+        invalidated by ``st_mtime_ns``: live task previews replace the file
+        through ``tmp.replace``, which bumps the mtime, so the next read
+        reloads and sees the new entry.
+        """
         path = self._apply_patch_preview_path()
         if not path or not path.exists():
             return {}
         try:
+            mtime_ns = path.stat().st_mtime_ns
+        except Exception:
+            mtime_ns = 0
+        cache = getattr(self, "_apply_patch_preview_store_cache", None)
+        if (
+            isinstance(cache, dict)
+            and cache.get("path") == str(path)
+            and cache.get("mtime_ns") == mtime_ns
+        ):
+            return cache["store"]
+        try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, dict) else {}
+            store = data if isinstance(data, dict) else {}
+            try:
+                self._apply_patch_preview_store_cache = {
+                    "path": str(path),
+                    "mtime_ns": mtime_ns,
+                    "store": store,
+                }
+            except Exception:
+                pass
+            return store
         except Exception:
             return {}
 
@@ -8534,6 +8564,14 @@ class Agent:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(pruned, fh, ensure_ascii=False)
             tmp.replace(path)
+            try:
+                self._apply_patch_preview_store_cache = {
+                    "path": str(path),
+                    "mtime_ns": path.stat().st_mtime_ns,
+                    "store": pruned,
+                }
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -8774,6 +8812,14 @@ class Agent:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(store, fh, ensure_ascii=False)
             tmp.replace(path)
+            try:
+                self._apply_patch_preview_store_cache = {
+                    "path": str(path),
+                    "mtime_ns": path.stat().st_mtime_ns,
+                    "store": store,
+                }
+            except Exception:
+                pass
         except Exception:
             # Preview persistence is best-effort; never break patch recording.
             pass
