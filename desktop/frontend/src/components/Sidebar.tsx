@@ -307,13 +307,6 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     await newChat(wsId);
   };
 
-  const runChatCommand = async (wsId: string, command: string) => {
-    if (wsId && wsId !== backendWsId) {
-      await runCommand(`/workspace switch ${wsId}`);
-    }
-    await runCommand(command);
-  };
-
   const startRename = (kind: "workspace" | "chat", id: string, wsId: string, value: string) =>
     setRename({ kind, id, wsId, value });
 
@@ -327,14 +320,28 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     if (!value) {
       return;
     }
-    if (target.kind === "chat") {
-      const key = chatKey(target.wsId, target.id);
-      setOptimisticChatNames((prev) => ({ ...prev, [key]: value }));
-    }
     if (target.kind === "workspace") {
       await runCommand(`/workspace rename ${target.id} ${quote(value)}`);
-    } else {
-      await runChatCommand(target.wsId, `/chat rename ${target.id} ${quote(value)}`);
+      return;
+    }
+    // Chat rename goes through the dedicated REST endpoint (not a slash
+    // command) so it persists immediately even while another task is running
+    // and is scoped to the exact workspace the chat lives in (chat ids repeat
+    // across workspaces, so a command routed through the focused workspace
+    // could rename a same-id chat elsewhere).
+    const key = chatKey(target.wsId, target.id);
+    setOptimisticChatNames((prev) => ({ ...prev, [key]: value }));
+    const ok = await client.renameChat(target.id, value, target.wsId);
+    if (!ok) {
+      setOptimisticChatNames((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    if (target.wsId) {
+      await refreshWorkspaceChats(target.wsId);
     }
   };
 

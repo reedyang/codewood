@@ -2940,6 +2940,15 @@ class ServeApp:
                 if len(parts) >= 4:
                     selector = parts[2]
                     new_name = " ".join(parts[3:]).strip()
+                    # Strip one pair of surrounding quotes (the GUI used to
+                    # send ``"name"`` here); naive split/join otherwise stores
+                    # the literal quote characters into the chat name.
+                    if (
+                        len(new_name) >= 2
+                        and new_name[0] == new_name[-1]
+                        and new_name[0] in ("\"", "'")
+                    ):
+                        new_name = new_name[1:-1].strip()
                     if new_name:
                         try:
                             agent = self.agent
@@ -3157,6 +3166,84 @@ class ServeApp:
                     return False
                 agent._apply_chat_model_from_entry(target, persist_if_missing=True)
                 agent._set_reasoning_effort(str(reasoning or "").strip())
+                _mark_dirty = getattr(agent, "_mark_chat_dirty", None)
+                if callable(_mark_dirty):
+                    _mark_dirty(cid)
+                try:
+                    agent._save_chat_state()
+                except Exception:
+                    pass
+        except Exception:
+            return False
+        finally:
+            if switched:
+                try:
+                    from ..controllers.workspace_command_controller import (
+                        workspace_switch_command,
+                    )
+
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        workspace_switch_command(agent, original_wsid)
+                except Exception:
+                    pass
+        self.broadcaster.publish(
+            "state",
+            self._route(chat_id=cid, state=_build_state(agent)),
+        )
+        return True
+
+    def rename_chat(self, chat_id: str, name: str, workspace_id: str = "") -> bool:
+        """Persist a chat name for one GUI chat directly (no slash command).
+
+        Unlike the ``/chat rename`` slash-command path this endpoint is
+        workspace-scoped (chat ids repeat across workspaces) and executes
+        immediately even while another chat's task is running, so the rename
+        can never be routed to a same-id chat in the focused workspace.
+        """
+        agent = self.agent
+        cid = str(chat_id or "").strip()
+        new_name = str(name or "").strip()
+        wsid = str(workspace_id or "").strip()
+        if not cid or not new_name:
+            return False
+        original_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+        switched = False
+        try:
+            if wsid and wsid != original_wsid:
+                from ..controllers.workspace_command_controller import (
+                    workspace_switch_command,
+                )
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    workspace_switch_command(agent, wsid)
+                switched = True
+        except Exception:
+            if switched:
+                try:
+                    from ..controllers.workspace_command_controller import (
+                        workspace_switch_command,
+                    )
+
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        workspace_switch_command(agent, original_wsid)
+                except Exception:
+                    pass
+            return False
+        try:
+            with self._session_scope_for_chat(
+                cid, wsid or str(getattr(agent, "workspace_id", "") or "")
+            ):
+                agent.active_chat_id = cid
+                target = agent._find_chat_by_id(cid)
+                if not target:
+                    return False
+                target["name"] = new_name
+                target["name_source"] = "manual"
+                target["updated_at"] = datetime.datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                if str(target.get("id") or "") == agent.active_chat_id:
+                    agent.active_chat_name = new_name
                 _mark_dirty = getattr(agent, "_mark_chat_dirty", None)
                 if callable(_mark_dirty):
                     _mark_dirty(cid)
@@ -8587,6 +8674,13 @@ def _make_handler(app: ServeApp):
                 ws_id = str(body.get("workspaceId") or "")[:256]
                 reasoning = str(body.get("reasoning") or "")[:256]
                 ok = app.set_chat_reasoning(chat_id, reasoning, ws_id)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/rename-chat":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                name = str(body.get("name") or "")[:512]
+                ok = app.rename_chat(chat_id, name, ws_id)
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/save-pending-inputs":
