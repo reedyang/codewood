@@ -315,6 +315,10 @@ export interface ConfirmRequest {
   command?: string;
   options?: string[];
   offerAlways?: boolean;
+  /** When true the panel also offers a "reject & supplement info" action that
+   *  opens an inline textarea; the typed text is posted back as a JSON payload
+   *  and lands in the tool's role:tool result so the task can continue. */
+  rejectSupplement?: boolean;
   /** Structured diff rows for an apply_patch change preview. When present the
    *  panel renders a responsive (side-by-side / inline) highlighted diff. */
   diffRows?: DiffRow[];

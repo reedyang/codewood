@@ -10,6 +10,28 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..core.security import command_security
 
 
+CONFIRM_SUPPLEMENT_ATTR = "_confirm_supplement_text"
+
+
+def set_confirm_supplement(agent: Any, text: str) -> None:
+    """Store the user's reject-with-supplement text on the agent.
+
+    The confirm gate returns a plain ``False`` (declined) to its callers, so
+    the supplementary text must ride along on the agent until the caller
+    builds the tool result (``agent._confirm_declined_result``) that becomes
+    the role:tool message the model receives.
+    """
+    setattr(agent, CONFIRM_SUPPLEMENT_ATTR, str(text or ""))
+
+
+def get_confirm_supplement(agent: Any) -> str:
+    return str(getattr(agent, CONFIRM_SUPPLEMENT_ATTR, "") or "")
+
+
+def clear_confirm_supplement(agent: Any) -> None:
+    setattr(agent, CONFIRM_SUPPLEMENT_ATTR, "")
+
+
 def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
     msg = str(text or "")
     if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
@@ -240,14 +262,18 @@ def _confirm_choice_via_selection(
     preview_segments: Optional[List[Dict[str, Any]]] = None,
     code_language: Optional[str] = None,
 ) -> Optional[str]:
-    """Render the confirmation as a fixed-option single-choice question.
+    """Render the confirmation as a single-choice question with an extra
+    "reject & supplement info" action.
 
     Reuses the same selection UX as the ``request_user_input`` tool (a GUI
     inline panel via ``_confirm_choice_provider``, or the TUI arrow-key
     selector). The user's pick is mapped **locally** back to one of
-    ``"y" | "n" | "a"`` — it is never sent to the model. Returns ``None`` when
-    no selection UI is available so the caller can fall back to the plain
-    y/n/a text prompt.
+    ``\"y\" | \"n\" | \"a\" | \"n_supplement\"`` — it is never sent to the
+    model. When the user picks "reject & supplement info", the supplementary
+    text is stored on the agent via ``set_confirm_supplement`` and
+    ``\"n_supplement\"`` is returned so the caller can keep the task running
+    with the user's feedback. Returns ``None`` when no selection UI is
+    available so the caller can fall back to the plain text prompt.
     """
     label_yes = _t(agent, "execution_policy.prompt.choice_yes", fallback="Yes, execute")
     label_no = _t(agent, "execution_policy.prompt.choice_no", fallback="No, cancel")
@@ -256,8 +282,15 @@ def _confirm_choice_via_selection(
         "execution_policy.prompt.choice_always",
         fallback="Always (add to skip-confirm list)",
     )
-    # Index-aligned option labels and their local y/n/a mapping. The user
-    # only ever sees fixed options; no freeform answer is accepted.
+    label_reject = _t(
+        agent,
+        "execution_policy.prompt.choice_reject_supplement",
+        fallback="Reject & supplement info",
+    )
+    # Index-aligned option labels and their local y/n/a mapping. The trailing
+    # reject-with-supplement action is rendered by the selection UIs (as an
+    # inline free-text row in the TUI, a dedicated panel action in the GUI)
+    # and never participates in the index mapping below.
     options = [label_yes, label_no]
     mapping = {label_yes: "y", label_no: "n"}
     if offer_always:
@@ -265,7 +298,9 @@ def _confirm_choice_via_selection(
         mapping[label_always] = "a"
 
     # GUI: a structured confirm provider renders the inline choice panel and
-    # blocks until the user picks. It returns the mapped y/n/a directly.
+    # blocks until the user picks. It returns the mapped y/n/a directly, or
+    # ``"n_supplement"`` after storing the user's supplementary text on the
+    # agent.
     gui_provider = getattr(agent, "_confirm_choice_provider", None)
     if callable(gui_provider):
         try:
@@ -292,6 +327,8 @@ def _confirm_choice_via_selection(
         except Exception:
             return None
         ans = str(raw or "").strip().lower()
+        if ans == "n_supplement":
+            return "n_supplement"
         if ans in ("y", "yes"):
             return "y"
         if ans in ("a", "always") and offer_always:
@@ -299,7 +336,8 @@ def _confirm_choice_via_selection(
         # Empty / dismissed / anything else => treat as cancel (no execute).
         return "n"
 
-    # TUI: arrow-key selector with fixed options and NO "Other" free-text row.
+    # TUI: arrow-key selector with the fixed options plus a trailing
+    # "reject & supplement info" free-text row (the ``Other`` row relabeled).
     input_handler = getattr(agent, "input_handler", None)
     interactive = getattr(input_handler, "prompt_request_user_input_selection", None)
     if not callable(interactive):
@@ -315,9 +353,10 @@ def _confirm_choice_via_selection(
     # keyword set on TypeError so older selectors still render the choice (just
     # without the live diff / highlighting). KeyboardInterrupt => cancel.
     kwarg_sets = [
-        dict(allow_other=False, command=display_command, preview_segments=preview_segments, code_language=code_language),
-        dict(allow_other=False, command=display_command, preview_segments=preview_segments),
-        dict(allow_other=False, command=display_command),
+        dict(allow_other=True, other_label=label_reject, command=display_command, preview_segments=preview_segments, code_language=code_language),
+        dict(allow_other=True, other_label=label_reject, command=display_command, preview_segments=preview_segments),
+        dict(allow_other=True, other_label=label_reject, command=display_command),
+        dict(allow_other=True, other_label=label_reject),
     ]
     picked = None
     selected = False
@@ -341,7 +380,13 @@ def _confirm_choice_via_selection(
         # Esc / cancel => do not execute.
         return "n"
     label = str(picked).strip()
-    return mapping.get(label, "n")
+    if label in mapping:
+        return mapping[label]
+    # Not a fixed option: the user typed a supplement on the reject row.
+    if label:
+        set_confirm_supplement(agent, label)
+        return "n_supplement"
+    return "n"
 
 
 def prompt_confirm_yes_no_maybe_always(
@@ -371,13 +416,18 @@ def prompt_confirm_yes_no_maybe_always(
     ):
         return True
 
+    clear_confirm_supplement(agent)
+
     if confirm_reason:
         prompt_core = f"{prompt_core}\n  AI review: {confirm_reason}"
 
     # Preferred path: a fixed-option single-choice question (same style as the
     # request_user_input tool) instead of a y/n/a text prompt. The user's pick
-    # is mapped to y/n/a locally and never forwarded to the model. Falls back
-    # to the plain text prompt below when no selection UI is available.
+    # is mapped to y/n/a locally and never forwarded to the model. A
+    # "reject & supplement info" pick stores the user's text on the agent
+    # (``set_confirm_supplement``) so the caller can attach it to the
+    # role:tool result and keep the task running. Falls back to the plain text
+    # prompt below when no selection UI is available.
     selection = _confirm_choice_via_selection(
         agent,
         prompt_core,
@@ -386,15 +436,21 @@ def prompt_confirm_yes_no_maybe_always(
         preview_segments=preview_segments,
         code_language=code_language,
     )
+    if selection == "n_supplement":
+        return False
     if selection is not None:
         raw = selection
     else:
         yes_no_always_suffix = _t(
             agent,
             "execution_policy.prompt.yes_no_always_suffix",
-            fallback=" (y/n/a, a=add this entry to skip-confirm list): ",
+            fallback=" (y/n/a/r, a=add this entry to skip-confirm list, r=reject & supplement info): ",
         )
-        yes_no_suffix = _t(agent, "execution_policy.prompt.yes_no_suffix", fallback=" (y/n): ")
+        yes_no_suffix = _t(
+            agent,
+            "execution_policy.prompt.yes_no_suffix",
+            fallback=" (y/n/r, r=reject & supplement info): ",
+        )
         # The selection UIs show the command on its own line; for the plain-text
         # fallback we inline it after the question so the user still sees it.
         prompt_with_command = prompt_core
@@ -409,6 +465,19 @@ def prompt_confirm_yes_no_maybe_always(
             raw = suspend_monitor(line).strip().lower()
         else:
             raw = input(line).strip().lower()
+        if raw in ("r", "reject"):
+            supplement_prompt = _t(
+                agent,
+                "execution_policy.prompt.reject_supplement_input",
+                fallback="Supplementary info to continue (leave empty to just reject): ",
+            )
+            if callable(suspend_monitor):
+                supplement = str(suspend_monitor(supplement_prompt) or "").strip()
+            else:
+                supplement = input(supplement_prompt).strip()
+            if supplement:
+                set_confirm_supplement(agent, supplement)
+            return False
     if offer_always and raw in ("a", "always"):
         if kind == "shell" and shell_command is not None:
             add_shell_command_allowlist(agent, shell_command)

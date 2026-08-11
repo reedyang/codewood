@@ -2905,7 +2905,11 @@ class PromptToolkitInputHandler:
                 else:
                     box = ""
                 style = "class:amisel.focused" if focused else ""
-                fragments.append((style, f"{pointer}{box}{label}\n"))
+                # Numbered rows (``1. Label``) keep the interactive selector
+                # consistent with the plain numbered-prompt fallback and the
+                # GUI option chips; the trailing free-text row gets the next
+                # index (e.g. ``4. Reject & supplement info``).
+                fragments.append((style, f"{pointer}{box}{i + 1}. {label}\n"))
             if not allow_other:
                 # No "Other" free-text row: strip the trailing newline from the
                 # last option so the rendered block has no dangling blank line.
@@ -2921,7 +2925,7 @@ class PromptToolkitInputHandler:
             else:
                 box = ""
             style = "class:amisel.focused" if focused else ""
-            fragments.append((style, f"{pointer}{box}{other_label}"))
+            fragments.append((style, f"{pointer}{box}{len(opts) + 1}. {other_label}"))
             if not state["editing_other"]:
                 fragments.append(("", "\n"))
             return fragments

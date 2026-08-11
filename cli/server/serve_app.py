@@ -58,7 +58,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
 
 # Upper bounds to reject oversized/abusive payloads (input guarding).
 _MAX_INPUT_CHARS = 200_000
-_MAX_CONFIRM_ANSWER_CHARS = 64
+_MAX_CONFIRM_ANSWER_CHARS = 4096
 _MAX_BODY_BYTES = 1_048_576  # 1 MiB
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
@@ -2528,6 +2528,24 @@ class ServeApp:
         finally:
             with self._confirms_lock:
                 self._confirms.pop(cid, None)
+        raw_answer = str(answer or "").strip()
+        # A "reject & supplement info" answer arrives as a JSON payload; store
+        # the supplementary text and report a plain "no" to the legacy y/n
+        # caller (the text is picked up by the next confirm result builder).
+        if raw_answer.startswith("{"):
+            try:
+                payload = json.loads(raw_answer)
+                supp = str(payload.get("reject_with_supplement") or "").strip()
+                if supp:
+                    try:
+                        from ..services.execution_policy_service import set_confirm_supplement
+
+                        set_confirm_supplement(self.agent, supp)
+                    except Exception:
+                        pass
+                    return "n"
+            except Exception:
+                pass
         return str(answer or "")
 
     def _confirm_choice_provider(
@@ -2541,12 +2559,17 @@ class ServeApp:
         """Structured confirmation prompt for the execution-policy gate.
 
         Broadcasts a ``confirm`` SSE event carrying the prompt plus a fixed
-        list of option labels (Yes / No / optionally Always) and blocks until
-        the frontend POSTs the chosen answer to ``/confirm``. The frontend
-        renders an inline single-choice panel (same style as the
-        ``request_user_input`` panel) below the message area; the user's pick is
-        posted back as the option **index** and mapped here to ``"y" | "n" |
-        "a"`` locally — the choice is never sent to the model.
+        list of option labels (Yes / No / optionally Always) plus a
+        ``rejectSupplement`` flag and blocks until the frontend POSTs the
+        chosen answer to ``/confirm``. The frontend renders an inline
+        single-choice panel (same style as the ``request_user_input`` panel)
+        below the message area; the user's pick is posted back as the option
+        **index** and mapped here to ``\"y\" | \"n\" | \"a\"`` locally — the
+        choice is never sent to the model. When the user chooses
+        "reject & supplement info" the frontend posts a JSON payload
+        ``{\"reject_with_supplement\": \"<text>\"}``; the text is stored on the
+        agent and ``\"n_supplement\"`` is returned so the caller keeps the task
+        running with the user's feedback.
 
         Returns ``"n"`` (cancel) when the prompt is dismissed without a pick.
         """
@@ -2581,6 +2604,7 @@ class ServeApp:
                 "command": strip_ansi(str(command or "")),
                 "options": safe_options,
                 "offerAlways": bool(offer_always),
+                "rejectSupplement": True,
                 "diffRows": diff_rows,
                 "chatId": self._active_chat_id(),
                 "workspaceId": self._active_chat_workspace_id(),
@@ -2591,9 +2615,27 @@ class ServeApp:
         finally:
             with self._confirms_lock:
                 self._confirms.pop(cid, None)
+        raw_answer = str(answer or "").strip()
+        # "Reject & supplement info": the frontend posts the user's free text
+        # as a JSON payload. Store it on the agent so the caller can attach it
+        # to the role:tool result and continue the task with the feedback.
+        if raw_answer.startswith("{"):
+            try:
+                payload = json.loads(raw_answer)
+                supp = str(payload.get("reject_with_supplement") or "").strip()
+                if supp:
+                    try:
+                        from ..services.execution_policy_service import set_confirm_supplement
+
+                        set_confirm_supplement(self.agent, supp)
+                    except Exception:
+                        pass
+                    return "n_supplement"
+            except Exception:
+                pass
         # The frontend posts either the option index (preferred) or a direct
         # y/n/a token. Map both to the canonical y/n/a the policy gate expects.
-        ans = str(answer or "").strip().lower()
+        ans = raw_answer.lower()
         if ans.isdigit():
             idx = int(ans)
             if 0 <= idx < len(safe_options):

@@ -3882,6 +3882,10 @@ class Agent:
                 payload["error"] = error_text
             if message_text:
                 payload["message"] = message_text
+            if r.get("user_rejected_with_supplement"):
+                payload["user_rejected_with_supplement"] = True
+            if r.get("user_supplement"):
+                payload["user_supplement"] = str(r["user_supplement"])
         else:
             payload: Dict[str, Any] = dict(r)
             payload["success"] = success
@@ -8311,6 +8315,11 @@ class Agent:
         """Best-effort detect user-cancelled operations across tools."""
         if not isinstance(result, dict):
             return False
+        if bool(result.get("user_rejected_with_supplement", False)):
+            # Reject-with-supplement keeps the task running: the tool result
+            # (carrying the user's text) flows back to the model as a
+            # role:tool message instead of stopping the loop.
+            return False
         for k in ("cancelled", "cancelled_by_user", "user_cancelled"):
             if bool(result.get(k, False)):
                 return True
@@ -8335,6 +8344,33 @@ class Agent:
             "confirm installation yes(y)/no(n): n",
         ]
         return any(n.lower() in text for n in needles)
+
+    def _confirm_declined_result(self, error: str) -> Dict[str, Any]:
+        """Build the tool result for a declined confirmation gate.
+
+        When the user chose "reject & supplement info" (the supplementary text
+        was stored on the agent by the confirm UI), the text is attached to the
+        result as ``user_supplement`` so it lands in the role:tool message the
+        model receives, ``user_rejected_with_supplement`` keeps the runtime
+        loop running, and ``retryable`` is disabled so no generic retry prompt
+        replaces the user's feedback.
+        """
+        supp = str(getattr(self, "_confirm_supplement_text", "") or "").strip()
+        setattr(self, "_confirm_supplement_text", "")
+        if supp:
+            return {
+                "success": False,
+                "error": str(error or "Operation cancelled by user"),
+                "retryable": False,
+                "user_rejected_with_supplement": True,
+                "user_supplement": supp,
+                "message": (
+                    "User rejected this operation and provided supplementary "
+                    f"information: {supp}. Incorporate this feedback and "
+                    "continue the task with adjusted steps."
+                ),
+            }
+        return {"success": False, "error": str(error or "Operation cancelled by user")}
 
     def _reload_skills_if_workspace_skill_changed(self, paths: List[Path]) -> None:
         try:

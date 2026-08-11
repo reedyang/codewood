@@ -5002,6 +5002,26 @@ def run_agent_loop(agent: Any):
                         no_tool_rounds = 0
                         continue_after_batch = True
                         break
+                    if bool(result.get("user_rejected_with_supplement", False)):
+                        # The user rejected the operation and provided
+                        # supplementary information: keep the task running.
+                        # The tool result (with the supplement) was already
+                        # recorded as a role:tool message and flows back to the
+                        # model on the next round, which continues with the
+                        # user's feedback instead of stopping.
+                        if explore_ticker is not None:
+                            explore_ticker.stop()
+                        supp = str(result.get("user_supplement") or "").strip()
+                        if not bool(getattr(self, "_gui_plain_stream", False)):
+                            if supp:
+                                print(
+                                    t(
+                                        "runtime.user_rejected_with_supplement",
+                                        supplement=supp,
+                                    )
+                                )
+                            else:
+                                print(t("runtime.user_rejected"))
                     if self._result_indicates_user_cancelled(result):
                         if explore_ticker is not None:
                             explore_ticker.stop()

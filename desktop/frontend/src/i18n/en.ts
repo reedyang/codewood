@@ -426,6 +426,8 @@ export const en: Dict = {
   "confirm.yes": "Yes",
   "confirm.no": "No",
   "confirm.always": "Always",
+  "confirm.rejectSupplement": "Reject & supplement info",
+  "confirm.rejectSupplementPlaceholder": "Type supplementary info…",
   "confirm.answerPlaceholder": "Type a response…",
   "confirm.submit": "Submit",
 

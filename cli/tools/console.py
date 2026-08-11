@@ -120,6 +120,9 @@ class ConsoleExecTool(BaseTool):
                 display_command=command,
             )
             if not ok:
+                builder = getattr(agent, "_confirm_declined_result", None)
+                if callable(builder):
+                    return builder("Operation cancelled by user")
                 return {"success": False, "error": "Operation cancelled by user"}
         return _dispatch(agent, "exec", {"command": command})
 
