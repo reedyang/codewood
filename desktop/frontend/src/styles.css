@@ -3883,8 +3883,15 @@ html[data-has-bg] .select {
    Execution-policy button's height, so the two toolbar controls line up.
    The policy button is a ``.dropdown-trigger`` (font 12.5px, padding 6px,
    1px border) → 30px tall; we pin both to the same explicit height. */
+.composer-left .policy-dropdown {
+  flex-shrink: 0;
+}
+
 .composer-left .policy-dropdown .dropdown-trigger {
   height: 30px;
+  /* Keep the policy label (e.g. "Confirmation") on a single line even when
+     the composer toolbar gets crowded on narrow windows. */
+  white-space: nowrap;
 }
 
 .composer-plus-menu .icon-btn.round {
