@@ -4165,14 +4165,27 @@ class Agent:
         target = None
         issuing = getattr(self, "_last_tool_issuing_assistant", None)
         if isinstance(issuing, dict) and str(issuing.get("role") or "").strip().lower() == "assistant":
-            target = issuing
+            # The issuing reference can point at a detached copy of the
+            # message when a mid-batch chat reload/switch re-created the
+            # history dicts while a tool call was pending (e.g. the GUI
+            # confirm dialog for reject-with-supplement keeps the session
+            # open for the user's feedback, and the session state can be
+            # re-activated/reloaded in that window). Attaching the raw
+            # rounds to that stale dict would silently drop them from the
+            # persisted history, so verify the reference is still the live
+            # message in ``conversation_history`` before using it.
+            for m in getattr(self, "conversation_history", None) or []:
+                if m is issuing:
+                    target = issuing
+                    break
         if target is None:
+            # Re-locate the live issuing assistant. The tool result(s) for
+            # the current batch immediately follow its issuing assistant
+            # message, so the last assistant in history is the right target.
             for msg in reversed(self.conversation_history):
                 if not isinstance(msg, dict):
                     continue
                 if str(msg.get("role") or "").strip().lower() != "assistant":
-                    continue
-                if not _assistant_tool_calls(msg):
                     continue
                 target = msg
                 break
@@ -4182,6 +4195,10 @@ class Agent:
                 self._sync_active_chat_messages()
             except Exception:
                 pass
+            # Re-point the issuing reference at the live message so later
+            # tools in the same batch (or the next flush) pair with the same
+            # message instead of the stale copy.
+            self._last_tool_issuing_assistant = target
         if clear:
             self._accumulated_tool_rounds = []
             self._accumulated_tool_rounds_raw = []

@@ -951,6 +951,67 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
             self.assertTrue(agent.synced_raw_lengths)
             self.assertEqual(agent.synced_raw_lengths[0], 1)
 
+    def test_attach_accumulated_tool_rounds_reattaches_stale_issuing(self):
+        """Raw tool rounds must land on the live assistant message, not on a
+        detached copy of it.
+
+        A mid-batch chat reload/switch (e.g. the GUI confirm dialog for
+        reject-with-supplement re-activating the session while the tool call
+        is pending) re-creates the history message dicts. The
+        ``_last_tool_issuing_assistant`` reference then points at the stale
+        copy; attaching ``_tool_rounds_raw`` there would silently drop the
+        rejected call's raw round from the persisted history (history reload
+        would only show the later, successful apply_patch).
+        """
+        from cli.agent import Agent
+
+        class _Stub(_DummyAgent):
+            def __init__(self, work_directory: Path) -> None:
+                super().__init__(work_directory)
+                self.active_chat_id = "chat-1"
+                self._chat_state_manager = _FakePreviewChatStateManager(work_directory)
+                self.live_assistant = {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-live",
+                            "type": "function",
+                            "function": {"name": "apply_patch", "arguments": "{}"},
+                        }
+                    ],
+                }
+                self.conversation_history = [self.live_assistant]
+                # A detached copy: same content, different object. It is no
+                # longer part of conversation_history after the reload.
+                self.stale_assistant = dict(self.live_assistant)
+                self._last_tool_issuing_assistant = self.stale_assistant
+                self._accumulated_tool_rounds = []
+                self._accumulated_tool_rounds_raw = [
+                    {"tool": "apply_patch", "args": {}, "failed": True, "output": "x"}
+                ]
+                self.sync_calls = 0
+
+            def _sync_active_chat_messages(self) -> None:
+                self.sync_calls += 1
+
+        with tempfile.TemporaryDirectory() as td:
+            agent = _Stub(Path(td))
+            attach = Agent._attach_accumulated_tool_rounds.__get__(agent, _Stub)
+            ok = attach(clear=True)
+            self.assertTrue(ok)
+            live_raw = agent.live_assistant.get("_tool_rounds_raw")
+            self.assertIsInstance(live_raw, list)
+            self.assertEqual(len(live_raw), 1)
+            self.assertEqual(live_raw[0].get("tool"), "apply_patch")
+            self.assertTrue(live_raw[0].get("failed"))
+            # The stale detached copy must never receive the rounds.
+            self.assertNotIn("_tool_rounds_raw", agent.stale_assistant)
+            # The issuing reference is re-pointed at the live message.
+            self.assertIs(agent._last_tool_issuing_assistant, agent.live_assistant)
+            self.assertEqual(agent.sync_calls, 1)
+            self.assertEqual(agent._accumulated_tool_rounds_raw, [])
+
 
 class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
     """Per-chat side data lives under ``chats/data/<record-stem>/``, is deleted
