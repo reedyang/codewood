@@ -2825,6 +2825,45 @@ class Agent:
             return True
         return False
 
+    def _tool_display_path(self, raw_path: Any) -> str:
+        """Return ``raw_path`` for GUI/TUI tool-call display.
+
+        Paths that resolve inside the workspace root are always shown as
+        workspace-relative paths (forward slashes), so the transcript reads
+        the same whether the model passed an absolute path or a
+        workspace-relative one. Anything else — or any resolution failure
+        (e.g. no workspace_root in test stubs) — is shown exactly as passed.
+        """
+        p = str(raw_path or "").strip()
+        if not p:
+            return p
+        try:
+            root_raw = getattr(self, "workspace_root", None)
+            if root_raw is None:
+                return p
+            root = Path(str(root_raw)).resolve()
+            candidate = Path(p)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            candidate = candidate.resolve()
+            try:
+                rel = candidate.relative_to(root)
+            except ValueError:
+                # Case-insensitive filesystems (Windows/macOS) can make
+                # relative_to reject a path that differs only by case;
+                # re-check through os.path.relpath before giving up.
+                rel = None
+            if rel is None:
+                rel_str = os.path.relpath(str(candidate), str(root))
+                if rel_str == ".." or rel_str.startswith(".." + os.sep) or rel_str == ".":
+                    return p
+                rel = Path(rel_str)
+            if not rel.parts:
+                return p
+            return rel.as_posix()
+        except Exception:
+            return p
+
     def _natural_tool_action(
         self, tool_name: str, args: Dict[str, Any], is_add_file: Optional[bool] = None
     ) -> tuple:
@@ -2847,14 +2886,11 @@ class Agent:
                 if add_file
                 else translate("status.apply_patch", self._ui_language())
             )
-            detail = f" {p}" if p else ""
+            detail = f" {self._tool_display_path(p)}" if p else ""
             return (label, detail)
         if name == "read":
             p = str(a.get("path") or "").strip()
-            try:
-                rel = Path(p).relative_to(self.workspace_root)
-            except Exception:
-                rel = p
+            rel = self._tool_display_path(p)
             label = translate("tool.label.read", self._ui_language())
             _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".ico"}
             if Path(p).suffix.lower() in _IMAGE_EXTS:
@@ -2876,6 +2912,7 @@ class Agent:
             inc = str(a.get("include") or "").strip()
             detail = pat
             if sp and sp != ".":
+                sp = self._tool_display_path(sp)
                 detail = f"{pat} in {sp}"
             if inc:
                 if sp and sp != ".":
@@ -2890,6 +2927,7 @@ class Agent:
             sp = str(a.get("path") or "").strip()
             detail = pat
             if sp and sp != ".":
+                sp = self._tool_display_path(sp)
                 detail = f"{pat} in {sp}"
             return (label, detail)
         if name == "project_context_search":
@@ -8374,7 +8412,7 @@ class Agent:
             name = str(a.get("subagent") or "").strip() or "-"
             return f"run_subagent (subagent={name})"
         if str(tool_name).strip().lower() == "apply_patch":
-            p = str(a.get("path") or "").strip() or "-"
+            p = self._tool_display_path(a.get("path")) or "-"
             patch_v = a.get("patch")
             if isinstance(patch_v, str):
                 patch_info = f"patch_chars={len(patch_v)}"
@@ -8421,6 +8459,8 @@ class Agent:
         ):
             v = a.get(k)
             if isinstance(v, str) and v.strip():
+                if k == "path":
+                    v = self._tool_display_path(v)
                 vv = v.strip().replace("\n", " ")
                 if k != "command" and len(vv) > 120:
                     vv = vv[:120] + "..."
@@ -8796,7 +8836,13 @@ class Agent:
         path = self._apply_patch_preview_path()
         if not path:
             return
-        display_file = str(result.get("file") or args.get("file_path") or "")
+        _display_path_fn = getattr(self, "_tool_display_path", None)
+        if callable(_display_path_fn):
+            display_file = _display_path_fn(
+                result.get("file") or args.get("file_path") or ""
+            )
+        else:
+            display_file = str(result.get("file") or args.get("file_path") or "")
         key = str(ref or "")
         if not key:
             return
@@ -8851,8 +8897,16 @@ class Agent:
             try:
                 if is_gui:
                     import json as _json
+                    _display_path_fn = getattr(self, "_tool_display_path", None)
+                    if callable(_display_path_fn):
+                        _file_display = _display_path_fn(entry.get("file") or "")
+                    else:
+                        _file_display = str(entry.get("file") or "")
                     payload = _json.dumps(
-                        {"file": entry.get("file") or "", "diffRows": rows},
+                        {
+                            "file": _file_display,
+                            "diffRows": rows,
+                        },
                         ensure_ascii=False,
                     )
                     print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")

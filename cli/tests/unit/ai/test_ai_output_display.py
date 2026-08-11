@@ -1,6 +1,8 @@
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from cli.config.app_info import get_app_name
@@ -471,6 +473,54 @@ class AiOutputDisplayTests(unittest.TestCase):
             )
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Edit "))
         self.assertIn("<H>edit.py</H>", line)
+
+    def test_tool_display_path_relativizes_workspace_absolute_path(self):
+        # A path inside the workspace root always displays as a
+        # workspace-relative path (forward slashes), no matter how the
+        # model passed it.
+        root = Path(tempfile.gettempdir()) / "cw_ws_display_rel"
+        self.agent.workspace_root = root
+        target = root / "cli" / "main.py"
+        self.assertEqual(self.agent._tool_display_path(str(target)), "cli/main.py")
+
+    def test_tool_display_path_keeps_relative_path_unchanged(self):
+        root = Path(tempfile.gettempdir()) / "cw_ws_display_keep_rel"
+        self.agent.workspace_root = root
+        self.assertEqual(self.agent._tool_display_path("cli/main.py"), "cli/main.py")
+
+    def test_tool_display_path_keeps_path_outside_workspace(self):
+        root = Path(tempfile.gettempdir()) / "cw_ws_display_outside_root"
+        outside = Path(tempfile.gettempdir()) / "cw_ws_display_outside" / "x.py"
+        self.agent.workspace_root = root
+        self.assertEqual(
+            self.agent._tool_display_path(str(outside)),
+            str(outside),
+        )
+
+    def test_tool_display_path_falls_back_when_no_workspace_root(self):
+        # Agent.__new__(Agent) carries no workspace_root; the raw arg must
+        # pass through untouched.
+        raw = r"D:\some\file.py"
+        self.assertEqual(self.agent._tool_display_path(raw), raw)
+
+    def test_format_tool_call_feedback_line_apply_patch_shows_workspace_relative_path(self):
+        # apply_patch with an absolute path inside the workspace renders the
+        # tool-call description with the workspace-relative path.
+        root = Path(tempfile.gettempdir()) / "cw_ws_display_feedback"
+        self.agent.workspace_root = root
+        abs_p = root / "sub" / "edit.py"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text), patch.object(
+            self.agent, "_is_apply_patch_add_file", return_value=False
+        ):
+            line = self.agent._format_tool_call_feedback_line(
+                "apply_patch",
+                {"path": str(abs_p), "patch": "@@\n-old\n+new\n"},
+                failed=False,
+            )
+        self.assertIn("<H>sub/edit.py</H>", line)
+        self.assertNotIn(str(abs_p), line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(

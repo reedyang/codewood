@@ -1121,7 +1121,13 @@ class ApplyPatchTool(BaseTool):
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
-            "path": {"type": "string"},
+            "path": {
+                "type": "string",
+                "description": (
+                    "File to patch. May be an absolute path or a path "
+                    "relative to the workspace root (e.g. 'src/main.py')."
+                ),
+            },
             "patch": {
                 "type": "string",
                 "description": "Prefer a standard patch/git apply unified diff, including ---/+++ and at least one @@ ... @@ hunk.",
