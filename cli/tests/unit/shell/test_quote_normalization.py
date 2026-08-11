@@ -3,6 +3,8 @@ straight quotes to match files containing typographic/curly quotes."""
 import unittest
 
 from cli.tools.apply_patch import (
+    _collapse_quote_escapes,
+    _lines_match,
     _matches_at,
     _locate_hunk_start,
     _normalize_for_match,
@@ -139,6 +141,61 @@ class QuoteNormalizationTests(unittest.TestCase):
         ]
         result = _locate_hunk_start(file_lines, 0, 1, hunk_lines, fuzz=2)
         self.assertEqual(result, 2)
+
+    def test_lines_match_tolerates_escaped_quotes_in_patch(self):
+        """A patch line copied from JSON-escaped tool output (\\" for ") must
+        still match a file line that has the plain quote.  This reproduces the
+        ChatTitleBar rename-chat regression where apply_patch failed 6 times
+        on ``return `\\"${...}"\\`;`` while the file had plain quotes."""
+        file_line = '  return `"${value.replace(/"/g, "")}"`;'
+        patch_line = '-  return `\\"${value.replace(/\\\\"/g, "")}"`;'
+        self.assertNotEqual(file_line, patch_line[1:])
+        self.assertTrue(_lines_match(file_line, patch_line[1:]))
+
+    def test_lines_match_does_not_drop_real_backslashes_in_file(self):
+        """The file side is never collapsed: a file line that genuinely
+        contains a backslash-quote must not match a patch line that dropped
+        the backslash."""
+        file_line = r'  return `\"${value}"`;'
+        patch_line = '  return `"${value}"`;'
+        self.assertFalse(_lines_match(file_line, patch_line))
+
+    def test_collapse_quote_escapes_handles_runs(self):
+        self.assertEqual(_collapse_quote_escapes('a\\"b'), 'a"b')
+        self.assertEqual(_collapse_quote_escapes('a\\\\"b'), 'a"b')
+        self.assertEqual(_collapse_quote_escapes("a\\'b"), "a'b")
+        self.assertEqual(_collapse_quote_escapes("a\\`b"), "a`b")
+        # A backslash not before a quote is left alone.
+        self.assertEqual(_collapse_quote_escapes("a\\nb"), "a\\nb")
+
+    def test_locate_hunk_start_tolerates_escaped_quotes(self):
+        """The full hunk-locating path (used before every apply) accepts a
+        patch whose deletion lines carry backslash-escaped quotes."""
+        file_lines = [
+            'import { buildChatMenuItems, chatKey } from "./chatMenu";',
+            "",
+            "function quote(value: string): string {",
+            '  return `"${value.replace(/"/g, "")}"`;',
+            "}",
+            "",
+            "interface MenuState {",
+            "  x: number;",
+            "  y: number;",
+        ]
+        hunk_lines = [
+            ' import { buildChatMenuItems, chatKey } from "./chatMenu";',
+            " ",
+            "-function quote(value: string): string {",
+            '-  return `\\"${value.replace(/\\\\"/g, "")}"`;',
+            "-}",
+            "-",
+            " interface MenuState {",
+            "   x: number;",
+            "   y: number;",
+        ]
+        result = _locate_hunk_start(file_lines, 0, 4, hunk_lines, fuzz=2)
+        self.assertIsNotNone(result)
+        self.assertEqual(result, 0)
 
 
 if __name__ == "__main__":

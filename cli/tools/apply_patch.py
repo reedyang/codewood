@@ -197,6 +197,48 @@ def _normalize_for_match(s: str) -> str:
     return s.translate(_QUOTE_NORMALIZE_TABLE)
 
 
+# Matches a backslash immediately preceding a quote character (", ', or
+# backtick).  AI-generated patches routinely copy lines out of JSON-escaped
+# tool output (e.g. the read tool result), which turns a plain `"` into the
+# two characters `\"` (and `\\"` for a literal backslash-quote).  When the
+# file actually contains the unescaped form, strict matching fails with a
+# confusing "anchor found but context does not match".  Collapsing these
+# escapes on the patch side (only as a fallback after strict comparison
+# fails) recovers those patches without ever making a *file* line with a
+# real backslash match a patch line that dropped it.
+_QUOTE_ESCAPE_RE = re.compile(r'\\(["\'`])')
+
+
+def _collapse_quote_escapes(s: str) -> str:
+    """Collapse backslash-escaped quotes (``\\"``, ``\\'``, ``\\` ``) into
+    plain quotes.  Applied iteratively so runs like ``\\\\"`` also collapse
+    (each pass removes one backslash before a quote)."""
+    prev = None
+    cur = s
+    while cur != prev:
+        prev = cur
+        cur = _QUOTE_ESCAPE_RE.sub(r"\1", cur)
+    return cur
+
+
+def _lines_match(file_line: str, patch_text: str) -> bool:
+    """Compare a file line against a patch context/deletion line.
+
+    Strict comparison (after typographic-quote normalization) is tried
+    first; when it fails, the patch text is retried with backslash-quote
+    escapes collapsed.  The file side is never collapsed, so a file line
+    that genuinely contains ``\\"`` still requires the same bytes (or the
+    exact escaped form) in the patch — we only tolerate *extra* backslashes
+    that models introduce while transcribing JSON-escaped tool output.
+    """
+    if _normalize_for_match(file_line) == _normalize_for_match(patch_text):
+        return True
+    return (
+        _normalize_for_match(_collapse_quote_escapes(patch_text))
+        == _normalize_for_match(file_line)
+    )
+
+
 def _is_phantom_eof_empty_deletion(hl: str, cur: int, old_len: int) -> bool:
     """True when *hl* is an empty deletion line ('-' with no content) located
     past the end of the file.
@@ -232,7 +274,7 @@ def _matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> 
                 if _is_phantom_eof_empty_deletion(hl, cur, len(old_lines)):
                     continue
                 return False
-            if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+            if not _lines_match(old_lines[cur], text):
                 return False
             cur += 1
         elif prefix == "+":
@@ -315,7 +357,7 @@ def _hunk_matches_at(
             ok = True
             for hl in leading_ctx:
                 text = hl[1:]
-                if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                if cur >= len(old_lines) or not _lines_match(old_lines[cur], text):
                     ok = False
                     break
                 cur += 1
@@ -335,7 +377,7 @@ def _hunk_matches_at(
                             continue
                         ok = False
                         break
-                    if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                    if not _lines_match(old_lines[cur], text):
                         ok = False
                         break
                     cur += 1
@@ -355,7 +397,7 @@ def _hunk_matches_at(
                             continue
                         ok = False
                         break
-                    if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                    if not _lines_match(old_lines[cur], text):
                         ok = False
                         break
                     cur += 1
@@ -410,7 +452,7 @@ def _locate_hunk_start(
 
     candidates: List[int] = []
     for probe in range(src_idx, len(old_lines)):
-        if _normalize_for_match(old_lines[probe]) == _normalize_for_match(anchor):
+        if _lines_match(old_lines[probe], anchor):
             candidates.append(probe)
     if not candidates:
         return None
@@ -440,10 +482,67 @@ def _locate_hunk_start(
             # matches directly; otherwise the subsequent hunk
             # application (which does exact line-by-line comparison)
             # will fail.
-            if _normalize_for_match(old_lines[test_pos]) != _normalize_for_match(anchor):
+            if not _lines_match(old_lines[test_pos], anchor):
                 continue
             if _hunk_matches_at(old_lines, test_pos, hunk_lines, fuzz=fuzz):
                 return test_pos
+    return None
+
+
+def _first_hunk_mismatch_detail(
+    old_lines: List[str],
+    hunk_lines: List[str],
+    target_idx: int,
+) -> Optional[str]:
+    """Return a short human-readable description of the first hunk body
+    line whose content differs from the file at the closest candidate
+    position, or ``None`` when every line matches.
+
+    This is used to enrich the generic "anchor found but context does not
+    match" error with the exact expected/actual bytes, so the model can see
+    e.g. that the patch has ``\\"`` where the file has a plain ``"`` (a
+    common JSON-escaped-tool-output transcription artifact).  The scan is
+    best-effort: it walks forward from *target_idx* following the anchor and
+    stops at the first context/deletion line that does not match.
+    """
+    if not old_lines or not hunk_lines:
+        return None
+    anchor: Optional[str] = None
+    for hl in hunk_lines:
+        if hl and hl[0] in (" ", "-"):
+            anchor = hl[1:]
+            break
+    if anchor is None:
+        return None
+    start = target_idx
+    if start < 0 or start >= len(old_lines):
+        start = 0
+    found = False
+    for probe in range(start, len(old_lines)):
+        if _lines_match(old_lines[probe], anchor):
+            start = probe
+            found = True
+            break
+    if not found:
+        return None
+    cur = start
+    for hl in hunk_lines:
+        if hl.startswith("*** ") or hl.startswith("\\ No newline"):
+            continue
+        if not hl:
+            continue
+        prefix = hl[0]
+        if prefix not in (" ", "-"):
+            continue
+        text = hl[1:]
+        if cur >= len(old_lines):
+            return f"hunk line {cur + 1}: expected {text!r} but file is shorter"
+        if not _lines_match(old_lines[cur], text):
+            return (
+                f"hunk line {cur + 1}: expected {text!r} "
+                f"but file has {old_lines[cur]!r}"
+            )
+        cur += 1
     return None
 
 
@@ -739,6 +838,18 @@ def action_apply_unified_patch(
                     None,
                 )
                 if _first_ctx is not None and _first_ctx in old_lines:
+                    # Find the first hunk line whose content differs from the
+                    # file at the best candidate position, so the error tells
+                    # the model exactly which line/bytes are off (this is
+                    # usually a backslash/quote transcription difference).
+                    mismatch_detail = _first_hunk_mismatch_detail(
+                        old_lines, hunk["lines"], target_idx
+                    )
+                    suffix = (
+                        f"\nFirst mismatch: {mismatch_detail}"
+                        if mismatch_detail
+                        else ""
+                    )
                     return {
                         "success": False,
                         "error": _format_apply_patch_error(
@@ -746,7 +857,7 @@ def action_apply_unified_patch(
                             f"file, but the surrounding context does not "
                             f"match. Check line numbers, blank lines, "
                             f"and indentation. Target: line "
-                            f"{target_idx + 1}."
+                            f"{target_idx + 1}.{suffix}"
                         ),
                     }
                 return {
@@ -776,7 +887,7 @@ def action_apply_unified_patch(
                 prefix = hl[0]
                 text = hl[1:]
                 if prefix == " ":
-                    if cur >= len(old_lines) or _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                    if cur >= len(old_lines) or not _lines_match(old_lines[cur], text):
                         expected = repr(text)
                         actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
                         return {
@@ -805,7 +916,7 @@ def action_apply_unified_patch(
                                 f"check line numbers and indentation."
                             ),
                         }
-                    if _normalize_for_match(old_lines[cur]) != _normalize_for_match(text):
+                    if not _lines_match(old_lines[cur], text):
                         expected = repr(text)
                         actual = repr(old_lines[cur]) if cur < len(old_lines) else "<end of file>"
                         return {
