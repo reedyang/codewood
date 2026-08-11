@@ -172,6 +172,98 @@ describe("Sidebar workspace routing", () => {
     expect(container.querySelector(".chat-busy-dot")).toBeTruthy();
   });
 
+  it("keeps concurrent running chats ordered by task start time while their updatedAt flips", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-08T15:20:00"));
+
+    const mock = (chat2UpdatedAt: string) => ({
+      state: {
+        workspace: {
+          id: "ws-2",
+          name: "Workspace B",
+          root: "D:/workspace-b",
+        },
+        workspaces: [{
+          id: "ws-2",
+          name: "Workspace B",
+          root: "D:/workspace-b",
+          active: true,
+          isDefault: false,
+        }],
+      },
+      activeWorkspaceId: "ws-2",
+      activeChatId: "chat-2",
+      activeChats: [{
+        id: "chat-2",
+        name: "Older Task",
+        active: true,
+        archived: false,
+        // Mid-run sync bumped this chat's updatedAt past the other task's,
+        // which used to make it jump to the top and then flip back.
+        updatedAt: chat2UpdatedAt,
+        running: true,
+      }, {
+        id: "chat-3",
+        name: "Newer Task",
+        active: false,
+        archived: false,
+        updatedAt: "2026-07-08 15:19:40",
+        running: true,
+      }],
+      uiPrefs: {
+        pinnedWorkspaceIds: [],
+        pinnedChatIds: [],
+        workspaceOrder: [],
+      },
+      workspaceChats: {},
+      expandedWorkspaceIds: ["ws-2"],
+      busyByChat: {
+        "ws-2\u0000chat-2": true,
+        "ws-2\u0000chat-3": true,
+      },
+      runningChatStartedAtByChat: {
+        "ws-2\u0000chat-2": Date.parse("2026-07-08T15:19:30"),
+        "ws-2\u0000chat-3": Date.parse("2026-07-08T15:19:50"),
+      },
+      unreadChatIds: {},
+      now: Date.parse("2026-07-08T15:20:00"),
+      t: (key: string) => key,
+      runCommand: vi.fn(async () => undefined),
+      switchToChat: vi.fn(async () => undefined),
+      newChat: vi.fn(async () => undefined),
+      deleteChat: vi.fn(async () => undefined),
+      openWorkspaceInExplorer: vi.fn(async () => true),
+      deleteWorkspace: vi.fn(async () => true),
+      toggleWorkspacePin: vi.fn(),
+      toggleChatPin: vi.fn(),
+      reorderWorkspace: vi.fn(),
+      toggleChatArchive: vi.fn(async () => undefined),
+      archiveChats: vi.fn(async () => undefined),
+      toggleWorkspaceExpanded: vi.fn(),
+      refreshWorkspaceChats: vi.fn(async () => undefined),
+      client: {
+        exportChat: vi.fn(async () => true),
+      },
+    });
+
+    const rowNames = () =>
+      Array.from(document.querySelectorAll(".tree-row.chat-row .tree-name"))
+        .map((el) => el.textContent?.trim() ?? "");
+
+    // chat-2 has the NEWEST updatedAt, but it started first, so it must stay
+    // below chat-3. The order is driven by task start time, not the live
+    // updatedAt that keeps bumping while the task runs.
+    useAppMock.mockReturnValue(mock("2026-07-08 15:20:00"));
+    const { rerender } = render(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
+    expect(rowNames()).toEqual(["Newer Task", "Older Task"]);
+
+    // Another mid-run sync bumps chat-2's updatedAt even further; the order
+    // must not flip back and forth.
+    useAppMock.mockReturnValue(mock("2026-07-08 15:20:30"));
+    rerender(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
+    expect(rowNames()).toEqual(["Newer Task", "Older Task"]);
+  });
+
   it("resets the visible chat count after collapsing and re-expanding a workspace", () => {
     const chats = Array.from({ length: 7 }, (_, i) => ({
       id: `chat-${i}`,
