@@ -219,24 +219,33 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   // selected.  During a cross-workspace switch, ``activeWsId`` is optimistic
   // while ``state`` can still be the workspace just left; overriding B's cache
   // with that A list is what made same-id chats flash under B.
+  // While a chat's task is running the backend bumps ``updatedAt`` on every
+  // message sync, so sorting by it would make two concurrent tasks keep
+  // swapping places (whoever emitted last jumps to the top).  Running chats
+  // therefore sort by their turn's fixed start time instead; the list only
+  // reorders once, when a task completes and ``updatedAt`` finally moves to
+  // the completion time.
   const chatsByWorkspace = useMemo(() => {
+    const sortKey = (chat: ChatRow, wsId: string): number => {
+      const startedAt = runningChatStartedAtByChat[`${wsId}\u0000${chat.id}`];
+      if (typeof startedAt === "number") {
+        return startedAt;
+      }
+      return chat.updatedAt ? new Date(chat.updatedAt).getTime() : 0;
+    };
+    const byTimeDesc = (a: ChatRow, b: ChatRow, wsId: string) =>
+      sortKey(b, wsId) - sortKey(a, wsId);
     const map: Record<string, ChatRow[]> = {};
     for (const [wsId, list] of Object.entries(workspaceChats)) {
-      map[wsId] = [...list].sort((a, b) => {
-        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-        return bTime - aTime;
-      });
+      map[wsId] = [...list].sort((a, b) => byTimeDesc(a, b, wsId));
     }
     if (activeWsId && activeWsId === backendWsId) {
-      map[activeWsId] = [...activeChats].sort((a, b) => {
-        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-        return bTime - aTime;
-      });
+      map[activeWsId] = [...activeChats].sort((a, b) =>
+        byTimeDesc(a, b, activeWsId),
+      );
     }
     return map;
-  }, [activeChats, workspaceChats, activeWsId, backendWsId]);
+  }, [activeChats, workspaceChats, activeWsId, backendWsId, runningChatStartedAtByChat]);
   // Freeze idle-chat relative timestamps until the chat data itself changes,
   // so only the actively running chat shows a live second-by-second timer.
   const relativeNow = useMemo(
