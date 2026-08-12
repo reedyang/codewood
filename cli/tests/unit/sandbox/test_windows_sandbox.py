@@ -1,4 +1,5 @@
 import ctypes
+import json
 import io
 import os
 import struct
@@ -24,10 +25,13 @@ from cli.core.sandbox.windows import (
     _ensure_sandbox_runner_copy,
     _flag_path,
     _load_acl_record,
+    _load_pending_cleanup,
     _load_secret,
     _random_password,
+    _record_acl_dirs,
     _secret_path,
     _save_secret,
+    _users_ready_path,
     launch_elevated_setup,
     _shell_runner_exe_path,
     _select_user,
@@ -46,6 +50,17 @@ def _start_shared_root_patch(testcase):
     testcase._root_patch.start()
     testcase.addCleanup(testcase._root_patch.stop)
     testcase.shared = Path(testcase._tmp.name)
+
+
+class _SyncThread:
+    """Run spawned background threads inline so tests stay deterministic."""
+
+    def __init__(self, target=None, daemon=None, **kwargs):
+        self._target = target
+
+    def start(self):
+        if self._target is not None:
+            self._target()
 
 
 class RandomPasswordTests(unittest.TestCase):
@@ -94,7 +109,7 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stderr="", stdout="")
 
         with patch(
-            "cli.core.sandbox.windows._user_exists", return_value=False
+            "cli.core.sandbox.windows._user_exists", return_value=True
         ), patch(
             "cli.core.sandbox.windows._run_process", side_effect=fake_run
         ), patch(
@@ -104,6 +119,8 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
             "cli.core.sandbox.windows._ps_grant_modify_sid"
         ), patch(
             "cli.core.sandbox.windows._ps_grant_read_group", return_value=0
+        ), patch(
+            "cli.core.sandbox.windows.threading.Thread", _SyncThread
         ):
             result = self.backend.provision(
                 self.config_dir, None, "workspace_write", progress=progress.append
@@ -146,6 +163,8 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
                 "cli.core.sandbox.windows._ps_grant_modify_sid"
             ), patch(
                 "cli.core.sandbox.windows._ps_grant_read_group", return_value=0
+            ), patch(
+                "cli.core.sandbox.windows.threading.Thread", _SyncThread
             ):
                 result = self.backend.provision(
                     self.config_dir, str(root), "workspace_write"
@@ -158,6 +177,189 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
                 i for i, c in enumerate(calls) if "icacls" in c and "/remove:g" in c
             )
             self.assertLess(cleanup_idx, remove_idx)
+
+    def test_provision_grants_profile_read_and_records_it(self):
+        _save_secret(
+            self.config_dir,
+            {"offline": _random_password(), "online": _random_password()},
+        )
+        granted_timeouts = []
+
+        def fake_grant(timeout=1800):
+            granted_timeouts.append(timeout)
+            return True
+
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process",
+            return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", side_effect=fake_grant
+        ):
+            result = self.backend.provision(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        # Provisioning must request the profile read grant with a generous
+        # timeout (the first grant propagates the ACE over the whole profile)
+        # and record the wildcard entry so a rebuild sweeps the subdirectories.
+        # It is called once explicitly and once through the workspace-ACL
+        # refresh.
+        self.assertTrue(granted_timeouts)
+        self.assertTrue(all(t == 1800 for t in granted_timeouts))
+        self.assertIn(str(Path.home() / "*"), _load_acl_record())
+
+    def test_provision_ignores_profile_read_failure(self):
+        _save_secret(
+            self.config_dir,
+            {"offline": _random_password(), "online": _random_password()},
+        )
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process",
+            return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=False
+        ):
+            result = self.backend.provision(
+                self.config_dir, None, "workspace_write"
+            )
+
+        # Directories that require elevation simply fail; that must not make
+        # the whole provisioning fail.
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_provision_users_writes_ready_flag(self):
+        _save_secret(
+            self.config_dir,
+            {"offline": _random_password(), "online": _random_password()},
+        )
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process",
+            return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ):
+            result = self.backend.provision_users(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        ready = _users_ready_path(self.config_dir)
+        self.assertTrue(ready.exists())
+        data = json.loads(ready.read_text(encoding="utf-8"))
+        self.assertTrue(data["users_ready"])
+        self.assertTrue(data["firewall_ok"])
+
+    def test_provision_acls_refuses_without_users(self):
+        with patch("cli.core.sandbox.windows._user_exists", return_value=False):
+            result = self.backend.provision_acls(self.config_dir, None)
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any("users are missing" in e for e in result["errors"])
+        )
+        self.assertFalse(_flag_path(self.config_dir).exists())
+
+    def test_wait_and_provision_acls_runs_after_ready_flag(self):
+        _users_ready_path(self.config_dir).write_text(
+            json.dumps({"users_ready": True, "firewall_ok": True}),
+            encoding="utf-8",
+        )
+        calls = []
+
+        def fake_acls(*args, **kwargs):
+            calls.append(args)
+            return {"ok": True}
+
+        with patch.object(self.backend, "provision_acls", side_effect=fake_acls):
+            result = self.backend.wait_and_provision_acls(
+                self.config_dir, None, "workspace_write", timeout=5
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 1)
+
+    def test_cleanup_all_recorded_acls_sweeps_runtime_root(self):
+        calls = []
+        with patch(
+            "cli.core.sandbox.windows._run_process",
+            side_effect=lambda argv, timeout=180, stdin_data=None: (
+                calls.append(argv)
+                or SimpleNamespace(returncode=0, stderr="", stdout="")
+            ),
+        ):
+            self.backend.cleanup_all_recorded_acls(self.config_dir)
+        remove_g = [c for c in calls if c[0] == "icacls" and "/remove:g" in c]
+        self.assertGreaterEqual(len(remove_g), 2)
+        self.assertIn(SANDBOX_USER_OFFLINE, remove_g[0])
+        self.assertIn(SANDBOX_USER_ONLINE, remove_g[1])
+
+    def test_pending_cleanup_journal_resumes_after_interruption(self):
+        rec = [str(Path(self._tmp.name) / "ws1"), str(Path(self._tmp.name) / "ws2")]
+        _record_acl_dirs(rec)
+        recorded = sorted(_load_acl_record())
+        swept = []
+        state = {"fails": 1}
+
+        def fake_cleanup(workspace_root, config_dir=None):
+            swept.append(workspace_root)
+            if state["fails"] > 0:
+                state["fails"] -= 1
+                raise RuntimeError("interrupted mid-sweep")
+
+        with patch(
+            "cli.core.sandbox.windows._run_process",
+            return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+        ), patch.object(
+            self.backend, "cleanup_workspace_acls", side_effect=fake_cleanup
+        ):
+            self.backend.cleanup_all_recorded_acls(self.config_dir)
+        # The interrupted entry stays journaled for the next startup.
+        pending = _load_pending_cleanup(self.config_dir)
+        self.assertEqual(len(pending), 1)
+        self.assertIn(recorded[0], pending)
+        with patch(
+            "cli.core.sandbox.windows._run_process",
+            return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+        ), patch.object(self.backend, "cleanup_workspace_acls"):
+            self.backend.resume_pending_cleanup(self.config_dir)
+        self.assertFalse(_load_pending_cleanup(self.config_dir))
+
+    def test_status_provisioned_with_users_ready_only(self):
+        _save_secret(
+            self.config_dir, {"offline": "X1", "online": "Y2"}
+        )
+        _cap_sid_path(self.config_dir).write_text("{}", encoding="utf-8")
+        _users_ready_path(self.config_dir).write_text(
+            json.dumps({"users_ready": True, "firewall_ok": True}),
+            encoding="utf-8",
+        )
+        with patch("cli.core.sandbox.windows._user_exists", return_value=True):
+            status = self.backend.status(self.config_dir)
+        # The background ACL phase is still running; the users-ready flag
+        # written by the elevated setup is enough to count as provisioned.
+        self.assertTrue(status["provisioned"])
+        self.assertTrue(status["firewall_ok"])
+        self.assertFalse(status["degraded"])
 
 
 class WindowsSandboxBackendCredentialTests(unittest.TestCase):
@@ -631,6 +833,10 @@ class WindowsSandboxBackendAclTests(unittest.TestCase):
                 "workspace": "S-1-5-21-1-2-3-4",
                 "readonly": "S-1-5-21-5-6-7-8",
             },
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows.threading.Thread", _SyncThread
         ):
             backend.apply_workspace_acls(str(root), level, config_dir)
         return calls
@@ -656,6 +862,44 @@ class WindowsSandboxBackendAclTests(unittest.TestCase):
             self.assertIn("'write'", script)
             self.assertIn("'Modify'", script)
             self.assertIn("S-1-5-21-1-2-3-4", script)
+
+    def test_apply_workspace_acls_records_profile_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._apply(tmp, "workspace_write")
+            self.assertIn(str(Path.home() / "*"), _load_acl_record())
+
+    def test_apply_workspace_acls_grants_profile_read_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+
+            def fake_run(argv, timeout=180, stdin_data=None):
+                calls.append(argv)
+                if argv[0] == "powershell" and "Get-Acl" in " ".join(argv):
+                    return SimpleNamespace(
+                        returncode=1,
+                        stdout=str(Path.home() / "AppData") + "\n",
+                        stderr="",
+                    )
+                return SimpleNamespace(returncode=1, stderr="", stdout="")
+
+            with patch(
+                "cli.core.sandbox.windows._run_process",
+                side_effect=fake_run,
+            ), patch(
+                "cli.core.sandbox.windows._load_or_create_cap_sids",
+                return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+            ), patch(
+                "cli.core.sandbox.windows.threading.Thread", _SyncThread
+            ):
+                WindowsSandboxBackend().apply_workspace_acls(
+                    tmp, "workspace_write", self.config_dir
+                )
+            icacls_calls = [c for c in calls if c[0] == "icacls"]
+            self.assertGreaterEqual(len(icacls_calls), 1)
+            self.assertTrue(
+                all(c[1].startswith(str(Path.home())) for c in icacls_calls)
+            )
+            self.assertTrue(all("(OI)(CI)RX" in c[3] for c in icacls_calls))
 
 
 class WindowsSandboxBackendCleanupTests(unittest.TestCase):
@@ -719,6 +963,10 @@ class WindowsSandboxBackendCleanupTests(unittest.TestCase):
                     "workspace": "S-1-5-21-1-2-3-4",
                     "readonly": "S-1-5-21-5-6-7-8",
                 },
+            ), patch(
+                "cli.core.sandbox.windows._grant_profile_read", return_value=True
+            ), patch(
+                "cli.core.sandbox.windows.threading.Thread", _SyncThread
             ):
                 self.backend.apply_workspace_acls(
                     str(root), "workspace_write", self.config_dir

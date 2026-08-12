@@ -4,7 +4,11 @@ Follows the Codex Windows sandbox design:
 
 - dedicated local users ``CodewoodSandboxOffline`` / ``CodewoodSandboxOnline``
   provide the file-system identity (reads follow what those users may read,
-  writes only where the workspace ACL grants them);
+  writes only where the workspace ACL grants them). Provisioning also grants
+  the sandbox users group ReadAndExecute on the current user's profile root,
+  so ``read_only`` / ``workspace_write`` commands can read (but not write)
+  files outside the workspace -- e.g. npm's ``%APPDATA%`` cache would
+  otherwise fail with EPERM before a single write is attempted);
 - a Windows Firewall outbound BLOCK rule keyed on the offline user provides
   network isolation without runtime elevation;
 - ``CreateProcessWithLogonW`` starts commands as the sandbox user (standard
@@ -29,6 +33,7 @@ import string
 import struct
 import subprocess
 import sys
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -44,7 +49,13 @@ from . import SANDBOX_USER_OFFLINE, SANDBOX_USER_ONLINE
 _log = logging.getLogger("codewood.sandbox.windows")
 
 SANDBOX_SECRET_FILENAME = "sandbox_secret.bin"
+#: Serializes the background home-subdirectory read-grant pass so concurrent
+#: refreshes (startup, workspace switch, settings save) never run two icacls
+#: sweeps at the same time.
+_profile_read_lock = threading.Lock()
 SANDBOX_PROVISIONED_FLAG = "sandbox_provisioned.flag"
+SANDBOX_USERS_READY_FLAG = "sandbox_users_ready.flag"
+SANDBOX_PENDING_CLEANUP = "sandbox_pending_cleanup.json"
 SANDBOX_FIREWALL_RULE_OFFLINE = "Codewood Sandbox Offline Block Outbound"
 SANDBOX_RUNTIME_DIRNAME = "sandbox"
 SANDBOX_USERS_GROUP = "CodewoodSandUsers"
@@ -560,9 +571,17 @@ def _ps_grant_read_group(path: str) -> int:
     """Grant the sandbox users group ReadAndExecute on ``path`` (no elevation).
 
     Used by provisioning for the Python interpreter that launches the runner
-    in source builds (packaged builds run ``shell-runner.exe`` instead). The
-    runner process itself uses the plain logon token, so a group ACE is
-    sufficient -- the restricted-token rule only applies to the child command.
+    in source builds (packaged builds run ``shell-runner.exe`` instead) and
+    for the current user's profile root (out-of-workspace reads).  The runner
+    process itself uses the plain logon token, so a group ACE is sufficient --
+    the restricted-token rule only applies to the child command.
+
+    Idempotent: when the group already holds the exact ACE, ``Set-Acl`` is
+    skipped.  ``Set-Acl`` on a directory with an inheritable ACE forces NTFS
+    to propagate the new ACE to every descendant, which is slow on large
+    trees (a user profile / Python install can hold hundreds of thousands of
+    files); skipping it keeps repeated provisioning fast and prevents
+    duplicate ACEs from accumulating.
     """
     ps = (
         "$p='{0}'; $acl=Get-Acl -LiteralPath $p; "
@@ -570,9 +589,141 @@ def _ps_grant_read_group(path: str) -> int:
         "$sid=$id.Translate([System.Security.Principal.SecurityIdentifier]); "
         "$rule=New-Object System.Security.AccessControl.FileSystemAccessRule("
         "$sid,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow'); "
-        "$acl.AddAccessRule($rule); Set-Acl -LiteralPath $p $acl"
+        "$exists=$false; "
+        "foreach ($ace in $acl.Access) { "
+        "  if ($ace.AccessControlType -eq $rule.AccessControlType -and "
+        "      $ace.FileSystemRights -eq $rule.FileSystemRights -and "
+        "      $ace.InheritanceFlags -eq $rule.InheritanceFlags -and "
+        "      $ace.PropagationFlags -eq $rule.PropagationFlags) { "
+        "    try { "
+        "      $aceSid=$ace.IdentityReference.Translate("
+        "[System.Security.Principal.SecurityIdentifier]).Value "
+        "    } catch { $aceSid=$null } "
+        "    if ($aceSid -eq $sid.Value) { $exists=$true; break } "
+        "  } "
+        "}; "
+        "if (-not $exists) { $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p $acl }"
     ).format(path, SANDBOX_USERS_GROUP)
     return _run_process(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]).returncode
+
+
+def _grant_profile_read(timeout: float = 1800) -> bool:
+    """Grant the sandbox users group ReadAndExecute on the home subdirectories.
+
+    The home ROOT is intentionally left untouched (like the Codex Windows
+    sandbox): an inheritable ACE there would force NTFS to propagate over the
+    whole profile, and the descriptor is not writable without elevation.
+    Instead every top-level subdirectory is granted explicitly with
+    ``icacls`` (DACL only, so no elevation is needed for the current user's
+    own directories).  Directories that require elevation simply fail and are
+    skipped -- that is expected, not an error.  Writes stay blocked because
+    the ACEs carry no write rights and the restricted token's capability SIDs
+    gate every write path.
+
+    Returns True when at least one subdirectory was granted (or all already
+    held an explicit ACE).  The grant set is recorded as ``<home>\\*`` so a
+    later rebuild knows to sweep every subdirectory.
+
+    The check runs as ONE PowerShell process over all subdirectories (a
+    per-directory check would spawn ~50 ``powershell.exe`` at startup and
+    stall the backend handshake); only directories missing an explicit ACE
+    are then granted with ``icacls``.
+    """
+    home = Path.home()
+    children: list = []
+    try:
+        children = [c for c in sorted(home.iterdir()) if c.is_dir()]
+    except Exception:
+        pass
+    if not children:
+        return False
+    # Wildcard record: cleanup expands it and sweeps every subdirectory.
+    _record_acl_dirs([str(home / "*")])
+    try:
+        missing = _missing_profile_read_dirs(children)
+    except Exception:
+        return False
+    if not missing:
+        return True
+    granted_any = False
+    for child in missing:
+        try:
+            result = _run_process(
+                [
+                    "icacls",
+                    str(child),
+                    "/grant",
+                    f"{SANDBOX_USERS_GROUP}:(OI)(CI)RX",
+                    "/q",
+                ],
+                timeout=timeout,
+            )
+            if result.returncode == 0:
+                granted_any = True
+        except Exception:
+            continue
+    return granted_any
+
+
+def _missing_profile_read_dirs(children: Sequence[Path]) -> list:
+    """Return the home subdirectories lacking an explicit read ACE.
+
+    Only an explicit (non-inherited) ACE counts as present: an inherited copy
+    vanishes as soon as its parent's ACE is removed by a rebuild sweep, so it
+    cannot be relied on.  All checks run in a single PowerShell process so a
+    home with ~50 subdirectories costs one process instead of ~50.
+    """
+    ps_lines = []
+    ps_lines.append(
+        "$id=New-Object System.Security.Principal.NTAccount('{0}'); "
+        "$sid=$id.Translate([System.Security.Principal.SecurityIdentifier]); ".format(
+            SANDBOX_USERS_GROUP
+        )
+    )
+    ps_lines.append(
+        "$rx=[System.Security.AccessControl.FileSystemRights]::ReadAndExecute; "
+        "$inh=[System.Security.AccessControl.InheritanceFlags]::ContainerInherit "
+        "-bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit; "
+    )
+    ps_lines.append("$dirs=@(")
+    for child in children:
+        ps_lines.append("  '{0}',".format(str(child).replace("'", "''")))
+    ps_lines.append(");")
+    ps_lines.append(
+        "foreach ($p in $dirs) { "
+        "  $found=$false; "
+        "  try { "
+        "    $acl=Get-Acl -LiteralPath $p; "
+        "    foreach ($ace in $acl.Access) { "
+        "      if ($ace.IsInherited) { continue } "
+        "      if ($ace.AccessControlType -ne "
+        "[System.Security.AccessControl.AccessControlType]::Allow) { continue } "
+        "      if (-not ($ace.FileSystemRights -band $rx)) { continue } "
+        "      if (($ace.InheritanceFlags -band $inh) -ne $inh) { continue } "
+        "      try { "
+        "        $s=$ace.IdentityReference.Translate("
+        "[System.Security.Principal.SecurityIdentifier]).Value "
+        "      } catch { continue } "
+        "      if ($s -eq $sid.Value) { $found=$true; break } "
+        "    } "
+        "  } catch {} "
+        "  if (-not $found) { Write-Output $p } "
+        "}"
+    )
+    result = _run_process(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "".join(ps_lines),
+        ],
+        timeout=120,
+    )
+    out = (result.stdout or "").strip()
+    if not out:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
 #: One PowerShell process applies every workspace ACL edit (root + protected
@@ -793,6 +944,35 @@ def _save_acl_record(dirs: set) -> None:
         tmp.replace(path)
     except OSError:  # pragma: no cover - defensive
         tmp.write_text(json.dumps({"dirs": sorted(dirs)}), encoding="utf-8")
+
+
+def _pending_cleanup_path(config_dir: Any) -> Path:
+    return _shared_sandbox_root() / SANDBOX_PENDING_CLEANUP
+
+
+def _load_pending_cleanup(config_dir: Any) -> list:
+    """Return the list of directories whose ACL sweep is still pending."""
+    path = _pending_cleanup_path(config_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(d) for d in data]
+    except Exception:
+        pass
+    return []
+
+
+def _save_pending_cleanup(config_dir: Any, dirs) -> None:
+    """Persist the remaining sweep list; an empty list removes the journal."""
+    path = _pending_cleanup_path(config_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if dirs:
+            path.write_text(json.dumps(sorted(set(dirs))), encoding="utf-8")
+        elif path.exists():
+            path.unlink()
+    except Exception:
+        pass
 
 
 def _record_acl_dirs(paths) -> None:
@@ -1065,6 +1245,10 @@ def _secret_path(config_dir: Any) -> Path:
 
 def _flag_path(config_dir: Any) -> Path:
     return _shared_sandbox_root() / SANDBOX_PROVISIONED_FLAG
+
+
+def _users_ready_path(config_dir: Any) -> Path:
+    return _shared_sandbox_root() / SANDBOX_USERS_READY_FLAG
 
 
 def _dpapi_protect(data: bytes) -> bytes:
@@ -1341,6 +1525,19 @@ class WindowsSandboxBackend(SandboxBackend):
                 firewall_ok = bool(data.get("firewall_ok"))
             except Exception:
                 pass
+        if not flag_ok:
+            # The elevated setup writes ``users_ready`` as soon as the users
+            # / firewall are in place; the ACL phase (runtime dirs, profile /
+            # workspace grants) is applied gradually on a background thread
+            # afterwards, so it must not gate the "provisioned" status.
+            ready = _users_ready_path(config_dir)
+            if ready.exists():
+                try:
+                    rdata = json.loads(ready.read_text(encoding="utf-8"))
+                    flag_ok = bool(rdata.get("users_ready"))
+                    firewall_ok = bool(rdata.get("firewall_ok"))
+                except Exception:
+                    pass
         # A failed firewall step means network isolation is missing, so the
         # sandbox counts as not provisioned and the "Set up sandbox" action
         # stays visible for retry.
@@ -1440,22 +1637,13 @@ class WindowsSandboxBackend(SandboxBackend):
         comspec = env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
         cmdline = "{} /c {}".format(comspec, command)
 
-        # Sandbox user environment: point profile/temp at writable dirs owned
-        # by the sandbox users instead of the real user's profile.
-        sandbox_root = _shared_sandbox_root()
-        home = sandbox_root / "home"
-        tmp = sandbox_root / "tmp"
+        # Sandbox user environment: the child keeps the real user's profile /
+        # temp paths (reads there are allowed by the profile ACL grant).
+        # Profile/temp are intentionally NOT redirected: a write that cannot
+        # happen should fail loudly (EPERM) so the model can decide whether to
+        # escalate, instead of silently landing in a sandbox-only location
+        # that has no meaning for the real user.
         env2 = dict(env)
-        env2["USERNAME"] = user
-        env2["USERDOMAIN"] = os.environ.get("COMPUTERNAME", ".")
-        env2["USERPROFILE"] = str(home)
-        env2["HOME"] = str(home)
-        env2["HOMEDRIVE"] = str(home.drive or "C:")
-        env2["HOMEPATH"] = str(home)[len(str(home.drive)) :] if home.drive else str(home)
-        env2["TEMP"] = str(tmp)
-        env2["TMP"] = str(tmp)
-        env2["APPDATA"] = str(home / "AppData" / "Roaming")
-        env2["LOCALAPPDATA"] = str(home / "AppData" / "Local")
         # git refuses repositories owned by another user ("dubious
         # ownership"); the sandbox user legitimately reads repos owned by
         # the real user, so allow all safe.directory entries.
@@ -1713,18 +1901,82 @@ class WindowsSandboxBackend(SandboxBackend):
 
     # -- provisioning -------------------------------------------------------
 
-    def provision(
+    def cleanup_all_recorded_acls(self, config_dir: Any = None) -> None:
+        """Strip sandbox-managed ACLs from every recorded directory.
+
+        Runs before the sandbox users are deleted/recreated during the
+        elevated setup: after ``Remove-LocalUser`` their SIDs become
+        unresolvable and the ACEs would linger as stale entries.  Every
+        recorded directory belongs to the current user, so no elevation is
+        needed -- the serve process runs this ahead of the UAC step while
+        the elevated window stays fast.
+
+        The sweep is journaled (``sandbox_pending_cleanup.json``): a
+        directory is removed from the journal only after its sweep
+        completes, so an interrupted run (e.g. the app exits mid-sweep) is
+        continued by :meth:`resume_pending_cleanup` on the next startup.
+        """
+        recorded = sorted(_load_acl_record())
+        if recorded:
+            _save_pending_cleanup(config_dir, recorded)
+            self._sweep_cleanup_journal(config_dir)
+        runtime_root = _shared_sandbox_root()
+        if runtime_root.exists():
+            for user in (SANDBOX_USER_OFFLINE, SANDBOX_USER_ONLINE):
+                _run_process(["icacls", str(runtime_root), "/remove:g", user, "/t", "/q"])
+                _run_process(["icacls", str(runtime_root), "/remove:d", user, "/t", "/q"])
+
+    def _sweep_cleanup_journal(self, config_dir: Any = None) -> None:
+        """Sweep every directory still listed in the cleanup journal.
+
+        Each directory is removed from the journal only after its sweep
+        returns without error, so failures and interrupted runs leave the
+        entry behind for the next attempt (startup resume).
+        """
+        remaining = _load_pending_cleanup(config_dir)
+        for entry in list(remaining):
+            try:
+                self.cleanup_workspace_acls(entry, config_dir)
+                done = True
+            except Exception:
+                done = False
+            if done:
+                try:
+                    still = _load_pending_cleanup(config_dir)
+                    _save_pending_cleanup(
+                        config_dir, [d for d in still if d != entry]
+                    )
+                except Exception:
+                    pass
+
+    def resume_pending_cleanup(self, config_dir: Any = None) -> None:
+        """Continue an interrupted ACL-removal sweep (startup resume).
+
+        Idempotent: directories whose sweep already completed are gone from
+        the journal, and re-sweeping a directory whose sandbox ACEs are
+        already gone is a no-op.
+        """
+        self._sweep_cleanup_journal(config_dir)
+
+    def provision_users(
         self,
         config_dir: Any,
-        workspace_root: Optional[str],
+        workspace_root: Optional[str] = None,
         level: str = "workspace_write",
+        sweep: bool = True,
         progress: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
-        """Idempotent one-time setup. Must run in an elevated process.
+        """Elevated-only provisioning: users, group, firewall (fast).
 
-        ``progress`` receives a human-readable line as each step starts and
-        completes, so the CLI can stream setup progress to the console instead
-        of printing everything after the fact.
+        GUI setups run this inside the UAC window; the slow ACL work that
+        only touches the current user's own directories (runtime dirs,
+        python/profile read grants, workspace ACLs) is applied afterwards by
+        :meth:`provision_acls` from the serve process, so the elevated
+        window closes quickly.  The manual ``codewood sandbox setup`` runs
+        both phases via :meth:`provision`.
+
+        ``sweep`` controls the pre-deletion ACL sweep: GUI setups pass False
+        because the serve process sweeps in a background thread instead.
         """
         steps: list = []
         errors: list = []
@@ -1766,130 +2018,140 @@ class WindowsSandboxBackend(SandboxBackend):
             else:
                 emit(f"group {SANDBOX_USERS_GROUP}: created")
 
-        # Strip the OLD users' ACLs from every sandbox-managed location BEFORE
-        # the accounts are deleted: after Remove-LocalUser their SIDs become
-        # unresolvable and the ACEs would linger as stale entries.  The ACL
-        # record lists every directory that ever received sandbox ACLs (across
-        # all Code Wood data directories), so all of them are swept, not just
-        # the current workspace.
-        recorded = sorted(_load_acl_record())
-        if recorded:
-            announce(
-                "removing old sandbox-user ACLs from %d recorded directories"
-                % len(recorded)
-            )
-        for recorded_dir in recorded:
-            self.cleanup_workspace_acls(recorded_dir, config_dir)
-        runtime_root = _shared_sandbox_root()
-        if runtime_root.exists():
-            for user in (SANDBOX_USER_OFFLINE, SANDBOX_USER_ONLINE):
-                _run_process(["icacls", str(runtime_root), "/remove:g", user, "/t", "/q"])
-                _run_process(["icacls", str(runtime_root), "/remove:d", user, "/t", "/q"])
+        # If both sandbox users already exist and can log on with the stored
+        # secret, keep the accounts: deleting them would change their SIDs and
+        # force a full ACL sweep first (slow), while their existing ACEs stay
+        # valid as long as the accounts survive.  The sweep + recreation only
+        # runs when the credentials are broken or foreign (rare).
+        users_valid = (
+            _user_exists(SANDBOX_USER_OFFLINE)
+            and _user_exists(SANDBOX_USER_ONLINE)
+            and bool(self.verify_credentials(config_dir, fresh=True))
+        )
+        if users_valid:
+            emit("sandbox users: credentials valid, keeping accounts")
+        elif sweep:
+            # Strip the OLD users' ACLs from every sandbox-managed location
+            # BEFORE the accounts are deleted: after Remove-LocalUser their
+            # SIDs become unresolvable and the ACEs would linger as stale
+            # entries.
+            recorded = sorted(_load_acl_record())
+            if recorded:
+                announce(
+                    "removing old sandbox-user ACLs from %d recorded directories"
+                    % len(recorded)
+                )
+            self.cleanup_all_recorded_acls(config_dir)
+        # GUI setups run the sweep from the serve process instead (this
+        # elevated window stays fast); the dead-SID cleanup removes stale
+        # ACEs regardless of timing.
 
         # ``net user`` rejects usernames longer than 20 characters (legacy
         # NetBIOS limit) with a bare usage message, so user management goes
         # through the PowerShell LocalAccounts module which has no such limit.
         offline_created = False
-        for user, key in (
-            (SANDBOX_USER_OFFLINE, "offline"),
-            (SANDBOX_USER_ONLINE, "online"),
-        ):
-            if _user_exists(user):
-                # Recreate instead of refreshing the password: an account
-                # created by another Code Wood data directory (or left
-                # disabled/locked) can reject Set-LocalUser with
-                # InvalidPasswordException, and the account's password must
-                # match THIS data directory's secret to keep running sandboxes
-                # working after setup.
-                announce(f"removing existing user {user} (will be recreated)")
+        if not users_valid:
+            for user, key in (
+                (SANDBOX_USER_OFFLINE, "offline"),
+                (SANDBOX_USER_ONLINE, "online"),
+            ):
+                if _user_exists(user):
+                    # Recreate instead of refreshing the password: an account
+                    # created by another Code Wood data directory (or left
+                    # disabled/locked) can reject Set-LocalUser with
+                    # InvalidPasswordException, and the account's password must
+                    # match THIS data directory's secret to keep running
+                    # sandboxes working after setup.
+                    announce(f"removing existing user {user} (will be recreated)")
+                    result = _run_process(
+                        [
+                            "powershell",
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            "Remove-LocalUser -Name '{0}' -ErrorAction Stop".format(
+                                user
+                            ),
+                        ]
+                    )
+                    if result.returncode != 0:
+                        errors.append(
+                            f"remove existing user {user}: {result.stderr.strip()}"
+                        )
+                        continue
+                    emit(f"user {user}: removed existing account")
+                # Create the account, retrying with a fresh password when the
+                # local password policy (complexity / history / minimum length)
+                # rejects the generated one.  The accepted password is
+                # persisted back into the secret file so sandbox logon keeps
+                # working.
+                password = secret[key]
+                create_error: Optional[str] = None
+                for attempt in range(4):
+                    announce(
+                        f"creating user {user}"
+                        + (f" (attempt {attempt + 1})" if attempt else "")
+                    )
+                    ps = (
+                        "New-LocalUser -Name '{0}' -Password "
+                        "(ConvertTo-SecureString '{1}' -AsPlainText -Force) "
+                        "-PasswordNeverExpires -AccountNeverExpires"
+                    ).format(user, password)
+                    result = _run_process(
+                        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
+                    )
+                    if result.returncode == 0:
+                        emit(f"user {user}: created")
+                        create_error = None
+                        break
+                    output = (result.stderr or "") + (result.stdout or "")
+                    if "InvalidPasswordException" in output:
+                        # Password policy rejected this password; retry with a
+                        # fresh one and grow the length in case the policy
+                        # sets a higher minimum.
+                        password = _random_password(14 + attempt)
+                        create_error = (
+                            f"create user {user}: password rejected by local "
+                            "password policy; retried with a new password"
+                        )
+                        continue
+                    create_error = f"create user {user}: {result.stderr.strip()}"
+                    break
+                if create_error:
+                    errors.append(create_error)
+                    continue
+                if password != secret[key]:
+                    secret[key] = password
+                    _save_secret(config_dir, secret)
+                if user == SANDBOX_USER_OFFLINE:
+                    offline_created = True
+                _run_process(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Add-LocalGroupMember -Group 'Users' -Member '{0}' "
+                        "-ErrorAction SilentlyContinue".format(user),
+                    ]
+                )
                 result = _run_process(
                     [
                         "powershell",
                         "-NoProfile",
                         "-NonInteractive",
                         "-Command",
-                        "Remove-LocalUser -Name '{0}' -ErrorAction Stop".format(
-                            user
-                        ),
+                        "$group='{0}'; $member='{1}'; "
+                        "if (-not (Get-LocalGroupMember -Group $group -Member $member "
+                        "-ErrorAction SilentlyContinue)) {{ "
+                        "Add-LocalGroupMember -Group $group -Member $member -ErrorAction Stop }}"
+                        .format(SANDBOX_USERS_GROUP, user),
                     ]
                 )
                 if result.returncode != 0:
                     errors.append(
-                        f"remove existing user {user}: {result.stderr.strip()}"
+                        f"add {user} to {SANDBOX_USERS_GROUP}: {result.stderr.strip()}"
                     )
-                    continue
-                emit(f"user {user}: removed existing account")
-            # Create the account, retrying with a fresh password when the
-            # local password policy (complexity / history / minimum length)
-            # rejects the generated one.  The accepted password is persisted
-            # back into the secret file so sandbox logon keeps working.
-            password = secret[key]
-            create_error: Optional[str] = None
-            for attempt in range(4):
-                announce(
-                    f"creating user {user}"
-                    + (f" (attempt {attempt + 1})" if attempt else "")
-                )
-                ps = (
-                    "New-LocalUser -Name '{0}' -Password "
-                    "(ConvertTo-SecureString '{1}' -AsPlainText -Force) "
-                    "-PasswordNeverExpires -AccountNeverExpires"
-                ).format(user, password)
-                result = _run_process(
-                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
-                )
-                if result.returncode == 0:
-                    emit(f"user {user}: created")
-                    create_error = None
-                    break
-                output = (result.stderr or "") + (result.stdout or "")
-                if "InvalidPasswordException" in output:
-                    # Password policy rejected this password; retry with a
-                    # fresh one and grow the length in case the policy sets a
-                    # higher minimum.
-                    password = _random_password(14 + attempt)
-                    create_error = (
-                        f"create user {user}: password rejected by local "
-                        "password policy; retried with a new password"
-                    )
-                    continue
-                create_error = f"create user {user}: {result.stderr.strip()}"
-                break
-            if create_error:
-                errors.append(create_error)
-                continue
-            if password != secret[key]:
-                secret[key] = password
-                _save_secret(config_dir, secret)
-            if user == SANDBOX_USER_OFFLINE:
-                offline_created = True
-            _run_process(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "Add-LocalGroupMember -Group 'Users' -Member '{0}' "
-                    "-ErrorAction SilentlyContinue".format(user),
-                ]
-            )
-            result = _run_process(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "$group='{0}'; $member='{1}'; "
-                    "if (-not (Get-LocalGroupMember -Group $group -Member $member "
-                    "-ErrorAction SilentlyContinue)) {{ "
-                    "Add-LocalGroupMember -Group $group -Member $member -ErrorAction Stop }}"
-                    .format(SANDBOX_USERS_GROUP, user),
-                ]
-            )
-            if result.returncode != 0:
-                errors.append(
-                    f"add {user} to {SANDBOX_USERS_GROUP}: {result.stderr.strip()}"
-                )
 
         # Firewall: block outbound traffic for the offline user. PowerShell is
         # used with the user's SID wrapped in an SDDL authorization list
@@ -1899,7 +2161,7 @@ class WindowsSandboxBackend(SandboxBackend):
         # policy, in which case file isolation still works but network
         # isolation degrades.
         firewall_ok = False
-        if offline_created:
+        if offline_created or _user_exists(SANDBOX_USER_OFFLINE):
             ps_remove = (
                 "Remove-NetFirewallRule -DisplayName '{0}' -ErrorAction SilentlyContinue"
             ).format(SANDBOX_FIREWALL_RULE_OFFLINE)
@@ -1926,6 +2188,101 @@ class WindowsSandboxBackend(SandboxBackend):
                 )
         # If the offline user failed to create, its error is already reported
         # above and the cascading firewall failure is skipped.
+
+        # Capability SIDs are part of the sandbox identity: create them now so
+        # the status check passes as soon as the users are ready (the ACL
+        # phase reuses the same SIDs later).
+        _load_or_create_cap_sids(config_dir)
+
+        ready = _users_ready_path(config_dir)
+        announce("writing users-ready flag")
+        ready.parent.mkdir(parents=True, exist_ok=True)
+        ready.write_text(
+            json.dumps(
+                {
+                    "level": level,
+                    "users_ready": True,
+                    "firewall_ok": bool(firewall_ok),
+                }
+            ),
+            encoding="utf-8",
+        )
+        emit("users-ready flag: written")
+
+        ok = not errors
+        if ok:
+            # Credentials may have changed; drop the cached check so the
+            # settings page re-verifies on the next load.
+            _credential_check_cache.pop(str(Path(config_dir).resolve()), None)
+        return {
+            "ok": ok,
+            "steps": steps,
+            "errors": errors,
+            "message": (
+                "Sandbox users ready."
+                if ok
+                else "Sandbox user provisioning finished with errors."
+            ),
+        }
+
+    def provision_acls(
+        self,
+        config_dir: Any,
+        workspace_root: Optional[str] = None,
+        level: str = "workspace_write",
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Non-elevated ACL phase of provisioning (serve process).
+
+        Applies everything that only touches the current user's own
+        directories -- sandbox runtime dirs, python interpreter read grant,
+        user profile read grant and workspace ACLs -- and finally writes the
+        ``provisioned`` flag.  Requires the sandbox users to already exist
+        (created by the elevated :meth:`provision_users`); otherwise it is a
+        no-op that reports the missing users.
+        """
+        steps: list = []
+        errors: list = []
+
+        def emit(msg: str) -> None:
+            steps.append(msg)
+            if progress:
+                try:
+                    progress("  ✓ " + msg)
+                except Exception:
+                    pass
+
+        def announce(msg: str) -> None:
+            if progress:
+                try:
+                    progress("  … " + msg)
+                except Exception:
+                    pass
+
+        if not (
+            _user_exists(SANDBOX_USER_OFFLINE)
+            and _user_exists(SANDBOX_USER_ONLINE)
+            and _user_exists(SANDBOX_USERS_GROUP)
+        ):
+            return {
+                "ok": False,
+                "steps": [],
+                "errors": [
+                    "sandbox users are missing; run the elevated setup first"
+                ],
+                "message": "Sandbox ACLs not applied: sandbox users missing.",
+            }
+
+        # The firewall status is recorded by the elevated users-ready flag.
+        firewall_ok = False
+        ready = _users_ready_path(config_dir)
+        try:
+            if ready.exists():
+                firewall_ok = bool(
+                    json.loads(ready.read_text(encoding="utf-8")).get("firewall_ok")
+                )
+        except Exception:
+            pass
 
         # Sandbox runtime dirs (home/temp/AppData) writable by both sandbox users.
         cap_sids = _load_or_create_cap_sids(config_dir)
@@ -1979,6 +2336,33 @@ class WindowsSandboxBackend(SandboxBackend):
                 + ("granted" if py_ok else "failed (non-fatal for source runs)")
             )
 
+        # Outside-the-workspace reads: the default Windows profile ACL grants
+        # only the owner, so a sandbox user cannot even ``lstat`` a path under
+        # the current user's profile (``C:\\Users\\<user>\\AppData`` etc.) --
+        # tools like npm fail with EPERM before attempting any write.  Grant
+        # the sandbox users group ReadAndExecute on the profile root so
+        # read_only / workspace_write commands can read user files outside the
+        # workspace.  Writes stay blocked: the ACE carries no write rights and
+        # the restricted token's capability SIDs gate every write path.
+        announce(
+            "granting sandbox users read access to the user profile "
+            "(first grant can take a few minutes)"
+        )
+        # Record the wildcard entry so a rebuild sweeps every subdirectory.
+        _record_acl_dirs([str(Path.home() / "*")])
+        profile_ok = False
+        try:
+            profile_ok = _grant_profile_read(timeout=1800)
+        except Exception:
+            profile_ok = False
+        if profile_ok:
+            emit("user profile read: granted")
+        else:
+            emit(
+                "user profile read: no accessible subdirectories "
+                "(out-of-workspace reads may be limited)"
+            )
+
         announce("applying workspace ACLs")
         self.apply_workspace_acls(workspace_root, level, config_dir)
         emit(f"workspace ACLs: {level}")
@@ -2014,6 +2398,63 @@ class WindowsSandboxBackend(SandboxBackend):
             ),
         }
 
+    def wait_and_provision_acls(
+        self,
+        config_dir: Any,
+        workspace_root: Optional[str] = None,
+        level: str = "workspace_write",
+        timeout: float = 900,
+    ) -> Dict[str, Any]:
+        """Poll for the elevated users-ready flag, then apply the ACL phase.
+
+        The serve process runs this on a background thread after launching
+        the UAC setup; once the elevated window reports the users ready, the
+        slow ACL work (which needs no elevation) is applied here.
+        """
+        ready = _users_ready_path(config_dir)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if ready.exists():
+                break
+            time.sleep(1.0)
+        return self.provision_acls(config_dir, workspace_root, level)
+
+    def provision(
+        self,
+        config_dir: Any,
+        workspace_root: Optional[str],
+        level: str = "workspace_write",
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Idempotent one-time setup. Must run in an elevated process.
+
+        Manual ``codewood sandbox setup`` path: runs the users/group/firewall
+        phase and the ACL phase back-to-back in one elevated process.  The
+        GUI path splits them (see :meth:`provision_users` and
+        :meth:`provision_acls`) so the UAC window finishes quickly.
+        """
+        steps: list = []
+        errors: list = []
+        users = self.provision_users(
+            config_dir, workspace_root, level, progress=progress
+        )
+        acls = self.provision_acls(config_dir, workspace_root, level, progress)
+        steps.extend(users.get("steps", []))
+        steps.extend(acls.get("steps", []))
+        errors.extend(users.get("errors", []))
+        errors.extend(acls.get("errors", []))
+        ok = not errors
+        return {
+            "ok": ok,
+            "steps": steps,
+            "errors": errors,
+            "message": (
+                "Sandbox provisioning complete."
+                if ok
+                else "Sandbox provisioning finished with errors."
+            ),
+        }
+
     def apply_workspace_acls(
         self,
         workspace_root: Optional[str],
@@ -2026,6 +2467,11 @@ class WindowsSandboxBackend(SandboxBackend):
         other level grants it modify. Protected subdirectories (``.git``, the
         workspace config dir) always get an explicit write-deny.
 
+        The current user's profile root is always granted ReadAndExecute for
+        the sandbox users group (out-of-workspace reads such as npm's
+        ``%APPDATA%``).  The grant is idempotent, so this self-heals installs
+        that provisioned before the profile grant existed.
+
         All edits are batched into a single PowerShell invocation — each
         ``powershell.exe`` costs ~0.5-1.5s to start, and the previous
         per-ACE helpers spawned ~25 processes for this step. The script also
@@ -2035,8 +2481,8 @@ class WindowsSandboxBackend(SandboxBackend):
         if not workspace_root:
             return
         ws = str(Path(workspace_root).resolve())
-        # Remember the directory so a future user rebuild strips its ACLs too.
-        _record_acl_dirs([ws])
+        # Remember the directories so a future user rebuild strips their ACLs.
+        _record_acl_dirs([ws, str(Path.home() / "*")])
         cap_sids = _load_or_create_cap_sids(config_dir) if config_dir else None
         protected = []
         for sub in (".git", ".codewood", ".agents"):
@@ -2059,6 +2505,29 @@ class WindowsSandboxBackend(SandboxBackend):
                 "workspace ACL apply failed: %s",
                 (result.stderr or result.stdout or "").strip(),
             )
+        # Out-of-workspace reads: ensure the home subdirectories carry an
+        # explicit read ACE for the sandbox users group.  Runs entirely on a
+        # background thread -- including the batched check -- so the startup
+        # path (``refresh_workspace_acls``) never blocks on PowerShell /
+        # icacls.  The pass is idempotent; only the first one actually
+        # touches the directories, and the lock skips concurrent duplicates.
+        def _ensure_profile_read() -> None:
+            if not _profile_read_lock.acquire(blocking=False):
+                return
+            try:
+                if not _grant_profile_read(timeout=1800):
+                    _log.warning("granting sandbox profile read access failed")
+            except Exception:
+                _log.warning(
+                    "granting sandbox profile read access failed", exc_info=True
+                )
+            finally:
+                _profile_read_lock.release()
+
+        try:
+            threading.Thread(target=_ensure_profile_read, daemon=True).start()
+        except Exception:
+            pass
 
     def cleanup_workspace_acls(
         self, workspace_root: Optional[str], config_dir: Any = None
@@ -2082,7 +2551,13 @@ class WindowsSandboxBackend(SandboxBackend):
         # The directory no longer carries sandbox-managed ACLs: drop it from
         # the record even if it no longer exists (nothing left to clean).
         _unrecord_acl_dirs([workspace_root])
-        ws = Path(workspace_root)
+        root_str = str(workspace_root)
+        if root_str.endswith(("\\*", "/*")):
+            # Wildcard record entry (``<home>\\*``): sweep every subdirectory
+            # of the parent; the parent itself carries no sandbox ACE.
+            ws = Path(root_str[:-2])
+        else:
+            ws = Path(root_str)
         if not ws.exists():
             return
         ws_str = str(ws.resolve())

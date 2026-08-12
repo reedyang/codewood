@@ -1274,10 +1274,23 @@ def _handle_sandbox_command(argv: list) -> int:
         # Stream each step to the console as it happens (the elevated setup
         # window otherwise stays blank for a long time and only prints the
         # result at the end).
-        result = backend.provision(
-            config_dir, workspace, level,
-            progress=lambda msg: print(msg, flush=True),
-        )
+        if gui_launched:
+            # GUI setups only create the users/group/firewall inside the UAC
+            # window (fast); the serve process applies the slow ACL work in
+            # the background once the users-ready flag appears.
+            result = backend.provision_users(
+                config_dir, workspace, level, sweep=False,
+                progress=lambda msg: print(msg, flush=True),
+            )
+            print(
+                "Users are ready; the app is applying ACLs in the background. "
+                "You can close this window."
+            )
+        else:
+            result = backend.provision(
+                config_dir, workspace, level,
+                progress=lambda msg: print(msg, flush=True),
+            )
         for error in result.get("errors", []):
             print(f"  ✗ {error}")
         print(result.get("message", ""))

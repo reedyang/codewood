@@ -5586,17 +5586,49 @@ class ServeApp:
             workspace_root = getattr(agent, "workspace_root", None) or getattr(
                 agent, "work_directory", None
             )
-            ok = launch_elevated_setup(
-                agent.config_dir, workspace_root, level
-            )
+            config_dir = agent.config_dir
+
+            def _run_background_setup() -> None:
+                # The elevated window appears immediately and only creates
+                # the users/group/firewall (fast).  The old-ACL sweep and the
+                # slow ACL work (runtime dirs, python/profile read grants,
+                # workspace ACLs) run here on this background thread; once
+                # the users-ready flag appears the ACL phase starts.
+                try:
+                    from ..core.sandbox import (
+                        cleanup_all_sandbox_acls,
+                        get_sandbox_backend,
+                    )
+
+                    backend = get_sandbox_backend()
+                    ok = launch_elevated_setup(config_dir, workspace_root, level)
+                    if not ok:
+                        return
+                    # Strip the old sandbox ACLs in the background: only
+                    # meaningful when the users are rebuilt (their SIDs
+                    # change); the dead-SID cleanup removes stale ACEs even
+                    # if this runs after the elevated rebuild finished.
+                    if backend.verify_credentials(config_dir) is not True:
+                        cleanup_all_sandbox_acls(config_dir)
+                    backend.wait_and_provision_acls(
+                        config_dir, workspace_root, level
+                    )
+                except Exception:
+                    import logging
+
+                    logging.getLogger("codewood.serve").exception(
+                        "background sandbox setup failed"
+                    )
+
+            import threading
+
+            threading.Thread(target=_run_background_setup, daemon=True).start()
             return {
-                "ok": ok,
+                "ok": True,
                 "message": (
-                    "Sandbox setup started in an elevated window; accept the "
-                    "UAC prompt and refresh this page afterwards."
-                    if ok
-                    else "Could not start the elevated setup (UAC declined?). "
-                    "Run 'codewood sandbox setup' from an admin terminal instead."
+                    "Sandbox setup started: accept the UAC prompt (users are "
+                    "created fast); the ACL work finishes in the background, "
+                    "so refresh this page afterwards to see the final status."
                 ),
             }
         except Exception as exc:

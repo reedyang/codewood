@@ -49,6 +49,48 @@ class SandboxBackend(ABC):
         """
         return {"ok": False, "message": "provisioning not supported on this platform"}
 
+    def provision_users(
+        self,
+        config_dir: Any,
+        workspace_root: Optional[str] = None,
+        level: str = "workspace_write",
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Elevated-only provisioning: users/group/firewall (fast).
+
+        GUI setups run this inside the UAC window; the slow ACL work is
+        applied afterwards by :meth:`provision_acls` from the serve process.
+        """
+        return {"ok": False, "message": "provisioning not supported on this platform"}
+
+    def provision_acls(
+        self,
+        config_dir: Any,
+        workspace_root: Optional[str] = None,
+        level: str = "workspace_write",
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Non-elevated ACL phase of provisioning (serve process)."""
+        return {"ok": False, "message": "provisioning not supported on this platform"}
+
+    def wait_and_provision_acls(
+        self,
+        config_dir: Any,
+        workspace_root: Optional[str] = None,
+        level: str = "workspace_write",
+        timeout: float = 900,
+    ) -> Dict[str, Any]:
+        """Poll for the elevated users-ready flag, then apply the ACL phase."""
+        return {"ok": False, "message": "provisioning not supported on this platform"}
+
+    def cleanup_all_recorded_acls(self, config_dir: Any = None) -> None:
+        """Strip sandbox-managed ACLs from every recorded directory."""
+        return None
+
+    def resume_pending_cleanup(self, config_dir: Any = None) -> None:
+        """Continue an interrupted ACL-removal sweep (best effort)."""
+        return None
+
     def verify_credentials(
         self, config_dir: Any, fresh: bool = False
     ) -> Optional[bool]:
