@@ -171,7 +171,7 @@ class ChatInterruptScopeTests(unittest.TestCase):
                 self.sync_calls += 1
 
             def _format_tool_call_feedback_line(
-                self, tool_name, args, failed=False, is_add_file=None
+                self, tool_name, args, failed=False, is_add_file=None, background=False
             ):
                 return f"tool={tool_name} failed={failed}"
 

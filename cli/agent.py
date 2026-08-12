@@ -164,6 +164,7 @@ INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
 ASK_MORE_INFO_ANSWER_HISTORY_PREFIX = "[ASK_MORE_INFO_ANSWER]"
+BG_TASK_RESULT_HISTORY_PREFIX = "[BACKGROUND_TASK_RESULT]"
 # Effectively unbounded tail limit: used by transcript mode to render shell
 # output in full (no "... omitted N lines ..." truncation).
 _FULL_OUTPUT_TAIL_LIMIT = 10**9
@@ -2731,11 +2732,31 @@ class Agent:
         tool_name: str,
         args: Dict[str, Any],
         failed: bool = False,
+        background: bool = False,
     ) -> None:
         self._ensure_terminal_line_start()
         self._reset_tool_call_feedback_interstitial_lines()
-        line = self._format_tool_call_feedback_line(tool_name, args, failed=failed)
+        line = self._format_tool_call_feedback_line(
+            tool_name, args, failed=failed, background=background
+        )
         print(line)
+        try:
+            from .core.logging.app_logging import get_logger
+
+            get_logger("codewood.shell_feedback").info(
+                "print-feedback tool=%s line=%r",
+                tool_name,
+                line[:120],
+            )
+        except Exception:
+            pass
+        # Flush immediately: the GUI's stdout bridge buffers, and a blocking
+        # tool (e.g. ``wait``) would otherwise defer its description line until
+        # the tool returns, so the user never sees it "running".
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
         self._last_tool_call_feedback_line = line
         self._last_terminal_block_kind = "feedback"
         self._terminal_cursor_at_line_start = True
@@ -2759,15 +2780,20 @@ class Agent:
         args: Dict[str, Any],
         failed: bool = False,
         is_add_file: Optional[bool] = None,
+        background: bool = False,
     ) -> str:
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         name = str(tool_name or "").strip().lower()
+        # Background shell calls read as "Ran in background <cmd>" even when the
+        # caller only knows the args (e.g. the pre-execution feedback line).
+        background = bool(background) or bool(args.get("background"))
         if name == "shell":
             # Shell keeps the literal "Ran <command>" phrasing so the executed
             # command line reads exactly as typed.
             summary = self._tool_call_summary(tool_name, args)
+            verb_key = "status.ran_background" if background else "status.ran"
             return self._format_wrapped_command_feedback_line(
-                f"{bullet} {_ansi_bold(translate('status.ran', self._ui_language()))} ",
+                f"{bullet} {_ansi_bold(translate(verb_key, self._ui_language()))} ",
                 summary,
             )
         # Explore running state reads as "Exploring <topic>..."; only the
@@ -2941,6 +2967,21 @@ class Agent:
         if name == "update_plan":
             label = translate("tool.label.update_plan", self._ui_language(), fallback=self._humanize_tool_name(tool_name))
             return (label, "")
+        if name == "background_task_kill":
+            return (
+                translate("tool.label.background_task_kill", self._ui_language(), fallback="Kill background task"),
+                f"({str(a.get('background_task_id') or '')})" if a.get("background_task_id") else "",
+            )
+        if name == "background_task_status":
+            return (
+                translate("tool.label.background_task_status", self._ui_language(), fallback="Background task status"),
+                f"({str(a.get('background_task_id') or '')})" if a.get("background_task_id") else "",
+            )
+        if name == "wait":
+            return (
+                translate("tool.label.wait", self._ui_language(), fallback="Wait"),
+                f"(seconds={a.get('seconds')})",
+            )
         if name == "run_subagent" and str(a.get("subagent") or "").strip().lower() == "explore":
             return (self._explore_running_label(a), "")
         if name == "request_user_input":
@@ -3608,6 +3649,82 @@ class Agent:
             return None
         return payload
 
+    def _build_background_task_result_history_content(
+        self,
+        background_task_id: str,
+        status: str,
+        return_code: Any,
+        output: str = "",
+        error: str = "",
+        full_output_path: str = "",
+    ) -> str:
+        """Build the hidden internal user message carrying a background task's
+        completion result.  The GUI never displays it (``_internal`` user
+        messages are excluded from genuine turns); it reaches the model as a
+        normal user message on the next model call."""
+        payload = {
+            "kind": "background_task_result",
+            "background_task_id": str(background_task_id or ""),
+            "status": str(status or ""),
+            "return_code": return_code,
+            "output": str(output or ""),
+            "error": str(error or ""),
+            "full_output_path": str(full_output_path or ""),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return f"{BG_TASK_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_background_task_result_history_content(
+        self, content: str
+    ) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(BG_TASK_RESULT_HISTORY_PREFIX):
+            return None
+        body = text[len(BG_TASK_RESULT_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "background_task_result":
+            return None
+        return payload
+
+    def _inject_pending_background_task_results(self) -> None:
+        """Drain completed background-task notifications into hidden internal
+        user messages so the next model call carries the execution result.
+
+        Called by the runtime loop immediately before every ``call_ai``.
+        Each finished task is injected exactly once (the manager marks it as
+        injected when drained).
+        """
+        mgr = getattr(self, "_background_task_manager", None)
+        if mgr is None:
+            return
+        pending = []
+        try:
+            pending = mgr.drain_notifications()
+        except Exception:
+            return
+        for item in pending:
+            if not isinstance(item, dict):
+                continue
+            try:
+                content = self._build_background_task_result_history_content(
+                    background_task_id=str(item.get("background_task_id") or ""),
+                    status=str(item.get("status") or ""),
+                    return_code=item.get("return_code"),
+                    output=str(item.get("output") or ""),
+                    error=str(item.get("error") or ""),
+                    full_output_path=str(item.get("full_output_path") or ""),
+                )
+                self._append_chat_message("user", content, _internal=True)
+            except Exception:
+                pass
+
     def _parse_model_tool_plan_history_content(self, content: str) -> Optional[Dict[str, Any]]:
         text = str(content or "").strip()
         if not text:
@@ -3935,6 +4052,7 @@ class Agent:
             str(tool_name or ""),
             args if isinstance(args, dict) else {},
             failed=not success,
+            background=bool(r.get("background")),
         )
         if t == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
             elapsed = r.get("_elapsed_seconds")
@@ -4013,10 +4131,23 @@ class Agent:
                 # user's selection) only after the answer arrives — emitting
                 # the interim options-only block here would leave a stale copy
                 # in the live transcript when the updated block is streamed.
-                skip_live_emit = (t == "shell" and gui_mode) or t == "request_user_input"
+                is_background = bool(r.get("background"))
+                skip_live_emit = (
+                    t == "shell" and gui_mode and not is_background
+                ) or t == "request_user_input"
                 try:
                     if not skip_live_emit:
-                        emit_live(live_suffix)
+                        _emit_text = live_suffix
+                        _emit_kwargs: Dict[str, Any] = {}
+                        if is_background:
+                            # Keep the command-output block OPEN (no END) so the
+                            # frontend appends background chunks into it and the
+                            # round's spinner keeps running until completion.
+                            _emit_text = _emit_text.rstrip(GUI_CMD_OUTPUT_END)
+                            _bg_tid = str(r.get("background_task_id") or "")
+                            if _bg_tid:
+                                _emit_kwargs["bg_task_id"] = _bg_tid
+                        emit_live(_emit_text, **_emit_kwargs)
                     if isinstance(r, dict):
                         r["_gui_live_suffix_emitted"] = True
                 except Exception:
@@ -4046,6 +4177,13 @@ class Agent:
         error_text = str(r.get("error") or "")
         if error_text:
             raw_entry["error"] = error_text
+        _bg_tid_raw = str(r.get("background_task_id") or "")
+        # Only the tool call that LAUNCHED the background task owns it — its
+        # round renders as the live background block with the running spinner.
+        # Query/management tools (wait, background_task_status, kill) also
+        # return background_task_id but must NOT be tagged as the task's round.
+        if _bg_tid_raw and bool(r.get("background")):
+            raw_entry["bgTaskId"] = _bg_tid_raw
         # Persist whether apply_patch was creating a new file, so history
         # reload can render the correct label after the file exists on disk.
         # Prefer the pre-execution snapshot captured by the runtime loop;
@@ -4067,6 +4205,23 @@ class Agent:
             raw_entry["marker"] = gui_marker
         pending_raw.append(raw_entry)
         self._accumulated_tool_rounds_raw = pending_raw
+        if _bg_tid_raw:
+            # A very fast background task can finalize BEFORE this raw entry is
+            # recorded (the finalizer runs on a watcher thread).  The raw entry
+            # is now in place, so if the task already reached a terminal state,
+            # write the final output back immediately — the GUI block then
+            # shows the command's real output on expand/reload.
+            try:
+                _bg_mgr = getattr(self, "_background_task_manager", None)
+                if _bg_mgr is not None:
+                    _bg_rec = _bg_mgr.get(_bg_tid_raw)
+                    if _bg_rec is not None and _bg_rec.status != "running":
+                        try:
+                            _bg_mgr._update_round_output(_bg_rec)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         if t == "apply_patch":
             self._attach_accumulated_tool_rounds(clear=False)
         if sync_after_raw_attach:
@@ -8418,6 +8573,7 @@ class Agent:
         interactive: bool = False,
         input_data: Optional[str] = None,
         bypass_sandbox: bool = False,
+        background: bool = False,
     ) -> dict:
         """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
         return tools_shell.action_shell_command(
@@ -8427,6 +8583,7 @@ class Agent:
             interactive=interactive,
             input_data=input_data,
             bypass_sandbox=bypass_sandbox,
+            background=background,
         )
 
     def action_apply_unified_patch(
@@ -9058,6 +9215,15 @@ class Agent:
         """
         Shut down runtime resources in a unified way. Non-blocking by default so background thread pools/tasks do not delay exit.
         """
+        try:
+            mgr = getattr(self, "_background_task_manager", None)
+            if mgr is not None:
+                try:
+                    mgr.shutdown()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try:
             self._stop_skills_watcher()
         except Exception:

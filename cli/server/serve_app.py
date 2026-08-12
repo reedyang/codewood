@@ -8386,9 +8386,23 @@ class ServeApp:
             "tool_feedback_repaint",
             self._route(text=str(text or "")),
         )
-        self.agent._gui_tool_output_emit = lambda text: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "output",
-            self._route(text=str(text or "")),
+        def _emit_tool_output(text: str, **kw: Any) -> None:
+            payload: Dict[str, Any] = {"text": str(text or "")}
+            bg_task_id = str(kw.get("bg_task_id") or "")
+            if bg_task_id:
+                payload["bgTaskId"] = bg_task_id
+            self.broadcaster.publish("output", self._route(**payload))
+
+        self.agent._gui_tool_output_emit = _emit_tool_output  # type: ignore[attr-defined]
+        self.agent._gui_bg_task_output_emit = lambda task_id, text, end=False, status="", return_code=None: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "background_task_output",
+            self._route(
+                taskId=str(task_id or ""),
+                text=str(text or ""),
+                end=bool(end),
+                status=str(status or ""),
+                returnCode=return_code,
+            ),
         )
         self.agent._gui_request_user_input_answer_emit = lambda answer: self.broadcaster.publish(  # type: ignore[attr-defined]
             "request_user_input_answer",

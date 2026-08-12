@@ -4266,6 +4266,14 @@ def run_agent_loop(agent: Any):
                     _history_len_before_model_call = len(
                         list(getattr(self, "conversation_history", None) or [])
                     )
+                    # Carry completed background-task results into the next
+                    # model call as hidden internal user messages.  Drain right
+                    # before call_ai so a task that finished while the previous
+                    # tool batch was still running is delivered immediately.
+                    try:
+                        self._inject_pending_background_task_results()
+                    except Exception:
+                        pass
                     ai_result = self.call_ai(
                         model_input,
                         context=_brief_ctx,

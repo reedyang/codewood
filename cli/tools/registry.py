@@ -18,6 +18,7 @@ from ..core.config.model_providers import is_small_model_context_window
 from .base import BaseTool
 
 from .shell import ShellTool
+from .background import BackgroundTaskKillTool, BackgroundTaskStatusTool, WaitTool
 from .apply_patch import ApplyPatchTool
 from .read import ReadTool
 from .grep import GrepTool
@@ -62,6 +63,9 @@ _MCP_PREFIX_RE = re.compile(r"^mcp__(.+?)__(.+)$")
 
 ALL_TOOLS: List[Type[BaseTool]] = [
     ShellTool,
+    BackgroundTaskKillTool,
+    BackgroundTaskStatusTool,
+    WaitTool,
     ApplyPatchTool,
     ReadTool,
     GrepTool,

@@ -17,7 +17,7 @@ vi.mock("../state/AppContext", () => ({
   }),
 }));
 
-import { compactNoticeInsertionIndex, HistoryRoundDetailView, LiveRoundView, orderTranscriptEntries, RoundShell, TurnView } from "./ChatView";
+import { compactNoticeInsertionIndex, groupLiveRounds, HistoryRoundDetailView, LiveRoundView, orderTranscriptEntries, RoundShell, TurnView } from "./ChatView";
 import { StepsView } from "./Steps";
 
 describe("HistoryRoundDetailView", () => {
@@ -538,5 +538,62 @@ describe("orderTranscriptEntries", () => {
       "",
       "正在执行任务的用户消息",
     ]);
+  });
+});
+
+describe("groupLiveRounds background grouping", () => {
+  it("keeps an active background round in its own group so later Wait lines are not swallowed", () => {
+    const now = Date.now();
+    const groups = groupLiveRounds([
+      {
+        id: 1,
+        waitStartedAt: now,
+        waitEndedAt: null,
+        bgTaskId: "call_1",
+        bgTaskEnded: false,
+        segments: [
+          {
+            id: 2,
+            kind: "step",
+            // Background shell round: prompt line + OPEN command-output block
+            // (no \uE001 END sentinel) — the live suffix keeps it open until the
+            // task finishes.
+            text:
+              "\uE004• Ran in background echo hi\uE005\n" +
+              "\uE000Background task started (id=call_1)...",
+          },
+        ],
+      },
+      {
+        id: 3,
+        waitStartedAt: now,
+        waitEndedAt: null,
+        // A blocking tool's feedback line arrives while the background task is
+        // still running. It is routed into its own round by appendSegment; the
+        // renderer must NOT merge it into the open background block.
+        segments: [
+          {
+            id: 4,
+            kind: "step",
+            text:
+              "\uE004\x1b[38;2;19;161;14m•\x1b[0m \x1b[1mWait\x1b[0m \x1b[94m(seconds=30)\x1b[0m\uE005",
+          },
+        ],
+      },
+    ]);
+
+    expect(groups.filter((g) => g.kind === "tool")).toHaveLength(2);
+    const bgGroup = groups.find(
+      (g) => g.kind === "tool" && g.rounds.some((r) => r.bgTaskId === "call_1"),
+    );
+    const waitGroup = groups.find(
+      (g) =>
+        g.kind === "tool" &&
+        g.rounds.some((r) => r.segments.some((s) => s.text.includes("Wait"))),
+    );
+    expect(bgGroup && bgGroup.kind === "tool" ? bgGroup.rounds : []).toHaveLength(1);
+    expect(waitGroup && waitGroup.kind === "tool" ? waitGroup.rounds : []).toHaveLength(1);
+    // The Wait line must not share a group with the still-open background block.
+    expect(bgGroup).not.toBe(waitGroup);
   });
 });

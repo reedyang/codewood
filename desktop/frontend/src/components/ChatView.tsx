@@ -3064,6 +3064,19 @@ export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
       continue;
     }
     if (isLiveToolRound(round)) {
+      // A background task round keeps its command-output block OPEN (no
+      // CMD_OUTPUT_END sentinel) until the task finishes.  Later tool rounds
+      // (e.g. "• Wait (seconds=30)" before the blocking wait tool) must NOT be
+      // concatenated into that same group: splitSteps enters cmd mode at the
+      // open CMD_OUTPUT_BEGIN and would swallow the subsequent prompt sentinels
+      // as raw command output, hiding the Wait line until the block closes.
+      // Flush the pending tool group and render the background round as its
+      // own group so following rounds open a fresh, independently parsed one.
+      if (round.bgTaskId && !round.bgTaskEnded) {
+        flushTools();
+        groups.push({ kind: "tool", rounds: [round] });
+        continue;
+      }
       toolRounds.push(round);
       continue;
     }
