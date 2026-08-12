@@ -5,14 +5,20 @@ import { chatKey } from "./chatMenu";
 
 interface ArchivedChat extends WorkspaceChatSummary {
   wsId: string;
+}
+
+interface WorkspaceGroup {
+  wsId: string;
   wsName: string;
+  chats: ArchivedChat[];
 }
 
 export function ArchivedChatsSettings() {
   const { state, workspaceChats, refreshWorkspaceChats, toggleChatArchive, deleteChat, t } = useApp();
   const [loading, setLoading] = useState(true);
   const [chatToDelete, setChatToDelete] = useState<ArchivedChat | null>(null);
-  const [confirmRemoveAll, setConfirmRemoveAll] = useState(false);
+  const [groupToClear, setGroupToClear] = useState<WorkspaceGroup | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   // Keep the latest workspaces in a ref so ``loadAll`` stays referentially
   // stable. Depending on ``state`` directly would recreate ``loadAll`` on every
@@ -43,36 +49,43 @@ export function ArchivedChatsSettings() {
     return map;
   }, [state?.workspaces]);
 
-  const archivedChats: ArchivedChat[] = useMemo(() => {
-    const result: ArchivedChat[] = [];
+  const groups: WorkspaceGroup[] = useMemo(() => {
+    const byWs = new Map<string, ArchivedChat[]>();
     for (const [wsId, chats] of Object.entries(workspaceChats)) {
       for (const c of chats) {
         if (c.archived) {
-          result.push({ ...c, wsId, wsName: wsNames[wsId] ?? wsId });
+          const list = byWs.get(wsId) ?? [];
+          list.push({ ...c, wsId });
+          byWs.set(wsId, list);
         }
       }
     }
     if (state?.chats) {
       const activeWsId = state.workspace.id;
-      const seenIds = new Set(result.map((r) => r.id));
+      const seenIds = new Set<string>();
+      for (const list of byWs.values()) {
+        for (const c of list) seenIds.add(c.id);
+      }
       for (const c of state.chats) {
         if (c.archived && !seenIds.has(c.id)) {
-          result.push({
+          const list = byWs.get(activeWsId) ?? [];
+          list.push({
             id: c.id,
             name: c.name,
             updatedAt: c.updatedAt,
             archived: c.archived,
             wsId: activeWsId,
-            wsName: wsNames[activeWsId] ?? activeWsId,
           });
+          byWs.set(activeWsId, list);
         }
       }
     }
-    result.sort((a, b) => {
-      const aTime = a.updatedAt ?? "";
-      const bTime = b.updatedAt ?? "";
-      return bTime.localeCompare(aTime);
-    });
+    const result: WorkspaceGroup[] = [];
+    for (const [wsId, chats] of byWs) {
+      chats.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+      result.push({ wsId, wsName: wsNames[wsId] ?? wsId, chats });
+    }
+    result.sort((a, b) => a.wsName.localeCompare(b.wsName));
     return result;
   }, [workspaceChats, state, wsNames]);
 
@@ -91,53 +104,66 @@ export function ArchivedChatsSettings() {
     [deleteChat],
   );
 
-  const handleRemoveAll = useCallback(async () => {
-    for (const chat of archivedChats) {
-      await deleteChat(chat.id, chat.wsId);
+  const handleClearGroup = useCallback(async () => {
+    if (!groupToClear) return;
+    setClearing(true);
+    try {
+      for (const chat of groupToClear.chats) {
+        await deleteChat(chat.id, chat.wsId);
+      }
+      await loadAll();
+    } finally {
+      setClearing(false);
+      setGroupToClear(null);
     }
-    setConfirmRemoveAll(false);
-    void loadAll();
-  }, [archivedChats, deleteChat, loadAll]);
+  }, [groupToClear, deleteChat, loadAll]);
 
   return (
     <div className="settings-page">
       <div className="archived-chats-header">
         <h2 className="settings-page-title">{t("settings.page.archivedChats")}</h2>
-        {!loading && archivedChats.length > 0 && (
-          <button
-            className="archived-chats-remove-all"
-            onClick={() => setConfirmRemoveAll(true)}
-          >
-            {t("archivedChats.removeAll")}
-          </button>
-        )}
       </div>
       {loading ? (
         <p className="muted">{t("models.loading")}</p>
-      ) : archivedChats.length === 0 ? (
+      ) : groups.length === 0 ? (
         <p className="muted">{t("archivedChats.empty")}</p>
       ) : (
-        <div className="archived-chats-list">
-          {archivedChats.map((chat) => (
-            <div key={chatKey(chat.wsId, chat.id)} className="archived-chat-row">
-              <div className="archived-chat-info">
-                <span className="archived-chat-name">{chat.name}</span>
-                <span className="archived-chat-workspace">{chat.wsName}</span>
+        <div className="archived-chat-groups">
+          {groups.map((group) => (
+            <div key={group.wsId} className="archived-chat-group">
+              <div className="archived-chat-group-header">
+                <span className="archived-chat-group-name">{group.wsName}</span>
+                <span className="archived-chat-group-count">{group.chats.length}</span>
+                <button
+                  className="archived-chat-group-remove-all"
+                  onClick={() => setGroupToClear(group)}
+                >
+                  {t("archivedChats.removeWorkspaceAll")}
+                </button>
               </div>
-              <button
-                className="archived-chat-unarchive"
-                onClick={() => handleUnarchive(chat)}
-                title={t("archivedChats.unarchive")}
-              >
-                {t("archivedChats.unarchive")}
-              </button>
-              <button
-                className="archived-chat-remove"
-                onClick={() => setChatToDelete(chat)}
-                title={t("common.remove")}
-              >
-                {t("common.remove")}
-              </button>
+              <div className="archived-chats-list">
+                {group.chats.map((chat) => (
+                  <div key={chatKey(chat.wsId, chat.id)} className="archived-chat-row">
+                    <div className="archived-chat-info">
+                      <span className="archived-chat-name">{chat.name}</span>
+                    </div>
+                    <button
+                      className="archived-chat-unarchive"
+                      onClick={() => handleUnarchive(chat)}
+                      title={t("archivedChats.unarchive")}
+                    >
+                      {t("archivedChats.unarchive")}
+                    </button>
+                    <button
+                      className="archived-chat-remove"
+                      onClick={() => setChatToDelete(chat)}
+                      title={t("common.remove")}
+                    >
+                      {t("common.remove")}
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>
@@ -163,18 +189,26 @@ export function ArchivedChatsSettings() {
         </div>
       )}
 
-      {confirmRemoveAll && (
+      {groupToClear && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
-            <h3 className="modal-title">{t("archivedChats.removeAllConfirm")}</h3>
-            <p className="modal-body">{t("archivedChats.removeAllConfirm")}</p>
+            <h3 className="modal-title">
+              {t("archivedChats.removeWorkspaceAllTitle", { name: groupToClear.wsName })}
+            </h3>
+            <p className="modal-body">
+              {t("archivedChats.removeWorkspaceAllConfirm", {
+                name: groupToClear.wsName,
+                count: String(groupToClear.chats.length),
+              })}
+            </p>
             <div className="modal-actions">
-              <button className="btn" onClick={() => setConfirmRemoveAll(false)}>
+              <button className="btn" onClick={() => setGroupToClear(null)} disabled={clearing}>
                 {t("common.cancel")}
               </button>
               <button
                 className="btn btn-danger"
-                onClick={() => void handleRemoveAll()}
+                onClick={() => void handleClearGroup()}
+                disabled={clearing}
               >
                 {t("common.remove")}
               </button>

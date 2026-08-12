@@ -3016,22 +3016,62 @@ html[data-has-bg] .select {
   margin-bottom: 0;
 }
 
-.archived-chats-remove-all {
+.archived-chat-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.archived-chat-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.archived-chat-group-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border: none;
-  border-radius: 8px;
+  padding: 2px 4px;
+}
+
+.archived-chat-group-name {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-chat-group-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.archived-chat-group-remove-all {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
   color: #c54545;
   font: inherit;
+  font-size: 12px;
   cursor: pointer;
-  text-align: left;
+  white-space: nowrap;
 }
 
-.archived-chats-remove-all:hover {
+.archived-chat-group-remove-all:hover {
   background: color-mix(in srgb, #c54545 12%, transparent);
+  border-color: color-mix(in srgb, #c54545 35%, transparent);
 }
 
 .archived-chats-list {
@@ -3060,14 +3100,6 @@ html[data-has-bg] .select {
 .archived-chat-name {
   font-weight: 600;
   font-size: 14px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.archived-chat-workspace {
-  font-size: 11px;
-  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
