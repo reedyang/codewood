@@ -235,8 +235,10 @@ export const en: Dict = {
   "sandbox.unsupported": "Sandboxing is not supported on this platform yet.",
   "archivedChats.empty": "No archived chats.",
   "archivedChats.unarchive": "Unarchive",
-  "archivedChats.removeAll": "Remove All",
-  "archivedChats.removeAllConfirm": "Permanently remove all archived chats?",
+  "archivedChats.removeWorkspaceAll": "Remove All",
+  "archivedChats.removeWorkspaceAllTitle": "Remove all archived chats in \"{name}\"?",
+  "archivedChats.removeWorkspaceAllConfirm":
+    "This permanently deletes {count} archived chat(s) in workspace \"{name}\".",
   "archivedChats.removeConfirm": "Remove this archived chat?",
   "settings.console.font": "Font",
   "settings.console.fontDefault": "Default",
