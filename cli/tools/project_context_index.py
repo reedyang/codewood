@@ -1764,13 +1764,11 @@ if _WATCHDOG_AVAILABLE:
                 index._save()
 
         def _on_event(self, rel: str, kind: Optional[str]) -> None:
-            if not rel:
-                return
             try:
                 root_s = str(self._index.workspace_root).replace("\\", "/")
             except Exception:
                 return
-            rel = rel.replace("\\", "/")
+            rel = _normalize_watch_rel(rel, root_s)
             if not rel or rel.startswith(".") or "/." in rel:
                 return
             parts = rel.split("/")
@@ -1810,6 +1808,23 @@ if _WATCHDOG_AVAILABLE:
 
 else:
     _ProjectFileWatcher = None
+
+
+def _normalize_watch_rel(rel: str, root_s: str) -> str:
+    """Rebase a watchdog event path onto the workspace root as a POSIX rel path.
+
+    watchdog emits absolute ``src_path``/``dest_path`` values, while index
+    keys are workspace-relative. Storing an absolute path as a key would
+    index the same file twice (absolute + relative), inflating the indexed
+    file count and the status-bar ``Index: N files`` figure.
+    """
+    try:
+        rel = str(rel or "").replace("\\", "/")
+        if os.path.isabs(rel):
+            rel = os.path.relpath(rel, root_s).replace("\\", "/")
+        return rel
+    except Exception:
+        return ""
 
 
 def _start_file_watcher(index: "ProjectContextIndex") -> Optional[Any]:

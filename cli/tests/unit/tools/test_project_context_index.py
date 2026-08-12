@@ -6,6 +6,7 @@ from pathlib import Path
 from cli.agent import Agent
 from cli.tools.project_context_index import (
     ProjectContextIndex,
+    _normalize_watch_rel,
     _CallEdge,
     _FileEntry,
     search_workspace_files,
@@ -71,6 +72,45 @@ class ProjectContextIndexTests(unittest.TestCase):
 
             st = index.status()
             self.assertEqual(st["files_total"], 2)
+
+    def test_normalize_watch_rel_rebases_absolute_paths(self):
+        root = "D:/SourceCode/opensource/codewood"
+        self.assertEqual(
+            _normalize_watch_rel(
+                r"D:\SourceCode\opensource\codewood\cli\config\app_info.py", root
+            ),
+            "cli/config/app_info.py",
+        )
+        self.assertEqual(
+            _normalize_watch_rel("D:/SourceCode/opensource/codewood/cli/config/app_info.py", root),
+            "cli/config/app_info.py",
+        )
+        self.assertEqual(
+            _normalize_watch_rel("cli/config/app_info.py", root),
+            "cli/config/app_info.py",
+        )
+        self.assertEqual(_normalize_watch_rel("", root), "")
+        self.assertEqual(_normalize_watch_rel(None, root), "")
+
+    def test_refresh_removes_absolute_path_duplicates(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            (workspace / "a.py").write_text("def f():\n    pass\n", encoding="utf-8")
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=Path(td_storage))
+            index.refresh_index(force=True)
+            self.assertIn("a.py", index.files)
+
+            # Simulate the file-watcher bug that stored the same file under an
+            # absolute-path key in addition to the relative one.
+            abs_key = str(workspace / "a.py").replace("\\", "/")
+            with index._lock:
+                index.files[abs_key] = index.files["a.py"]
+            self.assertEqual(len(index.files), 2)
+
+            index.refresh_index(force=False)
+            self.assertEqual(len(index.files), 1)
+            self.assertIn("a.py", index.files)
+            self.assertNotIn(abs_key, index.files)
 
     def test_refresh_writes_index_file_even_when_workspace_has_no_code_files(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
