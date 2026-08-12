@@ -434,6 +434,36 @@ describe("TurnView compact notice placement", () => {
       user.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
   });
+
+  it("keeps a compact summary above a settled turn's output", () => {
+    render(
+      <TurnView
+        turn={{
+          id: 10,
+          userText: "已结束任务的消息",
+          rounds: [],
+          startedAt: 1000,
+          endedAt: 2000,
+        }}
+        now={3000}
+        negIndex={-1}
+        handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
+        compactNotice={{
+          title: "Context compacted",
+          body: "formatted summary",
+          text: "Context compacted",
+          stage: "done",
+          anchorTurnId: 10,
+        }}
+      />,
+    );
+
+    const summary = screen.getByText("formatted summary");
+    const user = screen.getByText("已结束任务的消息");
+    expect(
+      summary.compareDocumentPosition(user) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
 });
 
 describe("orderTranscriptEntries", () => {
@@ -474,5 +504,39 @@ describe("orderTranscriptEntries", () => {
     expect(
       compactNoticeInsertionIndex(entries, new Date("2026-08-05T12:01:00").getTime()),
     ).toBe(1);
+  });
+
+  it("keeps a persisted compact summary above the running turn it belongs to", () => {
+    const entries = orderTranscriptEntries(
+      [
+        { userText: "正在执行任务的用户消息", timestamp: "2026-08-05 12:00:00", rounds: [] },
+        {
+          userText: "",
+          timestamp: "2026-08-05 12:05:00",
+          rounds: [
+            {
+              waitSeconds: 0,
+              text: "",
+              tools: "",
+              compactNoticeTitle: "Context compacted",
+              compactNoticeBody: "formatted summary",
+            },
+          ],
+        },
+      ],
+      [{
+        id: 3,
+        userText: "正在执行任务的用户消息",
+        rounds: [],
+        startedAt: new Date("2026-08-05T12:00:00").getTime(),
+        endedAt: null,
+      }],
+    );
+
+    expect(entries.map((entry) => entry.turn.userText)).toEqual([
+      "正在执行任务的用户消息",
+      "",
+      "正在执行任务的用户消息",
+    ]);
   });
 });

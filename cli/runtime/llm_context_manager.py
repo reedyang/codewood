@@ -1377,12 +1377,20 @@ class LLMContextManager:
                 print(self._t("compaction.no_context"))
             return False
         start_text = self._t("compaction.start.auto") if mode == "auto" else self._t("compaction.start.manual")
-        self._emit_gui_compaction_notice("start", mode, start_text)
-        start_banner_lines = self._print_compaction_notice(start_text)
+        # In GUI mode the bridge (``_OutputBridge``) is installed as sys.stdout
+        # and every write becomes an ``output`` SSE event, so printing the TUI
+        # banner/raw text here would leak a second, unformatted notice into the
+        # transcript.  Route the start feedback exclusively through the GUI
+        # notice callback; keep the TUI banner for terminal sessions only.
+        gui_notice_enabled = callable(getattr(self.agent, "_gui_compaction_notice", None))
+        if gui_notice_enabled:
+            self._emit_gui_compaction_notice("start", mode, start_text)
+            start_banner_lines = 0
+        else:
+            start_banner_lines = self._print_compaction_notice(start_text)
         source_history = [m for _idx, m in candidates_with_idx]
         compaction_user_input = self.build_compaction_user_input(mode)
         stream_summary = True
-        gui_notice_enabled = callable(getattr(self.agent, "_gui_compaction_notice", None))
         stream_to_terminal = not gui_notice_enabled
         streamed_summary_parts: List[str] = []
         try:
@@ -1426,11 +1434,12 @@ class LLMContextManager:
                     streamed_summary_parts.append(piece)
                     current_stream_text = "".join(streamed_summary_parts)
                     if gui_notice_enabled:
+                        stream_body = current_stream_text.replace("```", "").strip()
                         self._emit_gui_compaction_notice(
                             "stream",
                             mode,
                             start_text,
-                            current_stream_text,
+                            stream_body,
                         )
                     if stream_to_terminal:
                         self._write_compaction_raw(piece)
@@ -1497,12 +1506,15 @@ class LLMContextManager:
             if mode == "manual":
                 print(self._t("compaction.failed_saving_summary"))
             return False
+        compact_display = self.build_context_compaction_display_payload(content)
         if stream_to_terminal:
             if self._compaction_tui_finalize_via_reload():
                 return True
-        self._clear_compaction_banner(start_banner_lines)
-        compact_display = self.build_context_compaction_display_payload(content)
-        self._print_compaction_notice(compact_display["title"], compact_display["body"])
+            self._clear_compaction_banner(start_banner_lines)
+            self._print_compaction_notice(compact_display["title"], compact_display["body"])
+        # The formatted summary reaches the GUI through the ``done`` notice
+        # only; printing it to stdout in GUI mode would duplicate it below the
+        # rendered summary as raw TUI text (see the ``start`` branch above).
         self._emit_gui_compaction_notice("done", mode, compact_display["title"], compact_display["body"])
         return True
 
