@@ -3489,4 +3489,202 @@ describe("AppContext backend crash recovery", () => {
     expect(apiMock.connectEvents.mock.calls.length).toBeGreaterThan(callsBefore);
     expect(apiMock.getState.mock.calls.length).toBeGreaterThan(1);
   });
+
+  describe("background tasks", () => {
+    it("routes background_task_output into the bound round and settles it on end", async () => {
+      render(
+        <AppProvider>
+          <TurnsProbe />
+        </AppProvider>,
+      );
+      await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+      act(() => {
+        apiMock.emit({
+          event: "turn_start",
+          data: { text: "run", chatId: "chat-1", workspaceId: "ws-1" },
+        });
+        apiMock.emit({
+          event: "output",
+          data: {
+            // The started block keeps its CMD_OUTPUT open (no \uE001 END).
+            text: "\uE004• Ran in background echo hi\uE005\n\uE000Background task started (id=call_1)...",
+            bgTaskId: "call_1",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        expect(turns[0].rounds[0].bgTaskId).toBe("call_1");
+        expect(turns[0].rounds[0].bgTaskEnded).toBe(false);
+        expect(turns[0].rounds[0].waitEndedAt).toBeNull();
+      });
+
+      act(() => {
+        apiMock.emit({
+          event: "background_task_output",
+          data: { taskId: "call_1", text: "progress-1\n", chatId: "chat-1", workspaceId: "ws-1" },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        const text = turns[0].rounds[0].segments.map((s) => s.text).join("");
+        expect(text).toContain("progress-1");
+      });
+
+      act(() => {
+        apiMock.emit({
+          event: "background_task_output",
+          data: {
+            taskId: "call_1",
+            text: "final-line\n",
+            end: true,
+            status: "completed",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        const round = turns[0].rounds[0];
+        expect(round.bgTaskEnded).toBe(true);
+        expect(round.waitEndedAt).toBeTypeOf("number");
+        const text = round.segments.map((s) => s.text).join("");
+        expect(text).toContain("final-line");
+        expect(text).toContain("[bg task call_1 completed]");
+        expect(text).toContain("\uE001");
+      });
+    });
+
+    it("keeps the background round spinning across round_start/round_end", async () => {
+      render(
+        <AppProvider>
+          <TurnsProbe />
+        </AppProvider>,
+      );
+      await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+      act(() => {
+        apiMock.emit({
+          event: "turn_start",
+          data: { text: "run", chatId: "chat-1", workspaceId: "ws-1" },
+        });
+        apiMock.emit({
+          event: "output",
+          data: {
+            text: "\uE004• Ran in background echo hi\uE005\n\uE000Background task started (id=call_1)...",
+            bgTaskId: "call_1",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        expect(turns[0].rounds[0].bgTaskId).toBe("call_1");
+      });
+
+      // A later model round (round_start/round_end) must NOT freeze the
+      // background round — its spinner keeps running until the task ends.
+      act(() => {
+        apiMock.emit({ event: "round_start", data: { chatId: "chat-1", workspaceId: "ws-1" } });
+        apiMock.emit({ event: "round_end", data: { chatId: "chat-1", workspaceId: "ws-1" } });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        const bgRound = turns[0].rounds.find((r) => r.bgTaskId === "call_1");
+        expect(bgRound).toBeDefined();
+        expect(bgRound!.waitEndedAt).toBeNull();
+      });
+
+      act(() => {
+        apiMock.emit({
+          event: "background_task_output",
+          data: {
+            taskId: "call_1",
+            text: "",
+            end: true,
+            status: "completed",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        const bgRound = turns[0].rounds.find((r) => r.bgTaskId === "call_1");
+        expect(bgRound).toBeDefined();
+        expect(bgRound!.waitEndedAt).toBeTypeOf("number");
+      });
+    });
+
+    it("does not swallow a bullet feedback line into an open background block", async () => {
+      render(
+        <AppProvider>
+          <TurnsProbe />
+        </AppProvider>,
+      );
+      await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+      act(() => {
+        apiMock.emit({
+          event: "turn_start",
+          data: { text: "run", chatId: "chat-1", workspaceId: "ws-1" },
+        });
+        apiMock.emit({
+          event: "output",
+          data: {
+            // A background task keeps its output block open (no \uE001 END).
+            text: "\uE004• Ran in background echo hi\uE005\n\uE000Background task started (id=call_1)...",
+            bgTaskId: "call_1",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        expect(turns[0].rounds.some((r) => r.bgTaskId === "call_1")).toBe(true);
+      });
+
+      // A blocking tool's feedback line ("• Wait ...") must render as its own
+      // row instead of being appended into the open background block.
+      act(() => {
+        apiMock.emit({
+          event: "output",
+          data: {
+            // The backend wraps feedback lines in the CMD_PROMPT sentinels
+            // (\uE004…\uE005) plus ANSI colors; the bullet check must strip
+            // both or the line is swallowed into the open background block.
+            text:
+              "\uE004\x1b[38;2;19;161;14m•\x1b[0m \x1b[1mWait\x1b[0m \x1b[94m(seconds=30)\x1b[0m\uE005",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+        const allText = turns[0].rounds.map((r) => r.segments.map((s) => s.text).join("")).join("|");
+        expect(allText.replace(/\x1b\[[0-9;]*m/g, "")).toContain("Wait (seconds=30)");
+        // The wait description must NOT be appended inside the background block.
+        const bgRound = turns[0].rounds.find((r) => r.bgTaskId === "call_1");
+        expect(bgRound!.segments.map((s) => s.text).join("")).not.toContain("Wait (seconds=30)");
+        // And it must live in its own round, ready to render immediately.
+        expect(
+          turns[0].rounds.some((r) => r.segments.map((s) => s.text).join("").replace(/\x1b\[[0-9;]*m/g, "").includes("Wait (seconds=30)")),
+        ).toBe(true);
+      });
+    });
+  });
 });

@@ -1561,8 +1561,22 @@ def action_shell_command(
     interactive: bool = True,
     input_data: Optional[str] = None,
     bypass_sandbox: bool = False,
+    background: bool = False,
 ) -> dict:
     """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
+    # Background mode: spawn the process in the existing worker thread but do
+    # NOT wait for it here.  The tool returns immediately with a
+    # ``background_task_id`` (== the issuing tool call id); the
+    # BackgroundTaskManager finalizes the task when the worker finishes.
+    background_mode = bool(background)
+    _bg_task_id = ""
+    if background_mode:
+        try:
+            _bg_task_id = str(agent._next_tool_call_id() or "").strip()
+        except Exception:
+            _bg_task_id = ""
+        if not _bg_task_id:
+            _bg_task_id = f"bg_{secrets.token_hex(8)}"
     # Capture the thread-bound session key on the main thread BEFORE any
     # pipe-reader threads start.  This is the workspace-qualified key
     # (ws_id::chat_id) that _runtime_for_thread() uses for lookup —
@@ -2135,6 +2149,20 @@ def action_shell_command(
                 else:
                     out_stream = sys.stdout
 
+                # Background mode: never write the command's output to the
+                # terminal / current GUI round.  A BackgroundOutputSink
+                # captures it (discarding terminal rendering) and forwards
+                # batched chunks to the background_task_output SSE event so
+                # the mapped tool-call block updates live.
+                _bg_stream_target = None
+                if background_mode:
+                    try:
+                        from .background_tasks import BackgroundOutputSink
+
+                        _bg_stream_target = BackgroundOutputSink(agent, _bg_task_id)
+                    except Exception:
+                        _bg_stream_target = None
+
                 def _stream_and_capture(
                     pipe: Any,
                     target: Any,
@@ -2388,7 +2416,7 @@ def action_shell_command(
                             target=_stream_and_capture,
                             args=(
                                 process.stdout,
-                                out_stream,
+                                (_bg_stream_target if _bg_stream_target is not None else out_stream),
                                 stdout_chunks,
                                 stdout_completed_lines,
                                 stdout_pending_line_state,
@@ -2397,10 +2425,16 @@ def action_shell_command(
                         )
                         t_out.start()
                         try:
+                            # Background tasks must never be auto-terminated:
+                            # no 30s no-output idle kill, no 900s total cap.
+                            _bg_idle = float("inf") if background_mode else None
+                            _bg_total = float("inf") if background_mode else None
                             code, timed = _wait_for_process_exit_or_interactive_timeout(
                                 process,
                                 agent,
                                 activity_state,
+                                idle_timeout=_bg_idle,
+                                max_total_timeout=_bg_total,
                             )
                         finally:
                             # Abandoned rounds (user interrupt) must not wait for
@@ -2429,6 +2463,58 @@ def action_shell_command(
                     daemon=True,
                 )
                 worker_thread.start()
+
+                if background_mode:
+                    # Register the running task with the session manager and
+                    # return immediately — the worker thread keeps executing in
+                    # the background and the manager finalizes on completion.
+                    _stop_status_ticker()
+                    try:
+                        _mgr = getattr(agent, "_background_task_manager", None)
+                        if _mgr is None:
+                            from .background_tasks import BackgroundTaskManager
+
+                            _mgr = BackgroundTaskManager(agent)
+                            agent._background_task_manager = _mgr
+                        _rec = _mgr.register_task(
+                            task_id=_bg_task_id,
+                            agent=agent,
+                            chat_key=_shell_session_key,
+                            command=command,
+                            cwd=str(execution_cwd.resolve()),
+                            process_ref=process_ref,
+                            worker_state=worker_state,
+                            stdout_chunks=stdout_chunks,
+                            stream_chunks_lock=stream_chunks_lock,
+                            merge_path=merge_path,
+                            sink=_bg_stream_target,
+                        )
+                        _mgr.watch(record=_rec)
+                    except Exception as _bg_reg_err:
+                        return {
+                            "success": False,
+                            "background": True,
+                            "background_task_id": _bg_task_id,
+                            "error": f"Failed to start background task: {_bg_reg_err}",
+                        }
+                    return {
+                        "success": True,
+                        "background": True,
+                        "background_task_id": _bg_task_id,
+                        "status": "running",
+                        "message": (
+                            f"Command is running in background (id={_bg_task_id}): {command}"
+                        ),
+                        "output": (
+                            "Background task started (id="
+                            f"{_bg_task_id}). It keeps running in the background; "
+                            "use `background_task_status` to query it, `wait` to "
+                            "block until it finishes, and `background_task_kill` "
+                            "to terminate it. "
+                            f"Command: {command}\n"
+                        ),
+                        "return_code": None,
+                    }
 
                 # No polling: block on a single event that the worker sets on
                 # completion, or that the interrupt path sets directly (via the
@@ -5290,6 +5376,17 @@ class ShellTool(BaseTool):
                 "type": "boolean",
                 "description": "Request user-approved one-time sandbox bypass (full permissions).",
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Run the command as a background task. Returns immediately "
+                    "with a background_task_id (same as the tool call id); the "
+                    "command keeps running without the 30s no-output timeout. "
+                    "Manage it with `background_task_status`, `wait` and "
+                    "`background_task_kill`; its result is delivered to you "
+                    "automatically when it finishes."
+                ),
+            },
         },
         "required": ["command"],
     }
@@ -5343,6 +5440,7 @@ class ShellTool(BaseTool):
         shell_force = bool(params.get("force", False))
         shell_interactive = bool(params.get("interactive", False))
         shell_bypass_sandbox = bool(params.get("bypass_sandbox", False))
+        shell_background = bool(params.get("background", False))
         clone_guard = guard_git_clone_precheck(agent.work_directory, str(shell_cmd), shell_force)
         if isinstance(clone_guard, dict):
             return clone_guard
@@ -5376,6 +5474,7 @@ class ShellTool(BaseTool):
                 "force": shell_force,
                 "input": params.get("input") if isinstance(params.get("input"), str) else None,
                 "bypass_sandbox": bool(params.get("bypass_sandbox", False)),
+                "background": bool(params.get("background", False)),
             },
         }
         if shell_bypass_sandbox and _sandbox_active_for_agent(agent):
@@ -5395,4 +5494,5 @@ class ShellTool(BaseTool):
             interactive=shell_interactive,
             input_data=None,
             bypass_sandbox=shell_bypass_sandbox,
+            background=shell_background,
         )

@@ -356,7 +356,8 @@ export type ServerEvent =
   | { event: "round_end"; data: { chatId?: string } }
   | { event: "tool_feedback_repaint"; data: { text: string; chatId?: string; workspaceId?: string } }
   | { event: "compact_notice"; data: { title?: string; body?: string; text: string; stage?: string; mode?: string; chatId?: string; workspaceId?: string } }
-  | { event: "output"; data: { text: string } }
+  | { event: "output"; data: { text: string; chatId?: string; workspaceId?: string; bgTaskId?: string } }
+  | { event: "background_task_output"; data: { taskId: string; text: string; end?: boolean; status?: string; returnCode?: number | null; chatId?: string; workspaceId?: string } }
   | { event: "assistant"; data: { text: string } }
   | { event: "thinking"; data: { text: string } }
   | { event: "retry_countdown"; data: RetryCountdownEvent }
@@ -433,6 +434,11 @@ export interface TurnRound {
    *  When present, overrides the client-side thinking timer for consistency
    *  with the history-view ``waitSeconds``. */
   backendElapsedMs?: number;
+  /** Background task id bound to this round (a shell background=true call).
+   *  While ``bgTaskId`` is set and ``bgTaskEnded`` is false the round keeps its
+   *  spinner running even across round/answer boundaries. */
+  bgTaskId?: string;
+  bgTaskEnded?: boolean;
 }
 
 /** One user request and the assistant's streamed response, split into rounds. */

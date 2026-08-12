@@ -104,6 +104,9 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._task_interrupt_requested = False
     agent._interruptible_processes = {}
     agent._interrupt_state_lock = threading.RLock()
+    from ..tools.background_tasks import BackgroundTaskManager
+
+    agent._background_task_manager = BackgroundTaskManager(agent)
     agent._interrupt_monitor_stop_event = threading.Event()
     agent._interrupt_monitor_thread = None
     agent._interrupt_monitor_refs = 0

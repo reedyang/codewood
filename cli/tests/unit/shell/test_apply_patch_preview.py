@@ -901,6 +901,7 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
                 args: Dict[str, Any],
                 failed: bool = False,
                 is_add_file: Optional[bool] = None,
+                background: bool = False,
             ) -> str:
                 return f"tool={tool_name} failed={failed} path={args.get('path', '')}"
 

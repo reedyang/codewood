@@ -809,6 +809,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     draftWorkspaceIdRef.current = draftWorkspaceId;
   }, [draftWorkspaceId]);
   const nextIdRef = useRef(1);
+  // Maps background task id -> live round id per chat. Populated when the
+  // started block for a shell background=true call arrives (the ``output``
+  // SSE carries ``bgTaskId``); used by ``background_task_output`` events to
+  // route late output into the correct tool-call block.
+  const bgTaskByRoundRef = useRef<Record<string, Record<string, number>>>({});
   const seededExpandRef = useRef(false);
   const themeInitRef = useRef(false);
   const activeChatIdRef = useRef<string>("");
@@ -1708,6 +1713,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return text.lastIndexOf(CMD_OUTPUT_BEGIN) > text.lastIndexOf(CMD_OUTPUT_END);
   }, []);
 
+  // A round bound to a background task whose spinner must keep running until
+  // the task finishes (the final ``background_task_output`` end event).
+  const isBgRoundActive = useCallback((round: TurnRound | undefined) => {
+    return Boolean(round && round.bgTaskId && !round.bgTaskEnded);
+  }, []);
+
   // Append a streamed delta to the current round of the active turn. Within a
   // round, consecutive same-kind deltas merge into one segment so model text
   // and tool output each stay contiguous while preserving arrival order.
@@ -1756,11 +1767,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
             break;
           }
         }
+        // A tool feedback/description line printed by the runtime before a
+        // blocking tool executes (e.g. "• Wait (seconds=30)") must open its own
+        // visible row — it must NOT be swallowed as a continuation of an
+        // earlier still-open command block (such as a background shell round
+        // whose output block stays open until the task finishes).  Detect it by
+        // the leading "• " bullet (after ANSI + sentinel stripping), which
+        // command output streams do not produce.  The backend wraps feedback
+        // lines in the CMD_PROMPT sentinels (\ue004…\ue005) and ANSI colors, so
+        // both must be stripped before the bullet check — otherwise the line
+        // is mis-detected and appended inside an open background block.
+        const looksLikeFeedbackLine =
+          kind === "step" &&
+          !text.startsWith(CMD_OUTPUT_BEGIN) &&
+          text
+            .replace(/\x1b\[[0-9;]*m/g, "")
+            .replace(/[\uE000\uE001\uE004\uE005\uE006]/g, "")
+            .trimStart()
+            .startsWith("• ");
         const isCmdContinuation =
           kind === "step" &&
           !text.startsWith(CMD_OUTPUT_BEGIN) &&
           !text.startsWith(CMD_PROMPT_BEGIN) &&
           !text.startsWith(DIFF_BEGIN) &&
+          !looksLikeFeedbackLine &&
           Boolean(openCmdRound);
         if (isCmdContinuation) {
           // Keep the stream contiguous: append to the round that owns the open
@@ -1777,6 +1807,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
           }
           round = openCmdRound as TurnRound;
+        } else if (
+          kind === "step" &&
+          looksLikeFeedbackLine &&
+          isBgRoundActive(round)
+        ) {
+          // A new tool's feedback/description line ("• Wait (seconds=30)", …)
+          // arriving while a background task round is still open must open its
+          // own round — otherwise it is appended inside the background task's
+          // output block and never seen until the task completes (or is
+          // overwritten by the final output).  The background round keeps its
+          // spinner (no freeze) until the task's end event.
+          round = {
+            id: nextIdRef.current++,
+            waitStartedAt: Date.now(),
+            waitEndedAt: null,
+            segments: [],
+          };
+          rounds.push(round);
         } else if (!round) {
           round = {
             id: nextIdRef.current++,
@@ -1804,9 +1852,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // ``round_start`` event, still open a fresh round so the reply gets
           // its own Thinking/timer block instead of being merged into the
           // previous tool-only pass.
+          const freezeEnd = isBgRoundActive(round) ? round.waitEndedAt : (round.waitEndedAt ?? Date.now());
           rounds[rounds.length - 1] = {
             ...round,
-            waitEndedAt: round.waitEndedAt ?? Date.now(),
+            waitEndedAt: freezeEnd,
           };
           round = {
             id: nextIdRef.current++,
@@ -1822,9 +1871,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // If tool output starts after visible assistant text without an
           // explicit ``round_start``, split the round so the answer doesn't
           // remain in a second running "Working..." block beside the tools.
+          const freezeEnd2 = isBgRoundActive(round) ? round.waitEndedAt : (round.waitEndedAt ?? Date.now());
           rounds[rounds.length - 1] = {
             ...round,
-            waitEndedAt: round.waitEndedAt ?? Date.now(),
+            waitEndedAt: freezeEnd2,
           };
           round = {
             id: nextIdRef.current++,
@@ -1870,7 +1920,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return { ...prev, [chatId]: next };
       });
     },
-    [roundHasOpenCmdBlock],
+    [roundHasOpenCmdBlock, isBgRoundActive],
   );
 
   const repaintLastToolPrompt = useCallback((text: string, chatId: string) => {
@@ -2059,6 +2109,138 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // Find the live round that owns the tool-call block just opened for a
+  // background task: the started block keeps its CMD_OUTPUT block open, so the
+  // last round with an open command block is the target. Called right after
+  // appendSegment emitted the block; the ref mirrors committed state.
+  const resolveBgRoundId = useCallback(
+    (chatId: string): number | undefined => {
+      const turns = turnsByChatRef.current[chatId];
+      const turn = turns && turns.length > 0 ? turns[turns.length - 1] : undefined;
+      if (!turn) {
+        return undefined;
+      }
+      for (let i = turn.rounds.length - 1; i >= 0; i -= 1) {
+        if (roundHasOpenCmdBlock(turn.rounds[i])) {
+          return turn.rounds[i].id;
+        }
+      }
+      return undefined;
+    },
+    [roundHasOpenCmdBlock],
+  );
+
+  // Mark a live round as bound to a background task so its spinner survives
+  // round/answer boundaries until the task's end event arrives.
+  const markBgRoundActive = useCallback(
+    (chatId: string, roundId: number, taskId: string) => {
+      setTurnsByChat((prev) => {
+        const list = prev[chatId];
+        if (!list || list.length === 0) {
+          return prev;
+        }
+        const next = [...list];
+        let changed = false;
+        for (let t = next.length - 1; t >= 0; t -= 1) {
+          const turn = next[t];
+          const rIdx = turn.rounds.findIndex((r) => r.id === roundId);
+          if (rIdx < 0) {
+            continue;
+          }
+          const rounds = [...turn.rounds];
+          const round = rounds[rIdx];
+          if (round.bgTaskId === taskId && round.bgTaskEnded === false) {
+            return prev;
+          }
+          rounds[rIdx] = { ...round, bgTaskId: taskId, bgTaskEnded: false };
+          next[t] = { ...turn, rounds };
+          changed = true;
+          break;
+        }
+        return changed ? { ...prev, [chatId]: next } : prev;
+      });
+    },
+    [],
+  );
+
+  // Append background-task output into the round bound to ``taskId`` (found
+  // via bgTaskByRoundRef) or, as a fallback, into the last round.
+  const appendBgTaskOutput = useCallback(
+    (chatId: string, taskId: string, text: string, end: boolean, status: string) => {
+      if (!text && !end) {
+        return;
+      }
+      const mappedRoundId = bgTaskByRoundRef.current[chatId]?.[taskId];
+      setTurnsByChat((prev) => {
+        const list = prev[chatId];
+        if (!list || list.length === 0) {
+          return prev;
+        }
+        const next = [...list];
+        let changed = false;
+        const applyToRound = (turnIdx: number, rIdx: number) => {
+          const turn = next[turnIdx];
+          const rounds = [...turn.rounds];
+          const round = rounds[rIdx];
+          const segments = [...round.segments];
+          if (end) {
+            // Replace the whole output block with the authoritative final
+            // content (the finalizer re-sends the complete bounded output),
+            // so expanding the tool call shows the command's real output.
+            const statusLine = status ? `\n[bg task ${taskId} ${status}]` : "";
+            const finalBlock = CMD_OUTPUT_BEGIN + text + statusLine + CMD_OUTPUT_END;
+            const merged = segments.map((s) => s.text).join("");
+            const beginIdx = merged.indexOf(CMD_OUTPUT_BEGIN);
+            if (beginIdx >= 0) {
+              const prefix = merged.slice(0, beginIdx);
+              segments.splice(0, segments.length, {
+                id: nextIdRef.current++,
+                kind: "step",
+                text: prefix + finalBlock,
+              });
+            } else {
+              segments.push({ id: nextIdRef.current++, kind: "step", text: finalBlock });
+            }
+          } else {
+            // Incremental chunk: append into the still-open output block.
+            const last = segments[segments.length - 1];
+            if (last && last.kind === "step") {
+              segments[segments.length - 1] = { ...last, text: last.text + text };
+            } else if (text) {
+              segments.push({ id: nextIdRef.current++, kind: "step", text });
+            }
+          }
+          rounds[rIdx] = {
+            ...round,
+            segments,
+            bgTaskEnded: end ? true : round.bgTaskEnded,
+            waitEndedAt: end ? (round.waitEndedAt ?? Date.now()) : round.waitEndedAt,
+          };
+          next[turnIdx] = { ...turn, rounds };
+          changed = true;
+        };
+        if (mappedRoundId != null) {
+          for (let t = next.length - 1; t >= 0; t -= 1) {
+            const rIdx = next[t].rounds.findIndex((r) => r.id === mappedRoundId);
+            if (rIdx >= 0) {
+              applyToRound(t, rIdx);
+              break;
+            }
+          }
+        }
+        if (!changed) {
+          const turnIdx = next.length - 1;
+          const rIdx = next[turnIdx] ? next[turnIdx].rounds.length - 1 : -1;
+          if (rIdx >= 0) {
+            applyToRound(turnIdx, rIdx);
+          }
+        }
+        return changed ? { ...prev, [chatId]: next } : prev;
+      });
+    },
+    [],
+  );
+
   // Open a model round's wait timer on the active turn. Each backend
   // ``round_start`` becomes its own UI round so repeated tool-call loops can
   // render distinct Thinking blocks instead of merging later reasoning into the
@@ -2088,7 +2270,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         last.segments.length > 0 ||
         last.thinkingText
       ) {
-        if (last && last.waitEndedAt === null) {
+        if (last && last.waitEndedAt === null && !isBgRoundActive(last)) {
           rounds[rounds.length - 1] = {
             ...last,
             waitEndedAt: Date.now(),
@@ -2124,6 +2306,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return prev;
       }
       const lastRound = turn.rounds[turn.rounds.length - 1];
+      if (isBgRoundActive(lastRound)) {
+        return prev;
+      }
       if (lastRound.waitEndedAt !== null) {
         return prev;
       }
@@ -2162,7 +2347,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       // Freeze any still-open round so its timer stops with the turn.
       const rounds = last.rounds.map((r, i) =>
-        i === last.rounds.length - 1 && r.waitEndedAt === null
+        i === last.rounds.length - 1 && r.waitEndedAt === null && !isBgRoundActive(r)
           ? { ...r, waitEndedAt: Date.now() }
           : r,
       );
@@ -2652,6 +2837,56 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // ``_OutputBridge`` chat getters), so the bucket is always correct.
           if (!eventKey || !String(data.chatId ?? "")) break;
           appendSegment("step", stepText, eventKey);
+          const bgTaskId = String((data as { bgTaskId?: string }).bgTaskId ?? "");
+          if (bgTaskId) {
+            // A background task started: remember which live round owns its
+            // tool-call block so later background_task_output events can
+            // append into it, and bind the round so its spinner keeps running.
+            const recordMapping = () => {
+              const rid = resolveBgRoundId(eventKey);
+              if (rid != null) {
+                const perChat = { ...(bgTaskByRoundRef.current[eventKey] ?? {}) };
+                perChat[bgTaskId] = rid;
+                bgTaskByRoundRef.current[eventKey] = perChat;
+                markBgRoundActive(eventKey, rid, bgTaskId);
+                return true;
+              }
+              return false;
+            };
+            if (!recordMapping()) {
+              window.setTimeout(recordMapping, 0);
+            }
+          }
+          break;
+        }
+        case "background_task_output": {
+          const bgData = event.data as Extract<
+            ServerEvent,
+            { event: "background_task_output" }
+          >["data"];
+          const bgTaskId = String(bgData.taskId ?? "");
+          const bgText = String(bgData.text ?? "");
+          const bgEnd = Boolean(bgData.end);
+          if (!eventKey || !bgTaskId) break;
+          appendBgTaskOutput(
+            eventKey,
+            bgTaskId,
+            bgText,
+            bgEnd,
+            String(bgData.status ?? ""),
+          );
+          if (bgEnd) {
+            // The task finished and the backend rewrote the persisted tool
+            // round with the final output.  When this chat has no live turn
+            // running (the common case: the model already ended its turn and
+            // the GUI is showing the structured history), reload the history
+            // so the expanded tool-call block shows the command's real output.
+            window.setTimeout(() => {
+              if (!busyByChatRef.current[eventKey]) {
+                reloadHistoryRef.current?.();
+              }
+            }, 300);
+          }
           break;
         }
         case "tool_feedback_repaint": {
