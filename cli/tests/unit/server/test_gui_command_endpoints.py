@@ -8,6 +8,7 @@ slash-command machinery.
 """
 
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -45,8 +46,11 @@ def _agent(active_chat: str = "chat-1") -> Agent:
     agent._workspaces_state = {
         "workspaces": {
             "ws-1": {"id": "ws-1", "name": "Workspace 1", "kind": "custom", "root": "D:/ws1"},
+            "ws-2": {"id": "ws-2", "name": "Workspace 2", "kind": "custom", "root": "D:/ws2"},
         },
     }
+    agent._save_workspace_state = lambda: None
+    agent._refresh_input_handler_skill_completions = lambda: None
     agent._workspace_entry_by_selector = lambda selector: next(
         (
             e
@@ -90,6 +94,7 @@ def _app(agent):
     ).__get__(stub, _Stub)
     stub.workspace_create = getattr(ServeApp, "workspace_create").__get__(stub, _Stub)
     stub.workspace_rename = getattr(ServeApp, "workspace_rename").__get__(stub, _Stub)
+    stub.delete_workspace = getattr(ServeApp, "delete_workspace").__get__(stub, _Stub)
     return stub
 
 
@@ -231,6 +236,33 @@ class ServeAppGuiCommandEndpointTests(unittest.TestCase):
             result = app.workspace_rename("ws-1", "Taken")
 
         self.assertEqual(result["ok"], False)
+
+    def test_delete_workspace_removes_entry_synchronously_and_cleans_acl_in_background(self):
+        agent = _agent()
+        app = _app(agent)
+
+        with patch(
+            "cli.core.sandbox.cleanup_workspace_acls"
+        ) as cleanup:
+            result = app.delete_workspace("ws-2")
+
+        # The registry entry is gone BEFORE the request returns.
+        self.assertEqual(result, {"id": "ws-2", "wasActive": False, "fallbackId": ""})
+        self.assertNotIn(
+            "ws-2", agent._workspaces_state.get("workspaces", {})
+        )
+        # The sandbox ACL cleanup runs on a background thread (does not block
+        # the HTTP response); wait for it to fire.
+        deadline = time.time() + 3
+        while cleanup.call_count == 0 and time.time() < deadline:
+            time.sleep(0.005)
+        cleanup.assert_called_once_with(agent, "D:/ws2")
+        self.assertTrue(any(e == "idle" for e, _ in app.broadcaster.published))
+
+    def test_delete_workspace_returns_none_for_missing_or_default(self):
+        app = _app(_agent())
+        self.assertIsNone(app.delete_workspace("nope"))
+        self.assertIsNone(app.delete_workspace("default"))
 
 
 if __name__ == "__main__":

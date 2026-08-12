@@ -4,6 +4,7 @@ import logging
 import re
 import shlex
 import shutil
+import threading
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_name
@@ -400,13 +401,23 @@ def workspace_delete_command(agent: Any, arg_text: str) -> str:
     if isinstance(workspaces, dict):
         workspaces.pop(workspace_id, None)
     # Revoke the sandbox users/group/capability SIDs' ACLs on the forgotten
-    # workspace tree (best-effort, never raises).
-    try:
-        from ..core.sandbox import cleanup_workspace_acls
+    # workspace tree (best-effort, never raises). This walks the whole tree
+    # and can be slow on large projects, so it runs in the background AFTER
+    # the registry entry is gone — deleting must not block on ACL cleanup.
+    deleted_root = str(entry.get("root") or "")
+    if deleted_root:
+        try:
+            from ..core.sandbox import cleanup_workspace_acls
 
-        cleanup_workspace_acls(agent, str(entry.get("root") or ""))
-    except Exception:
-        pass
+            def _cleanup_in_background() -> None:
+                try:
+                    cleanup_workspace_acls(agent, deleted_root)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_cleanup_in_background, daemon=True).start()
+        except Exception:
+            pass
     if active_deleted:
         default_entry = (
             workspaces.get(default_workspace_id)
