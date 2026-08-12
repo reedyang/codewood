@@ -8417,6 +8417,7 @@ class Agent:
         confirmed: bool = False,
         interactive: bool = False,
         input_data: Optional[str] = None,
+        bypass_sandbox: bool = False,
     ) -> dict:
         """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
         return tools_shell.action_shell_command(
@@ -8425,6 +8426,7 @@ class Agent:
             confirmed=confirmed,
             interactive=interactive,
             input_data=input_data,
+            bypass_sandbox=bypass_sandbox,
         )
 
     def action_apply_unified_patch(

@@ -35,6 +35,8 @@ For all software-understanding tasks that require locating code, use `grep` to f
 - Do not wrap script execution in unnecessary PowerShell. Use interpreters directly instead of nesting them in a PowerShell wrapper.
 [[endif]]
 
+If a shell result says `sandbox_related: true`, the failure was likely caused by the sandbox: reflect on whether the command is necessary; if it truly is, you may re-run it with `bypass_sandbox: true` (one-time, user-approved). A rejected escalation ends the task.
+
 ## `read` Tool
 
 `read` is the primary tool for inspecting file contents:

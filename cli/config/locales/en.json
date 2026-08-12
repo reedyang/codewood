@@ -160,6 +160,7 @@
   "execution_policy.prompt.choice_always": "Always (add to skip-confirm list)",
   "execution_policy.prompt.choice_reject_supplement": "Reject & supplement info",
   "execution_policy.prompt.reject_supplement_input": "Supplementary info to continue (leave empty to just reject): ",
+  "execution_policy.prompt.escalate_sandbox_no_command": "⚠️ The model requests to bypass the sandbox (level: {level}) and run this command with full permissions (one-time). Approve? Yes=approve, No=reject and end the task, Reject & supplement info=reject but continue with your feedback.",
   "execution_policy.writes_files.empty_response": "Empty response",
   "execution_policy.writes_files.unable_to_parse": "Unable to parse file-write classification",
   "execution_policy.combined.empty_response": "Empty response",

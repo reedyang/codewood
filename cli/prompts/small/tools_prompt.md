@@ -14,6 +14,8 @@ Use `read` to inspect file contents. Use `offset` and `limit` to page through la
 
 Use for running commands. Prefer built-in tools first. On Windows, prefix non-read file ops with `powershell -ExecutionPolicy Bypass -Command "..."`.
 
+If a shell result says `sandbox_related: true`, the failure was likely caused by the sandbox: reflect on whether the command is necessary; if it truly is, you may re-run it with `bypass_sandbox: true` (one-time, user-approved). A rejected escalation ends the task.
+
 ## Information Completeness
 
 Before finishing, check if you need more info from the user. If so, call `request_user_input`. Try tools first, then ask the user.

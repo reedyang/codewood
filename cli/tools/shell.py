@@ -91,6 +91,39 @@ _READ_ONLY_COMMAND_EXACT: Set[str] = {c.lower() for c in [
     "pwd", "whoami", "hostname", "uname", "date", "time", "ver", "dir",
 ]}
 
+# ---------------------------------------------------------------------------
+# Sandbox failure analysis — heuristics that tell the model whether a failed
+# command was (very likely) blocked by the sandbox itself: denied writes
+# outside the workspace, network disabled, sandbox spawn failures, etc.
+# These only apply while a sandbox plan is active, so false positives are
+# bounded to sandboxed runs.
+# ---------------------------------------------------------------------------
+_SANDBOX_ACCESS_DENIED_RE = re.compile(
+    r"(?i)(access is denied|access denied|permission denied|"
+    r"operation not permitted|is not permitted|eacces|"
+    r"errno\s*13|errno\s*10013)"
+)
+
+# Network-failure output patterns used only when the sandbox has network
+# access disabled *and* the command is a known network command.
+_SANDBOX_NETWORK_RE = re.compile(
+    r"(?i)(network is unreachable|network unreachable|no route to host|"
+    r"connection (?:timed out|refused|reset)|errno\s*1006[01]|"
+    r"errno\s*10060|errno\s*10061|unable to (?:resolve|connect)|"
+    r"could not resolve host|name or service not known|"
+    r"temporary failure in name resolution|getaddrinfo failed|timed out)"
+)
+
+_SANDBOX_NETWORK_COMMAND_RE = re.compile(
+    r"(?i)\b(git\s+(?:fetch|clone|pull|push|ls-remote)|"
+    r"curl|wget|ping|tracert|nslookup|dig|ssh|scp|rsync|"
+    r"pip\s+install|pip3\s+install|python\s+-m\s+(?:pip|uv)\s+install|"
+    r"npm\s+(?:install|ci|i\b)|pnpm\s+(?:install|i\b)|"
+    r"yarn\s+(?:add|install)|nuget\s+install|"
+    r"uv\s+(?:add|sync|pip\s+install)|go\s+(?:get|mod\s+download)|"
+    r"cargo\s+(?:add|update))\b"
+)
+
 
 _CURL_WRITE_FLAGS: Set[str] = {
     # Flags that make curl write response body to a local file.
@@ -1342,12 +1375,184 @@ def _normalize_windows_shell_path_separators(command: str) -> str:
     return call_prefix + rebuilt
 
 
+def _sandbox_escalation_hint(reason: str, plan: Any) -> str:
+    """Model-facing guidance shown when a failure looks sandbox-caused.
+
+    The hint first asks the model to reflect on whether the command is truly
+    necessary (or whether a sandbox-safe alternative exists), then explains
+    how to request a one-time, user-approved sandbox bypass.
+    """
+    if reason == "not_provisioned":
+        return (
+            "This failure is a sandbox configuration problem, not a command "
+            "problem. Run 'codewood sandbox setup' from an elevated terminal "
+            "(or Settings > Security > Sandbox settings > Set up sandbox). "
+            "Alternatively you may request a one-time sandbox bypass by "
+            "re-running this command with `bypass_sandbox: true` on the "
+            "shell tool (the user will be asked to approve)."
+        )
+    if reason == "network_blocked":
+        return (
+            "The sandbox has network access disabled, so this failure is very "
+            "likely caused by the sandbox network block. First reflect on "
+            "whether network access is truly necessary, or whether the "
+            "dependency/package can be resolved offline. If it is truly "
+            "required, you may request a one-time sandbox bypass by re-running "
+            "this command with `bypass_sandbox: true` (the user will be asked "
+            "to approve)."
+        )
+    return (
+        "This failure is very likely caused by the sandbox "
+        "(level=%s): the command may have tried to write outside the allowed "
+        "workspace, touch a protected path, or use a capability the sandbox "
+        "denies. First reflect on whether the command is truly necessary or "
+        "whether a sandbox-safe alternative exists (prefer the built-in "
+        "read/grep/glob tools and keep writes inside the workspace). If it is "
+        "truly required, you may request a one-time sandbox bypass by "
+        "re-running this command with `bypass_sandbox: true` (the user will "
+        "be asked to approve)."
+        % (getattr(plan, "level", "") or "sandbox")
+    )
+
+
+def _sandbox_failure_analysis(
+    command: str,
+    return_code: int,
+    out: str,
+    sandbox_plan: Any,
+) -> Optional[Dict[str, Any]]:
+    """Return sandbox-failure metadata when a failed command was very likely
+    blocked by the sandbox; ``None`` when no sandbox was active or the failure
+    does not look sandbox-caused.
+
+    ``sandbox_plan`` must be the *effective* plan (``None`` after a bypass was
+    approved), so an escalated run is never mislabelled as sandbox-caused.
+    """
+    if sandbox_plan is None:
+        return None
+    text = str(out or "")
+    reason: Optional[str] = None
+    if "Sandboxed command could not be started" in text:
+        reason = "spawn_failure"
+    elif int(return_code) == 5:
+        # ERROR_ACCESS_DENIED — the classic sandbox-denied exit code.
+        reason = "access_denied"
+    elif _SANDBOX_ACCESS_DENIED_RE.search(text):
+        reason = "access_denied"
+    elif (
+        (not bool(getattr(sandbox_plan, "network", True)))
+        and _SANDBOX_NETWORK_COMMAND_RE.search(command)
+        and _SANDBOX_NETWORK_RE.search(text)
+    ):
+        reason = "network_blocked"
+    if reason is None:
+        return None
+    return {
+        "sandbox_related": True,
+        "sandbox_reason": reason,
+        "sandbox_level": getattr(sandbox_plan, "level", "") or "",
+        "sandbox_network": bool(getattr(sandbox_plan, "network", True)),
+        "sandbox_escalation_hint": _sandbox_escalation_hint(
+            reason, sandbox_plan
+        ),
+    }
+
+
+def _apply_sandbox_escalation_approval(
+    agent: Any,
+    command: str,
+    sandbox_plan: Any,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Ask the user to approve a one-time sandbox bypass for ``command``.
+
+    Returns ``(approval, result)``:
+
+    - ``('approved', None)`` — the user approved; the caller runs the command
+      unsandboxed for this one call only.
+    - ``('rejected', result)`` — plain reject; ``result`` ends the task.
+    - ``('rejected_with_supplement', result)`` — reject + feedback;
+      ``result`` keeps the task running with the user's text attached.
+    """
+    level = str(getattr(sandbox_plan, "level", "") or "sandbox")
+    prompt_text = _t(
+        agent,
+        "execution_policy.prompt.escalate_sandbox_no_command",
+        fallback=(
+            "⚠️ The model requests to bypass the sandbox (level={level}) and "
+            "run this command with full permissions (one-time). Approve? "
+            "Yes=approve, No=reject and end the task, Reject & supplement "
+            "info=reject but continue with your feedback."
+        ).format(level=level),
+        level=level,
+    )
+    ok = agent._prompt_confirm_yes_no_maybe_always(
+        prompt_text,
+        offer_always=False,
+        kind="shell",
+        shell_command=command,
+        display_command=command,
+    )
+    if ok:
+        return "approved", None
+    from ..services.execution_policy_service import get_confirm_supplement
+
+    if get_confirm_supplement(agent):
+        declined = agent._confirm_declined_result(
+            "User rejected the sandbox-escalation request; the command was "
+            "not executed (sandboxed execution also skipped)."
+        )
+        declined.setdefault("sandbox_escalation_rejected", True)
+        return "rejected_with_supplement", declined
+    return (
+        "rejected",
+        {
+            "success": False,
+            "user_cancelled": True,
+            "cancelled_by_user": True,
+            "retryable": False,
+            "sandbox_escalation_rejected": True,
+            "error": (
+                "User rejected the sandbox-escalation request; the command "
+                "was NOT executed. This ends the current task: do not retry "
+                "this command and do not request sandbox escalation again "
+                "unless the user explicitly asks."
+            ),
+        },
+    )
+
+
+def _sandbox_active_for_agent(agent: Any) -> bool:
+    """Return True when a sandbox plan would apply to this agent's commands.
+
+    Mirrors the plan resolution used inside :func:`action_shell_command`
+    (via the regular import, not the by-path load) so the shell tool can
+    decide *before* execution whether a `bypass_sandbox` request will go
+    through a human approval gate. Never raises.
+    """
+    try:
+        from ..core.sandbox import (
+            SANDBOX_LEVEL_FULL_ACCESS,
+            normalize_sandbox_level,
+            sandbox_plan_for_agent,
+        )
+
+        if (
+            normalize_sandbox_level(getattr(agent, "sandbox_level", None))
+            == SANDBOX_LEVEL_FULL_ACCESS
+        ):
+            return False
+        return sandbox_plan_for_agent(agent) is not None
+    except Exception:
+        return False
+
+
 def action_shell_command(
     agent: Any,
     command: str,
     confirmed: bool = False,
     interactive: bool = True,
     input_data: Optional[str] = None,
+    bypass_sandbox: bool = False,
 ) -> dict:
     """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
     # Capture the thread-bound session key on the main thread BEFORE any
@@ -1390,6 +1595,9 @@ def action_shell_command(
     # A configured sandbox that is not provisioned fails closed: the command
     # is refused instead of silently running unsandboxed.
     sandbox_plan = None
+    _sandbox_plan_original = None
+    _sandbox_bypass_approved = False
+    _sandbox_block = None
     try:
         # Load the sandbox implementation by absolute path: the GUI backend
         # must run the exact code from this repository regardless of any
@@ -1413,10 +1621,8 @@ def action_shell_command(
         _sb_spec.loader.exec_module(_sb)
 
         _sandbox_block = _sb.sandbox_block_error(agent)
-        if _sandbox_block:
-            _log.warning("sandbox fail-closed: %s", _sandbox_block)
-            return {"success": False, "error": _sandbox_block}
         sandbox_plan = _sb.sandbox_plan_for_agent(agent)
+        _sandbox_plan_original = sandbox_plan
         _log.info(
             "sandbox plan: level=%r network=%r plan=%s",
             getattr(agent, "sandbox_level", None),
@@ -1426,6 +1632,37 @@ def action_shell_command(
     except Exception as exc:
         _log.warning("sandbox plan resolution failed: %s", exc)
         sandbox_plan = None
+
+    # The escalation decision and fail-closed check live OUTSIDE the module
+    # load try/except: an exception in the approval flow must never silently
+    # fall back to an unsandboxed run (fail closed, not fail open).
+    if bypass_sandbox and (sandbox_plan is not None or _sandbox_block):
+        # Model-initiated privilege escalation: run this command unsandboxed
+        # (one-time) only after the user approves. The approval prompt maps
+        # to y=approve / n=reject (end task) / r=reject & supplement info
+        # (continue task).
+        _escalation, _escalation_result = _apply_sandbox_escalation_approval(
+            agent, command, sandbox_plan
+        )
+        if _escalation_result is not None:
+            return _escalation_result
+        _sandbox_bypass_approved = True
+        sandbox_plan = None
+        _log.info("sandbox escalation approved by user; running unsandboxed")
+    elif _sandbox_block:
+        # Fail closed: a configured sandbox must never silently fall back to
+        # an unsandboxed run. (``bypass_sandbox`` is the only explicit
+        # user-approved exception, handled above.)
+        _log.warning("sandbox fail-closed: %s", _sandbox_block)
+        return {
+            "success": False,
+            "sandbox_related": True,
+            "sandbox_reason": "not_provisioned",
+            "sandbox_escalation_hint": _sandbox_escalation_hint(
+                "not_provisioned", sandbox_plan
+            ),
+            "error": _sandbox_block,
+        }
 
     # Determine which files this command targets for deletion *before* the
     # confirmation prompt so we can auto-skip approval when the model is
@@ -1483,6 +1720,13 @@ def action_shell_command(
         )
         and (not in_allowlist)
     )
+    # A user-approved sandbox bypass already went through a human
+    # confirmation for this exact command: never re-prompt the generic
+    # command confirmation (and never let a policy/manual-confirm flag
+    # re-require it).
+    if _sandbox_bypass_approved:
+        force_manual_confirm_by_policy = False
+        confirmed = True
     # Hard guard: if AI/policy requires manual confirmation, never bypass it via confirmed=True.
     if force_manual_confirm_by_policy:
         confirmed = False
@@ -2372,6 +2616,13 @@ def action_shell_command(
                 "display_output": replay_out_text,
                 "display_rendered_lines": int(replay_rendered_lines) + int(banner_lines),
             }
+            # Surface sandbox context so the model knows this command ran
+            # sandboxed (or that a one-time user-approved bypass was used).
+            if _sandbox_plan_original is not None:
+                base_out["sandbox_level"] = _sandbox_plan_original.level
+                base_out["sandbox_network"] = bool(_sandbox_plan_original.network)
+                if _sandbox_bypass_approved:
+                    base_out["sandbox_bypassed"] = True
             if _shell_was_truncated:
                 base_out["full_output_path"] = str(_shell_output_path)
             if is_file_read_shell_command(command):
@@ -2817,20 +3068,35 @@ def action_shell_command(
         # Include the command's own output in the error so the model can see
         # why it failed (e.g. an "Access is denied" from the sandbox) instead
         # of only an opaque exit code.
+        _sb_fail = _sandbox_failure_analysis(
+            command, return_code, str(out or ""), sandbox_plan
+        )
         _failure_tail = str(_shell_rendered or "").strip()
         if _failure_tail and not rg_error:
             _failure_tail = _failure_tail[-1200:]
+            _err_msg = (
+                f"Command execution failed, exit code: {return_code}. "
+                f"Output:\n{_failure_tail}"
+            )
+            if _sb_fail:
+                _err_msg += (
+                    "\n\n" + str(_sb_fail.get("sandbox_escalation_hint") or "")
+                )
             return {
                 "success": False,
-                "error": (
-                    f"Command execution failed, exit code: {return_code}. "
-                    f"Output:\n{_failure_tail}"
-                ),
+                "error": _err_msg,
+                **(_sb_fail or {}),
                 **base_out,
             }
+        _err_msg = rg_error or f"Command execution failed, exit code: {return_code}"
+        if _sb_fail:
+            _err_msg += (
+                "\n\n" + str(_sb_fail.get("sandbox_escalation_hint") or "")
+            )
         return {
             "success": False,
-            "error": rg_error or f"Command execution failed, exit code: {return_code}",
+            "error": _err_msg,
+            **(_sb_fail or {}),
             **base_out,
         }
 
@@ -5012,6 +5278,10 @@ class ShellTool(BaseTool):
         "properties": {
             "command": {"type": "string"},
             "force": {"type": "boolean"},
+            "bypass_sandbox": {
+                "type": "boolean",
+                "description": "Request user-approved one-time sandbox bypass (full permissions).",
+            },
         },
         "required": ["command"],
     }
@@ -5064,6 +5334,7 @@ class ShellTool(BaseTool):
 
         shell_force = bool(params.get("force", False))
         shell_interactive = bool(params.get("interactive", False))
+        shell_bypass_sandbox = bool(params.get("bypass_sandbox", False))
         clone_guard = guard_git_clone_precheck(agent.work_directory, str(shell_cmd), shell_force)
         if isinstance(clone_guard, dict):
             return clone_guard
@@ -5096,12 +5367,24 @@ class ShellTool(BaseTool):
                 "interactive": shell_interactive,
                 "force": shell_force,
                 "input": params.get("input") if isinstance(params.get("input"), str) else None,
+                "bypass_sandbox": bool(params.get("bypass_sandbox", False)),
             },
         }
-        confirmed = agent._freedom_auto_confirm(shell_cmd_dict)
+        if shell_bypass_sandbox and _sandbox_active_for_agent(agent):
+            # Model-initiated privilege escalation: this call goes through the
+            # user's escalation-approval prompt instead of the AI auto-review,
+            # so skip the AI review entirely. ``confirmed`` stays False: the
+            # generic confirmation prompt is still suppressed afterwards by
+            # the approved-escalation flag inside action_shell_command (and a
+            # rejected escalation returns before any execution).
+            confirmed = False
+            _log.info("bypass_sandbox requested: skipping AI auto-review")
+        else:
+            confirmed = agent._freedom_auto_confirm(shell_cmd_dict)
         return agent.action_shell_command(
             shell_cmd,
             confirmed=confirmed,
             interactive=shell_interactive,
             input_data=None,
+            bypass_sandbox=shell_bypass_sandbox,
         )
