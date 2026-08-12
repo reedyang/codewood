@@ -6,7 +6,7 @@ from io import StringIO
 from pathlib import Path
 
 from cli.core.config.config_jsonc import CONFIG_JSONC_FILENAME
-from cli.runtime.bootstrap import setup_runtime_preferences
+from cli.runtime.bootstrap import DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT, setup_runtime_preferences
 
 
 class _FakeAgent:
@@ -28,9 +28,15 @@ class RuntimePreferencesTests(unittest.TestCase):
             with redirect_stdout(out):
                 setup_runtime_preferences(agent)
 
-            self.assertEqual(agent.auto_compact_trigger_percent, 80)
+            # Assert against the shared constant instead of a hard-coded number
+            # so a future default bump can't silently stale this test again.
+            self.assertEqual(
+                agent.auto_compact_trigger_percent, DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
+            )
             self.assertIn("Invalid auto_compact_trigger_percent", out.getvalue())
-            self.assertIn("using default 80%", out.getvalue())
+            self.assertIn(
+                f"using default {DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT}%", out.getvalue()
+            )
 
     def test_valid_auto_compact_trigger_percent_is_loaded(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:

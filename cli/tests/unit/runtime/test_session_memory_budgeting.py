@@ -321,6 +321,114 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertEqual(str(agent.conversation_history[2].get("content") or ""), "Subsequent user message")
         self.assertEqual(str(agent.conversation_history[3].get("content") or ""), "Subsequent assistant message")
 
+    def test_compact_routes_prompt_as_internal_user_message(self):
+        # The compact prompt is appended to the main conversation as an
+        # ``_internal`` user message (hidden from GUI/TUI display) right before
+        # the summary, so the assistant summary stays paired with its prompt.
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+        captured = {}
+
+        def _fake_call_ai(*args, **kwargs):
+            captured["user_input"] = args[0] if args else kwargs.get("user_input")
+            return "Summary body"
+
+        agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        self.assertEqual(len(agent.conversation_history), 4)
+        prompt_msg = agent.conversation_history[-2]
+        summary_msg = agent.conversation_history[-1]
+        self.assertEqual(prompt_msg["role"], "user")
+        self.assertTrue(prompt_msg["_internal"])
+        self.assertIn("compact_mode=manual", str(prompt_msg.get("content") or ""))
+        # The exact prompt text sent to the model is what gets persisted, so
+        # history replay sends the same deterministic prompt.
+        self.assertEqual(prompt_msg["content"], captured["user_input"])
+        payload = svc.parse_context_compaction_summary_content(str(summary_msg.get("content") or ""))
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload.get("summary"), "Summary body")
+
+    def test_compact_failure_rolls_back_internal_prompt_message(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("api down")
+
+        agent.call_ai = _boom  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertFalse(ok)
+        # A failed compaction must not leave an orphan internal prompt in
+        # history (it would read as an unanswered compact request to the model).
+        self.assertEqual(len(agent.conversation_history), 2)
+        self.assertEqual(str(agent.conversation_history[-1].get("content") or ""), "Answer needing summarization")
+
+    def test_auto_compact_not_retriggered_by_internal_prompt_tail(self):
+        # After a compaction the tail is ``[internal prompt, summary]``. The
+        # internal prompt is bookkeeping, not genuine dialogue, so a fresh
+        # candidate scan must find nothing to compact until the user sends a
+        # real message — otherwise auto-compact would loop on every check.
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+        agent.call_ai = lambda *args, **kwargs: "Summary body"  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        self.assertEqual(svc.llm_context_manager._compaction_candidate_rows("auto"), [])
+
+    def test_compact_prompt_persisted_but_not_replayed_after_summary(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 128000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+        agent.call_ai = lambda *args, **kwargs: "Summary body"  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        messages, _ = svc.build_regular_task_messages("Continue")
+        joined = "\n".join(str(m.get("content") or "") for m in messages)
+        # The summary is the model-visible context anchor: the hidden internal
+        # prompt is persisted in the conversation (paired with the summary in
+        # history) but is NOT replayed to the model afterwards — it was
+        # compacted into the summary. This keeps the model-visible behavior
+        # identical to the previous out-of-band prompt call.
+        self.assertIn("Summary body", joined)
+        self.assertNotIn("CONTEXT CHECKPOINT COMPACTION", joined)
+        self.assertNotIn("compact_mode=manual", joined)
+
     def test_compact_appends_summary_and_excludes_compaction_meta_from_model_context(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 16000}
