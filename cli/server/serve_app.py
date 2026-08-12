@@ -43,7 +43,6 @@ from ..core.console_utils import (
     GUI_CMD_PROMPT_BEGIN,
     GUI_DIFF_BEGIN,
     GUI_FORCE_PROMPT_PREFIX,
-    GUI_INTERNAL_COMMAND_PREFIX,
 )
 from ..config.app_info import get_app_slug_snake
 from ..services.session_memory_service import _assistant_display_view
@@ -2490,13 +2489,12 @@ class ServeApp:
         forced = str(text).startswith(GUI_FORCE_PROMPT_PREFIX)
         if forced:
             display = str(text)[len(GUI_FORCE_PROMPT_PREFIX):]
-        elif str(text).startswith(GUI_INTERNAL_COMMAND_PREFIX):
-            display = str(text)[len(GUI_INTERNAL_COMMAND_PREFIX):]
         else:
             display = str(text)
-        # GUI-issued internal commands (rename, switch, ...) carry their own
-        # sentinel. A bare slash line with no sentinel is treated the same way
-        # defensively. Hide its echo/output and skip turn bookkeeping.
+        # Defensive: a bare slash line that somehow reaches the loop without
+        # the force-prompt sentinel is treated as an internal command — hide
+        # its echo/output and skip turn bookkeeping so it never leaks into the
+        # model prompt or persisted history.
         is_internal_command = (not forced) and display.lstrip().startswith("/")
         if self._bridge is not None:
             # Per-thread: only silences this loop thread's writes.
@@ -2725,39 +2723,6 @@ class ServeApp:
     def token(self) -> str:
         return self._token
 
-    def _apply_immediate_chat_config(
-        self,
-        chat_id: str,
-        apply_fn: "callable[[], None]",
-    ) -> str:
-        """Apply a GUI model/reasoning change against the target chat session.
-
-        HTTP handler threads are not bound to a chat loop session by default, so
-        mutating model globals here would otherwise pin the change onto the
-        handler thread's anonymous session instead of the target chat's runtime
-        session. Bind to ``chat_id`` first, restore that chat's saved model into
-        the shared globals, then apply the update so future turns in that chat
-        use the new selection.
-        """
-        agent = self.agent
-        cid = str(chat_id or "").strip() or _primary_active_chat_id(agent)
-        with agent._session_scope(cid):
-            try:
-                agent.active_chat_id = cid
-            except Exception:
-                pass
-            try:
-                finder = getattr(agent, "_find_chat_by_id", None)
-                restore = getattr(agent, "_apply_chat_model_from_entry", None)
-                if callable(finder) and callable(restore):
-                    chat = finder(cid)
-                    if chat:
-                        restore(chat, persist_if_missing=True)
-            except Exception:
-                pass
-            apply_fn()
-        return cid
-
     def _diagnose_server_health(self) -> None:
         """Emit a diagnostic snapshot to the server log for ``/server-health``.
 
@@ -2925,113 +2890,6 @@ class ServeApp:
         # runtime loop strips so "/foo" / "!bar" never run as command/shell.
         if as_prompt and line:
             line = GUI_FORCE_PROMPT_PREFIX + line
-        elif line.lstrip().startswith("/"):
-            stripped = line.lstrip()
-            # Apply execution-policy changes immediately so they take effect
-            # even while a multi-round task is executing (the inner tool loop
-            # does not poll the input queue until the current task finishes).
-            if stripped.startswith("/execution-policy "):
-                policy = stripped[len("/execution-policy "):].strip().lower()
-                if policy in ("unlimited", "moderate", "confirmation"):
-                    if policy != str(getattr(self.agent, "execution_policy", "")).lower():
-                        self.agent.execution_policy = policy
-                        try:
-                            save = getattr(self.agent, "_save_execution_policy_to_config", None)
-                            if callable(save):
-                                save()
-                        except Exception:
-                            pass
-                    self.broadcaster.publish(
-                        "state", self._route(state=_build_state(self.agent))
-                    )
-                    return
-            # Apply reasoning effort changes immediately so the new level
-            # is used on the next model call, even while a task is executing.
-            if stripped.startswith("/reasoning ") or stripped == "/reasoning":
-                level = stripped[len("/reasoning"):].strip() if stripped.startswith("/reasoning ") else ""
-                try:
-                    cid = self._apply_immediate_chat_config(
-                        cid,
-                        lambda: self.agent._set_reasoning_effort(level),
-                    )
-                except Exception:
-                    pass
-                self.broadcaster.publish(
-                    "state", self._route(chat_id=cid, state=_build_state(self.agent))
-                )
-                return
-            # Apply model switch immediately so the new model is used on the
-            # next call, even while a task is executing.
-            if stripped.startswith("/model ") or stripped == "/model":
-                try:
-                    cid = self._apply_immediate_chat_config(
-                        cid,
-                        lambda: self.agent._handle_model_builtin_command(stripped),
-                    )
-                except Exception:
-                    pass
-                self.broadcaster.publish(
-                    "state", self._route(chat_id=cid, state=_build_state(self.agent))
-                )
-                return
-            # Apply chat rename immediately so the new name takes effect
-            # even while a multi-round task is executing (the inner tool loop
-            # does not poll the input queue until the current task finishes).
-            if stripped.startswith("/chat rename "):
-                parts = stripped.split()
-                if len(parts) >= 4:
-                    selector = parts[2]
-                    new_name = " ".join(parts[3:]).strip()
-                    # Strip one pair of surrounding quotes (the GUI used to
-                    # send ``"name"`` here); naive split/join otherwise stores
-                    # the literal quote characters into the chat name.
-                    if (
-                        len(new_name) >= 2
-                        and new_name[0] == new_name[-1]
-                        and new_name[0] in ("\"", "'")
-                    ):
-                        new_name = new_name[1:-1].strip()
-                    if new_name:
-                        try:
-                            agent = self.agent
-                            with agent._chat_state_lock:
-                                target = agent._resolve_chat_selector(selector)
-                                if target:
-                                    target["name"] = new_name
-                                    target["name_source"] = "manual"
-                                    target["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    if str(target.get("id") or "") == agent.active_chat_id:
-                                        agent.active_chat_name = new_name
-                                    _mark_dirty = getattr(agent, "_mark_chat_dirty", None)
-                                    if callable(_mark_dirty):
-                                        _mark_dirty(str(target.get("id") or ""))
-                                    agent._save_chat_state()
-                        except Exception:
-                            pass
-                self.broadcaster.publish(
-                    "state", self._route(state=_build_state(self.agent))
-                )
-                return
-            # All other slash commands: mark them so the runtime loop runs it
-            # but keeps them out of the user's input history (history.json).
-            line = GUI_INTERNAL_COMMAND_PREFIX + line
-            # Editing a message while a task is running: interrupt the task first
-            # so the edit command is processed immediately after the task unwinds
-            # rather than waiting for the entire task to complete.
-            if stripped.startswith("/chat edit"):
-                # Suppress the "task interrupted" banner: the edit command
-                # truncates the conversation history, so the interrupted task's
-                # context is already gone and the banner would be misleading.
-                try:
-                    self.agent._conversation_interrupt_banner_recent = True
-                    self.agent._conversation_interrupt_banner_recent_at = 0.0
-                except Exception:
-                    pass
-                # Interrupt only the chat being edited. The interrupt is scoped
-                # to that chat's session and process bucket (see ``interrupt``),
-                # so editing a message in chat B can never abort a task that is
-                # running in a different chat (e.g. chat A).
-                self.interrupt(chat_id=cid, workspace_id=wsid)
         rt = self._get_or_spawn_runtime(cid, wsid)
         rt.input_queue.put(line)
 
