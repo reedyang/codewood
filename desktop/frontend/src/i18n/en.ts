@@ -195,7 +195,7 @@ export const en: Dict = {
   "settings.page.security": "Security",
   "security.auditModel": "Security Audit Model",
   "security.auditModelHint":
-    "Dedicated model for security review calls (e.g. script risk assessment). Use \"provider/model_name\" format, or leave empty to use the default chat model.",
+    "Dedicated model for security review calls (e.g. script risk assessment).",
   "security.auditModelDefault": "Use main model",
   "security.errSaveAuditModel": "Failed to save security audit model.",
   "security.confirmAllowlist": "Confirm Allowlist",
