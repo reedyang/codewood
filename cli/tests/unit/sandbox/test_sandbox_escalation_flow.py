@@ -107,6 +107,25 @@ class SandboxEscalationFlowTests(unittest.TestCase):
         # generic command confirmation must NOT be re-prompted afterwards.
         self.assertEqual(len(agent.prompt_calls), 1)
 
+    def test_unlimited_policy_auto_approves_bypass_without_prompt(self):
+        agent = self._agent()
+        agent.execution_policy = "unlimited"
+        spec_patch, module_patch = _patch_sandbox_loader()
+        with spec_patch, module_patch:
+            result = action_shell_command(
+                agent,
+                "python -c \"print(1)\"",
+                confirmed=False,
+                interactive=False,
+                input_data=None,
+                bypass_sandbox=True,
+            )
+        self.assertTrue(result["success"])
+        self.assertTrue(result["sandbox_bypassed"])
+        self.assertEqual(result["sandbox_level"], "workspace_write")
+        # Unlimited mode: the bypass is auto-approved, no prompt at all.
+        self.assertEqual(len(agent.prompt_calls), 0)
+
     def test_rejected_ends_task_without_execution(self):
         agent = self._agent()
         agent.prompt_result = False
