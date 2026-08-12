@@ -140,6 +140,58 @@ codewood sandbox status
 预置,`shell` 命令会被拒绝并返回明确错误,而不会静默降级为无沙盒执行。
 配置 `full_access` 不需要预置。
 
+## 失败识别与提权(bypass_sandbox)
+
+### 明确告知失败是否由沙箱导致
+
+在沙盒级别下执行的每条 `shell` 命令,结果都会附带沙盒上下文,让模型
+能判断运行环境:
+
+- `sandbox_level` / `sandbox_network`:本次命令的隔离级别与网络开关。
+- `sandbox_bypassed: true`:本次命令经用户批准以完全权限执行(仅一次)。
+
+当沙盒内命令**失败**且看起来是被沙盒拦截时,结果额外携带:
+
+- `sandbox_related: true`:失败非常可能是沙箱限制导致(如访问被拒、
+  网络被禁、沙盒启动失败),而非命令本身错误。
+- `sandbox_reason`:`access_denied` / `network_blocked` / `spawn_failure`
+  / `not_provisioned` 之一。
+- `sandbox_escalation_hint`:给模型的引导文本,提示先反思命令是否必要、
+  是否有沙盒安全的替代方案,确有必要时如何申请提权。
+
+判定依据(仅当沙盒计划生效时):
+
+- 沙盒进程启动失败(`spawn_failure`)或未预置(`not_provisioned`)为确定信号;
+- Windows 退出码 `5`(ERROR_ACCESS_DENIED)或输出含
+  "Access is denied" / "permission denied" / EACCES 等 → `access_denied`;
+- `sandbox_network=false` 且命令为网络类(git fetch/clone/pull、curl、
+  pip/npm install 等)且输出含网络不可达/超时 → `network_blocked`。
+
+### 模型发起的一次性提权(需用户批准)
+
+`shell` 工具新增可选参数 `bypass_sandbox`(布尔)。模型在因沙箱失败并
+反思后,确有必要时可以重新调用 `shell` 并设置 `bypass_sandbox: true`,
+申请以完全权限执行该命令(仅本次,不改变沙盒配置)。执行前一定会弹出
+确认,用户有三个选择:
+
+| 用户选择 | 行为 |
+| --- | --- |
+| 是(批准) | 本次命令以完全权限执行一次;结果标记 `sandbox_bypassed: true` |
+| 否(拒绝) | 结束当前任务:命令不执行,返回 `user_cancelled`,运行时按用户取消处理,模型不得重试或再次申请提权 |
+| 拒绝并补充信息 | 任务继续:命令不执行,返回 `user_rejected_with_supplement` + `user_supplement`,模型按用户反馈调整步骤后继续 |
+
+提权批准视为**本次命令唯一的人工审核关卡**:
+
+- 批准后**不会再弹出**第二次的常规命令执行确认(execution policy),直接执行;
+- 该工具调用**跳过 AI 自动审核**(`_freedom_auto_confirm`),因为用户已在
+  提权确认中人工把关;
+- 仅当沙盒实际激活(`read_only` / `workspace_write` 且平台支持)时上述
+  跳过才生效;`full_access` 或平台不支持时 `bypass_sandbox` 是空操作,
+  AI 审核与常规确认照旧。
+
+> 提权是**显式用户批准**的例外通道:它只影响被批准的那一条命令,不会
+> 改变 `config.jsonc` 中的 `sandbox_level`,也不会让后续命令绕过沙盒。
+
 ## 配置项(`config.jsonc`)
 
 ```jsonc
