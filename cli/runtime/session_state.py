@@ -52,6 +52,14 @@ class SessionState:
         # contents have been injected into this chat's history at least once.
         "session_injected_skills",
         "session_injected_mcp_prompts",
+        # Per-chat tool-round accumulation. These are appended by
+        # ``Agent._record_model_tool_execution_history`` while a tool batch
+        # runs and flushed onto the issuing assistant message by
+        # ``Agent._flush_tool_rounds``; they must stay per-chat or a
+        # concurrent chat's rounds leak into this chat's ``_tool_rounds_raw``.
+        "accumulated_tool_rounds",
+        "accumulated_tool_rounds_raw",
+        "last_tool_issuing_assistant",
         # Per-chat interrupt flags. In serve mode a GUI interrupt (stop button,
         # ``/chat edit``) targets ONE chat: the request lands on that chat's
         # session, so only that chat's loop thread consumes it and a different
@@ -98,6 +106,9 @@ class SessionState:
         self.reasoning_effort: str = ""
         self.session_injected_skills: set = set()
         self.session_injected_mcp_prompts: set = set()
+        self.accumulated_tool_rounds: List[Any] = []
+        self.accumulated_tool_rounds_raw: List[Any] = []
+        self.last_tool_issuing_assistant: Any = None
         self.task_interrupt_requested: bool = False
         self.process_interrupt_requested: bool = False
         self.pause_interrupt_requested: bool = False
@@ -128,6 +139,9 @@ SESSION_FIELD_MAP: Dict[str, str] = {
     "reasoning_level": "reasoning_effort",
     "_session_injected_skills": "session_injected_skills",
     "_session_injected_mcp_prompts": "session_injected_mcp_prompts",
+    "_accumulated_tool_rounds": "accumulated_tool_rounds",
+    "_accumulated_tool_rounds_raw": "accumulated_tool_rounds_raw",
+    "_last_tool_issuing_assistant": "last_tool_issuing_assistant",
 }
 
 
