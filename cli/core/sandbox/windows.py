@@ -56,6 +56,12 @@ SANDBOX_ACL_RECORD_FILENAME = "sandbox_acl_dirs.json"
 # Modify") do not leak into the sandbox.  ``workspace`` gates workspace writes;
 # ``readonly`` is used by read_only sessions and may write only the sandbox
 # runtime dirs.
+# ``CreateProcessWithLogonW`` rejects command lines longer than ~930
+# characters with ERROR_INVALID_PARAMETER (0x80070057), far below the 32K
+# limit of plain ``CreateProcess``.  The runner argv embeds the whole user
+# command, so commands beyond this budget fail to start.  The safe budget for
+# the complete runner command line (kept well under the observed ~930 limit).
+_LOGONW_CMDLINE_SAFE_LIMIT = 800
 HANDLE_FLAG_INHERIT = 0x1
 WRITE_RESTRICTED = 0x8
 LUA_TOKEN = 0x4
@@ -1169,6 +1175,7 @@ class WindowsSandboxProcess:
         stdout: Any,
         stdin: Any,
         exit_file: Optional[str] = None,
+        cleanup_paths: Optional[Sequence[str]] = None,
         pseudo_console: Optional[ctypes.c_void_p] = None,
     ) -> None:
         self._w = w
@@ -1179,6 +1186,7 @@ class WindowsSandboxProcess:
         self.stdout = stdout
         self.stdin = stdin
         self._exit_file = exit_file
+        self._cleanup_paths = list(cleanup_paths or [])
         self._returncode: Optional[int] = None
         self._job_closed = False
         self._pseudo_console = pseudo_console
@@ -1217,6 +1225,11 @@ class WindowsSandboxProcess:
             if self._exit_file:
                 try:
                     os.unlink(self._exit_file)
+                except OSError:
+                    pass
+            for extra in self._cleanup_paths:
+                try:
+                    os.unlink(extra)
                 except OSError:
                     pass
         return -1
@@ -1508,16 +1521,6 @@ class WindowsSandboxBackend(SandboxBackend):
         # which the sandbox user cannot traverse; provisioning grants read
         # access to the interpreter, and this override covers embedded/runtime
         # deployments.
-        runner_args = [
-            "--cmd",
-            cmdline,
-            "--cap",
-            cap_sid,
-            "--exit-file",
-            str(exit_file),
-            "--job",
-            str(int(h_job)) if h_job else "0",
-        ]
         # Three runner launch modes:
         # 1. CODOWN_SANDBOX_RUNNER_EXE: explicit standalone shell-runner.exe
         #    (used by tests and by frozen builds if autodetection is off).
@@ -1537,7 +1540,7 @@ class WindowsSandboxBackend(SandboxBackend):
                 # per-user install (or on a mapped drive) is denied with
                 # ERROR_ACCESS_DENIED (5) even though the app reads it fine.
                 runner_exe = _ensure_sandbox_runner_copy(runner_exe)
-            runner_argv = [runner_exe] + runner_args
+            runner_head = [runner_exe]
         else:
             runner_python = (
                 os.environ.get("CODOWN_SANDBOX_RUNNER_PYTHON") or sys.executable
@@ -1549,8 +1552,57 @@ class WindowsSandboxBackend(SandboxBackend):
                 "_m=_u.module_from_spec(_sp);_sp.loader.exec_module(_m);"
                 "_s.exit(_m.main())"
             ).format(str(runner_path))
-            runner_argv = [runner_python, "-c", runner_loader] + runner_args
-        runner_cmdline = subprocess.list2cmdline(runner_argv)
+            runner_head = [runner_python, "-c", runner_loader]
+
+        def _runner_argv(cmd_arg: str) -> list:
+            return runner_head + [
+                "--cmd",
+                cmd_arg,
+                "--cap",
+                cap_sid,
+                "--exit-file",
+                str(exit_file),
+                "--job",
+                str(int(h_job)) if h_job else "0",
+            ]
+
+        # CreateProcessWithLogonW rejects command lines longer than ~930
+        # characters with ERROR_INVALID_PARAMETER (0x80070057), far below the
+        # 32K limit of plain CreateProcess.  The runner argv embeds the whole
+        # user command, so commands beyond the budget fail to start even though
+        # they would run fine unsandboxed.  Route oversized commands through a
+        # temp file the runner reads instead: the LogonW command line then
+        # stays tiny (--cmd-file <path>) while the runner re-reads the full
+        # command from the ACL-granted runtime dir.
+        cmd_file: Optional[Path] = None
+        runner_cmdline = subprocess.list2cmdline(_runner_argv(cmdline))
+        if len(runner_cmdline) > _LOGONW_CMDLINE_SAFE_LIMIT:
+            tmp.mkdir(parents=True, exist_ok=True)
+            cmd_file = tmp / f"cmd-{secrets.token_hex(8)}.txt"
+            try:
+                cmd_file.write_text(cmdline, encoding="utf-8")
+            except OSError:
+                _log.warning(
+                    "sandbox cmd-file write failed (%s); "
+                    "falling back to inline cmd",
+                    cmd_file,
+                    exc_info=True,
+                )
+                cmd_file = None
+            if cmd_file is not None:
+                runner_cmdline = subprocess.list2cmdline(
+                    runner_head
+                    + [
+                        "--cmd-file",
+                        str(cmd_file),
+                        "--cap",
+                        cap_sid,
+                        "--exit-file",
+                        str(exit_file),
+                        "--job",
+                        str(int(h_job)) if h_job else "0",
+                    ]
+                )
         si = STARTUPINFOW()
         si.cb = ctypes.sizeof(STARTUPINFOW)
         si.dwFlags = STARTF_USESTDHANDLES
@@ -1568,7 +1620,7 @@ class WindowsSandboxBackend(SandboxBackend):
             user,
             level,
             network,
-            runner_argv[0],
+            runner_head[0],
         )
         ok = w["CreateProcessWithLogonW"](
             user,
@@ -1599,17 +1651,22 @@ class WindowsSandboxBackend(SandboxBackend):
                     w["CloseHandle"](h_job)
                 except Exception:
                     pass
+            if cmd_file is not None:
+                try:
+                    os.unlink(cmd_file)
+                except OSError:
+                    pass
             win_err = ctypes.WinError(ctypes.get_last_error())
             if win_err.winerror == 5:
                 # The most common packaged-app failure: the sandbox user could
                 # not access the runner image or the working directory.  Give
                 # the user actionable hints instead of a bare "Access denied".
                 hint = _spawn_access_denied_hint(
-                    runner_argv[0] if runner_argv else "?", cwd
+                    runner_head[0], cwd
                 )
                 _log.warning(
                     "sandbox spawn denied: error=5 runner=%s cwd=%s",
-                    runner_argv[0] if runner_argv else "?",
+                    runner_head[0],
                     cwd,
                 )
                 raise OSError(
@@ -1650,6 +1707,7 @@ class WindowsSandboxBackend(SandboxBackend):
             stdout_file,
             stdin_file,
             str(exit_file),
+            [str(cmd_file)] if cmd_file is not None else None,
             None,
         )
 
