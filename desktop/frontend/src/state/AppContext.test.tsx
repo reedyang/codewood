@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppState, ServerEvent, Turn } from "../api/types";
+import { subsumedHistoryStartIndex } from "./AppContext";
 
 const apiMock = vi.hoisted(() => {
   let eventHandler: ((event: ServerEvent) => void) | null = null;
@@ -3339,6 +3340,85 @@ describe("AppContext thinking rounds", () => {
       expect(draft.draftWorkspaceId).toBe("ws-3");
       expect(draft.activeWorkspaceId).toBe("ws-3");
     });
+  });
+});
+
+describe("subsumedHistoryStartIndex", () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const now = () => Date.now();
+
+  function liveTurn(userText: string, startedAt: number, rounds: Turn["rounds"] = []): Turn {
+    return { id: 1, userText, rounds, startedAt, endedAt: null };
+  }
+
+  it("returns the tail index when the active turn's archived copy is the page tail", () => {
+    const t = now();
+    const index = subsumedHistoryStartIndex(
+      [liveTurn("hello", t)],
+      [
+        { userText: "older", timestamp: iso(t - 60_000), rounds: [] },
+        { userText: "hello", timestamp: iso(t), rounds: [] },
+      ],
+    );
+    expect(index).toBe(1);
+  });
+
+  it("subsumes the whole logical turn when compaction split it after the user entry", () => {
+    // A mid-turn context compaction persists the running turn as [user turn,
+    // compaction-summary turn, assistant continuation turn]. The tail is the
+    // assistant-only continuation (no user text) and must not defeat the
+    // match: the live copy replaces all three persisted turns.
+    const t = now();
+    const index = subsumedHistoryStartIndex(
+      [liveTurn("能自动发现类似的目录", t)],
+      [
+        { userText: "旧消息", timestamp: iso(t - 120_000), rounds: [] },
+        { userText: "能自动发现类似的目录", timestamp: iso(t - 1_000), rounds: [{ waitSeconds: 4, text: "计划", tools: "" }] },
+        {
+          userText: "",
+          timestamp: iso(t + 1_000),
+          rounds: [{ waitSeconds: 0, text: "", tools: "", compactNoticeTitle: "上下文已自动压缩", compactNoticeBody: "交接摘要" }],
+        },
+        { userText: "", timestamp: iso(t + 5_000), rounds: [{ waitSeconds: 7, text: "编译通过。跑 sandbox 测试：", tools: "" }] },
+      ],
+    );
+    expect(index).toBe(1);
+  });
+
+  it("returns -1 when the page holds no copy of the active turn", () => {
+    const t = now();
+    const index = subsumedHistoryStartIndex(
+      [liveTurn("new question", t)],
+      [{ userText: "old question", timestamp: iso(t - 60_000), rounds: [] }],
+    );
+    expect(index).toBe(-1);
+  });
+
+  it("does not subsume an older identical prompt far outside the time window", () => {
+    const t = now();
+    const index = subsumedHistoryStartIndex(
+      [liveTurn("repeat this task", t)],
+      [{ userText: "repeat this task", timestamp: "2020-01-01 00:00:00", rounds: [{ waitSeconds: 1, text: "old answer", tools: "" }] }],
+    );
+    expect(index).toBe(-1);
+  });
+
+  it("falls back to output inclusion for legacy entries without a parseable timestamp", () => {
+    const t = now();
+    const index = subsumedHistoryStartIndex(
+      [liveTurn("hello", t, [{ id: 1, waitStartedAt: t, waitEndedAt: null, segments: [{ id: 1, kind: "answer", text: "shared output" }] }])],
+      [{ userText: "hello", rounds: [{ waitSeconds: 1, text: "shared output", tools: "" }] }],
+    );
+    expect(index).toBe(0);
+  });
+
+  it("falls back to the no-rounds match for legacy entries with no round data", () => {
+    const t = now();
+    const index = subsumedHistoryStartIndex(
+      [liveTurn("legacy", t)],
+      [{ userText: "legacy", rounds: [] }],
+    );
+    expect(index).toBe(0);
   });
 });
 
