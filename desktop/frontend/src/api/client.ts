@@ -134,6 +134,83 @@ export class ApiClient {
     return res.ok;
   }
 
+  /** Fork the chat at the given (negative, from-end) genuine-user index into a
+   *  new chat. Returns the new chat id (or "" on failure). The backend
+   *  switches the active chat so the state event reloads the fork. */
+  async forkChat(chatId = "", workspaceId = "", index = -1): Promise<string> {
+    try {
+      const res = await fetch(`${this.base}/chat-fork`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, workspaceId, index }),
+      });
+      if (!res.ok) {
+        return "";
+      }
+      const data = (await res.json()) as { chatId?: string };
+      return data.chatId ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /** Truncate the chat at the given (negative, from-end) genuine-user index. */
+  async editChat(chatId = "", workspaceId = "", index = -1): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/chat-edit`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, workspaceId, index }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Apply an execution-policy change immediately (GUI security dropdown). */
+  async setExecutionPolicy(policy: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/set-execution-policy`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ policy }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Create + switch to a workspace from a directory path; returns its id. */
+  async createWorkspace(path: string): Promise<{ ok: boolean; id?: string }> {
+    try {
+      const res = await fetch(`${this.base}/workspace-create`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ path }),
+      });
+      const data = (await res.json()) as { ok?: boolean; id?: string };
+      return { ok: data.ok === true, id: data.id };
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  /** Rename a workspace (GUI sidebar rename). */
+  async renameWorkspace(id: string, name: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/workspace-rename`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ id, name }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async savePendingInputs(chatId: string, inputs: string[], workspaceId = ""): Promise<boolean> {
     const res = await fetch(`${this.base}/save-pending-inputs`, {
       method: "POST",

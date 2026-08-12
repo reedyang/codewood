@@ -24,6 +24,10 @@ const apiMock = vi.hoisted(() => {
   const syncModelPresets = vi.fn(async () => undefined);
   const deleteChat = vi.fn(async () => true);
   const deleteWorkspace = vi.fn(async () => ({ ok: true, id: "", wasActive: false, fallbackId: "" }));
+  const forkChat = vi.fn(async () => "chat-3");
+  const editChat = vi.fn(async () => true);
+  const setExecutionPolicy = vi.fn(async () => true);
+  const createWorkspace = vi.fn(async () => ({ ok: true, id: "ws-3" }));
   return {
     getState,
     connectEvents,
@@ -42,6 +46,10 @@ const apiMock = vi.hoisted(() => {
     syncModelPresets,
     deleteChat,
     deleteWorkspace,
+    forkChat,
+    editChat,
+    setExecutionPolicy,
+    createWorkspace,
     emit(event: ServerEvent) {
       if (!eventHandler) {
         throw new Error("Event handler not connected");
@@ -67,6 +75,10 @@ const apiMock = vi.hoisted(() => {
       syncModelPresets.mockClear();
       deleteChat.mockClear();
       deleteWorkspace.mockClear();
+      forkChat.mockClear();
+      editChat.mockClear();
+      setExecutionPolicy.mockClear();
+      createWorkspace.mockClear();
     },
   };
 });
@@ -98,6 +110,10 @@ vi.mock("../api/client", () => ({
     syncModelPresets = apiMock.syncModelPresets;
     deleteChat = apiMock.deleteChat;
     deleteWorkspace = apiMock.deleteWorkspace;
+    forkChat = apiMock.forkChat;
+    editChat = apiMock.editChat;
+    setExecutionPolicy = apiMock.setExecutionPolicy;
+    createWorkspace = apiMock.createWorkspace;
   },
 }));
 
@@ -301,6 +317,19 @@ function HistoryReloadProbe() {
         switch workspace
       </button>
       <pre data-testid="history-state">{JSON.stringify(state)}</pre>
+    </>
+  );
+}
+
+function CreateWorkspaceProbe() {
+  const { state, createWorkspace, draftMode, draftWorkspaceId, activeWorkspaceId } = useApp();
+  return (
+    <>
+      <button onClick={() => { void createWorkspace("D:/workspace-c"); }}>
+        create workspace
+      </button>
+      <pre data-testid="create-ws-list">{JSON.stringify(state?.workspaces ?? [])}</pre>
+      <pre data-testid="create-ws-draft">{JSON.stringify({ draftMode, draftWorkspaceId, activeWorkspaceId })}</pre>
     </>
   );
 }
@@ -1756,7 +1785,7 @@ describe("AppContext thinking rounds", () => {
 
     await waitFor(() => {
       const state = JSON.parse(screen.getByTestId("edit-model-state").textContent || "{}") as AppState;
-      expect(apiMock.sendInput).toHaveBeenCalledWith("/chat edit -1", false, "chat-1", "ws-1");
+      expect(apiMock.editChat).toHaveBeenCalledWith("chat-1", "ws-1", -1);
       expect(apiMock.setChatModel).toHaveBeenCalledWith("chat-1", "openai/family/model/v2", "ws-1");
       expect(state.model.current).toBe("openai/family/model/v2");
     });
@@ -1772,13 +1801,10 @@ describe("AppContext thinking rounds", () => {
       start: 0,
       total: 2,
     });
-    apiMock.sendInput.mockImplementation((text: string) => {
-      if (text === "/chat edit -1") {
-        return new Promise<void>((resolve) => {
-          resolveEdit = resolve;
-        });
-      }
-      return Promise.resolve();
+    apiMock.editChat.mockImplementation(() => {
+      return new Promise<boolean>((resolve) => {
+        resolveEdit = () => resolve(true);
+      });
     });
 
     render(
@@ -3262,6 +3288,56 @@ describe("AppContext thinking rounds", () => {
       expect(view.cacheStats?.totalTokens).toBe(120);
       expect(view.cacheStats?.supported).toBe(true);
       expect(view.tokenStats?.outputTokens).toBe(500);
+    });
+  });
+
+  it("createWorkspace lands on the new workspace draft and refreshes the list", async () => {
+    render(
+      <AppProvider>
+        <CreateWorkspaceProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    const createdState = buildState({
+      workspace: {
+        id: "ws-3",
+        name: "Workspace C",
+        root: "D:/workspace-c",
+        workDirectory: "D:/workspace-c",
+      },
+      workspaces: [
+        ...buildState().workspaces,
+        {
+          id: "ws-3",
+          name: "Workspace C",
+          root: "D:/workspace-c",
+          active: true,
+          isDefault: false,
+        },
+      ],
+      chats: [],
+      activeChatId: "",
+    });
+    apiMock.createWorkspace.mockResolvedValueOnce({ ok: true, id: "ws-3" });
+    apiMock.getState.mockResolvedValueOnce(createdState);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "create workspace" }));
+    });
+
+    await waitFor(() => {
+      const list = JSON.parse(screen.getByTestId("create-ws-list").textContent || "[]") as Array<{ id: string }>;
+      expect(list.map((w) => w.id)).toContain("ws-3");
+      const draft = JSON.parse(screen.getByTestId("create-ws-draft").textContent || "{}") as {
+        draftMode: boolean;
+        draftWorkspaceId: string;
+        activeWorkspaceId: string;
+      };
+      expect(draft.draftMode).toBe(true);
+      expect(draft.draftWorkspaceId).toBe("ws-3");
+      expect(draft.activeWorkspaceId).toBe("ws-3");
     });
   });
 });

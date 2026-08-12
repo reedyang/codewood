@@ -6,10 +6,6 @@ import { Icon } from "./Icon";
 import { HoverTooltip } from "./HoverTooltip";
 import { buildChatMenuItems, chatKey } from "./chatMenu";
 
-function quote(value: string): string {
-  return `"${value.replace(/"/g, "")}"`;
-}
-
 function formatRelative(value?: string, now = Date.now()): string {
   if (!value) {
     return "";
@@ -83,7 +79,6 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     unreadChatIds,
     now,
     t,
-    runCommand,
     switchToChat,
     newChat,
     deleteChat,
@@ -330,7 +325,9 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
       return;
     }
     if (target.kind === "workspace") {
-      await runCommand(`/workspace rename ${target.id} ${quote(value)}`);
+      // Workspace rename goes through the dedicated REST endpoint (not a slash
+      // command) so it persists immediately even while another task is running.
+      await client.renameWorkspace(target.id, value);
       return;
     }
     // Chat rename goes through the dedicated REST endpoint (not a slash

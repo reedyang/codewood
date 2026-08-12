@@ -320,6 +320,8 @@ interface AppContextValue {
   deleteChat: (chatId: string, workspaceId?: string) => Promise<void>;
   forkChat: (index: number) => Promise<void>;
   editChat: (index: number) => Promise<void>;
+  /** Create + switch to a workspace from a directory path (workspace picker). */
+  createWorkspace: (path: string) => Promise<boolean>;
   loadOlderHistory: () => Promise<void>;
   openWorkspaceInExplorer: (id: string) => Promise<boolean>;
   deleteWorkspace: (id: string) => Promise<boolean>;
@@ -4224,27 +4226,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   // Fork the chat at the given (negative, from-end) genuine-user index into a
-  // new chat, mirroring the TUI `/chat fork` command. The backend switches the
-  // active chat; the idle state carries the new id and the history effect
-  // reloads it.
+  // new chat (dedicated /chat-fork endpoint, the TUI-command equivalent).
+  // The backend switches the active chat; the state event carries the new id
+  // and the history effect reloads it.
   const forkChat = useCallback(
     async (index: number) => {
       clearTurns();
       historyChatRef.current = "\u0000";
-      await client.sendInput(
-        `/chat fork ${index}`,
-        false,
+      await client.forkChat(
         activeChatIdRef.current,
         activeWorkspaceIdRef.current,
+        index,
       );
     },
     [client, clearTurns],
   );
 
   // Truncate the conversation at the given (negative, from-end) genuine-user
-  // index, mirroring the TUI `/chat edit` command. The chat id is unchanged, so
-  // the activeChatId effect won't refire; instead we flag the next idle event
-  // to reload the (now shorter) history.
+  // index (dedicated /chat-edit endpoint, the TUI-command equivalent). The
+  // chat id is unchanged, so the activeChatId effect won't refire; instead we
+  // flag the next idle event to reload the (now shorter) history.
   const editChat = useCallback(
     async (index: number) => {
       clearTurns();
@@ -4287,14 +4288,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pendingHistoryReloadRef.current = true;
       // Route the edit to the exact chat (and workspace) being edited so the
       // backend scopes its interrupt to that chat instead of the active one.
-      await client.sendInput(
-        `/chat edit ${index}`,
-        false,
-        activeChatId,
-        activeWorkspaceIdRef.current,
-      );
+      await client.editChat(activeChatId, activeWorkspaceIdRef.current, index);
     },
     [client, clearTurns, trimHistoryTurnsForEdit, activeChatId, askMoreInfoByChat, setBusyForChat],
+  );
+
+  // Create + switch to a workspace from a directory path (dedicated
+  // /workspace-create endpoint, the TUI-command equivalent). On success the
+  // backend switches the focused workspace; mirror the open-folder flow so the
+  // sidebar/list and draft state reflect the new workspace immediately.
+  const createWorkspace = useCallback(
+    async (path: string) => {
+      const result = await client.createWorkspace(path);
+      if (!result.ok) {
+        return false;
+      }
+      if (result.id) {
+        pendingFocusWsIdRef.current = result.id;
+      }
+      try {
+        const next = await client.getState();
+        setState(next);
+        // Always land on the new workspace's draft (empty composer) view. Do
+        // NOT gate on ``next.activeChatId``: if the backend's snapshot still
+        // carries a stale active chat id the draft branch would never run and
+        // the workspace selector would keep showing the old workspace name.
+        setDraftMode(true);
+        setDraftWorkspaceId(next.workspace?.id ?? result.id ?? "");
+        historyChatRef.current = "\u0000";
+        setHistoryTurns([]);
+        setHistoryStart(0);
+        setHistoryTotal(0);
+      } catch {
+        // Non-fatal: the SSE state event will still refresh the UI.
+      }
+      return true;
+    },
+    [client],
   );
 
   const openWorkspaceInExplorer = useCallback(
@@ -4597,7 +4627,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!prev) return prev;
           return { ...prev, executionPolicy: value };
         });
-        await client.sendInput(`/execution-policy ${value}`);
+        await client.setExecutionPolicy(value);
       }
     },
     [client],
@@ -4754,10 +4784,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const handler = (action: string, payload?: string) => {
       switch (action) {
-        case "new-chat":
+        case "new-chat": {
           clearTurns();
-          void runCommand("/chat new");
+          historyChatRef.current = "\u0000";
+          // Dedicated /new-chat endpoint (the TUI-command equivalent); the
+          // backend publishes an idle event whose state carries the new
+          // active chat, and the history effect reloads its transcript.
+          void client.newChat().then((id) => {
+            if (id) {
+              void refreshWorkspaceChats(activeWorkspaceIdRef.current);
+            }
+          });
           break;
+        }
         case "open-folder": {
           const path = String(payload ?? "").trim();
           if (path) {
@@ -4799,7 +4838,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       delete (window as unknown as { __codewoodMenu?: typeof handler })
         .__codewoodMenu;
     };
-  }, [clearTurns, runCommand]);
+  }, [clearTurns, client, refreshWorkspaceChats]);
 
   const value: AppContextValue = {
     client,
@@ -4911,6 +4950,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deleteChat,
     forkChat,
     editChat,
+    createWorkspace,
     loadOlderHistory,
     openWorkspaceInExplorer,
     deleteWorkspace: deleteWorkspaceViaApi,
