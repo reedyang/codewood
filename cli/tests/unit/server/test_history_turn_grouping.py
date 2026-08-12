@@ -375,6 +375,41 @@ class StructuredTurnGroupingTests(unittest.TestCase):
         self.assertEqual(compact_round["compactNoticeTitle"], "Context compacted")
         self.assertEqual(compact_round["compactNoticeBody"], "Compacted summary body")
 
+    def test_hides_internal_compact_prompt_user_message(self):
+        # The compact prompt is appended to the conversation as an ``_internal``
+        # user message; the GUI turn builder must not surface it as a turn
+        # (only the persisted summary turn is rendered).
+        agent = _FakeAgent()
+        agent.session_memory_service = _FakeCompactionSessionMemoryService()
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": "old question",
+                "created_at": "2026-07-08 18:21:31",
+            },
+            {
+                "role": "user",
+                "content": "compact_mode=manual\nCONTEXT CHECKPOINT COMPACTION",
+                "_internal": True,
+                "created_at": "2026-07-08 18:21:41",
+            },
+            {
+                "role": "assistant",
+                "content": "SUMMARY",
+                "created_at": "2026-07-08 18:21:45",
+            },
+        ]
+
+        turns = _build_structured_turns(agent)
+
+        self.assertEqual(len(turns), 2)
+        self.assertEqual(turns[0]["userText"], "old question")
+        self.assertEqual(turns[1]["userText"], "")
+        self.assertEqual(turns[1]["rounds"][0]["compactNoticeTitle"], "Context compacted")
+        joined = "\n".join(str(r.get("text") or "") + str(r.get("tools") or "") for t in turns for r in t["rounds"])
+        self.assertNotIn("CONTEXT CHECKPOINT COMPACTION", joined)
+        self.assertNotIn("compact_mode=manual", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

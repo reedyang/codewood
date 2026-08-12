@@ -1167,8 +1167,16 @@ class LLMContextManager:
         if not rows:
             return []
         candidates = list(rows)
+        # Internal bookkeeping user messages (the compact prompt itself, file-
+        # change refs) are not genuine dialogue: after a compaction the tail is
+        # ``[internal prompt, summary]`` and must NOT count as new dialogue,
+        # otherwise every subsequent auto-compact check would re-trigger a
+        # compaction loop until the user sends a real message. The internal
+        # prompt still stays in the candidate rows so the next genuine
+        # compaction covers it together with its summary.
         has_new_dialogue = any(
             not self.is_context_compaction_summary_message(m)
+            and not (m.get("_internal") and str(m.get("role") or "").strip().lower() == "user")
             for _idx, m in candidates
         )
         if not has_new_dialogue:
@@ -1370,6 +1378,21 @@ class LLMContextManager:
         finally:
             self._context_compaction_lock.release()
 
+    def _rollback_internal_compact_prompt_message(self, msg: Optional[Dict[str, Any]]) -> None:
+        """Remove the internal compact-prompt user message on failure so a
+        failed compaction never leaves an orphan hidden prompt in history."""
+        if msg is None:
+            return
+        try:
+            hist = getattr(self.agent, "conversation_history", None)
+            if isinstance(hist, list):
+                for i in range(len(hist) - 1, -1, -1):
+                    if hist[i] is msg:
+                        hist.pop(i)
+                        break
+        except Exception:
+            pass
+
     def _compact_context_locked(self, mode: str) -> bool:
         candidates_with_idx = self._compaction_candidate_rows(mode)
         if not candidates_with_idx:
@@ -1497,12 +1520,30 @@ class LLMContextManager:
             msg["_token_count_includes_reasoning"] = True
         elif compaction_token_count_includes_reasoning is False:
             msg["_token_count_includes_reasoning"] = False
+        # Route the compact prompt through the main conversation as an internal
+        # user message: it pairs with the assistant summary appended below in
+        # the conversation record, but is hidden from the GUI/TUI display via
+        # the ``_internal`` flag (the same convention as slash-command and
+        # file-change bookkeeping entries). Later rounds keep being anchored at
+        # the summary (the prompt was compacted into it), so the model-visible
+        # behavior is unchanged. It is appended only after the model call
+        # succeeded so a failed compaction never leaves an orphan hidden
+        # prompt behind; the call itself already sent the same text as its
+        # ``user_input``, so the prompt is not duplicated.
+        internal_compact_prompt: Optional[Dict[str, Any]] = {
+            "role": "user",
+            "content": compaction_user_input,
+            "created_at": created_at,
+            "_internal": True,
+        }
         try:
+            self.agent.conversation_history.append(internal_compact_prompt)
             self.agent.conversation_history.append(msg)
             self.agent._sync_active_chat_messages()
             self.refresh_context_usage_snapshot(context_hint="context compacted")
         except Exception:
             get_logger().exception("context compact: failed to persist summary")
+            self._rollback_internal_compact_prompt_message(internal_compact_prompt)
             if mode == "manual":
                 print(self._t("compaction.failed_saving_summary"))
             return False

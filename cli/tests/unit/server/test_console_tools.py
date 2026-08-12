@@ -511,14 +511,18 @@ class ConsoleDispatchTests(unittest.TestCase):
 
         stub = self._stub()
         session = ConsoleSession("a", "cmd", "t", "/tmp", 100)
-        session._settle_quiet = 0.05
+        # A generous settle window so a slow scheduler (e.g. a loaded parallel
+        # test run) can't let the stable-wait settle on the last in-place
+        # refresh before the final newline line lands: the final line is
+        # written 0.02s after the last refresh, far inside the 0.2s window.
+        session._settle_quiet = 0.2
         stub._console._active = session
 
         def _stream():
             for pct in (10, 30, 50, 70, 90, 100):
                 session._ingest(f"progress {pct}%\r".encode())
                 time.sleep(0.03)
-            time.sleep(0.01)
+            time.sleep(0.02)
             session._ingest(b"progress done\n")
 
         t = threading.Thread(target=_stream)

@@ -1002,6 +1002,8 @@ class SessionMemoryService:
                 continue
             if role != "user":
                 continue
+            if msg.get("_internal"):
+                continue
             if self._is_excluded_user_message_for_model_context(msg):
                 continue
             raw = str(msg.get("content") or "")
