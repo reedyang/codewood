@@ -1474,6 +1474,14 @@ def _apply_sandbox_escalation_approval(
       ``result`` keeps the task running with the user's text attached.
     """
     level = str(getattr(sandbox_plan, "level", "") or "sandbox")
+    execution_policy = str(
+        getattr(agent, "execution_policy", "confirmation")
+    ).lower()
+    if execution_policy == "unlimited":
+        # Unlimited mode: the user has opted out of all safety checks and
+        # confirmations, so a model sandbox-bypass request is auto-approved.
+        _log.info("execution_policy=unlimited: sandbox bypass auto-approved")
+        return "approved", None
     prompt_text = _t(
         agent,
         "execution_policy.prompt.escalate_sandbox_no_command",
