@@ -51,6 +51,9 @@ _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 _WORKSPACE_ROUTE_LOGGER = logging.getLogger(
     f"{get_app_slug_snake()}.workspace_routing"
 )
+_SSE_LOGGER = logging.getLogger(
+    f"{get_app_slug_snake()}.sse"
+)
 
 # Matches CSI / SGR and most other ANSI escape sequences.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
@@ -3413,6 +3416,33 @@ class ServeApp:
         )
         return {"ok": True, "text": text}
 
+    def _publish_idle_if_chat_parked(self, chat_id: str, workspace_id: str = "") -> None:
+        """Publish an idle snapshot when a chat has no in-flight turn to stop.
+
+        ``Stop`` / ``pause`` only set the cooperative interrupt flag; when the
+        target chat's loop is already parked (waiting for the next input) that
+        flag is never consumed and the loop emits no terminal ``idle`` event.
+        A GUI that still believes the chat is running — e.g. the closing event
+        of the last turn was lost over SSE, so its live turn never settled —
+        would keep the spinner forever and make Stop appear unresponsive.
+        Publishing the current state as an idle snapshot lets the frontend
+        settle the stale live turn and reload history right away.
+
+        When a real turn IS streaming, its loop emits the terminal idle itself
+        once the interrupt unwinds the turn, so nothing is published here (an
+        early idle with ``running=True`` would be ignored by the frontend's
+        still-running guard anyway).
+        """
+        try:
+            if self._chat_is_busy(str(chat_id or ""), workspace_id):
+                return
+            self.broadcaster.publish(
+                "idle",
+                self._route(chat_id=str(chat_id or ""), state=self.state()),
+            )
+        except Exception:
+            pass
+
     def interrupt(self, chat_id: str = "", workspace_id: str = "") -> None:
         """Cancel an in-flight turn for the GUI's "stop" button / message edit.
 
@@ -3442,6 +3472,9 @@ class ServeApp:
                     agent._request_chat_interrupt(cid, wsid)
                 except Exception:
                     pass
+                _parked_publish = getattr(self, "_publish_idle_if_chat_parked", None)
+                if callable(_parked_publish):
+                    _parked_publish(cid, wsid)
             return
         try:
             lock = getattr(agent, "_interrupt_state_lock", None)
@@ -3482,6 +3515,9 @@ class ServeApp:
                     agent._request_chat_pause(cid, wsid)
                 except Exception:
                     pass
+                _parked_publish = getattr(self, "_publish_idle_if_chat_parked", None)
+                if callable(_parked_publish):
+                    _parked_publish(cid, wsid)
             return
         try:
             lock = getattr(agent, "_interrupt_state_lock", None)
@@ -9446,8 +9482,13 @@ def _make_handler(app: ServeApp):
             self.end_headers()
             sub = app.broadcaster.subscribe()
             try:
-                # Prime the client with the current state immediately.
-                self._write_sse({"event": "idle", "data": {"state": app.state()}})
+                # Prime the client with the current state immediately. Tag the
+                # snapshot with the active chat + workspace so a reconnect
+                # (whose earlier closing events may have been lost) can settle
+                # a stale live turn via the normal idle path.
+                self._write_sse(
+                    {"event": "idle", "data": app._route(state=app.state())}
+                )
                 while not app._shutdown_event.is_set():
                     try:
                         message = sub.get(timeout=15.0)
@@ -9463,9 +9504,22 @@ def _make_handler(app: ServeApp):
         def _write_sse(self, message: Dict[str, Any]) -> bool:
             try:
                 payload = json.dumps(message, ensure_ascii=False)
-            except Exception:
+                chunk = f"data: {payload}\n\n".encode("utf-8")
+            except Exception as exc:
+                # A payload that cannot be JSON-serialized (or UTF-8 encoded,
+                # e.g. lone surrogates) must never silently disappear: the GUI
+                # would wait forever for the very event that closes the current
+                # tool round / turn (``round_end`` / ``idle``), leaving the
+                # spinner stuck. Log the culprit instead of dropping it unseen.
+                try:
+                    _SSE_LOGGER.warning(
+                        "SSE event dropped: serialization failed (%s) event=%r",
+                        exc,
+                        message.get("event") if isinstance(message, dict) else None,
+                    )
+                except Exception:
+                    pass
                 return True
-            chunk = f"data: {payload}\n\n".encode("utf-8")
             return self._write_raw(chunk)
 
         def _write_raw(self, chunk: bytes) -> bool:
