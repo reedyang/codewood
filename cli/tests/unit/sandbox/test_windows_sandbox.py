@@ -495,6 +495,41 @@ class WindowsSandboxProcessTests(unittest.TestCase):
         self.assertTrue(state["terminated"])
         self.assertIn(3, state["closed"])
 
+    def test_cleanup_paths_unlinked_on_exit(self):
+        w, _ = _fake_win(signaled=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            exit_file = Path(tmp) / "exit.tmp"
+            exit_file.write_bytes(struct.pack("<I", 0))
+            extra = Path(tmp) / "cmd-extra.txt"
+            extra.write_text("cmd.exe /c echo hi", encoding="utf-8")
+            proc = WindowsSandboxProcess(
+                w,
+                1,
+                2,
+                3,
+                42,
+                None,
+                None,
+                exit_file=str(exit_file),
+                cleanup_paths=[str(extra)],
+            )
+            self.assertEqual(proc.wait(timeout=5), 0)
+            self.assertFalse(exit_file.exists())
+            self.assertFalse(extra.exists())
+
+    def test_cleanup_paths_missing_file_ignored(self):
+        w, _ = _fake_win(signaled=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            exit_file = Path(tmp) / "exit.tmp"
+            exit_file.write_bytes(struct.pack("<I", 0))
+            proc = WindowsSandboxProcess(
+                w, 1, 2, 3, 42, None, None,
+                exit_file=str(exit_file),
+                cleanup_paths=[str(Path(tmp) / "nope.txt")],
+            )
+            self.assertEqual(proc.wait(timeout=5), 0)
+            self.assertFalse(exit_file.exists())
+
 
 class WindowsSandboxBackendStatusTests(unittest.TestCase):
     def setUp(self):

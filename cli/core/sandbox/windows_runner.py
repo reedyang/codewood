@@ -408,11 +408,25 @@ def _make_startup() -> tuple:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cmd", required=True)
+    parser.add_argument("--cmd", default=None)
+    parser.add_argument("--cmd-file", default=None)
     parser.add_argument("--cap", required=True)
     parser.add_argument("--exit-file", required=True)
     parser.add_argument("--job", type=int, default=0)
     args = parser.parse_args(argv)
+
+    if args.cmd_file:
+        try:
+            with open(args.cmd_file, "r", encoding="utf-8") as f:
+                cmd = f.read()
+        except OSError:
+            _write_exit_file(args.exit_file, 0xFFFFFFFF)
+            return 5
+    else:
+        cmd = args.cmd
+    if not cmd:
+        _write_exit_file(args.exit_file, 0xFFFFFFFF)
+        return 3
 
     h_token, _keep = _make_restricted_token(args.cap)
     if not h_token:
@@ -420,7 +434,7 @@ def main(argv=None) -> int:
         return 2
     try:
         startup, flags, attr_buf, hpc = _make_startup()
-        cmd_buf = ctypes.create_unicode_buffer(args.cmd)
+        cmd_buf = ctypes.create_unicode_buffer(cmd)
         pi = PROCESS_INFORMATION()
         # bInheritHandles depends on the startup path: the ConPTY path
         # (PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE) requires FALSE — with TRUE the
