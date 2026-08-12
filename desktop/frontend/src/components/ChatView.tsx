@@ -49,10 +49,6 @@ import {
 import type { Segment, TokenKind } from "../utils/tokens";
 import { RichComposer } from "./RichComposer";
 
-function quote(value: string): string {
-  return `"${value.replace(/"/g, "")}"`;
-}
-
 function ChatLoadingSplash() {
   return (
     <div className="chat-loading-splash" aria-hidden="true">
@@ -3821,7 +3817,7 @@ function WorkspaceSelector({
   draftWorkspaceId?: string;
   onPickDraft?: (id: string) => void;
 }) {
-  const { state, activeWorkspaceId, runCommand, clearTurns, selectWorkspace, pickFolder, t } = useApp();
+  const { state, activeWorkspaceId, createWorkspace, clearTurns, selectWorkspace, pickFolder, t } = useApp();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
@@ -3869,7 +3865,7 @@ function WorkspaceSelector({
     }
     close();
     clearTurns();
-    await runCommand(`/workspace create ${quote(p)}`);
+    await createWorkspace(p);
   };
 
   const pickExisting = async () => {

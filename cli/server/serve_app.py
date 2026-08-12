@@ -3312,6 +3312,249 @@ class ServeApp:
         )
         return True
 
+    def _switch_to_workspace_safe(self, workspace_id: str) -> bool:
+        """Switch the agent's focused workspace to ``workspace_id``.
+
+        Returns ``True`` when the switch succeeded or was a no-op (same
+        workspace already focused). GUI endpoints that must address a chat in
+        a specific workspace (chat ids repeat across workspaces) switch here
+        first, then restore with :meth:`_restore_workspace`.
+        """
+        agent = self.agent
+        target = str(workspace_id or "").strip()
+        if not target:
+            return True
+        try:
+            current = str(getattr(agent, "workspace_id", "") or "").strip()
+        except Exception:
+            return False
+        if target == current:
+            return True
+        try:
+            from ..controllers.workspace_command_controller import (
+                workspace_switch_command,
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                workspace_switch_command(agent, target)
+        except Exception:
+            return False
+        return True
+
+    def _restore_workspace(self, workspace_id: str) -> None:
+        """Best-effort restore of the previously focused workspace."""
+        agent = self.agent
+        target = str(workspace_id or "").strip()
+        if not target:
+            return
+        try:
+            from ..controllers.workspace_command_controller import (
+                workspace_switch_command,
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                workspace_switch_command(agent, target)
+        except Exception:
+            pass
+
+    def chat_fork(
+        self, chat_id: str = "", workspace_id: str = "", index: int = -1
+    ) -> Dict[str, Any]:
+        """Fork a chat at a user-message index (GUI "Fork" button).
+
+        Dedicated equivalent of the TUI ``/chat fork`` slash command: it runs
+        the same controller logic but is workspace-scoped (chat ids repeat
+        across workspaces) and executes immediately on the HTTP thread instead
+        of being queued through the slash-command input path. The active chat
+        is switched to the new fork so the GUI's state event reloads its
+        transcript.
+        """
+        agent = self.agent
+        cid, wsid = self._resolve_chat_scope(chat_id, workspace_id)
+        if not cid:
+            return {"ok": False}
+        original_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+        if not self._switch_to_workspace_safe(wsid or original_wsid):
+            return {"ok": False}
+        new_id = ""
+        try:
+            with self._session_scope_for_chat(cid, wsid or original_wsid):
+                agent.active_chat_id = cid
+                refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
+                if callable(refresh):
+                    refresh(cid)
+                from ..controllers.chat_command_controller import (
+                    handle_chat_fork_command,
+                )
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    handle_chat_fork_command(
+                        agent, str(index if index is not None else -1)
+                    )
+                try:
+                    new_id = str(agent._chat_state.get("active") or "")
+                except Exception:
+                    pass
+        except Exception:
+            return {"ok": False}
+        finally:
+            self._restore_workspace(original_wsid)
+        if not new_id or new_id == cid:
+            return {"ok": False}
+        self.broadcaster.publish(
+            "state", self._route(state=_build_state(agent))
+        )
+        return {"ok": True, "chatId": new_id}
+
+    def chat_edit(
+        self, chat_id: str = "", workspace_id: str = "", index: int = -1
+    ) -> bool:
+        """Truncate a chat at a user-message index (GUI "Edit" button).
+
+        Dedicated equivalent of the TUI ``/chat edit`` slash command. The
+        target chat is interrupted first (scoped to that chat only, exactly
+        like the slash path in ``submit_input``), then the history is rewound
+        to just before the selected user message.
+        """
+        agent = self.agent
+        cid, wsid = self._resolve_chat_scope(chat_id, workspace_id)
+        if not cid:
+            return False
+        original_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+        if not self._switch_to_workspace_safe(wsid or original_wsid):
+            return False
+        self.interrupt(chat_id=cid, workspace_id=wsid or original_wsid)
+        try:
+            with self._session_scope_for_chat(cid, wsid or original_wsid):
+                agent.active_chat_id = cid
+                refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
+                if callable(refresh):
+                    refresh(cid)
+                from ..controllers.chat_command_controller import (
+                    handle_chat_edit_command,
+                )
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    handle_chat_edit_command(
+                        agent, str(index if index is not None else -1)
+                    )
+        except Exception:
+            return False
+        finally:
+            self._restore_workspace(original_wsid)
+        # The chat id is unchanged by an edit, so the frontend cannot rely on
+        # its active-chat history effect; it flags the next idle event to
+        # reload the (now shorter) transcript (see ``editChat`` in AppContext).
+        self.broadcaster.publish(
+            "idle", self._route(state=_build_state(agent))
+        )
+        return True
+
+    def set_execution_policy(self, policy: str) -> bool:
+        """Apply an execution-policy change immediately (GUI security dropdown).
+
+        Dedicated equivalent of the ``/execution-policy`` slash command; runs
+        on the HTTP thread so the new policy takes effect even while a
+        multi-round task is executing.
+        """
+        agent = self.agent
+        value = str(policy or "").strip().lower()
+        if value not in ("unlimited", "moderate", "confirmation"):
+            return False
+        try:
+            if value != str(getattr(agent, "execution_policy", "")).lower():
+                agent.execution_policy = value
+                save = getattr(agent, "_save_execution_policy_to_config", None)
+                if callable(save):
+                    save()
+        except Exception:
+            return False
+        self.broadcaster.publish(
+            "state", self._route(state=_build_state(agent))
+        )
+        return True
+
+    def workspace_create(self, path: str) -> Dict[str, Any]:
+        """Create + switch to a workspace from a directory path (GUI picker).
+
+        Dedicated equivalent of the TUI ``/workspace create`` slash command.
+        The controller is invoked directly (not through the slash-command
+        queue) and the new workspace id is returned so the frontend can focus
+        it immediately.
+        """
+        agent = self.agent
+        raw = str(path or "").strip()
+        if not raw:
+            return {"ok": False}
+        try:
+            before = set(agent._workspaces_state.get("workspaces", {}).keys())
+        except Exception:
+            before = set()
+        quoted = '"' + str(raw).replace('"', '\\"') + '"'
+        text = ""
+        try:
+            from ..controllers.workspace_command_controller import (
+                workspace_create_command,
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                text = workspace_create_command(agent, quoted)
+        except Exception:
+            return {"ok": False, "text": text}
+        try:
+            after = set(agent._workspaces_state.get("workspaces", {}).keys())
+        except Exception:
+            after = set()
+        new_ids = after - before
+        if not new_ids:
+            return {"ok": False, "text": text}
+        new_id = sorted(new_ids)[0]
+        # Publish an idle event (not just state) exactly like the proven
+        # ``open_folder`` path: the frontend consumes it (once the pending
+        # focus is set) to enter draft mode and refresh the workspace list,
+        # independent of the createWorkspace fetch round-trip.
+        self.broadcaster.publish(
+            "idle", self._route(state=_build_state(agent))
+        )
+        return {"ok": True, "id": new_id, "text": text}
+
+    def workspace_rename(self, workspace_id: str, name: str) -> Dict[str, Any]:
+        """Rename a workspace (GUI sidebar rename).
+
+        Dedicated equivalent of the TUI ``/workspace rename`` slash command,
+        invoked directly against the workspace controller so the change
+        persists immediately without waiting for the slash-command queue.
+        """
+        agent = self.agent
+        wid = str(workspace_id or "").strip()
+        new_name = str(name or "").strip()
+        if not wid or not new_name:
+            return {"ok": False}
+        quoted = (
+            '"' + wid.replace('"', '\\"') + '" --name "'
+            + new_name.replace('"', '\\"') + '"'
+        )
+        text = ""
+        try:
+            from ..controllers.workspace_command_controller import (
+                workspace_update_command,
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                text = workspace_update_command(agent, quoted)
+        except Exception:
+            return {"ok": False, "text": text}
+        try:
+            entry = agent._workspace_entry_by_selector(wid)
+        except Exception:
+            entry = None
+        if not entry or str(entry.get("name") or "") != new_name:
+            return {"ok": False, "text": text}
+        self.broadcaster.publish(
+            "state", self._route(state=_build_state(agent))
+        )
+        return {"ok": True, "text": text}
+
     def interrupt(self, chat_id: str = "", workspace_id: str = "") -> None:
         """Cancel an in-flight turn for the GUI's "stop" button / message edit.
 
@@ -8735,6 +8978,42 @@ def _make_handler(app: ServeApp):
                 name = str(body.get("name") or "")[:512]
                 ok = app.rename_chat(chat_id, name, ws_id)
                 self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/chat-fork":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                try:
+                    index = int(body.get("index") or -1)
+                except (TypeError, ValueError):
+                    index = -1
+                result = app.chat_fork(chat_id, ws_id, index)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/chat-edit":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                try:
+                    index = int(body.get("index") or -1)
+                except (TypeError, ValueError):
+                    index = -1
+                ok = app.chat_edit(chat_id, ws_id, index)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-execution-policy":
+                policy = str(body.get("policy") or "")[:64]
+                ok = app.set_execution_policy(policy)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/workspace-create":
+                p = str(body.get("path") or "")[:4096]
+                result = app.workspace_create(p)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/workspace-rename":
+                wid = str(body.get("id") or "")[:256]
+                name = str(body.get("name") or "")[:512]
+                result = app.workspace_rename(wid, name)
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/save-pending-inputs":
                 chat_id = str(body.get("chatId") or "")[:256]

@@ -81,6 +81,7 @@ describe("Sidebar workspace routing", () => {
       refreshWorkspaceChats: vi.fn(async () => undefined),
       client: {
         exportChat: vi.fn(async () => true),
+        renameWorkspace: vi.fn(async () => true),
       },
     });
 
@@ -161,6 +162,7 @@ describe("Sidebar workspace routing", () => {
       refreshWorkspaceChats: vi.fn(async () => undefined),
       client: {
         exportChat: vi.fn(async () => true),
+        renameWorkspace: vi.fn(async () => true),
       },
     });
 
@@ -243,6 +245,7 @@ describe("Sidebar workspace routing", () => {
       refreshWorkspaceChats: vi.fn(async () => undefined),
       client: {
         exportChat: vi.fn(async () => true),
+        renameWorkspace: vi.fn(async () => true),
       },
     });
 
@@ -315,6 +318,7 @@ describe("Sidebar workspace routing", () => {
       refreshWorkspaceChats: vi.fn(async () => undefined),
       client: {
         exportChat: vi.fn(async () => true),
+        renameWorkspace: vi.fn(async () => true),
       },
     });
 

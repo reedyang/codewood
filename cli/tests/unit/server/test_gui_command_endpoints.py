@@ -1,0 +1,237 @@
+"""ServeApp dedicated endpoints replacing GUI slash-command routing.
+
+Covers ``chat_fork`` / ``chat_edit`` / ``set_execution_policy`` /
+``workspace_create`` / ``workspace_rename`` — the GUI operations that used to
+be implemented by queuing TUI slash commands through ``submit_input``. Each
+now runs directly on the HTTP thread, workspace-scoped, without touching the
+slash-command machinery.
+"""
+
+import threading
+import unittest
+from unittest.mock import Mock, patch
+
+from cli.agent import Agent
+from cli.server.serve_app import ServeApp
+
+
+class _FakeBroadcaster:
+    def __init__(self) -> None:
+        self.published = []
+
+    def publish(self, event, data) -> None:
+        self.published.append((event, data))
+
+
+def _agent(active_chat: str = "chat-1") -> Agent:
+    agent = Agent.__new__(Agent)
+    agent.workspace_id = "ws-1"
+    agent.workspace_name = "Workspace 1"
+    agent.execution_policy = "confirmation"
+    agent._save_execution_policy_to_config = None
+    agent._refresh_chat_record_from_disk = None
+    agent._chat_state_lock = threading.RLock()
+    agent._chat_state = {
+        "active": active_chat,
+        "chats": [
+            {"id": "chat-1", "name": "Chat 1", "messages": []},
+            {"id": "chat-2", "name": "Chat 2", "messages": []},
+        ],
+    }
+    agent._find_chat_by_id = lambda cid: next(
+        (c for c in agent._chat_state["chats"] if c.get("id") == cid), None
+    )
+    agent._chat_entries = lambda: agent._chat_state["chats"]
+    agent._workspaces_state = {
+        "workspaces": {
+            "ws-1": {"id": "ws-1", "name": "Workspace 1", "kind": "custom", "root": "D:/ws1"},
+        },
+    }
+    agent._workspace_entry_by_selector = lambda selector: next(
+        (
+            e
+            for e in agent._workspaces_state.get("workspaces", {}).values()
+            if isinstance(e, dict)
+            and (e.get("id") == selector or e.get("name") == selector)
+        ),
+        None,
+    )
+    # Lazily installs the per-chat session registry (real Agent machinery).
+    agent._session_for_key("")
+    return agent
+
+
+def _app(agent):
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.agent = agent
+    stub.broadcaster = _FakeBroadcaster()
+    stub._token = "test"
+    stub._route = lambda **payload: payload
+    stub._resolve_chat_scope = lambda chat_id="", workspace_id="": (
+        str(chat_id or "") or "chat-1",
+        str(workspace_id or "") or "ws-1",
+    )
+    stub._session_scope_for_chat = getattr(ServeApp, "_session_scope_for_chat").__get__(
+        stub, _Stub
+    )
+    stub._switch_to_workspace_safe = getattr(
+        ServeApp, "_switch_to_workspace_safe"
+    ).__get__(stub, _Stub)
+    stub._restore_workspace = getattr(ServeApp, "_restore_workspace").__get__(
+        stub, _Stub
+    )
+    stub.chat_fork = getattr(ServeApp, "chat_fork").__get__(stub, _Stub)
+    stub.chat_edit = getattr(ServeApp, "chat_edit").__get__(stub, _Stub)
+    stub.set_execution_policy = getattr(
+        ServeApp, "set_execution_policy"
+    ).__get__(stub, _Stub)
+    stub.workspace_create = getattr(ServeApp, "workspace_create").__get__(stub, _Stub)
+    stub.workspace_rename = getattr(ServeApp, "workspace_rename").__get__(stub, _Stub)
+    return stub
+
+
+class ServeAppGuiCommandEndpointTests(unittest.TestCase):
+    def test_chat_fork_runs_controller_and_returns_new_chat_id(self):
+        agent = _agent()
+        app = _app(agent)
+
+        def fake_fork(agent_obj, raw_index: str):
+            self.assertEqual(raw_index, "-2")
+            agent_obj._chat_state["active"] = "chat-9"
+
+        with patch(
+            "cli.controllers.chat_command_controller.handle_chat_fork_command",
+            side_effect=fake_fork,
+        ):
+            result = app.chat_fork("chat-1", "ws-1", -2)
+
+        self.assertEqual(result, {"ok": True, "chatId": "chat-9"})
+        # The fork switch must be reflected in the broadcast state event.
+        self.assertTrue(any(e == "state" for e, _ in app.broadcaster.published))
+
+    def test_chat_fork_returns_not_ok_when_controller_makes_no_new_chat(self):
+        agent = _agent()
+        app = _app(agent)
+
+        with patch(
+            "cli.controllers.chat_command_controller.handle_chat_fork_command",
+            return_value=None,
+        ):
+            result = app.chat_fork("chat-1", "ws-1", -1)
+
+        self.assertEqual(result["ok"], False)
+
+    def test_chat_edit_interrupts_target_chat_then_runs_controller(self):
+        agent = _agent()
+        app = _app(agent)
+        app.interrupt = Mock()
+
+        with patch(
+            "cli.controllers.chat_command_controller.handle_chat_edit_command"
+        ) as edit:
+            ok = app.chat_edit("chat-2", "ws-1", -1)
+
+        self.assertTrue(ok)
+        app.interrupt.assert_called_once_with(chat_id="chat-2", workspace_id="ws-1")
+        self.assertEqual(edit.call_args.args[1], "-1")
+        # An edit leaves the chat id unchanged; the frontend reloads history on
+        # the next idle event (not via the active-chat change effect).
+        self.assertTrue(any(e == "idle" for e, _ in app.broadcaster.published))
+
+    def test_set_execution_policy_applies_and_persists(self):
+        agent = _agent()
+        saved = {}
+        agent._save_execution_policy_to_config = lambda: saved.update(
+            policy=agent.execution_policy
+        )
+        app = _app(agent)
+
+        self.assertTrue(app.set_execution_policy("unlimited"))
+        self.assertEqual(agent.execution_policy, "unlimited")
+        self.assertEqual(saved.get("policy"), "unlimited")
+        self.assertTrue(any(e == "state" for e, _ in app.broadcaster.published))
+
+    def test_set_execution_policy_rejects_unknown_value(self):
+        app = _app(_agent())
+        self.assertFalse(app.set_execution_policy("bogus"))
+        self.assertEqual(app.broadcaster.published, [])
+
+    def test_workspace_create_invokes_controller_and_returns_new_id(self):
+        agent = _agent()
+        app = _app(agent)
+
+        def fake_create(agent_obj, arg_text: str):
+            agent_obj._workspaces_state.setdefault("workspaces", {})["ws-9"] = {
+                "id": "ws-9",
+                "name": "New WS",
+                "kind": "custom",
+                "root": "D:/new",
+            }
+            return "workspace.create.success"
+
+        with patch(
+            "cli.controllers.workspace_command_controller.workspace_create_command",
+            side_effect=fake_create,
+        ) as create:
+            result = app.workspace_create("D:/new")
+
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["id"], "ws-9")
+        create.assert_called_once()
+        self.assertIn("D:/new", create.call_args.args[1])
+        # Mirrors open_folder: an idle event (not just state) lets the
+        # frontend enter draft mode and refresh the workspace list once the
+        # pending focus is set.
+        self.assertTrue(any(e == "idle" for e, _ in app.broadcaster.published))
+
+    def test_workspace_create_fails_when_no_workspace_added(self):
+        agent = _agent()
+        app = _app(agent)
+
+        with patch(
+            "cli.controllers.workspace_command_controller.workspace_create_command",
+            return_value="workspace.name_exists_error",
+        ):
+            result = app.workspace_create("D:/dup")
+
+        self.assertEqual(result["ok"], False)
+
+    def test_workspace_rename_invokes_controller_and_confirms_name(self):
+        agent = _agent()
+        app = _app(agent)
+
+        def fake_update(agent_obj, arg_text: str):
+            entry = agent_obj._workspace_entry_by_selector("ws-1")
+            entry["name"] = "Renamed"
+            return "workspace.update.success"
+
+        with patch(
+            "cli.controllers.workspace_command_controller.workspace_update_command",
+            side_effect=fake_update,
+        ) as update:
+            result = app.workspace_rename("ws-1", "Renamed")
+
+        self.assertEqual(result["ok"], True)
+        update.assert_called_once()
+        self.assertIn('"ws-1"', update.call_args.args[1])
+        self.assertIn("Renamed", update.call_args.args[1])
+        self.assertTrue(any(e == "state" for e, _ in app.broadcaster.published))
+
+    def test_workspace_rename_fails_when_name_not_applied(self):
+        agent = _agent()
+        app = _app(agent)
+
+        with patch(
+            "cli.controllers.workspace_command_controller.workspace_update_command",
+            return_value="workspace.name_exists_error",
+        ):
+            result = app.workspace_rename("ws-1", "Taken")
+
+        self.assertEqual(result["ok"], False)
+
+
+if __name__ == "__main__":
+    unittest.main()
