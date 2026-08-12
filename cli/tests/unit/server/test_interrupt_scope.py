@@ -62,6 +62,9 @@ def _app(agent):
     stub.pause = getattr(ServeApp, "pause").__get__(stub, _Stub)
     stub._resolve_chat_scope = getattr(ServeApp, "_resolve_chat_scope").__get__(stub, _Stub)
     stub._resolve_chat_record = getattr(ServeApp, "_resolve_chat_record").__get__(stub, _Stub)
+    stub._publish_idle_if_chat_parked = getattr(
+        ServeApp, "_publish_idle_if_chat_parked"
+    ).__get__(stub, _Stub)
     return stub
 
 
@@ -335,6 +338,42 @@ class ChatInterruptScopeTests(unittest.TestCase):
         )
         self.assertTrue(
             agent._session_for_key("ws-1::chat-b").task_interrupt_requested
+        )
+
+    def test_serveapp_interrupt_parked_chat_publishes_idle(self):
+        agent = _agent()
+        app = _app(agent)
+        app._chat_is_busy = lambda *a, **k: False
+        app.state = lambda: {"chats": []}
+
+        app.interrupt(chat_id="chat-b", workspace_id="ws-1")
+
+        self.assertTrue(
+            agent._session_for_key("ws-1::chat-b").task_interrupt_requested
+        )
+        self.assertEqual(
+            [(event, data.get("chat_id")) for event, data in app.broadcaster.published],
+            [("idle", "chat-b")],
+            "stopping a parked chat must publish an idle snapshot so a stale "
+            "GUI live turn settles instead of spinning forever",
+        )
+
+    def test_serveapp_interrupt_busy_chat_skips_parked_idle(self):
+        agent = _agent()
+        app = _app(agent)
+        app._chat_is_busy = lambda *a, **k: True
+        app.state = lambda: {"chats": []}
+
+        app.interrupt(chat_id="chat-b", workspace_id="ws-1")
+
+        self.assertTrue(
+            agent._session_for_key("ws-1::chat-b").task_interrupt_requested
+        )
+        self.assertEqual(
+            app.broadcaster.published,
+            [],
+            "a busy chat's loop emits the terminal idle itself; no snapshot "
+            "should be published here",
         )
 
     def test_serveapp_interrupt_without_chat_id_keeps_legacy_global_path(self):
