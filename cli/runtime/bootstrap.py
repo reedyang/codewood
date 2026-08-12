@@ -157,6 +157,20 @@ def setup_workspace_and_history(
     except Exception:
         pass
     try:
+        # Continue any interrupted sandbox ACL-removal sweep from a previous
+        # run (e.g. the app exited mid-cleanup).  Background thread so startup
+        # never blocks on the icacls sweep.
+        from ..core.sandbox import resume_pending_sandbox_cleanup
+        import threading
+
+        threading.Thread(
+            target=resume_pending_sandbox_cleanup,
+            args=(agent.config_dir,),
+            daemon=True,
+        ).start()
+    except Exception:
+        pass
+    try:
         cleanup = getattr(agent, "_cleanup_workspace_shell_stashes_if_needed", None)
         if callable(cleanup):
             cleanup()

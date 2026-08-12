@@ -205,6 +205,44 @@ def cleanup_workspace_acls(agent: Any, workspace_root: Optional[str] = None) -> 
         pass
 
 
+def cleanup_all_sandbox_acls(config_dir: Any) -> None:
+    """Best-effort: strip sandbox-managed ACLs from every recorded directory.
+
+    Called by the serve process before the elevated setup recreates the
+    sandbox users, so the old accounts' ACEs (removable by name) are swept
+    while their SIDs still resolve.  No elevation is needed: every recorded
+    directory belongs to the current user.  Never raises.
+    """
+    try:
+        backend = get_sandbox_backend()
+        if not backend.is_supported():
+            return
+        cleanup = getattr(backend, "cleanup_all_recorded_acls", None)
+        if callable(cleanup):
+            cleanup(config_dir)
+    except Exception:
+        pass
+
+
+def resume_pending_sandbox_cleanup(config_dir: Any) -> None:
+    """Best-effort: continue an interrupted sandbox ACL-removal sweep.
+
+    Called at startup on a background thread: any sweep left unfinished by a
+    previous run (tracked in ``sandbox_pending_cleanup.json``) is continued,
+    so a cleanup that did not finish before the app exited is not lost.
+    Never raises.
+    """
+    try:
+        backend = get_sandbox_backend()
+        if not backend.is_supported():
+            return
+        resume = getattr(backend, "resume_pending_cleanup", None)
+        if callable(resume):
+            resume(config_dir)
+    except Exception:
+        pass
+
+
 def sandbox_block_error(agent: Any) -> Optional[str]:
     """Return an error message when the sandbox is configured but not ready.
 
