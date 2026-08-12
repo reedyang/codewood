@@ -7362,13 +7362,26 @@ class ServeApp:
 
         # The workspace is forgotten: revoke the sandbox users/group/capability
         # SIDs' ACLs on its directory tree so the sandbox keeps no access to a
-        # directory the app no longer tracks. Best-effort, never raises.
-        try:
-            from ..core.sandbox import cleanup_workspace_acls
+        # directory the app no longer tracks. This walks the whole tree and
+        # can take a while on large projects, so it runs in the background
+        # AFTER the registry entry is gone — the GUI must not wait for it.
+        # Best-effort, never raises.
+        deleted_root = str(entry.get("root") or "")
+        if deleted_root:
+            try:
+                from ..core.sandbox import cleanup_workspace_acls
 
-            cleanup_workspace_acls(agent, str(entry.get("root") or ""))
-        except Exception:
-            pass
+                def _cleanup_in_background() -> None:
+                    try:
+                        cleanup_workspace_acls(agent, deleted_root)
+                    except Exception:
+                        pass
+
+                threading.Thread(
+                    target=_cleanup_in_background, daemon=True
+                ).start()
+            except Exception:
+                pass
 
         fallback_id = ""
         if active_deleted:
