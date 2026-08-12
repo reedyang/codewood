@@ -607,6 +607,74 @@ def _ps_grant_read_group(path: str) -> int:
     return _run_process(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]).returncode
 
 
+#: Known system/UWP subtrees under the profile that must NOT be granted or
+#: walked by the protected-directory discovery (per-app package data, Windows
+#: internals).  Paths are relative to the home directory.
+_PROFILE_SCAN_SKIP = (
+    "AppData\\Local\\Packages",
+    "AppData\\Local\\Microsoft",
+    "AppData\\Local\\Temp",
+    "AppData\\Local\\Programs",
+    "AppData\\Local\\WindowsApps",
+    "AppData\\Roaming\\Microsoft",
+)
+
+
+def _discover_protected_profile_dirs(home: Path, max_depth: int = 3) -> list:
+    """Discover profile directories that do not inherit ACLs and lack the
+    sandbox group's read ACE (npm's global dir / cache, yarn, pnpm, ...).
+
+    Runs as ONE PowerShell walk (bounded depth, skipping reparse points and
+    known system/UWP subtrees); every directory that is inheritance-protected
+    and has no explicit ReadAndExecute ACE for the sandbox users group is
+    reported.  These need explicit grants because the inheritable profile
+    grants never reach them.
+    """
+    skip_ps = ", ".join("'%s'" % str(home / s) for s in _PROFILE_SCAN_SKIP)
+    ps = (
+        "$home='{0}'; "
+        "$skip=@({1}); "
+        "$id=New-Object System.Security.Principal.NTAccount('{2}'); "
+        "$sid=$id.Translate([System.Security.Principal.SecurityIdentifier]); "
+        "$rx=[System.Security.AccessControl.FileSystemRights]::ReadAndExecute; "
+        "function Visit($dir, $depth) {{ "
+        "  if ($depth -gt {3}) {{ return }} "
+        "  foreach ($child in Get-ChildItem -LiteralPath $dir -Directory -Force "
+        "-ErrorAction SilentlyContinue) {{ "
+        "    $full=$child.FullName; "
+        "    if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {{ continue }} "
+        "    if ($skip -contains $full) {{ continue }} "
+        "    try {{ "
+        "      $acl=Get-Acl -LiteralPath $full; "
+        "      if ($acl.AreAccessRulesProtected) {{ "
+        "        $has=$false; "
+        "        foreach ($ace in $acl.Access) {{ "
+        "          if ($ace.IsInherited) {{ continue }} "
+        "          if ($ace.AccessControlType -ne "
+        "[System.Security.AccessControl.AccessControlType]::Allow) {{ continue }} "
+        "          if (-not ($ace.FileSystemRights -band $rx)) {{ continue }} "
+        "          try {{ $s=$ace.IdentityReference.Translate("
+        "[System.Security.Principal.SecurityIdentifier]).Value }} catch {{ continue }} "
+        "          if ($s -eq $sid.Value) {{ $has=$true; break }} "
+        "        }}; "
+        "        if (-not $has) {{ Write-Output $full }} "
+        "      }} "
+        "    }} catch {{}} "
+        "    Visit $full ($depth + 1) "
+        "  }} "
+        "}}; "
+        "Visit $home 1"
+    ).format(str(home), skip_ps, SANDBOX_USERS_GROUP, max_depth)
+    result = _run_process(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        timeout=180,
+    )
+    out = (result.stdout or "").strip()
+    if not out:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def _grant_profile_read(timeout: float = 1800) -> bool:
     """Grant the sandbox users group ReadAndExecute on the home subdirectories.
 
@@ -622,7 +690,12 @@ def _grant_profile_read(timeout: float = 1800) -> bool:
 
     Returns True when at least one subdirectory was granted (or all already
     held an explicit ACE).  The grant set is recorded as ``<home>\\*`` so a
-    later rebuild knows to sweep every subdirectory.
+    later rebuild knows to sweep every subdirectory.  Well-known protected
+    locations that do NOT inherit the profile grants (npm sets owner-only,
+    non-inheriting ACLs on its global bin and cache dirs, so tools like
+    ``npx`` cannot resolve globally installed commands) are discovered
+    automatically with a bounded PowerShell walk and granted explicitly as
+    well.
 
     The check runs as ONE PowerShell process over all subdirectories (a
     per-directory check would spawn ~50 ``powershell.exe`` at startup and
@@ -635,12 +708,18 @@ def _grant_profile_read(timeout: float = 1800) -> bool:
         children = [c for c in sorted(home.iterdir()) if c.is_dir()]
     except Exception:
         pass
-    if not children:
+    extra: list = []
+    try:
+        extra = _discover_protected_profile_dirs(home)
+    except Exception:
+        pass
+    targets = children + extra
+    if not targets:
         return False
     # Wildcard record: cleanup expands it and sweeps every subdirectory.
     _record_acl_dirs([str(home / "*")])
     try:
-        missing = _missing_profile_read_dirs(children)
+        missing = _missing_profile_read_dirs(targets)
     except Exception:
         return False
     if not missing:
