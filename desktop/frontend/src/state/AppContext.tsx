@@ -482,6 +482,58 @@ function buildCompactNoticeData(
   };
 }
 
+// A still-streaming live turn may already be partially persisted in the recent
+// history page.  Normally that archived copy is the page TAIL, but a mid-turn
+// context compaction splits the running turn into [user turn, compaction-
+// summary turn, assistant continuation turn], so the tail becomes an
+// assistant-only turn with no user text and can never match the live turn by
+// user text.  Return the index of the FIRST history turn that is an archived
+// copy of one of the given active live turns (same user text + close send
+// time), or -1 when the page holds no copy of them.  Everything from that
+// index to the end of the page belongs to the same logical turn and must not
+// render next to the live copy.
+export function subsumedHistoryStartIndex(
+  activeTurns: Turn[],
+  pageTurns: HistoryTurn[],
+): number {
+  for (const turn of activeTurns) {
+    const text = String(turn.userText || "").trim();
+    if (!text) {
+      continue;
+    }
+    const liveOutput = turn.rounds
+      .flatMap((round) => round.segments.map((segment) => segment.text))
+      .join("")
+      .trim();
+    const hitIndex = pageTurns.findIndex((historyTurn) => {
+      if (String(historyTurn.userText || "").trim() !== text) {
+        return false;
+      }
+      // A history reload after switching away and back may already have
+      // replayed the running turn's tool rounds.  It is still the same live
+      // turn and must not render a second time.  Match its user send time to
+      // avoid mistaking an older, identical prompt for the active one; retain
+      // the no-round fallback for legacy history entries that have no
+      // parseable timestamp.
+      const historyTimestamp = Date.parse(
+        String(historyTurn.timestamp || "").replace(" ", "T"),
+      );
+      const historyOutput = (historyTurn.rounds ?? [])
+        .map((round) => `${round.tools || ""}${round.text || ""}${round.thinking || ""}`)
+        .join("");
+      return Number.isFinite(historyTimestamp)
+        ? Math.abs(historyTimestamp - turn.startedAt) <= 120_000 ||
+          Boolean(liveOutput && historyOutput.includes(liveOutput))
+        : Boolean(liveOutput && historyOutput.includes(liveOutput)) ||
+          (!Array.isArray(historyTurn.rounds) || historyTurn.rounds.length === 0);
+    });
+    if (hitIndex !== -1) {
+      return hitIndex;
+    }
+  }
+  return -1;
+}
+
 function resolveTheme(theme: Theme): "light" | "dark" {
   if (theme === "system") {
     return systemPrefersDark() ? "dark" : "light";
@@ -3683,13 +3735,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // An in-progress turn is streaming for this chat (or an optimistic
           // first-message turn just opened for a freshly materialized draft
           // chat). It is not yet fully persisted, so keep the live turn and,
-          // when the persisted page already carries its trailing duplicate
-          // (the user message of the SAME in-progress turn, no answer yet),
-          // drop that tail. A brand-new chat has no persisted history yet
-          // (empty page) — keep the live turn untouched so the optimistically
-          // echoed user message survives this reload instead of being cleared.
+          // when the persisted page already carries its duplicate (the user
+          // message of the SAME in-progress turn), drop that archived copy. A
+          // brand-new chat has no persisted history yet (empty page) — keep
+          // the live turn untouched so the optimistically echoed user message
+          // survives this reload instead of being cleared.
           //
-          // IMPORTANT: only drop the tail when it really IS that duplicate.
+          // IMPORTANT: only drop a copy that really IS the active turn's.
           // The reload may race a NEW turn's start: the idle event that
           // triggered this fetch belongs to the PREVIOUS turn, and the new
           // turn (e.g. an auto-sent pending message) can begin streaming
@@ -3697,43 +3749,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // turn is the COMPLETED previous turn, not the streaming one —
           // dropping it (and then dropping the settled live turns) would erase
           // the completed task's user message and steps from the transcript
-          // until the next chat switch.
+          // until the next chat switch. Only turns matching an ACTIVE live
+          // turn are subsumed, so the completed previous turn is never touched.
           const activeTurns = live.filter((tt) => tt.endedAt === null);
-          const tail = page.turns[page.turns.length - 1];
-          const tailTimestamp = Date.parse(
-            String(tail?.timestamp || "").replace(" ", "T"),
-          );
-          const tailIsStreamingDuplicate = !!tail && activeTurns.some((turn) => {
-            if (String(turn.userText || "").trim() !== String(tail.userText || "").trim()) {
-              return false;
-            }
-            // A history reload after switching away and back may already have
-            // replayed the running turn's tool rounds.  It is still the same
-            // live turn and must not render a second time.  Match its user
-            // send time to avoid mistaking an older, identical prompt for the
-            // active one; retain the old no-round fallback for legacy history
-            // entries that have no parseable timestamp.
-            const liveOutput = turn.rounds
-              .flatMap((round) => round.segments.map((segment) => segment.text))
-              .join("")
-              .trim();
-            const tailOutput = (tail.rounds ?? [])
-              .map((round) => `${round.tools || ""}${round.text || ""}${round.thinking || ""}`)
-              .join("");
-            return Number.isFinite(tailTimestamp)
-              ? Math.abs(tailTimestamp - turn.startedAt) <= 120_000 ||
-                Boolean(liveOutput && tailOutput.includes(liveOutput))
-              : Boolean(liveOutput && tailOutput.includes(liveOutput)) ||
-                (!Array.isArray(tail.rounds) || tail.rounds.length === 0);
-          });
-          const keptTurns = tailIsStreamingDuplicate
-            ? page.turns.slice(0, -1)
-            : page.turns;
+          // Normally the archived copy of the active turn IS the page tail,
+          // but a mid-turn context compaction splits the running turn into
+          // [user turn, compaction-summary turn, assistant continuation turn]
+          // so the tail is an assistant-only turn that can never match the
+          // live turn's user text.  Drop every page turn from the first
+          // archived copy of the live turn onward (the whole logical turn) and
+          // keep the live rendering; the post-settlement recheck below
+          // replaces it with the full history.
+          const subsumedFrom = subsumedHistoryStartIndex(activeTurns, page.turns);
+          const subsumed = subsumedFrom !== -1;
+          const keptTurns = subsumed ? page.turns.slice(0, subsumedFrom) : page.turns;
           setHistoryTurns(keptTurns);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
           dropSettledLiveTurnsNotInHistory(key, keptTurns);
-          if (tailIsStreamingDuplicate) {
+          if (subsumed) {
             // ``idle`` can settle the live turn in the same event batch that
             // started this fetch.  In that narrow window this branch preserves
             // the live copy and hides its history copy, but no later event is
