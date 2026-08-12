@@ -390,14 +390,36 @@ export function orderTranscriptEntries(
   historyTurns: HistoryTurn[],
   liveTurns: Turn[],
 ): TranscriptEntry[] {
+  // A persisted compaction summary is its own assistant-only history turn whose
+  // ``created_at`` sits *mid-task* — after the running turn's user message was
+  // recorded. Sorting it by that absolute time would place the formatted
+  // summary BELOW the still-running turn's output on the next history reload
+  // (e.g. after clicking the chat name in the sidebar). Clamp its effective
+  // sort time to the previous regular history turn so it stays right above the
+  // running task, after the already-compacted conversation.
+  let lastRegularHistoryTs: number | undefined = undefined;
   const entries: TranscriptEntry[] = [
-    ...historyTurns.map((turn, index) => ({
-      source: "history" as const,
-      index,
-      turn,
-      timestamp: parseHistoryTime(turn.timestamp),
-      order: index,
-    })),
+    ...historyTurns.map((turn, index) => {
+      const parsed = parseHistoryTime(turn.timestamp);
+      const isSummaryTurn =
+        String(turn.userText || "").trim() === "" &&
+        (String(turn.rounds?.[0]?.compactNoticeTitle || "").trim() !== "" ||
+          String(turn.rounds?.[0]?.compactNoticeBody || "").trim() !== "");
+      const timestamp =
+        isSummaryTurn && lastRegularHistoryTs !== undefined
+          ? lastRegularHistoryTs
+          : parsed;
+      if (!isSummaryTurn && parsed !== undefined) {
+        lastRegularHistoryTs = parsed;
+      }
+      return {
+        source: "history" as const,
+        index,
+        turn,
+        timestamp,
+        order: index,
+      };
+    }),
     ...liveTurns.map((turn, index) => ({
       source: "live" as const,
       index,
@@ -3705,12 +3727,6 @@ export function TurnView({
   if (turn.endedAt !== null) {
     return (
       <>
-        <CompletedTurnView
-          turn={liveTurnToHistoryTurn(turn)}
-          negIndex={negIndex}
-          handlers={handlers}
-          settle={settle}
-        />
         {compactNotice && (
           <div className="turn compact-notice-turn" role="alert" aria-live="polite">
             <CompactNoticeView
@@ -3720,6 +3736,12 @@ export function TurnView({
             />
           </div>
         )}
+        <CompletedTurnView
+          turn={liveTurnToHistoryTurn(turn)}
+          negIndex={negIndex}
+          handlers={handlers}
+          settle={settle}
+        />
       </>
     );
   }

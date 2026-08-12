@@ -405,6 +405,104 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertEqual(notices[2][:4], ("stream", "manual", "Compacting context", "Summary body"))
         self.assertEqual(notices[-1][:4], ("done", "manual", "Context compacted", "Summary body"))
 
+    def test_gui_compact_stream_strips_code_fences_from_notice_body(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {
+                "role": "assistant",
+                "content": svc.build_context_compaction_summary_content(
+                    summary="Previous summary",
+                    mode="auto",
+                    covered_message_count=2,
+                ),
+            },
+            {"role": "user", "content": "Message needing summarization"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+        notices = []
+
+        def _notice(phase, mode, title, body, text):
+            notices.append((phase, mode, title, body, text))
+
+        class _FakeStream:
+            def __iter__(self):
+                yield "```\n"
+                yield "## Progress\n"
+                yield "- Step one\n"
+                yield "```\n"
+
+            def close(self):
+                return None
+
+        def _fake_call_ai(*args, **kwargs):
+            self.assertTrue(kwargs.get("stream"))
+            return _FakeStream()
+
+        agent._gui_compaction_notice = _notice
+        agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        stream_bodies = [body for phase, _mode, _title, body, _text in notices if phase == "stream"]
+        self.assertTrue(stream_bodies)
+        for body in stream_bodies:
+            self.assertNotIn("```", body)
+        self.assertEqual(stream_bodies[-1], "## Progress\n- Step one")
+        self.assertEqual(notices[-1][:4], ("done", "manual", "Context compacted", "## Progress\n- Step one"))
+
+    def test_gui_compact_skips_tui_banner_prints(self):
+        # In GUI mode the TUI banner/raw-text prints must NOT run: sys.stdout is
+        # the SSE bridge there, so any write would leak a second, unformatted
+        # notice into the transcript (start banner + raw done banner below the
+        # formatted summary).  All feedback must go through the GUI notice only.
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+        notices = []
+        tui_prints = []
+
+        class _FakeStream:
+            def __iter__(self):
+                yield "Summary body"
+
+            def close(self):
+                return None
+
+        def _fake_call_ai(*args, **kwargs):
+            self.assertTrue(kwargs.get("stream"))
+            return _FakeStream()
+
+        def _fake_print_notice(title, body=""):
+            tui_prints.append((str(title), str(body)))
+            return 3
+
+        agent._gui_compaction_notice = lambda phase, mode, title, body, text: notices.append(  # type: ignore[attr-defined]
+            (phase, mode, title, body, text)
+        )
+        agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
+
+        with (
+            patch.object(svc.llm_context_manager, "_print_compaction_notice", side_effect=_fake_print_notice),
+            redirect_stdout(io.StringIO()),
+        ):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        self.assertEqual(tui_prints, [])
+        self.assertEqual(notices[0][:4], ("start", "manual", "Compacting context", ""))
+        self.assertEqual(notices[-1][:4], ("done", "manual", "Context compacted", "Summary body"))
+
     def test_tui_compact_streams_summary_to_terminal_before_final_notice(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 16000}
