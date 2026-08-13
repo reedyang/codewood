@@ -236,7 +236,16 @@ def _is_workspace_read_command(agent: Any, command: str) -> bool:
 
     workspace_root = getattr(agent, "workspace_root", None)
     if not workspace_root:
-        return False
+        # A background chat loop may only carry its own workspace through the
+        # thread-local override (the globals describe the focused workspace).
+        ctx_getter = getattr(agent, "_workspace_ctx", None)
+        if callable(ctx_getter):
+            try:
+                workspace_root = (ctx_getter() or {}).get("workspace_root")
+            except Exception:
+                workspace_root = None
+        if not workspace_root:
+            return False
     try:
         workspace_root_path = Path(str(workspace_root)).resolve()
     except OSError:

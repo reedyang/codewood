@@ -91,5 +91,47 @@ class GrepToolPathHandlingTests(unittest.TestCase):
         self.assertIn("Directory not found", result["error"])
 
 
+class _OverrideAgent:
+    """Fake agent whose thread-local override points at a different root.
+
+    Mirrors a background chat loop: ``workspace_root`` (the global, focused
+    workspace) differs from ``_effective_workspace_root()`` (the chat's own
+    workspace). Relative paths must resolve against the override.
+    """
+
+    def __init__(self, global_root: Path, override_root: Path) -> None:
+        self.workspace_root = global_root
+        self._override_root = override_root
+
+    def _effective_workspace_root(self) -> Path:
+        return self._override_root
+
+
+class GrepToolWorkspaceOverrideTests(unittest.TestCase):
+    def test_relative_path_resolves_against_thread_override(self):
+        # Regression: a background chat whose workspace is NOT the focused one
+        # must resolve relative grep paths against its own workspace root,
+        # otherwise it reports "Directory not found" against the focused root.
+        with tempfile.TemporaryDirectory() as focused, tempfile.TemporaryDirectory() as own:
+            focused_root = Path(focused)
+            own_root = Path(own)
+            (own_root / "src").mkdir()
+            (own_root / "src" / "target.txt").write_text("needle\n", encoding="utf-8")
+            agent = _OverrideAgent(global_root=focused_root, override_root=own_root)
+            with patch("cli.tools.grep._find_rg", return_value=Path("rg")):
+                with patch("cli.tools.grep.subprocess.run") as mock_run:
+                    mock_run.return_value.returncode = 0
+                    mock_run.return_value.stdout = ""
+                    mock_run.return_value.stderr = ""
+                    result = action_grep(agent, "needle", path="src")
+            self.assertTrue(result["success"], result.get("error"))
+            args = mock_run.call_args.args[0]
+            self.assertEqual(Path(args[-1]).resolve(), (own_root / "src").resolve())
+            self.assertEqual(
+                Path(mock_run.call_args.kwargs["cwd"]).resolve(),
+                (own_root / "src").resolve(),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

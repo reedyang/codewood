@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from ..core.logging.app_logging import get_logger
+from ..core.workspace_scope import (
+    effective_workspace_config_dir,
+    effective_workspace_root,
+)
 
 logger = get_logger()
 
@@ -470,10 +474,10 @@ def _build_orchestrator(
             history_writer=_noop_history_writer,
             regular_message_builder=_unused_message_builder,
             ollama_importer=lambda: None,
-            workspace_root=str(getattr(agent, "workspace_root", "") or ""),
+            workspace_root=str(effective_workspace_root(agent)),
             self_repo_root=str(getattr(agent, "_self_repo_root", "") or ""),
             display_language=get_display_language(agent),
-            workspace_config_dir=str(getattr(agent, "workspace_config_dir", "") or ""),
+            workspace_config_dir=str(effective_workspace_config_dir(agent)),
         )
     )
 
@@ -535,7 +539,7 @@ def _candidate_image_paths(agent: Any, raw: str) -> List[Path]:
             pass
 
     for root in (
-        getattr(agent, "workspace_root", None),
+        effective_workspace_root(agent),
         getattr(agent, "work_directory", None),
         getattr(agent, "ai_workspace_temp_dir", None),
         getattr(agent, "workspace_config_dir", None),

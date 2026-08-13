@@ -164,6 +164,18 @@ def _start_background_subagent(
 
     def _worker() -> None:
         try:
+            # The sub-agent runs on a fresh thread; inherit the parent chat's
+            # workspace override so its tools/prompts resolve against the
+            # parent chat's workspace even when another workspace is focused.
+            get_ctx = getattr(agent, "_workspace_ctx", None)
+            set_ctx = getattr(agent, "_set_workspace_ctx", None)
+            if callable(get_ctx) and callable(set_ctx):
+                try:
+                    ctx = get_ctx()
+                    if ctx:
+                        set_ctx(ctx)
+                except Exception:
+                    pass
             result = _run_subagent(
                 agent,
                 subagent,

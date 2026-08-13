@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.localization import translate
+from ..core.workspace_scope import effective_workspace_root
 
 # BOM signatures, checked longest-first so utf-32 is not misread as utf-16.
 # Each entry maps the leading bytes to the base codec used to decode/encode the
@@ -693,7 +694,7 @@ def action_apply_unified_patch(
             return {"success": False, "error": decision.get("error", "")}
         execution_policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
         in_workspace_root = False
-        raw_workspace_root = getattr(agent, "workspace_root", None)
+        raw_workspace_root = effective_workspace_root(agent)
         if raw_workspace_root:
             try:
                 in_workspace_root = bool(

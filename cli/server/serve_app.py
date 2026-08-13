@@ -8587,12 +8587,24 @@ class ServeApp:
         conversation (loaded by the startup activation, ``select_chat``, or
         ``new_chat`` before input is routed here); this thread only binds to it
         so every per-session attribute the loop touches resolves correctly.
+
+        A thread-local workspace override is installed for the whole loop so
+        the chat keeps resolving relative tool paths, cache dirs and
+        system-prompt roots against ITS OWN workspace even after the user
+        focuses another workspace (which swaps the agent's workspace globals).
         """
         try:
             try:
                 self.agent._bind_session(rt.chat_id, rt.workspace_id)
             except Exception:
                 pass
+
+            ws_ctx = self._runtime_workspace_ctx(rt)
+            if ws_ctx:
+                try:
+                    self.agent._set_workspace_ctx(ws_ctx)
+                except Exception:
+                    pass
 
             from ..runtime.runtime_loop import run_agent_loop
 
@@ -8620,10 +8632,53 @@ class ServeApp:
             except Exception:
                 pass
         finally:
+            try:
+                self.agent._set_workspace_ctx(None)
+            except Exception:
+                pass
             key = self._runtime_key(rt.chat_id, rt.workspace_id)
             with self._runtimes_lock:
                 if self._runtimes.get(key) is rt:
                     self._runtimes.pop(key, None)
+
+    def _runtime_workspace_ctx(self, rt: "_ChatRuntime") -> Optional[Dict[str, Any]]:
+        """Resolve the thread-local workspace override for a chat loop thread.
+
+        The agent's workspace globals track the FOCUSED workspace; a chat whose
+        loop keeps running after the user focuses another workspace must keep
+        resolving paths/prompts against ITS OWN workspace. Mirrors
+        ``apply_workspace_entry`` so the loop sees the same identity the chat's
+        workspace was activated with. Returns ``None`` when the workspace
+        cannot be resolved (the loop then falls back to the globals).
+        """
+        agent = self.agent
+        wsid = str(getattr(rt, "workspace_id", "") or "").strip()
+        if not wsid:
+            return None
+        try:
+            entry = agent._workspace_entry_by_selector(wsid)
+        except Exception:
+            return None
+        if not isinstance(entry, dict):
+            return None
+        try:
+            root = agent._workspace_root_path(entry)
+            storage = agent._workspace_storage_path(entry)
+            name = str(entry.get("name") or (root.name if root else wsid) or wsid)
+            kind = str(entry.get("kind") or "custom").lower()
+            if kind != "default" and root.exists() and root.is_dir():
+                work_dir = root
+            else:
+                work_dir = getattr(agent, "work_directory", root)
+            return {
+                "workspace_id": wsid,
+                "workspace_name": name,
+                "workspace_root": str(root),
+                "workspace_config_dir": str(storage),
+                "work_directory": str(work_dir),
+            }
+        except Exception:
+            return None
 
 
 def _make_handler(app: ServeApp):

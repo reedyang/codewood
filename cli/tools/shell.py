@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..actions.command_execution_buffer import CommandExecutionBuffer
 from ..config.app_info import get_app_config_dirname, get_app_runtime_attr_name
 from ..core.logging.app_logging import get_logger
+from ..core.workspace_scope import effective_workspace_root
 from .script_scanners import expand_command_file_paths
 
 _log = get_logger("codewood.shell_diff")
@@ -919,7 +920,7 @@ def _resolve_shell_execution_cwd(agent: Any) -> Path:
                 return Path(str(resolved))
         except Exception:
             pass
-    raw_root = getattr(agent, "workspace_root", None)
+    raw_root = effective_workspace_root(agent)
     if raw_root:
         try:
             root = Path(str(raw_root)).expanduser().resolve()
@@ -4494,7 +4495,7 @@ def _parse_cd_prefix(agent: Any, command: str):
         try:
             target = Path(path_clean)
             cwd = _resolve_shell_execution_cwd(agent)
-            root_raw = getattr(agent, "workspace_root", None)
+            root_raw = effective_workspace_root(agent)
             if root_raw:
                 try:
                     root = Path(str(root_raw)).expanduser().resolve()

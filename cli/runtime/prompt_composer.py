@@ -9,6 +9,7 @@ from ..config.app_info import get_app_config_dirname
 from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, translate
 from .prompt_preprocessor import preprocess_prompt
 from ..core.config.skills_loader import _list_bundled_script_paths
+from ..core.workspace_scope import effective_workspace_id, effective_workspace_root
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
     MEMORY_TOOLS,
@@ -276,9 +277,7 @@ def _normalized_path_key(path: Path) -> str:
 
 
 def _agents_workspace_anchor(agent: Any) -> Path:
-    anchor = getattr(agent, "workspace_root", None) or getattr(agent, "work_directory", None)
-    if anchor is None:
-        anchor = getattr(agent, "config_dir", Path.cwd())
+    anchor = effective_workspace_root(agent)
     return _resolve_prompt_path(Path(anchor))
 
 
@@ -520,8 +519,8 @@ def _render_context_parts(agent: Any, include_tools: bool) -> List[Tuple[str, st
 
 def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> str:
     """Provide generic runtime cache-dir hints for all skills/scripts."""
-    ws_root = Path(getattr(agent, "workspace_root", agent.work_directory))
-    ws_id = str(getattr(agent, "workspace_id", "") or "").strip().lower()
+    ws_root = effective_workspace_root(agent)
+    ws_id = effective_workspace_id(agent).strip().lower()
     if ws_id == default_workspace_id:
         cache_root = (ws_root / "cache").resolve()
     else:
@@ -724,8 +723,8 @@ def default_skill_cache_dir(
     default_workspace_id: str,
 ) -> Path:
     sid = str(skill_id or "").strip().lower() or "skill"
-    ws_root = Path(getattr(agent, "workspace_root", agent.work_directory))
-    ws_id = str(getattr(agent, "workspace_id", "") or "").strip().lower()
+    ws_root = effective_workspace_root(agent)
+    ws_id = effective_workspace_id(agent).strip().lower()
     if ws_id == default_workspace_id:
         base = ws_root / "cache"
     else:

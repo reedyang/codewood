@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .base import BaseTool
+from ..core.workspace_scope import effective_workspace_root
 
 
 def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, prompt: str = "") -> Dict[str, Any]:
@@ -18,7 +19,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
     try:
         _rp = Path(path)
         if not _rp.is_absolute():
-            _rp = (agent.workspace_root / path) if hasattr(agent, "workspace_root") and agent.workspace_root else (agent.work_directory / path)
+            _rp = effective_workspace_root(agent) / path
         try:
             _rel = _rp.relative_to(agent.workspace_root)
         except Exception:
@@ -29,8 +30,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
     try:
         abs_path = Path(path)
         if not abs_path.is_absolute():
-            ws_root = getattr(agent, "workspace_root", None) or agent.work_directory
-            abs_path = ws_root / path
+            abs_path = effective_workspace_root(agent) / path
 
         if not abs_path.exists():
             return {"success": False, "error": f"File '{path}' does not exist"}
