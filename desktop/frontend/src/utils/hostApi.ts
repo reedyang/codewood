@@ -34,6 +34,9 @@ export interface HostBridgeApi {
   ) => boolean | Promise<boolean>;
   /** Open a native Save As dialog; returns the chosen file path or "". */
   save_file_dialog?: () => string | Promise<string>;
+  /** Read the system clipboard as text (host-native, no browser permission
+   *  prompt). Returns "" when the clipboard holds no text. */
+  get_clipboard_text?: () => string | Promise<string>;
   /** Current backend endpoint (port/token). Changes after a crash-restart,
    *  telling the frontend to rebuild its API client and reconnect. */
   backend_info?: () =>

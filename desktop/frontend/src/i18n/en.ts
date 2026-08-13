@@ -170,6 +170,8 @@ export const en: Dict = {
   "chat.pendingListCancel": "Remove from queue",
   "chat.pendingListSendNow": "Steer",
   "msg.copy": "Copy",
+  "msg.paste": "Paste",
+  "msg.cut": "Cut",
   "msg.fork": "Fork",
   "msg.edit": "Edit",
 

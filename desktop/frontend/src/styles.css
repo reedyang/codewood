@@ -1844,7 +1844,7 @@ body.resizing-x .browser-frame {
 .md-pre-preview {
   position: absolute;
   top: 6px;
-  right: 8px;
+  right: 40px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1872,6 +1872,38 @@ body.resizing-x .browser-frame {
 .md-pre-preview:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Hover-only "Copy" button in the top-right corner of every code block. It
+   shares the corner with the language tag / HTML preview button: on hover the
+   language tag fades out (below) and the HTML preview slides clear of the
+   corner (above), leaving this button as the corner control. */
+.md-pre-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  color: var(--text-muted);
+  background: var(--bg-elevated-solid);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+  z-index: 1;
+}
+
+.md-pre:hover .md-pre-copy {
+  opacity: 1;
+}
+
+.md-pre-copy:hover {
+  color: var(--text);
 }
 
 /* ── Cache Stats (Dashboard) ── */
@@ -5376,6 +5408,10 @@ h6.md-h {
   opacity: 0.7;
   user-select: none;
   pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.md-pre:hover .md-pre-lang {
+  opacity: 0;
 }
 .md-quote {
   margin: 8px 0;

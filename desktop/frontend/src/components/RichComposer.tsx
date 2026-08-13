@@ -18,6 +18,8 @@ import {
   encodeSegments,
 } from "../utils/tokens";
 import { Icon } from "./Icon";
+import { useCopyContextMenu } from "./CopyContextMenu";
+import { hostApi } from "../utils/hostApi";
 
 /** Rich-mixed composer.
  *
@@ -1512,6 +1514,65 @@ export function RichComposer({
     [replaceSelectionWithSegments, onPasteImages],
   );
 
+  // Paste triggered from the right-click menu. The menu button steals focus
+  // from the editor, so re-focus it first (Chromium restores the caret), then
+  // insert the clipboard text through the segment model. Reading the clipboard
+  // via the browser API makes Chromium pop a permission prompt on the
+  // ``file://`` origin, so the pywebview host reads it natively; the async
+  // Clipboard API is only a dev-mode fallback when the host bridge is absent.
+  const pasteFromContextMenu = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+    root.focus();
+    const apply = (text: string) => {
+      if (text) {
+        replaceSelectionWithSegments(decodeSegments(text));
+      }
+    };
+    const api = hostApi();
+    if (api?.get_clipboard_text) {
+      void Promise.resolve(api.get_clipboard_text()).then(apply).catch(() => {});
+      return;
+    }
+    void navigator.clipboard?.readText().then(apply).catch(() => {});
+  }, [replaceSelectionWithSegments]);
+
+  // Cut triggered from the right-click menu: copy the selection to the system
+  // clipboard (``writeText`` needs no read permission, so no Chromium prompt),
+  // then delete it through the model — the same semantics as Ctrl+X. Only the
+  // plain-text form is written here (matching the right-click Copy item); the
+  // pill-preserving envelope is reserved for the native Ctrl+X path.
+  const cutFromContextMenu = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+    root.focus();
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      return;
+    }
+    const text = sel.toString();
+    if (!text.trim()) {
+      return;
+    }
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => {
+          deleteSelectionViaModel();
+        })
+        .catch(() => {});
+    }
+  }, [deleteSelectionViaModel]);
+
+  const copyCtx = useCopyContextMenu({
+    onPaste: pasteFromContextMenu,
+    onCut: cutFromContextMenu,
+  });
+
   // Drag-and-drop from the OS file manager.
   const dragCounterRef = useRef(0);
   const [dragOver, setDragOver] = useState(false);
@@ -1755,6 +1816,7 @@ export function RichComposer({
         style={{ minHeight: `${rows * 22}px` }}
         onInput={handleInput}
         onKeyDown={handleKeyDown}
+        onContextMenu={copyCtx.onContextMenu}
         onCopy={(e) => {
           if (writeSelectionToClipboard(e)) {
             e.preventDefault();
@@ -1788,6 +1850,7 @@ export function RichComposer({
           }, 100);
         }}
       />
+      {copyCtx.menuNode}
       {slash.open && filteredItems.length > 0 && (
         <div className="rich-composer-popup">
           <div className="rich-composer-popup-hint">{t("composer.slashHint")}</div>

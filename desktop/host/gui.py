@@ -545,6 +545,66 @@ class HostApi:
     def save_file_dialog(self) -> str:
         return _save_file_dialog()
 
+    def get_clipboard_text(self) -> str:
+        """Read the system clipboard as text.
+
+        Used by the composer's right-click Paste menu. Reading the clipboard
+        from the web layer (``execCommand("paste")`` /
+        ``navigator.clipboard.readText``) makes Chromium pop a permission
+        prompt on the ``file://`` origin ("This file wants to see text and
+        images copied to the clipboard"), so the host reads it natively
+        instead. Returns "" when the clipboard holds no text.
+        """
+        try:
+            if sys.platform == "win32":
+                import ctypes
+
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                # ctypes defaults Win32 args/returns to 32-bit c_int, which
+                # truncates the 64-bit clipboard handles/pointers on a 64-bit
+                # Python build (crash on read / overflow on call). Declare the
+                # real pointer-sized types first.
+                user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+                user32.GetClipboardData.argtypes = [ctypes.c_uint]
+                user32.GetClipboardData.restype = ctypes.c_void_p
+                kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+                kernel32.GlobalLock.restype = ctypes.c_wchar_p
+                kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+                if not user32.OpenClipboard(None):
+                    return ""
+                try:
+                    handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
+                    if not handle:
+                        return ""
+                    text = kernel32.GlobalLock(handle)
+                    if text is None:
+                        return ""
+                    try:
+                        return text
+                    finally:
+                        kernel32.GlobalUnlock(handle)
+                finally:
+                    user32.CloseClipboard()
+            else:
+                # Linux/WSL: common CLI clipboard readers.
+                import shutil
+                import subprocess
+
+                for cmd in (
+                    ["xclip", "-selection", "clipboard", "-o"],
+                    ["xsel", "--clipboard", "--output"],
+                ):
+                    if shutil.which(cmd[0]):
+                        out = subprocess.run(
+                            cmd, capture_output=True, timeout=2
+                        )
+                        if out.returncode == 0:
+                            return out.stdout.decode("utf-8", "replace")
+        except Exception:
+            pass
+        return ""
+
     def minimize(self) -> None:
         window = webview.active_window()
         if window is not None:

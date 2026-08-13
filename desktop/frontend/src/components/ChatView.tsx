@@ -20,6 +20,7 @@ import { MarkdownText } from "./Markdown";
 import { StepsView, countToolCalls, textContainsSubAgentSession } from "./Steps";
 import { Collapsible } from "./Collapsible";
 import { ChatTitleBar } from "./ChatTitleBar";
+import { useCopyContextMenu } from "./CopyContextMenu";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FileChangeList } from "./FileChangeList";
@@ -768,6 +769,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     onFork: () => {},
     onEdit: () => {},
   };
+  const copyCtx = useCopyContextMenu();
 
   // ── History mode (session has finished) ──────────────────────────
   if (!isLive) {
@@ -788,7 +790,8 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     const timerText = `${t("activity.workedFor")} ${formatElapsed(workedForSeconds * 1000)}`;
 
     return (
-      <div className="transcript" ref={scrollRef}>
+      <div className="transcript" ref={scrollRef} onContextMenu={copyCtx.onContextMenu}>
+        {copyCtx.menuNode}
         <div className="transcript-inner">
           <div className="turn">
             {userPrompt && (
@@ -869,7 +872,8 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     : formatElapsed(now - liveStartedAt);
 
   return (
-    <div className="transcript" ref={scrollRef}>
+    <div className="transcript" ref={scrollRef} onContextMenu={copyCtx.onContextMenu}>
+      {copyCtx.menuNode}
       <div className="transcript-inner">
         <div className="turn">
           {userPrompt && (
@@ -1160,6 +1164,7 @@ export function ChatView() {
     t,
     activeSearchHit,
   } = useApp();
+  const copyCtx = useCopyContextMenu();
   // Drafts (in-progress composer segments) are kept per chat so switching
   // between chats never bleeds an unsent message into a sibling. A synthetic
   // key is used while we're still in "draft mode" (no chat exists yet) so
@@ -2031,7 +2036,8 @@ export function ChatView() {
             loadOlderHistory={() => void loadOlderHistory()}
             historyLoading={historyLoading}
           />
-          <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+          <div className="transcript" ref={scrollRef} onScroll={onScroll} onContextMenu={copyCtx.onContextMenu}>
+            {copyCtx.menuNode}
             <div className="transcript-inner">
             {historyStart > 0 && (
               <div className="history-more">
