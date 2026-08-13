@@ -15,7 +15,7 @@ from .ai_provider_clients import (
     call_ai_with_provider,
     prepare_image_input,
 )
-from .ai_special_mode_prompts import build_special_mode_messages
+from .ai_special_mode_prompts import InternalCallMode, build_special_mode_messages
 
 
 _AI_HISTORY_LOG = get_logger(f"{get_app_logger_root()}.ai_history")
@@ -387,10 +387,7 @@ class AIOrchestrator:
                 special_messages, special_record_history, special_error = build_special_mode_messages(
                     user_input=call_ctx.user_input,
                     stream=call_ctx.stream,
-                    minimal_classifier=call_ctx.minimal_classifier,
-                    freedom_combined_review=call_ctx.freedom_combined_review,
-                    session_summary_mode=call_ctx.session_summary_mode,
-                    memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
+                    internal_mode=call_ctx.internal_mode,
                     workspace_root=self.context.workspace_root,
                     self_repo_root=self.context.self_repo_root,
                     workspace_config_dir=self.context.workspace_config_dir,
@@ -410,18 +407,11 @@ class AIOrchestrator:
             if not provider or not model_name:
                 return AIResult(text="", error_code="API_ERROR")
 
-            internal_mode = any(
-                (
-                    call_ctx.freedom_combined_review,
-                    call_ctx.minimal_classifier,
-                    call_ctx.session_summary_mode,
-                    call_ctx.memory_query_expansion_mode,
-                )
-            )
+            is_internal = call_ctx.internal_mode is not InternalCallMode.REGULAR
             image_data, image_user_idx, image_user_text, image_error = prepare_image_input(
                 image_path=call_ctx.image_path,
                 messages=messages,
-                internal_mode=internal_mode,
+                internal_mode=is_internal,
             )
             if image_error:
                 return AIResult(text="", error_code="API_ERROR")
@@ -538,8 +528,7 @@ class AIOrchestrator:
                 image_data=image_data,
                 image_user_idx=image_user_idx,
                 image_user_text=image_user_text,
-                session_summary_mode=call_ctx.session_summary_mode,
-                memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
+                internal_mode=call_ctx.internal_mode,
                 tool_schemas=call_ctx.tool_schemas,
                 tool_choice=call_ctx.tool_choice,
                 display_language=self.context.display_language,

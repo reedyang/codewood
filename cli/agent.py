@@ -65,6 +65,7 @@ from .core.status_bar import (
 from .integrations.mcp import McpManager, McpError
 from .core.change_preview_formatter import ChangePreviewFormatter
 from .ai.ai_provider_clients import AICallContext, resolve_api_mode
+from .ai.ai_special_mode_prompts import InternalCallMode
 from .services.session_memory_service import (
     SessionMemoryService,
     _assistant_display_view,
@@ -7338,13 +7339,9 @@ class Agent:
             from .ai.ai_provider_clients import AICallContext
             _call_ctx = AICallContext(
                 user_input=(
-                    "You are a chat title generator. Output only the title text with no explanation.\n"
-                    "Task: Generate a short title from the user's first message using the same language as the message.\n"
-                    "Requirements: 4-64 characters; no trailing punctuation; avoid words like 'Chat/session/title/first message'.\n"
-                    "If the message is very short, extract a concise intent phrase.\n\n"
                     f"<user_first_message>\n{first_user}\n</user_first_message>"
                 ),
-                session_summary_mode=True,
+                internal_mode=InternalCallMode.CHAT_TITLE,
             )
             result = self._call_orchestrator(_call_ctx)
             t = result.text.strip().replace("\n", " ")
@@ -8244,11 +8241,8 @@ class Agent:
         user_input: str,
         context: str = "",
         stream: Optional[bool] = None,
-        minimal_classifier: bool = False,
-        freedom_combined_review: bool = False,
         return_message: bool = False,
-        session_summary_mode: bool = False,
-        memory_query_expansion_mode: bool = False,
+        internal_mode: InternalCallMode = InternalCallMode.REGULAR,
         image_path: Optional[str] = None,
         history_user_input: Optional[str] = None,
         history_skip_user: bool = False,
@@ -8263,11 +8257,8 @@ class Agent:
             user_input=user_input,
             context=context,
             stream=effective_stream,
-            minimal_classifier=minimal_classifier,
-            freedom_combined_review=freedom_combined_review,
             return_message=return_message,
-            session_summary_mode=session_summary_mode,
-            memory_query_expansion_mode=memory_query_expansion_mode,
+            internal_mode=internal_mode,
             image_path=image_path,
             history_user_input=history_user_input,
             history_skip_user=history_skip_user,
@@ -8291,9 +8282,10 @@ class Agent:
         # Security audit model override: when the call is for freedom-mode
         # combined review or minimal classifier, and a dedicated audit model
         # is configured, use that model instead of the chat model.
-        if (
-            call_ctx.freedom_combined_review or call_ctx.minimal_classifier
-        ) and not call_ctx.session_summary_mode:
+        if call_ctx.internal_mode in (
+            InternalCallMode.FREEDOM_COMBINED_REVIEW,
+            InternalCallMode.MINIMAL_CLASSIFIER,
+        ):
             audit_choice = self._resolve_security_audit_model()
             if audit_choice is not None:
                 audit_provider = str(audit_choice.get("provider") or "").strip()

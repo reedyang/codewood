@@ -17,6 +17,7 @@ from cli.ai.ai_provider_clients import (
     _throttle_error_message,
     set_retry_countdown_callback,
 )
+from cli.ai.ai_special_mode_prompts import InternalCallMode
 
 
 def _throttle_error(code: int) -> OpenAIRequestError:
@@ -178,8 +179,7 @@ class InfiniteRetryLoopTests(unittest.TestCase):
             image_data=None,
             image_user_idx=None,
             image_user_text="",
-            session_summary_mode=False,
-            memory_query_expansion_mode=False,
+            internal_mode=InternalCallMode.REGULAR,
             tool_schemas=None,
             tool_choice=None,
             append_history=lambda *a, **k: None,

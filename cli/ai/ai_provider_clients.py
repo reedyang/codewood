@@ -19,6 +19,7 @@ from ..core.config.model_providers import (
 from ..config.i18n import translate
 from ..core.logging.app_logging import get_logger
 from .model_api_adapter import ModelApiAdapterManager
+from .ai_special_mode_prompts import INTERNAL_CAPPED_MODES, InternalCallMode
 
 
 _OPENAI_API_ROUTE_CACHE_FILE = "openai_api_route_cache.json"
@@ -320,11 +321,8 @@ class AICallContext:
     user_input: str
     context: str = ""
     stream: bool = False
-    minimal_classifier: bool = False
-    freedom_combined_review: bool = False
     return_message: bool = False
-    session_summary_mode: bool = False
-    memory_query_expansion_mode: bool = False
+    internal_mode: InternalCallMode = InternalCallMode.REGULAR
     image_path: Optional[str] = None
     history_user_input: Optional[str] = None
     history_skip_user: bool = False
@@ -356,8 +354,7 @@ class ProviderCallContext:
     image_data: Optional[str]
     image_user_idx: Optional[int]
     image_user_text: str
-    session_summary_mode: bool
-    memory_query_expansion_mode: bool
+    internal_mode: InternalCallMode = InternalCallMode.REGULAR
     tool_schemas: Optional[List[Dict[str, Any]]] = None
     tool_choice: Any = None
     display_language: str = "en"
@@ -1647,8 +1644,7 @@ def _build_openai_payload(
     image_data: Optional[str],
     image_user_idx: Optional[int],
     image_user_text: str,
-    session_summary_mode: bool,
-    memory_query_expansion_mode: bool,
+    internal_mode: InternalCallMode,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     force_disable_thinking: bool,
@@ -1679,11 +1675,11 @@ def _build_openai_payload(
             payload["tools"] = tools_payload
             if tool_choice_payload is not None:
                 payload["tool_choice"] = tool_choice_payload
-        if session_summary_mode or memory_query_expansion_mode:
+        if internal_mode in INTERNAL_CAPPED_MODES:
             payload["max_output_tokens"] = 512
         if force_disable_thinking:
             payload["thinking"] = {"type": "disabled"}
-        if reasoning_effort and not (session_summary_mode or memory_query_expansion_mode):
+        if reasoning_effort and internal_mode not in INTERNAL_CAPPED_MODES:
             payload["reasoning"] = {"effort": reasoning_effort.lower()}
         if isinstance(payload.get("tools"), list) and not payload.get("tools"):
             payload.pop("tools", None)
@@ -1694,11 +1690,11 @@ def _build_openai_payload(
         payload["tools"] = tools_payload
         if tool_choice_payload is not None:
             payload["tool_choice"] = tool_choice_payload
-    if session_summary_mode or memory_query_expansion_mode:
+    if internal_mode in INTERNAL_CAPPED_MODES:
         payload["max_tokens"] = 512
     if force_disable_thinking:
         payload["thinking"] = {"type": "disabled"}
-    if reasoning_effort and not (session_summary_mode or memory_query_expansion_mode):
+    if reasoning_effort and internal_mode not in INTERNAL_CAPPED_MODES:
         payload["reasoning_effort"] = reasoning_effort.lower()
     if isinstance(payload.get("tools"), list) and not payload.get("tools"):
         payload.pop("tools", None)
@@ -2154,8 +2150,7 @@ def _call_openai_once(
     image_data: Optional[str],
     image_user_idx: Optional[int],
     image_user_text: str,
-    session_summary_mode: bool,
-    memory_query_expansion_mode: bool,
+    internal_mode: InternalCallMode,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     force_disable_thinking: bool,
@@ -2170,8 +2165,7 @@ def _call_openai_once(
         image_data=image_data,
         image_user_idx=image_user_idx,
         image_user_text=image_user_text,
-        session_summary_mode=session_summary_mode,
-        memory_query_expansion_mode=memory_query_expansion_mode,
+        internal_mode=internal_mode,
         tool_schemas=tool_schemas,
         tool_choice=tool_choice,
         force_disable_thinking=force_disable_thinking,
@@ -2239,8 +2233,7 @@ def _call_openai_with_suffix_strategy(
     image_data: Optional[str],
     image_user_idx: Optional[int],
     image_user_text: str,
-    session_summary_mode: bool,
-    memory_query_expansion_mode: bool,
+    internal_mode: InternalCallMode,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     reasoning_effort: str = "",
@@ -2283,8 +2276,7 @@ def _call_openai_with_suffix_strategy(
             image_data=image_data,
             image_user_idx=image_user_idx,
             image_user_text=image_user_text,
-            session_summary_mode=session_summary_mode,
-            memory_query_expansion_mode=memory_query_expansion_mode,
+            internal_mode=internal_mode,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
             force_disable_thinking=force_disable_thinking,
@@ -2352,8 +2344,7 @@ def _call_openai_with_suffix_strategy(
             image_data=image_data,
             image_user_idx=image_user_idx,
             image_user_text=image_user_text,
-            session_summary_mode=session_summary_mode,
-            memory_query_expansion_mode=memory_query_expansion_mode,
+            internal_mode=internal_mode,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
             force_disable_thinking=force_disable_thinking,
@@ -2503,8 +2494,7 @@ def _call_with_openai_compatible(
     image_data: Optional[str],
     image_user_idx: Optional[int],
     image_user_text: str,
-    session_summary_mode: bool,
-    memory_query_expansion_mode: bool,
+    internal_mode: InternalCallMode,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     append_history: Callable[..., None],
@@ -2599,8 +2589,7 @@ def _call_with_openai_compatible(
                     image_data=image_data,
                     image_user_idx=image_user_idx,
                     image_user_text=image_user_text,
-                    session_summary_mode=session_summary_mode,
-                    memory_query_expansion_mode=memory_query_expansion_mode,
+                    internal_mode=internal_mode,
                     tool_schemas=tool_schemas,
                     tool_choice=tool_choice,
                     reasoning_effort=reasoning_effort,
@@ -2696,8 +2685,7 @@ def _call_with_ollama(
     image_data: Optional[str],
     image_user_idx: Optional[int],
     image_user_text: str,
-    session_summary_mode: bool,
-    memory_query_expansion_mode: bool,
+    internal_mode: InternalCallMode,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     append_history: Callable[..., None],
@@ -2722,9 +2710,7 @@ def _call_with_ollama(
     ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
     ollama_tools = _normalize_openai_tool_schemas(tool_schemas, api_kind="chat")
     ollama_tool_choice = _normalize_openai_tool_choice(tool_choice, api_kind="chat")
-    if session_summary_mode:
-        ollama_options.update({"num_predict": 512})
-    elif memory_query_expansion_mode:
+    if internal_mode in INTERNAL_CAPPED_MODES:
         ollama_options.update({"num_predict": 512})
 
     payload: Dict[str, Any] = {
@@ -2941,8 +2927,7 @@ def call_ai_with_provider(
             image_data=context.image_data,
             image_user_idx=context.image_user_idx,
             image_user_text=context.image_user_text,
-            session_summary_mode=context.session_summary_mode,
-            memory_query_expansion_mode=context.memory_query_expansion_mode,
+            internal_mode=context.internal_mode,
             tool_schemas=context.tool_schemas,
             tool_choice=context.tool_choice,
             append_history=append_history,
@@ -2966,8 +2951,7 @@ def call_ai_with_provider(
             image_data=context.image_data,
             image_user_idx=context.image_user_idx,
             image_user_text=context.image_user_text,
-            session_summary_mode=context.session_summary_mode,
-            memory_query_expansion_mode=context.memory_query_expansion_mode,
+            internal_mode=context.internal_mode,
             tool_schemas=context.tool_schemas,
             tool_choice=context.tool_choice,
             append_history=append_history,
