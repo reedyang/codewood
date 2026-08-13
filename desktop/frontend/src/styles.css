@@ -6025,6 +6025,12 @@ h6.md-h {
   visibility: hidden;
 }
 
+/* Keep the Steer (jump) and delete (cancel) buttons apart so a quick click on
+   one cannot accidentally land on the other. */
+.pending-list-cancel {
+  margin-left: 8px;
+}
+
 .pending-list-item:hover .pending-list-jump,
 .pending-list-item:hover .pending-list-cancel,
 .pending-list-jump.visible,
