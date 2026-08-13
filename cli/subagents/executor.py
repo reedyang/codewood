@@ -473,6 +473,7 @@ def _build_orchestrator(
             workspace_root=str(getattr(agent, "workspace_root", "") or ""),
             self_repo_root=str(getattr(agent, "_self_repo_root", "") or ""),
             display_language=get_display_language(agent),
+            workspace_config_dir=str(getattr(agent, "workspace_config_dir", "") or ""),
         )
     )
 
