@@ -67,6 +67,7 @@ export function CodeBlock({
         </span>
       ) : null}
       {isHtml ? <PreviewButton code={code} /> : null}
+      <CopyButton code={code} />
       <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
     </pre>
   );
@@ -91,6 +92,28 @@ function PreviewButton({ code }: { code: string }) {
     >
       <Icon name="eye" size={13} />
       <span>{t("browser.preview")}</span>
+    </button>
+  );
+}
+
+/** Floating "Copy" button shown on hover in the top-right corner of every
+ *  fenced code block; copies the raw code text to the clipboard. */
+function CopyButton({ code }: { code: string }) {
+  const { t } = useApp();
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="md-pre-copy"
+      title={t("msg.copy")}
+      aria-label={t("msg.copy")}
+      onClick={() => {
+        void navigator.clipboard?.writeText(code);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      <Icon name={copied ? "check" : "copy"} size={13} />
     </button>
   );
 }
