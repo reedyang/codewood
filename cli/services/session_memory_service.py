@@ -17,6 +17,10 @@ from ..core.config.model_providers import (
 )
 from ..core.console_utils import _ansi_gray
 from ..core.logging.app_logging import get_logger
+from ..core.workspace_scope import (
+    effective_workspace_config_dir,
+    effective_workspace_root,
+)
 from ..ai.ai_special_mode_prompts import InternalCallMode
 
 MEMORY_RETRIEVAL_ROUNDS = 3
@@ -485,16 +489,14 @@ class SessionMemoryService:
         return str(resolved)
 
     def _model_visible_workspace_directory_text(self) -> str:
-        workspace_root = getattr(self.agent, "workspace_root", None)
-        if workspace_root:
-            visible = self._model_visible_path_text(workspace_root)
-            if visible != "(hidden internal runtime directory)":
-                return visible
-        workspace_config_dir = getattr(self.agent, "workspace_config_dir", None)
-        if workspace_config_dir:
-            visible = self._model_visible_path_text(workspace_config_dir)
-            if visible != "(hidden internal runtime directory)":
-                return visible
+        workspace_root = effective_workspace_root(self.agent)
+        visible = self._model_visible_path_text(workspace_root)
+        if visible != "(hidden internal runtime directory)":
+            return visible
+        workspace_config_dir = effective_workspace_config_dir(self.agent)
+        visible = self._model_visible_path_text(workspace_config_dir)
+        if visible != "(hidden internal runtime directory)":
+            return visible
         return "(hidden internal runtime directory)"
 
     def _context_usage_state_key(self) -> str:

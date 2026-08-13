@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from .base import BaseTool
 from .shell import _workspace_rg_executable_path
+from ..core.workspace_scope import effective_workspace_root
 
 
 def _find_rg(agent: Any) -> Optional[Path]:
@@ -46,8 +47,7 @@ def action_glob(
             path = "."
         search_dir = Path(path)
         if not search_dir.is_absolute():
-            ws_root = getattr(agent, "workspace_root", None) or agent.workspace_root
-            search_dir = ws_root / path
+            search_dir = effective_workspace_root(agent) / path
         search_dir = search_dir.resolve()
 
         if not search_dir.exists():

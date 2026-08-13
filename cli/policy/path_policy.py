@@ -3,6 +3,10 @@ from typing import Any, Dict, Iterable, Optional
 import tempfile
 
 from ..config.app_info import get_app_config_dirname, get_app_prompt_name, get_app_prompt_slug_kebab
+from ..core.workspace_scope import (
+    effective_workspace_config_dir,
+    effective_workspace_root,
+)
 
 
 AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset({"temp", "skills"})
@@ -23,17 +27,11 @@ class PathPolicy:
             return False
 
     def workspace_skills_root(self) -> Path:
-        return (self.agent.workspace_config_dir / "skills").resolve()
+        return (effective_workspace_config_dir(self.agent) / "skills").resolve()
 
     def resolve_user_path(self, raw_path: str) -> Path:
         def _relative_base_dir() -> Path:
-            raw_workspace_root = getattr(self.agent, "workspace_root", None)
-            if raw_workspace_root:
-                try:
-                    return Path(str(raw_workspace_root)).resolve()
-                except Exception:
-                    pass
-            return Path(self.agent.work_directory).resolve()
+            return effective_workspace_root(self.agent).resolve()
 
         p_raw = (raw_path or "").strip()
         if not p_raw:
@@ -41,14 +39,14 @@ class PathPolicy:
         norm = p_raw.replace("\\", "/").lstrip("./")
         config_dirname = get_app_config_dirname().strip("/")
         if norm == "workspace":
-            return self.agent.workspace_config_dir.resolve()
+            return effective_workspace_config_dir(self.agent).resolve()
         workspace_config_skills_prefix = f"workspace/{config_dirname}/skills/"
         if norm.startswith(workspace_config_skills_prefix):
             rest = norm[len(workspace_config_skills_prefix) :]
             return (self.workspace_skills_root() / Path(rest)).resolve()
         if norm.startswith("workspace/"):
             rest = norm[len("workspace/") :]
-            return (self.agent.workspace_config_dir / Path(rest)).resolve()
+            return (effective_workspace_config_dir(self.agent) / Path(rest)).resolve()
         if norm.startswith("skills/"):
             rest = norm[len("skills/") :]
             return (self.workspace_skills_root() / Path(rest)).resolve()
@@ -64,7 +62,7 @@ class PathPolicy:
             return False
 
     def workspace_cache_root(self) -> Path:
-        return (self.agent.workspace_config_dir / "cache").resolve()
+        return (effective_workspace_config_dir(self.agent) / "cache").resolve()
 
     def is_workspace_cache_path(self, path: Path) -> bool:
         """True iff ``path`` lives under the workspace cache directory."""
@@ -126,7 +124,7 @@ class PathPolicy:
                     return Path(str(resolved)).resolve()
             except Exception:
                 pass
-        raw_workspace_root = getattr(self.agent, "workspace_root", None)
+        raw_workspace_root = effective_workspace_root(self.agent)
         if raw_workspace_root:
             try:
                 root = Path(str(raw_workspace_root)).resolve()

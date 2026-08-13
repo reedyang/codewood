@@ -36,6 +36,7 @@ from .context_history_cache import (
 )
 from .prompt_preprocessor import preprocess_prompt
 
+from ..core.workspace_scope import effective_workspace_config_dir
 from ..config.app_info import (
     get_app_global_config_dir,
     get_app_logger_root,
@@ -1874,10 +1875,11 @@ class LLMContextManager:
         )
         # Key runtime metadata is intentionally non-clippable.
         workspace_root_text = self._model_visible_workspace_directory_text()
+        _ws_cfg_dir = effective_workspace_config_dir(self.agent)
         workspace_data_dir_text = self._model_visible_path_text(
-            getattr(self.agent, "workspace_config_dir", None)
+            _ws_cfg_dir
         )
-        workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
+        workspace_skills_dir = (_ws_cfg_dir / "skills").resolve()
         default_install_skills_dir = (get_app_global_config_dir() / "skills").resolve()
         runtime_tail_raw = (
             f"Current OS info: {os_info}\n"

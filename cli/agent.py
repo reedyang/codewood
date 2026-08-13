@@ -519,6 +519,31 @@ class Agent:
             if tls is not None:
                 tls.persist_ctx = prev
 
+    def _set_workspace_ctx(self, ctx: Optional[Dict[str, Any]]) -> None:
+        """Install/clear the calling thread's workspace override.
+
+        A chat loop thread that belongs to a NON-focused workspace installs an
+        override carrying ITS workspace's identity (root/data-dir/id/name/work
+        dir) at spawn time. Tools and prompt builders then resolve relative
+        paths and "Current workspace root" text against that override instead
+        of the agent globals (which track the focused workspace and are swapped
+        by ``workspace_switch_command``). HTTP/display threads and the focused
+        loop leave it unset and keep using the globals.
+        """
+        tls = self.__dict__.get("_session_tls")
+        if tls is None:
+            self._install_session_registry()
+            tls = self.__dict__["_session_tls"]
+        tls.workspace_ctx = ctx if isinstance(ctx, dict) else None
+
+    def _workspace_ctx(self) -> Optional[Dict[str, Any]]:
+        """The calling thread's workspace override, or ``None``."""
+        tls = self.__dict__.get("_session_tls")
+        if tls is None:
+            return None
+        ctx = getattr(tls, "workspace_ctx", None)
+        return ctx if isinstance(ctx, dict) else None
+
     @contextlib.contextmanager
     def _session_scope(self, chat_id: str):
         """Temporarily bind the calling thread to ``chat_id`` then restore.
@@ -661,18 +686,84 @@ class Agent:
     def _shell_execution_cwd(self) -> Path:
         """Return the cwd to use when executing shell commands/scripts."""
         try:
-            root = self._resolve_path_lenient(Path(self.workspace_root))
+            root = self._effective_workspace_root()
         except Exception:
-            return self.work_directory
+            return self._effective_work_directory()
         if root.exists() and root.is_dir():
             return root
-        return self.work_directory
+        return self._effective_work_directory()
+
+    def _effective_workspace_root(self) -> Path:
+        """Workspace root for the calling thread (per-chat override wins)."""
+        ctx = self._workspace_ctx()
+        if ctx:
+            raw = ctx.get("workspace_root") or ctx.get("work_directory")
+            if raw:
+                try:
+                    return self._resolve_path_lenient(Path(str(raw)))
+                except Exception:
+                    return Path(str(raw))
+        raw = getattr(self, "workspace_root", None)
+        if raw:
+            try:
+                return self._resolve_path_lenient(Path(str(raw)))
+            except Exception:
+                return Path(str(raw))
+        return getattr(self, "work_directory", Path.cwd())
+
+    def _effective_workspace_config_dir(self) -> Path:
+        """Workspace data dir for the calling thread (override wins)."""
+        ctx = self._workspace_ctx()
+        if ctx:
+            raw = ctx.get("workspace_config_dir")
+            if raw:
+                try:
+                    return self._resolve_path_lenient(Path(str(raw)))
+                except Exception:
+                    return Path(str(raw))
+        raw = getattr(self, "workspace_config_dir", None)
+        if raw:
+            try:
+                return self._resolve_path_lenient(Path(str(raw)))
+            except Exception:
+                return Path(str(raw))
+        return Path(getattr(self, "config_dir", Path.cwd()))
+
+    def _effective_workspace_id(self) -> str:
+        """Workspace id for the calling thread (override wins)."""
+        ctx = self._workspace_ctx()
+        if ctx:
+            wid = str(ctx.get("workspace_id") or "").strip()
+            if wid:
+                return wid
+        return str(getattr(self, "workspace_id", "") or "")
+
+    def _effective_workspace_name(self) -> str:
+        """Workspace name for the calling thread (override wins)."""
+        ctx = self._workspace_ctx()
+        if ctx:
+            name = str(ctx.get("workspace_name") or "").strip()
+            if name:
+                return name
+        return str(getattr(self, "workspace_name", "") or "")
+
+    def _effective_work_directory(self) -> Path:
+        """Working directory for the calling thread (override wins)."""
+        ctx = self._workspace_ctx()
+        if ctx:
+            raw = ctx.get("work_directory")
+            if raw:
+                try:
+                    return self._resolve_path_lenient(Path(str(raw)))
+                except Exception:
+                    return Path(str(raw))
+        return getattr(self, "work_directory", Path.cwd())
 
     def _cleanup_workspace_shell_stashes_if_needed(self) -> None:
         """Silently clean stale ``codewood_shell_pre`` stashes for the active workspace repo."""
         target = None
         try:
-            root = self._resolve_path_lenient(Path(self.workspace_root))
+            root = self._effective_workspace_root()
             if root.exists() and root.is_dir():
                 target = root
         except Exception:
@@ -2870,10 +2961,10 @@ class Agent:
         if not p:
             return p
         try:
-            root_raw = getattr(self, "workspace_root", None)
-            if root_raw is None:
+            root = self._effective_workspace_root()
+            if root is None:
                 return p
-            root = Path(str(root_raw)).resolve()
+            root = root.resolve()
             candidate = Path(p)
             if not candidate.is_absolute():
                 candidate = root / candidate
@@ -8349,7 +8440,18 @@ class Agent:
             self.ai_orchestrator.context.model_name = mname
             self.ai_orchestrator.context.model_params = mparams
             self.ai_orchestrator.context.openai_conf = mconf
-            self.ai_orchestrator.context.work_directory = str(self.work_directory)
+            try:
+                self.ai_orchestrator.context.work_directory = str(
+                    self._effective_work_directory()
+                )
+                self.ai_orchestrator.context.workspace_root = str(
+                    self._effective_workspace_root()
+                )
+                self.ai_orchestrator.context.workspace_config_dir = str(
+                    self._effective_workspace_config_dir()
+                )
+            except Exception:
+                pass
             return self.ai_orchestrator.call(call_ctx=call_ctx)
         # Streaming calls are the long-running, user-facing generation path.
         # Run the real network work (HTTP connect + reads) on a background
@@ -8363,6 +8465,7 @@ class Agent:
                 session_key = str(self._current_session_chat_key() or "")
                 _wsid, _, _cid = session_key.rpartition("::") if session_key else ("", "", "")
                 _persist_ctx = self._persist_workspace_ctx()
+                _ws_ctx = self._workspace_ctx()
 
                 def _bind_network_thread() -> None:
                     if _cid:
@@ -8373,6 +8476,11 @@ class Agent:
                     if _persist_ctx is not None:
                         try:
                             self._set_persist_workspace_ctx(_persist_ctx)
+                        except Exception:
+                            pass
+                    if _ws_ctx is not None:
+                        try:
+                            self._set_workspace_ctx(_ws_ctx)
                         except Exception:
                             pass
 
@@ -8400,9 +8508,9 @@ class Agent:
 
     def _workspace_relative_script_triple(self, rel: Path) -> Tuple[Path, Path, Path]:
         """Three candidate roots for relative-path resolution during shell parsing: current working directory, workspace/temp, and the workspace root (for legacy compatibility)."""
-        p_wd = (self.work_directory / rel).resolve()
-        p_temp = (self.ai_workspace_temp_dir / rel).resolve()
-        p_ws = (self.workspace_config_dir / rel).resolve()
+        p_wd = (self._effective_work_directory() / rel).resolve()
+        p_temp = (self._effective_workspace_config_dir() / "temp" / rel).resolve()
+        p_ws = (self._effective_workspace_config_dir() / rel).resolve()
         return p_wd, p_temp, p_ws
 
     def _try_register_ai_output_literal(self, raw: str) -> None:
@@ -8413,7 +8521,11 @@ class Agent:
         try:
             p = Path(raw)
             if not p.is_absolute():
-                for base in (self.work_directory, self.ai_workspace_temp_dir, self.workspace_config_dir):
+                for base in (
+                    self._effective_work_directory(),
+                    self._effective_workspace_config_dir() / "temp",
+                    self._effective_workspace_config_dir(),
+                ):
                     try:
                         q = (base / p).resolve()
                         q.relative_to(base.resolve())
@@ -8423,7 +8535,11 @@ class Agent:
                         continue
             else:
                 q = p.resolve()
-                for base in (self.work_directory, self.ai_workspace_temp_dir, self.workspace_config_dir):
+                for base in (
+                    self._effective_work_directory(),
+                    self._effective_workspace_config_dir() / "temp",
+                    self._effective_workspace_config_dir(),
+                ):
                     try:
                         q.relative_to(base.resolve())
                         self._ai_created_path_keys.add(self._ephemeral_path_key(q))
@@ -8439,7 +8555,11 @@ class Agent:
         try:
             p = Path(path_str.strip())
             if not p.is_absolute():
-                for base in (self.work_directory, self.ai_workspace_temp_dir, self.workspace_config_dir):
+                for base in (
+                    self._effective_work_directory(),
+                    self._effective_workspace_config_dir() / "temp",
+                    self._effective_workspace_config_dir(),
+                ):
                     q = (base / p).resolve()
                     if self._ephemeral_path_key(q) in self._ai_created_path_keys:
                         return True
