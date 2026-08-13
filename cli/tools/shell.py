@@ -412,19 +412,54 @@ _POWERSHELL_CLIXML_HEADER_RE = re.compile(r"(?m)^#< CLIXML[^\r\n]*\r?\n")
 _POWERSHELL_CLIXML_ORPHAN_RE = re.compile(r"</?Objs(?: [^>]*)?>")
 
 
+def _xml_unescape(text: str) -> str:
+    return (
+        str(text or "")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+    )
+
+
+def _extract_clixml_error_lines(doc: str) -> List[str]:
+    """Extract ``<S S="Error">...</S>`` lines from a PowerShell CLIXML document.
+
+    When stderr is redirected, Windows PowerShell 5.1 serializes *error*
+    records as CLIXML too (not just progress noise), so the message text
+    (e.g. ``Set-Content : Access to the path '...' is denied.``) would be lost
+    if the whole document were simply dropped.
+    """
+    parts = re.findall(r'<S S="Error">(.*?)</S>', str(doc or ""), re.DOTALL)
+    lines = []
+    for p in parts:
+        line = _xml_unescape(p).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _clixml_doc_replacement(match: "re.Match") -> str:
+    err_lines = _extract_clixml_error_lines(match.group(0))
+    if not err_lines:
+        return ""
+    return "\n".join(err_lines) + "\n"
+
+
 def _strip_powershell_clixml_output(text: str) -> str:
-    """Remove Windows PowerShell 5.1 progress CLIXML noise from captured output.
+    """Remove Windows PowerShell 5.1 CLIXML noise, keeping any error text.
 
     When stderr is redirected, Windows PowerShell 5.1 serializes progress
-    records as a CLIXML document (``#< CLIXML`` header plus an ``<Objs
-    Version="1.1.0.1" ...>`` blob, e.g. the engine's "Preparing modules for
-    first use." record).  The tool merges stderr into stdout, so this noise
-    would otherwise pollute every AI-visible result.  The header and document
-    can be split around real output, so each fragment is removed
-    independently.
+    records — and error records — as CLIXML documents (``#< CLIXML`` header
+    plus an ``<Objs Version=\"1.1.0.1\" ...>`` blob).  The tool merges stderr
+    into stdout, so the noise would otherwise pollute every AI-visible result;
+    the header and document can be split around real output, so each fragment
+    is handled independently.  Error text inside a document (``<S
+    S=\"Error\">``) is preserved so permission/other failures stay visible.
     """
     s = str(text or "")
-    s = _POWERSHELL_CLIXML_DOC_RE.sub("", s)
+    s = _POWERSHELL_CLIXML_DOC_RE.sub(_clixml_doc_replacement, s)
     s = _POWERSHELL_CLIXML_HEADER_RE.sub("", s)
     s = _POWERSHELL_CLIXML_ORPHAN_RE.sub("", s)
     return s
@@ -456,6 +491,7 @@ class _ClixmlStreamFilter:
         self._in_doc = False
         self._tail = ""
         self._doc_tail = ""
+        self._doc_buf = ""
 
     @staticmethod
     def _suffix_prefix_len(text: str, target: str) -> int:
@@ -503,10 +539,19 @@ class _ClixmlStreamFilter:
                 if end < 0:
                     keep = len(self._END_TAG) - 1
                     self._doc_tail = probe[-keep:] if len(probe) > keep else probe
+                    self._doc_buf += s
+                    if len(self._doc_buf) > 1_048_576:
+                        self._doc_buf = self._doc_buf[-262144:]
                     break
                 self._in_doc = False
                 self._doc_tail = ""
-                s = probe[end + len(self._END_TAG):]
+                doc_end = end + len(self._END_TAG)
+                doc = self._doc_buf + probe[:doc_end]
+                self._doc_buf = ""
+                err_lines = _extract_clixml_error_lines(doc)
+                if err_lines:
+                    out.append("\n".join(err_lines) + "\n")
+                s = probe[doc_end:]
                 if s.startswith("\r\n"):
                     s = s[2:]
                 elif s.startswith("\n"):
@@ -536,6 +581,7 @@ class _ClixmlStreamFilter:
         self._head_buf = ""
         self._tail = ""
         self._doc_tail = ""
+        self._doc_buf = ""
         self._header_done = True
         self._in_doc = False
         return ""
@@ -1237,21 +1283,32 @@ def _windows_powershell_command_argv(
 ) -> List[str]:
     """Build the argv that runs a bare PowerShell command directly.
 
-    ``-Command`` hands the exact script string to PowerShell with no
-    cmd.exe round-trip; complex (multi-line) scripts use ``-EncodedCommand``
-    so the payload is delivered verbatim with zero quoting concerns.  A
-    ``$ProgressPreference`` prefix keeps Windows PowerShell 5.1 from
-    serializing progress records as CLIXML noise on stderr.
+    ``-Command`` hands the exact script string to PowerShell with no cmd.exe
+    round-trip, so single- and multi-line scripts both arrive verbatim.
+    ``-EncodedCommand`` is avoided: on Windows PowerShell 5.1 a redirected
+    stderr serializes error records under it as a bare ``#< CLIXML`` header
+    with no payload, silently losing the error text.  A ``$ProgressPreference``
+    prefix keeps Windows PowerShell 5.1 from serializing progress records as
+    CLIXML noise on stderr.
     """
     argv: List[str] = [_windows_powershell_executable(), "-NoProfile"]
     if not interactive:
         argv.append("-NonInteractive")
-    script = "$ProgressPreference = 'SilentlyContinue'; " + command
-    if "\n" in script or "\r" in script:
-        argv.append("-EncodedCommand")
-        argv.append(_encode_powershell_script_as_encoded_command(script))
-    else:
-        argv.extend(["-Command", script])
+    script = (
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "$__cw_err0 = $Error.Count\n"
+        + command
+        + "\n"
+        # Surface PowerShell's own failure state as the process exit code:
+        # external programs already propagate via $LASTEXITCODE, while
+        # non-terminating errors (e.g. a denied file redirect that prints
+        # "Access is denied" but would otherwise exit 0) are detected through
+        # the error-record count.
+        "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+        "if ($Error.Count -gt $__cw_err0) { exit 1 }\n"
+        "exit 0"
+    )
+    argv.extend(["-Command", script])
     return argv
 
 

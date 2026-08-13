@@ -82,7 +82,14 @@ class ShellCommandPolicyTests(unittest.TestCase):
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$ProgressPreference = 'SilentlyContinue'; Get-ChildItem -Force",
+                (
+                    "$ProgressPreference = 'SilentlyContinue'\n"
+                    "$__cw_err0 = $Error.Count\n"
+                    "Get-ChildItem -Force\n"
+                    "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+                    "if ($Error.Count -gt $__cw_err0) { exit 1 }\n"
+                    "exit 0"
+                ),
             ],
         )
 
@@ -94,19 +101,33 @@ class ShellCommandPolicyTests(unittest.TestCase):
         self.assertNotIn("-NonInteractive", argv)
         self.assertEqual(
             argv[-1],
-            "$ProgressPreference = 'SilentlyContinue'; python",
+            (
+                "$ProgressPreference = 'SilentlyContinue'\n"
+                "$__cw_err0 = $Error.Count\n"
+                "python\n"
+                "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+                "if ($Error.Count -gt $__cw_err0) { exit 1 }\n"
+                "exit 0"
+            ),
         )
 
-    def test_windows_powershell_command_argv_multiline_uses_encoded_command(self):
+    def test_windows_powershell_command_argv_multiline_uses_command(self):
         with patch(
             "cli.tools.shell._windows_powershell_executable", return_value="powershell"
         ):
             argv = _windows_powershell_command_argv("$a = 1\n$a")
-        self.assertIn("-EncodedCommand", argv)
-        encoded = argv[-1]
+        self.assertIn("-Command", argv)
         self.assertEqual(
-            base64.b64decode(encoded).decode("utf-16-le"),
-            "$ProgressPreference = 'SilentlyContinue'; $a = 1\n$a",
+            argv[-1],
+            (
+                "$ProgressPreference = 'SilentlyContinue'\n"
+                "$__cw_err0 = $Error.Count\n"
+                "$a = 1\n"
+                "$a\n"
+                "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+                "if ($Error.Count -gt $__cw_err0) { exit 1 }\n"
+                "exit 0"
+            ),
         )
 
     def test_strip_powershell_clixml_output_removes_document_and_header(self):

@@ -44,7 +44,7 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertTrue(ok)
         called = popen_mock.call_args[0][0]
         called_cmd = called[-1] if isinstance(called, list) else called
-        self.assertTrue(called_cmd.endswith("python helloworld.py"), called_cmd)
+        self.assertIn("python helloworld.py", called_cmd)
 
     @patch("subprocess.Popen")
     def test_bare_py_script_is_wrapped_with_python(self, popen_mock):
