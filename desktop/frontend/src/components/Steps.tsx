@@ -772,10 +772,10 @@ function PromptWithAttachment({
               <Icon name="chevron" size={14} className="chevron" />
             </span>
           )}
+          {copyToggle}
           <span className="cmd-prompt-diff-toggle">
             <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>
-          {copyToggle}
         </HoverTooltip>
       </div>
       <Collapsible open={expanded && !isSubAgent} className="step-attachment">
