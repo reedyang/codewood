@@ -16,6 +16,7 @@ from cli.tools.shell import _is_read_only_command
 from cli.tools.shell import normalize_shell_command_for_summary
 from cli.tools.shell import _normalize_windows_shell_path_separators
 from cli.tools.shell import strip_redundant_cd_prefix
+from cli.tools.shell import relativize_cd_target_for_display
 
 
 class ShellCommandPolicyTests(unittest.TestCase):
@@ -644,6 +645,107 @@ class StripRedundantCdPrefixTests(unittest.TestCase):
             self.assertEqual(
                 strip_redundant_cd_prefix(agent, f"cd {root}; git status"),
                 "git status",
+            )
+
+
+class RelativizeCdTargetForDisplayTests(unittest.TestCase):
+    """``cd <abs-subdir>;`` shows as ``cd <rel-subdir>;`` in the GUI/TUI summary."""
+
+    def _agent_with_root(self, root: str):
+        return type("Agent", (), {"workspace_root": root})()
+
+    def test_relativizes_semicolon_cd_inside_workspace(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "cli"
+            sub.mkdir()
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                relativize_cd_target_for_display(agent, f"cd {sub}; git status"),
+                "cd cli; git status",
+            )
+
+    def test_relativizes_nested_subdirectory(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "cli" / "tools"
+            sub.mkdir(parents=True)
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                relativize_cd_target_for_display(agent, f"cd {sub}; git status"),
+                "cd cli/tools; git status",
+            )
+
+    def test_keeps_quotes_around_relative_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "my folder"
+            sub.mkdir()
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                relativize_cd_target_for_display(agent, f'cd "{sub}"; git status'),
+                'cd "my folder"; git status',
+            )
+
+    def test_relativizes_cmd_and_delimiter(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "cli"
+            sub.mkdir()
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                relativize_cd_target_for_display(agent, f"cd {sub} && git status"),
+                "cd cli && git status",
+            )
+
+    def test_relativizes_pushd(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "cli"
+            sub.mkdir()
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                relativize_cd_target_for_display(agent, f"pushd {sub}; git status"),
+                "pushd cli; git status",
+            )
+
+    def test_keeps_cd_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as other:
+            agent = self._agent_with_root(root)
+            cmd = f"cd {other}; git status"
+            self.assertEqual(relativize_cd_target_for_display(agent, cmd), cmd)
+
+    def test_keeps_cd_to_workspace_root_itself(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            cmd = f"cd {root}; git status"
+            self.assertEqual(relativize_cd_target_for_display(agent, cmd), cmd)
+
+    def test_keeps_parent_directory_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            parent = Path(root).parent
+            agent = self._agent_with_root(root)
+            cmd = f"cd {parent}; git status"
+            self.assertEqual(relativize_cd_target_for_display(agent, cmd), cmd)
+
+    def test_keeps_plain_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            self.assertEqual(relativize_cd_target_for_display(agent, "git status"), "git status")
+
+    def test_keeps_relative_cd_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "cli"
+            sub.mkdir()
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                relativize_cd_target_for_display(agent, "cd cli; git status"),
+                "cd cli; git status",
+            )
+
+    def test_falls_back_to_shell_cwd_when_workspace_root_missing(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "cli"
+            sub.mkdir()
+            agent = type("Agent", (), {"work_directory": Path(root)})()
+            self.assertEqual(
+                relativize_cd_target_for_display(agent, f"cd {sub}; git status"),
+                "cd cli; git status",
             )
 
 
