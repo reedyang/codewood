@@ -32,6 +32,7 @@ For all software-understanding tasks that require locating code, use `grep` to f
 - Use interpreters directly for scripts, e.g. `python tools/a.py --x 1` or `py scripts/job.py`; do not wrap them in unnecessary shell invocations.
 [[if $os="Windows"]]
 - On Windows, commands run directly in PowerShell: write native cmdlets (`Get-ChildItem`, `Get-Content`, ...) without a `powershell -Command` prefix.
+- On Windows, do not chain two commands with `&&` (PowerShell does not support it); use `;` instead.
 [[endif]]
 
 If a shell result says `sandbox_related: true`, the failure was likely caused by the sandbox: reflect on whether the command is necessary; if it truly is, you may re-run it with `bypass_sandbox: true` (one-time, user-approved). A rejected escalation ends the task.
