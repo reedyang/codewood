@@ -21,7 +21,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from ..core.logging.app_logging import get_logger
 
@@ -610,12 +610,40 @@ def _get_active_chat_id(agent: Any) -> str:
     return ""
 
 
+def _subagent_cancelled(agent: Any, cancel_check: Optional[Callable[[], bool]]) -> bool:
+    """True when the sub-agent should stop: a global interrupt fired, the
+    active chat task was interrupted, or an explicit per-task cancel was
+    requested (background-task kill).  All checks are defensive — a broken
+    hook must never crash the sub-agent loop."""
+    try:
+        if getattr(agent, "_task_interrupt_requested", False):
+            return True
+    except Exception:
+        pass
+    try:
+        chat_interrupt = getattr(agent, "_chat_task_interrupt_requested", None)
+        if callable(chat_interrupt) and chat_interrupt():
+            return True
+    except Exception:
+        pass
+    if cancel_check is not None:
+        try:
+            if cancel_check():
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def run_subagent(
     agent: Any,
     subagent_name: str,
     prompt: str,
     image: Optional[str] = None,
     topic: str = "",
+    cancel_check: Optional[Callable[[], bool]] = None,
+    suppress_session_marker: bool = False,
+    on_session_created: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Execute a sub-agent and return ``{success, output}`` (or error).
 
@@ -625,6 +653,14 @@ def run_subagent(
 
     The sub-agent session is persisted to disk and SSE events are emitted
     for real-time viewing in the GUI.
+
+    ``cancel_check`` lets a caller (e.g. the background-task worker) abort the
+    sub-agent at its next round boundary. ``suppress_session_marker`` hides the
+    ``GUI_SUBAGENT_SESSION`` stdout marker — used when the sub-agent runs on a
+    background thread whose stdout must not leak into the current turn.
+    ``on_session_created`` is invoked with the session id the moment the
+    session exists (before any SSE event) — the background worker uses it to
+    push the session marker to the GUI while the sub-agent is still running.
     """
     # Recursion guard: forbid nesting.
     if int(getattr(agent, "_subagent_depth", 0) or 0) > 0:
@@ -680,6 +716,11 @@ def run_subagent(
         topic=topic,
     )
     session_id = session["id"]
+    if on_session_created is not None:
+        try:
+            on_session_created(session_id)
+        except Exception:
+            pass
 
     # Emit session start event
     _emit_subagent_event(agent, "sub_agent_start", {
@@ -692,8 +733,9 @@ def run_subagent(
 
     # Print the session marker early so the GUI can show the ">" button
     # to enter the session viewer while the sub-agent is still running.
-    # Skip when stdout is a TTY (TUI mode) — the marker is meaningless there.
-    if not sys.stdout.isatty():
+    # Skip when stdout is a TTY (TUI mode) — the marker is meaningless there —
+    # and for background workers, whose stdout would leak into the wrong turn.
+    if not sys.stdout.isatty() and not suppress_session_marker:
         print(f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}", flush=True)
 
     # Require the sub-agent to reply in the same language the user is using.
@@ -738,10 +780,7 @@ def run_subagent(
         _round = 0
         while max_rounds is None or _round < max_rounds:
             _round += 1
-            if (
-                getattr(agent, "_task_interrupt_requested", False)
-                or getattr(agent, "_chat_task_interrupt_requested", lambda: False)()
-            ):
+            if _subagent_cancelled(agent, cancel_check):
                 cancelled_msg = _t(agent, "subagents.error.cancelled")
                 store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
                 _emit_subagent_event(agent, "sub_agent_end", {
@@ -848,10 +887,7 @@ def run_subagent(
                 if not isinstance(message, dict):
                     message = {"role": "assistant", "content": "".join(_streamed_text)}
 
-            if (
-                getattr(agent, "_task_interrupt_requested", False)
-                or getattr(agent, "_chat_task_interrupt_requested", lambda: False)()
-            ):
+            if _subagent_cancelled(agent, cancel_check):
                 cancelled_msg = _t(agent, "subagents.error.cancelled")
                 store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
                 _emit_subagent_event(agent, "sub_agent_end", {
@@ -999,10 +1035,7 @@ def run_subagent(
             # on reload — exactly like the main chat's tool-round history.
             round_raw: List[Dict[str, Any]] = []
             for idx, (tool_name, args) in enumerate(plans):
-                if (
-                    getattr(agent, "_task_interrupt_requested", False)
-                    or getattr(agent, "_chat_task_interrupt_requested", lambda: False)()
-                ):
+                if _subagent_cancelled(agent, cancel_check):
                     cancelled_msg = _t(agent, "subagents.error.cancelled")
                     store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
                     _emit_subagent_event(agent, "sub_agent_end", {

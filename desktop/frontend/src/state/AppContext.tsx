@@ -452,6 +452,11 @@ const CMD_PROMPT_BEGIN = "\uE004";
 const CMD_PROMPT_END = "\uE005";
 const CMD_OUTPUT_BEGIN = "\uE000";
 const CMD_OUTPUT_END = "\uE001";
+// Sentinels wrapping a sub-agent session id (kept in sync with
+// cli/core/console_utils.py). Used to render the "open sub-session" button on
+// the run_subagent tool-call block while/after the background task runs.
+const SUBAGENT_SESSION_BEGIN = "\uE008";
+const SUBAGENT_SESSION_END = "\uE009";
 const DIFF_BEGIN = "\uE006";
 
 function loadInitialTheme(): Theme {
@@ -2187,19 +2192,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
             // Replace the whole output block with the authoritative final
             // content (the finalizer re-sends the complete bounded output),
             // so expanding the tool call shows the command's real output.
+            const merged = segments.map((s) => s.text).join("");
+            // Keep a sub-agent session marker that may have been pushed into
+            // this round while the task was still running, so the "open
+            // sub-session" button survives the final replacement (e.g. when
+            // the task completes within the same busy turn, which skips the
+            // history reload that would otherwise re-add the marker).
+            const markerMatch = merged.match(
+              new RegExp(
+                `${SUBAGENT_SESSION_BEGIN}[\\s\\S]*?${SUBAGENT_SESSION_END}`,
+              ),
+            );
             const statusLine = status ? `\n[bg task ${taskId} ${status}]` : "";
             const finalBlock = CMD_OUTPUT_BEGIN + text + statusLine + CMD_OUTPUT_END;
-            const merged = segments.map((s) => s.text).join("");
+            const finalBlockWithMarker = markerMatch
+              ? finalBlock + "\n" + markerMatch[0]
+              : finalBlock;
             const beginIdx = merged.indexOf(CMD_OUTPUT_BEGIN);
             if (beginIdx >= 0) {
               const prefix = merged.slice(0, beginIdx);
               segments.splice(0, segments.length, {
                 id: nextIdRef.current++,
                 kind: "step",
-                text: prefix + finalBlock,
+                text: prefix + finalBlockWithMarker,
               });
             } else {
-              segments.push({ id: nextIdRef.current++, kind: "step", text: finalBlock });
+              segments.push({
+                id: nextIdRef.current++,
+                kind: "step",
+                text: finalBlockWithMarker,
+              });
             }
           } else {
             // Incremental chunk: append into the still-open output block.

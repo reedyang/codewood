@@ -1,16 +1,18 @@
-"""Background shell task registry and completion notifications.
+"""Background task registry and completion notifications.
 
-A background task is a shell command spawned by the ``shell`` tool with
-``background=True``.  The tool returns immediately with a
-``background_task_id`` (equal to the issuing tool call id); the process keeps
-running and streaming into a capture buffer in a worker thread.  When the
-process exits (normally, with a failure code, or after being killed by the
-user interrupt path or by ``background_task_kill``), the manager finalizes the
-task: it collapses the captured output, writes a full-output sidecar file,
-updates the persisted tool round (so the GUI block shows the result after
-reload), emits a final ``background_task_output`` SSE event (end=true) and
-queues a completion notification that the main loop drains before the next
-model call (delivered as a hidden internal user message).
+A background task is a long-running unit started with ``background=True``:
+either a shell command spawned by the ``shell`` tool, or a sub-agent started
+by the ``run_subagent`` tool (``kind="subagent"``, driven by a worker thread
+with a ``cancel`` callback instead of an OS process).  The tool returns
+immediately with a ``background_task_id`` (equal to the issuing tool call id);
+the work keeps running in the background.  When it finishes (normally, with a
+failure code, or after being killed via the user interrupt path or
+``background_task_kill``), the manager finalizes the task: it collapses the
+captured output, writes a full-output sidecar file, updates the persisted tool
+round (so the GUI block shows the result after reload), emits a final
+``background_task_output`` SSE event (end=true) and queues a completion
+notification that the main loop drains before the next model call (delivered
+as a hidden internal user message).
 """
 
 from __future__ import annotations
@@ -122,6 +124,9 @@ class BackgroundTaskRecord:
         "notification_injected",
         "finalized",
         "_finalize_lock",
+        "kind",
+        "cancel",
+        "session_marker",
     )
 
     def __init__(
@@ -138,6 +143,8 @@ class BackgroundTaskRecord:
         stream_chunks_lock: threading.Lock,
         merge_path: Optional[str],
         sink: Optional[BackgroundOutputSink],
+        kind: str = "shell",
+        cancel: Optional[Any] = None,
     ) -> None:
         self.task_id = str(task_id or "")
         self.agent = agent
@@ -166,6 +173,9 @@ class BackgroundTaskRecord:
         self.notification_injected = False
         self.finalized = False
         self._finalize_lock = threading.Lock()
+        self.kind = str(kind or "shell")
+        self.cancel = cancel
+        self.session_marker = ""
 
     def process(self) -> Any:
         if isinstance(self.process_ref, dict):
@@ -198,6 +208,8 @@ class BackgroundTaskManager:
         stream_chunks_lock: threading.Lock,
         merge_path: Optional[str],
         sink: Optional[BackgroundOutputSink],
+        kind: str = "shell",
+        cancel: Optional[Any] = None,
     ) -> BackgroundTaskRecord:
         record = BackgroundTaskRecord(
             task_id=task_id,
@@ -211,6 +223,8 @@ class BackgroundTaskManager:
             stream_chunks_lock=stream_chunks_lock,
             merge_path=merge_path,
             sink=sink,
+            kind=kind,
+            cancel=cancel,
         )
         with self._lock:
             self._tasks[record.task_id] = record
@@ -272,6 +286,15 @@ class BackgroundTaskManager:
                 "full_output_path": record.output_path,
             }
         agent = record.agent
+        # Non-process tasks (e.g. background sub-agents) expose a ``cancel``
+        # callback instead of a process tree: ask the worker to stop at its
+        # next checkpoint. The watcher finalizes the record as usual.
+        cancel = getattr(record, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                pass
         process = record.process()
         if process is not None:
             mark = getattr(agent, "_mark_process_aborted", None)
@@ -391,23 +414,31 @@ class BackgroundTaskManager:
                 return
             record.finalized = True
         agent = record.agent
+        worker_state = record.worker_state if isinstance(record.worker_state, dict) else {}
+        is_subagent = str(getattr(record, "kind", "") or "") == "subagent"
         process = record.process()
 
         aborted_by_user = False
         pause_interrupt = False
-        consume_abort = getattr(agent, "_consume_process_aborted", None)
-        if callable(consume_abort):
-            try:
-                aborted_by_user = bool(consume_abort(process))
-            except Exception:
-                pass
-        if aborted_by_user:
-            consume_pause = getattr(agent, "_consume_process_pause", None)
-            if callable(consume_pause):
+        if is_subagent:
+            # Background sub-agents have no OS process: the worker reports its
+            # own abort (a cancel was requested via ``background_task_kill``).
+            aborted_by_user = bool(worker_state.get("aborted", False))
+            pause_interrupt = False
+        else:
+            consume_abort = getattr(agent, "_consume_process_aborted", None)
+            if callable(consume_abort):
                 try:
-                    pause_interrupt = bool(consume_pause(process))
+                    aborted_by_user = bool(consume_abort(process))
                 except Exception:
                     pass
+            if aborted_by_user:
+                consume_pause = getattr(agent, "_consume_process_pause", None)
+                if callable(consume_pause):
+                    try:
+                        pause_interrupt = bool(consume_pause(process))
+                    except Exception:
+                        pass
 
         from .shell import _collapse_cr_output  # local import avoids cycles
 
@@ -415,23 +446,23 @@ class BackgroundTaskManager:
             out = "".join(record.stdout_chunks)
         out = _collapse_cr_output(out)
 
-        worker_state = record.worker_state if isinstance(record.worker_state, dict) else {}
         _rc_raw = worker_state.get("return_code")
         rc = int(_rc_raw if _rc_raw is not None else -1)
         timed_out = bool(worker_state.get("timed_out", False))
 
         if aborted_by_user:
-            from .shell import _shell_abort_notice  # local import
-            from .shell import SHELL_CANCEL_ABORT_NOTICE
+            if not is_subagent:
+                from .shell import _shell_abort_notice  # local import
+                from .shell import SHELL_CANCEL_ABORT_NOTICE
 
-            notice = ""
-            try:
-                notice = _shell_abort_notice(agent, process)
-            except Exception:
                 notice = ""
-            if not notice:
-                notice = SHELL_CANCEL_ABORT_NOTICE
-            out = notice
+                try:
+                    notice = _shell_abort_notice(agent, process)
+                except Exception:
+                    notice = ""
+                if not notice:
+                    notice = SHELL_CANCEL_ABORT_NOTICE
+                out = notice
             status = BG_TASK_STATUS_KILLED
         else:
             status = BG_TASK_STATUS_COMPLETED if rc == 0 else BG_TASK_STATUS_FAILED
@@ -454,12 +485,13 @@ class BackgroundTaskManager:
 
         record.output_path = _write_bg_output_file(agent, record.task_id, out)
 
-        unreg = getattr(agent, "_unregister_interruptible_process", None)
-        if callable(unreg):
-            try:
-                unreg(process)
-            except Exception:
-                pass
+        if not is_subagent:
+            unreg = getattr(agent, "_unregister_interruptible_process", None)
+            if callable(unreg):
+                try:
+                    unreg(process)
+                except Exception:
+                    pass
 
         try:
             self._update_round_output(record)
@@ -494,8 +526,9 @@ class BackgroundTaskManager:
         record.notification_pending = True
 
     def _update_round_output(self, record: BackgroundTaskRecord, _attempt: int = 0) -> bool:
-        """Rewrite the persisted tool round (raw entry) of the issuing shell
-        call with the final bounded output so a reload shows it expanded."""
+        """Rewrite the persisted tool round (raw entry) of the issuing tool
+        call (shell or run_subagent) with the final bounded output so a
+        reload shows it expanded."""
         agent = record.agent
         final = _bounded_output(record.final_out)
         tid = record.task_id
@@ -503,17 +536,21 @@ class BackgroundTaskManager:
         def _match_entry(entry: Any) -> bool:
             if not isinstance(entry, dict):
                 return False
+            tool = str(entry.get("tool") or "").strip().lower()
             return (
-                str(entry.get("tool") or "").strip().lower() == "shell"
+                tool in ("shell", "run_subagent")
                 and str(entry.get("bgTaskId") or "") == tid
             )
 
         updated = False
+        marker = str(getattr(record, "session_marker", "") or "")
         pending_raw = getattr(agent, "_accumulated_tool_rounds_raw", None)
         if isinstance(pending_raw, list):
             for entry in pending_raw:
                 if _match_entry(entry):
                     entry["output"] = final
+                    if marker:
+                        entry["marker"] = marker
                     updated = True
 
         hist = getattr(agent, "conversation_history", None)
@@ -530,6 +567,8 @@ class BackgroundTaskManager:
                 for entry in raw_list:
                     if _match_entry(entry):
                         entry["output"] = final
+                        if marker:
+                            entry["marker"] = marker
                         hit = True
                 if hit:
                     updated = True
