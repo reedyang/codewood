@@ -1868,6 +1868,14 @@ class _ChatRuntime:
 #: cache result and re-verify right after a successful setup.
 _sandbox_flag_mtime: Dict[str, float] = {}
 
+#: Last-seen mtime of the per-config-dir ``sandbox_users_ready.flag``.  The
+#: elevated setup writes it as soon as the users/group/firewall phase is done
+#: (the ACL phase then continues in the background), so advancing this flag
+#: also means "a setup just completed" -- the settings page must re-verify the
+#: credentials instead of trusting a False cached right before the elevated
+#: window finished.
+_sandbox_ready_mtime: Dict[str, float] = {}
+
 
 class ServeApp:
     """Owns the agent loop, the event broadcaster, and the HTTP server."""
@@ -5530,27 +5538,50 @@ class ServeApp:
             out["online_user"] = status.get("online_user")
             out["secret_exists"] = bool(status.get("secret_exists"))
             out["users_foreign"] = bool(status.get("users_foreign"))
-        from ..core.sandbox.windows import _flag_path
+        from ..core.sandbox.windows import _flag_path, _users_ready_path
 
         flag_mtime: Optional[float] = None
         try:
             flag_mtime = _flag_path(agent.config_dir).stat().st_mtime
         except Exception:
             pass
+        ready_mtime: Optional[float] = None
+        try:
+            ready_mtime = _users_ready_path(agent.config_dir).stat().st_mtime
+        except Exception:
+            pass
         key = str(agent.config_dir)
         prev_flag_mtime = _sandbox_flag_mtime.get(key)
+        prev_ready_mtime = _sandbox_ready_mtime.get(key)
         if flag_mtime is not None:
             _sandbox_flag_mtime[key] = flag_mtime
+        if ready_mtime is not None:
+            _sandbox_ready_mtime[key] = ready_mtime
         pw_ok = backend.verify_credentials(agent.config_dir)
+        # A setup is considered complete as soon as the ELEVATED phase
+        # (users / group / firewall) wrote ``users_ready``; the ACL work that
+        # follows on the serve side must not gate the page status.  Either
+        # flag advancing since the last load means a setup just finished, so
+        # drop the stale cached check and verify once against the fresh
+        # accounts.
+        setup_just_completed = (
+            (
+                flag_mtime is not None
+                and (prev_flag_mtime is None or flag_mtime > prev_flag_mtime)
+            )
+            or (
+                ready_mtime is not None
+                and (prev_ready_mtime is None or ready_mtime > prev_ready_mtime)
+            )
+        )
         if (
             pw_ok is False
-            and flag_mtime is not None
-            and prev_flag_mtime is not None
-            and flag_mtime > prev_flag_mtime
+            and setup_just_completed
         ):
-            # The provisioning flag was rewritten since the last status load:
-            # a setup just completed, so the cached False predates it.  Verify
-            # once without the cache so the page reflects the new passwords.
+            # The cached False predates the completed setup (it was recorded
+            # while the old accounts still had the mismatched password).
+            # Verify once without the cache so the page reflects the new
+            # accounts' passwords.
             pw_ok = backend.verify_credentials(agent.config_dir, fresh=True)
         if pw_ok is not None:
             out["passwords_ok"] = bool(pw_ok)

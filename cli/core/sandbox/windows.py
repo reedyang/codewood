@@ -552,10 +552,25 @@ def _run_process(argv: list, timeout: float = 180, stdin_data: Optional[str] = N
 def _run_set_password(user: str, password: str) -> Any:
     """Run ``Set-LocalUser`` to set ``password`` for ``user``.
 
-    The account is enabled along the way so a previously disabled account is
-    revived by the refresh path.  Used by in-place password refreshes, which
-    run inside the elevated provisioning window.
+    The account is enabled along the way (via the separate ``Enable-LocalUser``
+    cmdlet) so a previously disabled account is revived by the refresh path.
+    ``Set-LocalUser`` itself has NO ``-Enabled`` parameter on some Windows 11
+    builds (NamedParameterNotFound), which used to make every in-place refresh
+    fail and silently fall back to delete+recreate (SID churn).  Used by
+    in-place password refreshes, which run inside the elevated provisioning
+    window.
     """
+    _run_process(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Enable-LocalUser -Name '{0}' -ErrorAction SilentlyContinue".format(
+                user
+            ),
+        ]
+    )
     return _run_process(
         [
             "powershell",
@@ -564,7 +579,7 @@ def _run_set_password(user: str, password: str) -> Any:
             "-Command",
             "Set-LocalUser -Name '{0}' -Password "
             "(ConvertTo-SecureString '{1}' -AsPlainText -Force) "
-            "-Enabled $true -ErrorAction Stop".format(user, password),
+            "-ErrorAction Stop".format(user, password),
         ]
     )
 
@@ -3110,8 +3125,12 @@ class WindowsSandboxBackend(SandboxBackend):
         provisioning (so the old accounts still resolve by name) and when a
         workspace is deleted. Removes:
 
-        - the two sandbox users and the sandbox group by name, recursively
-          (``icacls /t``);
+        - the two sandbox users and the sandbox group by name at each recorded
+          root, batched into ONE ``icacls`` invocation per directory.  The
+          sandbox-managed ACEs are all inheritable (``(OI)(CI)``), so removing
+          the root ACE lets NTFS auto-inheritance drop every descendant copy --
+          no full-tree ``/t`` walk, which is what made rebuilds stall for many
+          minutes on large trees (the user profile / a pnpm store);
         - the capability SIDs and any dead (no longer resolvable) local SIDs
           at the root via PowerShell — inheritable ACE removal propagates to
           children through auto-inheritance.
@@ -3125,21 +3144,22 @@ class WindowsSandboxBackend(SandboxBackend):
         _unrecord_acl_dirs([workspace_root])
         root_str = str(workspace_root)
         if root_str.endswith(("\\*", "/*")):
-            # Wildcard record entry (``<home>\\*``): sweep every subdirectory
-            # of the parent; the parent itself carries no sandbox ACE.
-            ws = Path(root_str[:-2])
+            # Wildcard record entry (``<home>\\*``): the grants live on the
+            # subdirectories of the parent (the parent itself carries no
+            # sandbox ACE), so sweep each subdirectory individually instead of
+            # recursing the whole parent with ``/t``.
+            parent = Path(root_str[:-2])
+            try:
+                targets = [c for c in sorted(parent.iterdir()) if c.is_dir()]
+            except Exception:
+                targets = []
         else:
-            ws = Path(root_str)
-        if not ws.exists():
+            try:
+                targets = [Path(root_str)]
+            except Exception:
+                targets = []
+        if not targets or not any(t.exists() for t in targets):
             return
-        ws_str = str(ws.resolve())
-        for ident in (
-            SANDBOX_USER_OFFLINE,
-            SANDBOX_USER_ONLINE,
-            SANDBOX_USERS_GROUP,
-        ):
-            _run_process(["icacls", ws_str, "/remove:g", ident, "/t", "/q"])
-            _run_process(["icacls", ws_str, "/remove:d", ident, "/t", "/q"])
         cap_w = cap_r = ""
         if config_dir:
             try:
@@ -3148,15 +3168,32 @@ class WindowsSandboxBackend(SandboxBackend):
                 cap_r = cap.get("readonly", "")
             except Exception:
                 pass
-        _run_process(
-            [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                _build_cleanup_root_script(ws_str, cap_w, cap_r),
-            ]
-        )
+        for ws in targets:
+            ws_str = str(ws.resolve())
+            _run_process(
+                [
+                    "icacls",
+                    ws_str,
+                    "/remove:g",
+                    SANDBOX_USER_OFFLINE,
+                    SANDBOX_USER_ONLINE,
+                    SANDBOX_USERS_GROUP,
+                    "/remove:d",
+                    SANDBOX_USER_OFFLINE,
+                    SANDBOX_USER_ONLINE,
+                    SANDBOX_USERS_GROUP,
+                    "/q",
+                ]
+            )
+            _run_process(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    _build_cleanup_root_script(ws_str, cap_w, cap_r),
+                ]
+            )
 
 
 def launch_elevated_setup(
