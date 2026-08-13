@@ -142,6 +142,11 @@ const DIFF_END = "\uE007";
 // sub-agent session for the GUI's session viewer.
 const SUBAGENT_SESSION_BEGIN = "\uE008";
 const SUBAGENT_SESSION_END = "\uE009";
+// Sentinels wrapping the raw shell command line of a "• Ran ..." prompt (kept
+// in sync with cli/core/console_utils.py). The frontend uses it to offer a
+// hover-only "copy full command line" button on the tool-call row.
+const CMD_TEXT_BEGIN = "\uE00A";
+const CMD_TEXT_END = "\uE00B";
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const BOX_DRAWING_RE = /[\u2500-\u257F]/g;
@@ -164,7 +169,7 @@ function getLongestTableBorderWidth(text: string): number {
   return maxW;
 }
 
-type SegKind = "text" | "cmd" | "prompt" | "diff" | "subagent_session";
+type SegKind = "text" | "cmd" | "prompt" | "diff" | "subagent_session" | "cmd_text";
 type Segment = { kind: SegKind; text: string };
 
 function splitSteps(text: string): Segment[] {
@@ -215,6 +220,16 @@ function splitSteps(text: string): Segment[] {
       continue;
     }
     if (mode === "subagent_session" && ch === SUBAGENT_SESSION_END) {
+      flush();
+      mode = "text";
+      continue;
+    }
+    if (mode === "text" && ch === CMD_TEXT_BEGIN) {
+      flush();
+      mode = "cmd_text";
+      continue;
+    }
+    if (mode === "cmd_text" && ch === CMD_TEXT_END) {
       flush();
       mode = "text";
       continue;
@@ -502,6 +517,7 @@ export function StepsView({
         }
         if (seg.kind === "prompt") {
           const { bullet, body } = splitPromptBullet(value);
+          let cmdCopyText = "";
           // Find the next command-output, diff, or subagent_session block
           // that belongs to this prompt, skipping blank/text segments and
           // stopping at the next prompt if nothing is found.
@@ -526,6 +542,12 @@ export function StepsView({
               cmdPayload = trimBlankEdges(segments[j].text);
               continue;
             }
+            if (segments[j].kind === "cmd_text") {
+              // Raw shell command line for the hover-only copy button.
+              consumed.add(j);
+              cmdCopyText = trimBlankEdges(segments[j].text);
+              continue;
+            }
             if (segments[j].kind === "diff") {
               diffIndices.push(j);
               continue;
@@ -547,6 +569,7 @@ export function StepsView({
                 key={index}
                 bullet={bullet}
                 body={body}
+                cmdCopyText={cmdCopyText}
                 cmdPayload={cmdPayload}
                 diffPayloads={diffPayloads}
                 subagentSessionId={subagentSessionId}
@@ -563,6 +586,9 @@ export function StepsView({
           );
         }
         if (seg.kind === "cmd") {
+          return null;
+        }
+        if (seg.kind === "cmd_text") {
           return null;
         }
         if (seg.kind === "subagent_session") {
@@ -587,6 +613,7 @@ export function StepsView({
 function PromptWithAttachment({
   bullet,
   body,
+  cmdCopyText,
   cmdPayload,
   diffPayloads,
   subagentSessionId,
@@ -597,6 +624,7 @@ function PromptWithAttachment({
 }: {
   bullet: string;
   body: string;
+  cmdCopyText: string;
   cmdPayload: string;
   diffPayloads: string[];
   subagentSessionId: string;
@@ -605,7 +633,7 @@ function PromptWithAttachment({
   running?: boolean;
   trailingStatusText?: string;
 }) {
-  const { enterSubAgentSession, pendingExpandSubAgentId } = useApp();
+  const { t, enterSubAgentSession, pendingExpandSubAgentId } = useApp();
   const hasCmd = !!cmdPayload;
   const diffs: DiffPayload[] = diffPayloads
     .map((p) => {
@@ -630,6 +658,29 @@ function PromptWithAttachment({
     void enterSubAgentSession(subagentSessionId);
   };
 
+  const handleCopyCommand = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void navigator.clipboard?.writeText(stripAnsi(cmdCopyText));
+  };
+
+  const copyToggle = cmdCopyText ? (
+    <span
+      className="cmd-prompt-copy-toggle"
+      role="button"
+      tabIndex={0}
+      title={t("msg.copy")}
+      onClick={handleCopyCommand}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleCopyCommand(e as unknown as React.MouseEvent);
+        }
+      }}
+    >
+      <Icon name="copy" size={14} />
+    </span>
+  ) : null;
+
   if (!hasAttachment && !isSubAgent) {
     return (
       <div className="cmd-prompt">
@@ -646,6 +697,7 @@ function PromptWithAttachment({
             )}
           </span>
           {running && <SpinnerChar />}
+          {copyToggle}
         </HoverTooltip>
       </div>
     );
@@ -723,6 +775,7 @@ function PromptWithAttachment({
           <span className="cmd-prompt-diff-toggle">
             <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>
+          {copyToggle}
         </HoverTooltip>
       </div>
       <Collapsible open={expanded && !isSubAgent} className="step-attachment">

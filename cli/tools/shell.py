@@ -4383,13 +4383,14 @@ _CD_AND_DELIMITERS.sort(key=lambda x: -x[1])  # longest match first
 
 
 def strip_redundant_cd_prefix(agent: Any, command: str) -> str:
-    """Strip a leading ``cd <path> &&`` when <path> matches the shell cwd.
+    """Strip a leading ``cd <path> &&`` / ``cd <path>;`` when <path> is the workspace root.
 
-    The shell tool already sets the working directory to the workspace root.
-    A ``cd /d workspace-root && actual-command`` prefix is therefore redundant
+    The shell tool already runs from the workspace root, so a
+    ``cd <workspace-root> && actual-command`` (cmd) or
+    ``cd <workspace-root>; actual-command`` (PowerShell) prefix is redundant
     and only adds visual noise in the GUI / TUI command summary.  Stripping it
     also lets ``_classify_no_match_exit`` recognise the trailing search tool
-    when the model writes ``cd … && rg …``.
+    when the model writes ``cd … && rg …`` / ``cd …; rg …``.
     """
     s = str(command or "")
     for cd_token, _cd_len in _CD_AND_DELIMITERS:
@@ -4400,12 +4401,22 @@ def strip_redundant_cd_prefix(agent: Any, command: str) -> str:
         path_str, after_path = _split_cd_prefix_path_and_tail(rest)
         if path_str is None or after_path is None:
             continue
-        if not after_path.lstrip().startswith("&&"):
+        tail = after_path.lstrip()
+        sep = "&&" if tail.startswith("&&") else (";" if tail.startswith(";") else None)
+        if sep is None:
             continue
-        # Normalise both paths for comparison.
+        # Normalise both paths for comparison (workspace root when available).
         try:
             target = Path(str(path_str).strip().strip('"').strip("'"))
             cwd = _resolve_shell_execution_cwd(agent)
+            root_raw = getattr(agent, "workspace_root", None)
+            if root_raw:
+                try:
+                    root = Path(str(root_raw)).expanduser().resolve()
+                    if root.exists() and root.is_dir():
+                        cwd = root
+                except Exception:
+                    pass
             if not target.is_absolute():
                 # Relative cd — resolve against the shell cwd.
                 target = (cwd / target).resolve()
@@ -4415,13 +4426,17 @@ def strip_redundant_cd_prefix(agent: Any, command: str) -> str:
         except Exception:
             return command
         if _paths_equal(target, cwd):
-            return after_path.lstrip()[2:].lstrip()  # skip ``&&``
+            return tail[len(sep):].lstrip()  # skip ``&&`` / ``;``
         return command
     return command
 
 
 def _split_cd_prefix_path_and_tail(s: str) -> tuple[Optional[str], Optional[str]]:
-    """Extract the path from a ``cd <path> && ...`` prefix, respecting quotes."""
+    """Extract the path from a ``cd <path> && ...`` / ``cd <path>; ...`` prefix.
+
+    ``&&`` is the cmd statement separator and ``;`` the PowerShell one; both
+    are honoured and quotes are respected.
+    """
     s = str(s or "")
     in_quote = ""
     for i, ch in enumerate(s):
@@ -4434,8 +4449,11 @@ def _split_cd_prefix_path_and_tail(s: str) -> tuple[Optional[str], Optional[str]
             elif not in_quote:
                 in_quote = ch
             continue
-        if not in_quote and ch == "&" and i + 1 < len(s) and s[i + 1] == "&":
-            return s[:i], s[i:]
+        if not in_quote:
+            if ch == "&" and i + 1 < len(s) and s[i + 1] == "&":
+                return s[:i], s[i:]
+            if ch == ";":
+                return s[:i], s[i:]
     return None, None
 
 

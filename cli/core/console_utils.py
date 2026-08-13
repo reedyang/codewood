@@ -41,6 +41,17 @@ GUI_DIFF_END = "\ue007"
 GUI_SUBAGENT_SESSION_BEGIN = "\ue008"
 GUI_SUBAGENT_SESSION_END = "\ue009"
 
+# Private-use sentinels wrapping the raw shell command text in GUI mode. The
+# desktop GUI renders a hover-only copy button on the "• Ran <command>" line
+# that copies the full command line; the command travels in its own segment so
+# the frontend never has to guess where a localized "Ran"/"执行" verb ends.
+# Only emitted for shell tool calls (never for natural-language labels like
+# "Apply patch (...)"). Keep in sync with the frontend
+# (desktop/frontend/src/components/Steps.tsx).
+GUI_CMD_TEXT_BEGIN = "\ue00a"
+GUI_CMD_TEXT_END = "\ue00b"
+
+
 # Private-use sentinel prepended to composer input by the desktop GUI to force
 # the runtime loop to treat the line as a model prompt, never as a built-in
 # slash command or "!" direct-shell execution. The GUI does not allow users to
@@ -72,7 +83,7 @@ def escape_gui_sentinels(text: str) -> str:
     out: list = []
     for ch in text:
         code = ord(ch)
-        if 0xE000 <= code <= 0xE009:
+        if 0xE000 <= code <= 0xE00B:
             out.append("\\uE%03X" % (code - 0xE000))
         else:
             out.append(ch)

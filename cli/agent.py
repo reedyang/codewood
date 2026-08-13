@@ -75,6 +75,8 @@ from .policy.path_policy import PathPolicy
 from .core.console_utils import (
     GUI_CMD_OUTPUT_BEGIN,
     GUI_CMD_OUTPUT_END,
+    GUI_CMD_TEXT_BEGIN,
+    GUI_CMD_TEXT_END,
     GUI_CMD_PROMPT_BEGIN,
     GUI_CMD_PROMPT_END,
     GUI_DIFF_BEGIN,
@@ -2796,6 +2798,9 @@ class Agent:
             return self._format_wrapped_command_feedback_line(
                 f"{bullet} {_ansi_bold(translate(verb_key, self._ui_language()))} ",
                 summary,
+                # Emit the raw command in its own sentinel segment so the GUI
+                # can offer a "copy full command line" button on the row.
+                emit_cmd_copy=True,
             )
         # Explore running state reads as "Exploring <topic>..."; only the
         # action verb is bold, the topic stays regular (mirroring how the
@@ -3509,7 +3514,12 @@ class Agent:
                 pass
         return max(1, int(width or 80) - output_indent_width - (1 if output_indent_width else 0))
 
-    def _format_wrapped_command_feedback_line(self, lead_prefix: str, command_text: str) -> str:
+    def _format_wrapped_command_feedback_line(
+        self,
+        lead_prefix: str,
+        command_text: str,
+        emit_cmd_copy: bool = False,
+    ) -> str:
         lead = str(lead_prefix or "")
         cmd = str(command_text or "").replace("\r", " ").replace("\n", " ").strip()
         if bool(getattr(self, "_gui_no_wrap", False)):
@@ -3519,7 +3529,12 @@ class Agent:
             # left-aligned (hanging indent) instead of hard-wrapping with the
             # TUI's "  │ " continuation prefix.
             highlighted = highlight_assistant_display_line(cmd)
-            return f"{GUI_CMD_PROMPT_BEGIN}{lead}{highlighted}{GUI_CMD_PROMPT_END}"
+            line = f"{GUI_CMD_PROMPT_BEGIN}{lead}{highlighted}{GUI_CMD_PROMPT_END}"
+            if emit_cmd_copy and cmd:
+                # The copyable command travels as its own segment after the
+                # prompt so the frontend gets the exact command line.
+                line += f"{GUI_CMD_TEXT_BEGIN}{cmd}{GUI_CMD_TEXT_END}"
+            return line
         cols = max(8, int(self._terminal_columns_for_command_feedback() or 80))
         cont_prefix = _ansi_gray("  │ ")
         first_line_width = max(1, cols - self._feedback_text_display_width(lead))

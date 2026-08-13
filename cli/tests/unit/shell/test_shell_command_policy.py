@@ -1,4 +1,5 @@
 import base64
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from cli.tools.shell import enforce_workspace_rg_for_shell_command
 from cli.tools.shell import _is_read_only_command
 from cli.tools.shell import normalize_shell_command_for_summary
 from cli.tools.shell import _normalize_windows_shell_path_separators
+from cli.tools.shell import strip_redundant_cd_prefix
 
 
 class ShellCommandPolicyTests(unittest.TestCase):
@@ -560,6 +562,89 @@ class ReadOnlyTestAndTypecheckCommandTests(unittest.TestCase):
         cmd = "del cli/tests/x.txt"
         with patch("cli.tools.shell.os.name", "posix"):
             self.assertEqual(_normalize_windows_shell_path_separators(cmd), cmd)
+
+
+class StripRedundantCdPrefixTests(unittest.TestCase):
+    """``cd <workspace-root>;`` (PowerShell) / ``&&`` (cmd) prefixes are
+    stripped from the GUI/TUI tool-call description; anything else is kept."""
+
+    def _agent_with_root(self, root: str):
+        return type("Agent", (), {"workspace_root": root})()
+
+    def test_strips_powershell_semicolon_cd_to_workspace_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                strip_redundant_cd_prefix(agent, f"cd {root}; git status"),
+                "git status",
+            )
+
+    def test_strips_semicolon_cd_with_space_before_separator(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                strip_redundant_cd_prefix(agent, f"cd {root} ; git status"),
+                "git status",
+            )
+
+    def test_strips_quoted_semicolon_cd(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                strip_redundant_cd_prefix(agent, f'cd "{root}"; git status'),
+                "git status",
+            )
+
+    def test_keeps_cmd_and_delimiter_support(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            self.assertEqual(
+                strip_redundant_cd_prefix(agent, f"cd /d {root} && git status"),
+                "git status",
+            )
+            self.assertEqual(
+                strip_redundant_cd_prefix(agent, f"cd {root} && git status"),
+                "git status",
+            )
+
+    def test_keeps_cd_to_other_directory(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as other:
+            agent = self._agent_with_root(root)
+            cmd = f"cd {other}; git status"
+            self.assertEqual(strip_redundant_cd_prefix(agent, cmd), cmd)
+
+    def test_keeps_cd_to_workspace_subdirectory(self):
+        with tempfile.TemporaryDirectory() as root:
+            sub = Path(root) / "sub"
+            sub.mkdir()
+            agent = self._agent_with_root(root)
+            cmd = f"cd {sub}; git status"
+            self.assertEqual(strip_redundant_cd_prefix(agent, cmd), cmd)
+
+    def test_keeps_relative_cd_to_parent(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            cmd = "cd ..; git status"
+            self.assertEqual(strip_redundant_cd_prefix(agent, cmd), cmd)
+
+    def test_keeps_bare_cd_without_separator(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            cmd = f"cd {root}"
+            self.assertEqual(strip_redundant_cd_prefix(agent, cmd), cmd)
+
+    def test_keeps_plain_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = self._agent_with_root(root)
+            self.assertEqual(strip_redundant_cd_prefix(agent, "git status"), "git status")
+
+    def test_falls_back_to_shell_cwd_when_workspace_root_missing(self):
+        with tempfile.TemporaryDirectory() as root:
+            agent = type("Agent", (), {"work_directory": Path(root)})()
+            self.assertEqual(
+                strip_redundant_cd_prefix(agent, f"cd {root}; git status"),
+                "git status",
+            )
 
 
 if __name__ == "__main__":

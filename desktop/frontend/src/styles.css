@@ -5097,6 +5097,26 @@ html[data-has-bg] .select {
   opacity: 0;
 }
 
+/* Hover-only "copy full command line" button on a "Ran ..." row. Unlike the
+   expand chevron it stays hidden once the pointer leaves (the chevron remains
+   visible while expanded so the row can be collapsed). */
+.activity-steps .cmd-prompt:hover .cmd-prompt-copy-toggle {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.activity-steps .cmd-prompt-copy-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: 0.5ch;
+  vertical-align: middle;
+  color: var(--muted, #8a8a8a);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+}
+
 
 
 .diff-preview .diff-iline:not(.diff-del):not(.diff-add),

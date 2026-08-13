@@ -387,6 +387,48 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 执行 "))
         self.assertIn("<H>git status</H>", line)
 
+    def test_format_tool_call_feedback_line_shell_emits_cmd_copy_segment_in_gui_mode(self):
+        # In GUI mode the shell feedback line carries the raw command in its own
+        # sentinel segment so the frontend can offer a "copy full command line"
+        # button without guessing where a localized verb ends.
+        self.agent._gui_no_wrap = True
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
+            line = self.agent._format_tool_call_feedback_line(
+                "shell", {"command": "git status --short"}, failed=False
+            )
+        self.assertTrue(line.startswith("\ue004"))
+        self.assertIn("\ue005", line)
+        # The raw command is embedded verbatim (unhighlighted) in its segment.
+        self.assertIn("\ue00agit status --short\ue00b", line)
+
+    def test_format_tool_call_feedback_line_shell_background_emits_cmd_copy_segment(self):
+        self.agent._gui_no_wrap = True
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
+            line = self.agent._format_tool_call_feedback_line(
+                "shell", {"command": "ping localhost", "background": True}, failed=False
+            )
+        self.assertIn("\ue00aping localhost\ue00b", line)
+
+    def test_format_tool_call_feedback_line_non_shell_has_no_cmd_copy_segment(self):
+        # Only shell calls get the copyable command segment; natural-language
+        # labels (apply_patch etc.) must stay sentinel-free apart from the
+        # prompt wrapper.
+        self.agent._gui_no_wrap = True
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text), patch.object(
+            self.agent, "_is_apply_patch_add_file", return_value=False
+        ):
+            line = self.agent._format_tool_call_feedback_line(
+                "apply_patch", {"path": "a.txt", "patch": "x"}, failed=False
+            )
+        self.assertNotIn("\ue00a", line)
+        self.assertNotIn("\ue00b", line)
+
     def test_format_tool_call_feedback_line_localizes_non_shell_label(self):
         # Non-shell tool labels are localized in zh-CN via tool.label.* keys.
         self.agent.display_language = "zh-CN"
