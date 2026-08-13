@@ -57,6 +57,7 @@ _profile_read_lock = threading.Lock()
 SANDBOX_PROVISIONED_FLAG = "sandbox_provisioned.flag"
 SANDBOX_USERS_READY_FLAG = "sandbox_users_ready.flag"
 SANDBOX_PENDING_CLEANUP = "sandbox_pending_cleanup.json"
+SANDBOX_USERS_REBUILT_FLAG = "sandbox_users_rebuilt.flag"
 SANDBOX_FIREWALL_RULE_OFFLINE = "Codewood Sandbox Offline Block Outbound"
 SANDBOX_RUNTIME_DIRNAME = "sandbox"
 SANDBOX_USERS_GROUP = "CodewoodSandUsers"
@@ -548,6 +549,58 @@ def _run_process(argv: list, timeout: float = 180, stdin_data: Optional[str] = N
         return SimpleNamespace(returncode=-1, stdout="", stderr=str(exc))
 
 
+def _run_set_password(user: str, password: str) -> Any:
+    """Run ``Set-LocalUser`` to set ``password`` for ``user``.
+
+    The account is enabled along the way so a previously disabled account is
+    revived by the refresh path.  Used by in-place password refreshes, which
+    run inside the elevated provisioning window.
+    """
+    return _run_process(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Set-LocalUser -Name '{0}' -Password "
+            "(ConvertTo-SecureString '{1}' -AsPlainText -Force) "
+            "-Enabled $true -ErrorAction Stop".format(user, password),
+        ]
+    )
+
+
+def _ensure_sandbox_user_memberships(user: str) -> Optional[str]:
+    """Ensure ``user`` belongs to the built-in Users group and the sandbox
+    users group (both required for a sandbox account to work).  Returns an
+    error message on failure, ``None`` on success."""
+    _run_process(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Add-LocalGroupMember -Group 'Users' -Member '{0}' "
+            "-ErrorAction SilentlyContinue".format(user),
+        ]
+    )
+    result = _run_process(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$group='{0}'; $member='{1}'; "
+            "if (-not (Get-LocalGroupMember -Group $group -Member $member "
+            "-ErrorAction SilentlyContinue)) {{ "
+            "Add-LocalGroupMember -Group $group -Member $member -ErrorAction Stop }}"
+            .format(SANDBOX_USERS_GROUP, user),
+        ]
+    )
+    if result.returncode != 0:
+        return f"add {user} to {SANDBOX_USERS_GROUP}: {result.stderr.strip()}"
+    return None
+
+
 # Complete write-side deny set for read_only workspaces / protected dirs.
 # Deliberately excludes SYNCHRONIZE (part of icacls's W) and keeps cmd.exe's
 # built-in dir/type readable while blocking create/modify/append/delete.
@@ -972,6 +1025,156 @@ def _build_cleanup_root_script(ws: str, cap_w: str, cap_r: str) -> str:
     )
 
 
+#: Re-propagates the sandbox-managed ACE set over a directory tree after the
+#: sandbox users were recreated.  Root-level grants only reach files created
+#: afterwards, so files that predate the grants keep no sandbox ACEs and a
+#: rebuilt user cannot write them.  The script walks each tree, skips
+#: protected subtrees (``.git``/``.codewood``/``.agents`` keep their
+#: write-deny), and applies the same desired ACE set the roots received --
+#: only to objects that miss it (idempotent).  ``mode`` selects the set:
+#: ``write`` (group + workspace capability Modify), ``readonly`` (group
+#: ReadAndExecute plus deny), ``runtime`` (group + both capability SIDs
+#: Modify, matching the sandbox runtime dirs).
+_ACL_REINHERIT_PS = r"""
+$ErrorActionPreference = 'Stop'
+$group = '@@GROUP@@'
+$capW = '@@CAPW@@'
+$capR = '@@CAPR@@'
+$deny = '@@DENY@@'
+$exclude = @(@@EXCLUDE@@)
+
+$managedSids = @()
+try { $managedSids += (New-Object System.Security.Principal.NTAccount($group)).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+if ($capW) { $managedSids += $capW }
+if ($capR) { $managedSids += $capR }
+
+function Get-SidValue($ace) {
+    try { return $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { return $null }
+}
+
+function New-Rule([object]$identity, [string]$rights, [string]$type, [bool]$isDir) {
+    $inherit = 'ContainerInherit,ObjectInherit'
+    if (-not $isDir) { $inherit = 'None' }
+    return New-Object System.Security.AccessControl.FileSystemAccessRule($identity, $rights, $inherit, 'None', $type)
+}
+
+function Rule-Equals($ace, $rule) {
+    if ($ace.AccessControlType -ne $rule.AccessControlType) { return $false }
+    if ($ace.FileSystemRights -ne $rule.FileSystemRights) { return $false }
+    if ($ace.InheritanceFlags -ne $rule.InheritanceFlags) { return $false }
+    if ($ace.PropagationFlags -ne $rule.PropagationFlags) { return $false }
+    $a = Get-SidValue $ace
+    $b = Get-SidValue $rule
+    if (-not $a -or -not $b) { return $false }
+    return ($a -eq $b)
+}
+
+function Apply-ACL([string]$path, [string]$mode, [bool]$isDir) {
+    $acl = $null
+    try { $acl = Get-Acl -LiteralPath $path -ErrorAction Stop } catch { return }
+    $managed = @()
+    foreach ($ace in $acl.Access) {
+        $sid = Get-SidValue $ace
+        if ($sid -and ($managedSids -contains $sid)) { $managed += $ace }
+    }
+    $desired = @()
+    $groupId = New-Object System.Security.Principal.NTAccount($group)
+    if ($capW) { $capWId = New-Object System.Security.Principal.SecurityIdentifier($capW) } else { $capWId = $null }
+    if ($capR) { $capRId = New-Object System.Security.Principal.SecurityIdentifier($capR) } else { $capRId = $null }
+    if ($mode -eq 'readonly') {
+        $desired += New-Rule $groupId 'ReadAndExecute' 'Allow' $isDir
+        $desired += New-Rule $groupId $deny 'Deny' $isDir
+        if ($capWId) { $desired += New-Rule $capWId $deny 'Deny' $isDir }
+        if ($capRId) { $desired += New-Rule $capRId $deny 'Deny' $isDir }
+    } elseif ($mode -eq 'runtime') {
+        $desired += New-Rule $groupId 'Modify' 'Allow' $isDir
+        if ($capWId) { $desired += New-Rule $capWId 'Modify' 'Allow' $isDir }
+        if ($capRId) { $desired += New-Rule $capRId 'Modify' 'Allow' $isDir }
+    } else {
+        $desired += New-Rule $groupId 'Modify' 'Allow' $isDir
+        if ($capWId) { $desired += New-Rule $capWId 'Modify' 'Allow' $isDir }
+    }
+    $allPresent = $true
+    foreach ($rule in $desired) {
+        $found = $false
+        foreach ($ace in $managed) {
+            if (Rule-Equals $ace $rule) { $found = $true; break }
+        }
+        if (-not $found) { $allPresent = $false; break }
+    }
+    if ($allPresent -and ($managed.Count -eq $desired.Count)) { return }
+    foreach ($ace in $managed) { $acl.RemoveAccessRule($ace) | Out-Null }
+    foreach ($rule in $desired) { $acl.AddAccessRule($rule) }
+    try {
+        Set-Acl -LiteralPath $path -AclObject $acl
+    } catch {
+        [Console]::Error.WriteLine(("ACL apply failed on {0}: {1}" -f $path, $_))
+    }
+}
+
+function Test-Excluded([string]$path) {
+    foreach ($p in $exclude) {
+        if ($path -eq $p -or $path.StartsWith($p + '\')) { return $true }
+    }
+    return $false
+}
+
+function Apply-Tree([string]$root, [string]$mode) {
+    if (Test-Excluded $root) { return }
+    Apply-ACL $root $mode $true
+    $children = $null
+    try {
+        $children = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop)
+    } catch {
+        # An unreadable subtree (e.g. a store dir owned by another account)
+        # must not abort the whole propagation.
+        return
+    }
+    foreach ($child in $children) {
+        $full = $child.FullName
+        if (Test-Excluded $full) { continue }
+        # Never follow reparse points (junctions/symlinks): they may point
+        # outside the workspace and carry foreign ACLs.
+        if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        if ($child.PSIsContainer) {
+            Apply-Tree $full $mode
+        } else {
+            Apply-ACL $full $mode $false
+        }
+    }
+}
+
+@@TREE_CALLS@@
+"""
+
+
+def _build_acl_reinherit_script(
+    tree_calls: Sequence[Tuple[str, str]],
+    group: str,
+    cap_sids: Optional[Dict[str, str]],
+    protected: Sequence[str],
+) -> str:
+    """Build the recursive re-propagate script (see ``_ACL_REINHERIT_PS``)."""
+
+    def q(value: str) -> str:
+        return value.replace("'", "''")
+
+    calls = "\n".join(
+        "Apply-Tree '{0}' '{1}'".format(q(root), mode) for root, mode in tree_calls
+    )
+    return (
+        _ACL_REINHERIT_PS.replace("@@GROUP@@", group)
+        .replace("@@CAPW@@", cap_sids.get("workspace", "") if cap_sids else "")
+        .replace("@@CAPR@@", cap_sids.get("readonly", "") if cap_sids else "")
+        .replace("@@DENY@@", _DENY_WRITE_RIGHTS)
+        .replace(
+            "@@EXCLUDE@@",
+            ",".join("'" + q(p) + "'" for p in protected),
+        )
+        .replace("@@TREE_CALLS@@", calls)
+    )
+
+
 def _cap_sid_path(config_dir: Any) -> Path:
     return _shared_sandbox_root() / SANDBOX_CAP_SID_FILENAME
 
@@ -1379,6 +1582,10 @@ def _flag_path(config_dir: Any) -> Path:
 
 def _users_ready_path(config_dir: Any) -> Path:
     return _shared_sandbox_root() / SANDBOX_USERS_READY_FLAG
+
+
+def _rebuilt_flag_path(config_dir: Any) -> Path:
+    return _shared_sandbox_root() / SANDBOX_USERS_REBUILT_FLAG
 
 
 def _dpapi_protect(data: bytes) -> bytes:
@@ -2145,6 +2352,81 @@ class WindowsSandboxBackend(SandboxBackend):
         """
         self._sweep_cleanup_journal(config_dir)
 
+    def _refresh_sandbox_passwords(
+        self,
+        config_dir: Any,
+        secret: Dict[str, str],
+        emit: Callable[[str], None],
+        announce: Callable[[str], None],
+    ) -> bool:
+        """Refresh both sandbox users' passwords in place (``Set-LocalUser``)
+        so their SIDs -- and every ACL/owner entry referencing them -- survive
+        a credentials mismatch.  Returns ``True`` only when both accounts
+        existed and logged on with the stored secret afterwards; otherwise the
+        caller falls back to delete+recreate (which changes the SIDs).
+
+        When the local password policy rejects the stored secret (complexity
+        or password-history rules, e.g. the user changed the account password
+        so ``Set-LocalUser`` with the old secret would reuse a remembered
+        password), a fresh random password is generated and persisted back
+        into the secret file -- the account SID is still preserved.
+        """
+        for user, key in (
+            (SANDBOX_USER_OFFLINE, "offline"),
+            (SANDBOX_USER_ONLINE, "online"),
+        ):
+            if not _user_exists(user):
+                return False
+            announce(f"refreshing password for {user} (account SID kept)")
+            password = secret[key]
+            result = _run_set_password(user, password)
+            if result.returncode != 0:
+                output = (result.stderr or "") + (result.stdout or "")
+                if "InvalidPasswordException" not in output:
+                    announce(
+                        f"user {user}: in-place password refresh failed, "
+                        "falling back to recreate"
+                    )
+                    return False
+                # The password policy (complexity / history) rejected the
+                # stored secret; rotate to a fresh random password and keep
+                # the account (its SID and every referencing ACE survive).
+                announce(
+                    f"user {user}: password policy rejected the stored "
+                    "secret; rotating to a new password"
+                )
+                rotated = False
+                for attempt in range(4):
+                    password = _random_password(14 + attempt)
+                    result = _run_set_password(user, password)
+                    if result.returncode == 0:
+                        rotated = True
+                        break
+                if not rotated:
+                    announce(
+                        f"user {user}: password rotation failed, "
+                        "falling back to recreate"
+                    )
+                    return False
+                if password != secret[key]:
+                    secret[key] = password
+                    _save_secret(config_dir, secret)
+                emit(f"user {user}: password refreshed with a new secret")
+            else:
+                emit(f"user {user}: password refreshed in place")
+            if _ensure_sandbox_user_memberships(user):
+                announce(
+                    f"user {user}: sandbox group membership failed, "
+                    "falling back to recreate"
+                )
+                return False
+        # Both accounts must log on with the stored secret; this also catches
+        # accounts left disabled/locked after the refresh.
+        if not self.verify_credentials(config_dir, fresh=True):
+            announce("sandbox users: refresh did not restore logon, recreating")
+            return False
+        return True
+
     def provision_users(
         self,
         config_dir: Any,
@@ -2217,128 +2499,129 @@ class WindowsSandboxBackend(SandboxBackend):
         )
         if users_valid:
             emit("sandbox users: credentials valid, keeping accounts")
-        elif sweep:
-            # Strip the OLD users' ACLs from every sandbox-managed location
-            # BEFORE the accounts are deleted: after Remove-LocalUser their
-            # SIDs become unresolvable and the ACEs would linger as stale
-            # entries.
-            recorded = sorted(_load_acl_record())
-            if recorded:
-                announce(
-                    "removing old sandbox-user ACLs from %d recorded directories"
-                    % len(recorded)
+        else:
+            # Prefer refreshing the passwords in place so the account SIDs
+            # (and every ACL/owner entry referencing them) survive a
+            # credentials mismatch.  The slow ACL sweep and the SID-changing
+            # delete+recreate below only run when an account is missing or
+            # the refresh cannot restore logon.
+            offline_created = False
+            refreshed = self._refresh_sandbox_passwords(
+                config_dir, secret, emit, announce
+            )
+            if refreshed:
+                emit(
+                    "sandbox users: password refreshed in place, "
+                    "accounts kept (SIDs stable)"
                 )
-            self.cleanup_all_recorded_acls(config_dir)
-        # GUI setups run the sweep from the serve process instead (this
-        # elevated window stays fast); the dead-SID cleanup removes stale
-        # ACEs regardless of timing.
+            else:
+                if sweep:
+                    # Strip the OLD users' ACLs from every sandbox-managed
+                    # location BEFORE the accounts are deleted: after
+                    # Remove-LocalUser their SIDs become unresolvable and the
+                    # ACEs would linger as stale entries.
+                    recorded = sorted(_load_acl_record())
+                    if recorded:
+                        announce(
+                            "removing old sandbox-user ACLs from %d "
+                            "recorded directories" % len(recorded)
+                        )
+                    self.cleanup_all_recorded_acls(config_dir)
+                # GUI setups run the sweep from the serve process instead
+                # (this elevated window stays fast); the dead-SID cleanup
+                # removes stale ACEs regardless of timing.
 
-        # ``net user`` rejects usernames longer than 20 characters (legacy
-        # NetBIOS limit) with a bare usage message, so user management goes
-        # through the PowerShell LocalAccounts module which has no such limit.
-        offline_created = False
-        if not users_valid:
-            for user, key in (
-                (SANDBOX_USER_OFFLINE, "offline"),
-                (SANDBOX_USER_ONLINE, "online"),
-            ):
-                if _user_exists(user):
-                    # Recreate instead of refreshing the password: an account
-                    # created by another Code Wood data directory (or left
-                    # disabled/locked) can reject Set-LocalUser with
-                    # InvalidPasswordException, and the account's password must
-                    # match THIS data directory's secret to keep running
-                    # sandboxes working after setup.
-                    announce(f"removing existing user {user} (will be recreated)")
-                    result = _run_process(
-                        [
-                            "powershell",
-                            "-NoProfile",
-                            "-NonInteractive",
-                            "-Command",
-                            "Remove-LocalUser -Name '{0}' -ErrorAction Stop".format(
-                                user
-                            ),
-                        ]
-                    )
-                    if result.returncode != 0:
-                        errors.append(
-                            f"remove existing user {user}: {result.stderr.strip()}"
+                # ``net user`` rejects usernames longer than 20 characters
+                # (legacy NetBIOS limit) with a bare usage message, so user
+                # management goes through the PowerShell LocalAccounts module
+                # which has no such limit.
+                for user, key in (
+                    (SANDBOX_USER_OFFLINE, "offline"),
+                    (SANDBOX_USER_ONLINE, "online"),
+                ):
+                    if _user_exists(user):
+                        # Recreate the account: the in-place refresh above
+                        # already failed or was skipped, and the account's
+                        # password must match THIS data directory's secret to
+                        # keep running sandboxes working after setup.
+                        announce(f"removing existing user {user} (will be recreated)")
+                        result = _run_process(
+                            [
+                                "powershell",
+                                "-NoProfile",
+                                "-NonInteractive",
+                                "-Command",
+                                "Remove-LocalUser -Name '{0}' -ErrorAction Stop".format(
+                                    user
+                                ),
+                            ]
                         )
-                        continue
-                    emit(f"user {user}: removed existing account")
-                # Create the account, retrying with a fresh password when the
-                # local password policy (complexity / history / minimum length)
-                # rejects the generated one.  The accepted password is
-                # persisted back into the secret file so sandbox logon keeps
-                # working.
-                password = secret[key]
-                create_error: Optional[str] = None
-                for attempt in range(4):
-                    announce(
-                        f"creating user {user}"
-                        + (f" (attempt {attempt + 1})" if attempt else "")
-                    )
-                    ps = (
-                        "New-LocalUser -Name '{0}' -Password "
-                        "(ConvertTo-SecureString '{1}' -AsPlainText -Force) "
-                        "-PasswordNeverExpires -AccountNeverExpires"
-                    ).format(user, password)
-                    result = _run_process(
-                        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
-                    )
-                    if result.returncode == 0:
-                        emit(f"user {user}: created")
-                        create_error = None
+                        if result.returncode != 0:
+                            errors.append(
+                                f"remove existing user {user}: {result.stderr.strip()}"
+                            )
+                            continue
+                        emit(f"user {user}: removed existing account")
+                    # Create the account, retrying with a fresh password when
+                    # the local password policy (complexity / history /
+                    # minimum length) rejects the generated one.  The accepted
+                    # password is persisted back into the secret file so
+                    # sandbox logon keeps working.
+                    password = secret[key]
+                    create_error: Optional[str] = None
+                    for attempt in range(4):
+                        announce(
+                            f"creating user {user}"
+                            + (f" (attempt {attempt + 1})" if attempt else "")
+                        )
+                        ps = (
+                            "New-LocalUser -Name '{0}' -Password "
+                            "(ConvertTo-SecureString '{1}' -AsPlainText -Force) "
+                            "-PasswordNeverExpires -AccountNeverExpires"
+                        ).format(user, password)
+                        result = _run_process(
+                            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
+                        )
+                        if result.returncode == 0:
+                            emit(f"user {user}: created")
+                            create_error = None
+                            break
+                        output = (result.stderr or "") + (result.stdout or "")
+                        if "InvalidPasswordException" in output:
+                            # Password policy rejected this password; retry
+                            # with a fresh one and grow the length in case the
+                            # policy sets a higher minimum.
+                            password = _random_password(14 + attempt)
+                            create_error = (
+                                f"create user {user}: password rejected by local "
+                                "password policy; retried with a new password"
+                            )
+                            continue
+                        create_error = f"create user {user}: {result.stderr.strip()}"
                         break
-                    output = (result.stderr or "") + (result.stdout or "")
-                    if "InvalidPasswordException" in output:
-                        # Password policy rejected this password; retry with a
-                        # fresh one and grow the length in case the policy
-                        # sets a higher minimum.
-                        password = _random_password(14 + attempt)
-                        create_error = (
-                            f"create user {user}: password rejected by local "
-                            "password policy; retried with a new password"
-                        )
+                    if create_error:
+                        errors.append(create_error)
                         continue
-                    create_error = f"create user {user}: {result.stderr.strip()}"
-                    break
-                if create_error:
-                    errors.append(create_error)
-                    continue
-                if password != secret[key]:
-                    secret[key] = password
-                    _save_secret(config_dir, secret)
-                if user == SANDBOX_USER_OFFLINE:
-                    offline_created = True
-                _run_process(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        "Add-LocalGroupMember -Group 'Users' -Member '{0}' "
-                        "-ErrorAction SilentlyContinue".format(user),
-                    ]
-                )
-                result = _run_process(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        "$group='{0}'; $member='{1}'; "
-                        "if (-not (Get-LocalGroupMember -Group $group -Member $member "
-                        "-ErrorAction SilentlyContinue)) {{ "
-                        "Add-LocalGroupMember -Group $group -Member $member -ErrorAction Stop }}"
-                        .format(SANDBOX_USERS_GROUP, user),
-                    ]
-                )
-                if result.returncode != 0:
-                    errors.append(
-                        f"add {user} to {SANDBOX_USERS_GROUP}: {result.stderr.strip()}"
+                    if password != secret[key]:
+                        secret[key] = password
+                        _save_secret(config_dir, secret)
+                    if user == SANDBOX_USER_OFFLINE:
+                        offline_created = True
+                    membership_error = _ensure_sandbox_user_memberships(user)
+                    if membership_error:
+                        errors.append(membership_error)
+                # The users were recreated, so their SIDs changed: files that
+                # predate the root-level ACL grants carry no sandbox ACEs and
+                # the rebuilt users cannot write them.  Flag the rebuild so
+                # the serve-side ACL phase re-propagates the group/capability
+                # ACEs over the trees (no elevation needed -- every target
+                # belongs to the current user).
+                try:
+                    _rebuilt_flag_path(config_dir).write_text(
+                        json.dumps({"rebuilt_at": time.time()}), encoding="utf-8"
                     )
+                except Exception:
+                    _log.warning("writing sandbox users-rebuilt flag failed", exc_info=True)
 
         # Firewall: block outbound traffic for the offline user. PowerShell is
         # used with the user's SID wrapped in an SDDL authorization list
@@ -2572,6 +2855,9 @@ class WindowsSandboxBackend(SandboxBackend):
         announce("applying workspace ACLs")
         self.apply_workspace_acls(workspace_root, level, config_dir)
         emit(f"workspace ACLs: {level}")
+        self._repropagate_legacy_acls(
+            config_dir, workspace_root, level, emit, announce
+        )
 
         flag = _flag_path(config_dir)
         announce("writing provisioning flag")
@@ -2732,6 +3018,86 @@ class WindowsSandboxBackend(SandboxBackend):
 
         try:
             threading.Thread(target=_ensure_profile_read, daemon=True).start()
+        except Exception:
+            pass
+
+    def _repropagate_legacy_acls(
+        self,
+        config_dir: Any,
+        workspace_root: Optional[str],
+        level: str,
+        emit: Callable[[str], None],
+        announce: Callable[[str], None],
+    ) -> None:
+        """After a sandbox-user rebuild, re-propagate the sandbox-managed
+        ACEs over files that predate the root-level grants (root grants only
+        reach files created afterwards, so a rebuilt user cannot write the
+        old ones).  Runs in the serve process right after the workspace ACL
+        apply: every target belongs to the current user, so no elevation is
+        needed.  Skipped unless the elevated setup actually recreated the
+        users (``sandbox_users_rebuilt.flag``), and idempotent.
+
+        The propagation itself runs on a background thread so the ACL phase
+        (and the Security page status) is never blocked by the recursive
+        walk -- a large workspace can take minutes.
+        """
+        flag = _rebuilt_flag_path(config_dir)
+        if not flag.exists():
+            return
+        try:
+            threading.Thread(
+                target=self._repropagate_legacy_acls_impl,
+                args=(config_dir, workspace_root, level),
+                daemon=True,
+            ).start()
+        except Exception:
+            _log.warning("starting sandbox ACL re-propagate failed", exc_info=True)
+
+    def _repropagate_legacy_acls_impl(
+        self, config_dir: Any, workspace_root: Optional[str], level: str
+    ) -> None:
+        """Background body of :meth:`_repropagate_legacy_acls`."""
+        flag = _rebuilt_flag_path(config_dir)
+        if not flag.exists():
+            return
+        try:
+            cap_sids = _load_or_create_cap_sids(config_dir)
+            tree_calls: list = []
+            if workspace_root:
+                ws = str(Path(workspace_root).resolve())
+                tree_calls.append(
+                    (ws, "readonly" if level == "read_only" else "write")
+                )
+            sandbox_root = _shared_sandbox_root()
+            for sub in ("home", "tmp"):
+                runtime_dir = sandbox_root / sub
+                if runtime_dir.exists():
+                    tree_calls.append((str(runtime_dir), "runtime"))
+            if not tree_calls:
+                return
+            protected: list = []
+            if workspace_root:
+                for sub in (".git", ".codewood", ".agents"):
+                    target_path = Path(workspace_root).resolve() / sub
+                    if target_path.exists():
+                        protected.append(str(target_path))
+            script = _build_acl_reinherit_script(
+                tree_calls, SANDBOX_USERS_GROUP, cap_sids, protected
+            )
+            result = _run_process(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
+            )
+            if result.returncode != 0:
+                _log.warning(
+                    "sandbox ACL re-propagate failed: %s",
+                    (result.stderr or result.stdout or "").strip(),
+                )
+                return
+        except Exception:
+            _log.warning("sandbox ACL re-propagate failed", exc_info=True)
+            return
+        try:
+            flag.unlink()
         except Exception:
             pass
 
