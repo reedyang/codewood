@@ -363,6 +363,7 @@ def setup_model_ai_stack(
             workspace_root=str(getattr(agent, "workspace_root", "") or ""),
             self_repo_root=str(getattr(agent, "_self_repo_root", "") or ""),
             display_language=getattr(agent, "display_language", "en") or "en",
+            workspace_config_dir=str(getattr(agent, "workspace_config_dir", "") or ""),
         )
     )
 

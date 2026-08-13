@@ -356,6 +356,7 @@ class AgentAIContext:
     workspace_root: str = ""
     self_repo_root: str = ""
     display_language: str = "en"
+    workspace_config_dir: str = ""
     # Optional sink for multi-attempt model-call error messages that should be
     # displayed on screen and survive terminal-resize redraws but must NOT be
     # persisted to chat history. Receives a single pre-formatted string.
@@ -392,6 +393,7 @@ class AIOrchestrator:
                     memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
                     workspace_root=self.context.workspace_root,
                     self_repo_root=self.context.self_repo_root,
+                    workspace_config_dir=self.context.workspace_config_dir,
                 )
                 if special_error:
                     return AIResult(text="", error_code="API_ERROR")

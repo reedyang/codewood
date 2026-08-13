@@ -5,8 +5,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config.app_info import get_app_prompt_name, get_app_prompt_slug_kebab
 
 
-def _freedom_combined_review_system_prompt(workspace_root: str, self_repo_root: str) -> str:
+def _freedom_combined_review_system_prompt(workspace_root: str, self_repo_root: str, workspace_config_dir: str = "") -> str:
     app_name = get_app_prompt_name()
+    ws_cfg_temp = f"{workspace_config_dir}/temp/" if workspace_config_dir else "workspace_config_dir/temp/"
+    ws_cfg_cache = f"{workspace_config_dir}/cache/" if workspace_config_dir else "workspace_config_dir/cache/"
+    # Ensure trailing slash for clarity
+    ws_cfg_temp = ws_cfg_temp.rstrip("/") + "/"
+    ws_cfg_cache = ws_cfg_cache.rstrip("/") + "/"
     return (
         f"You review a script BEFORE it runs ({app_name} freedom mode) and output ONE classification. "
         "Evaluate three independent flags: "
@@ -20,15 +25,17 @@ def _freedom_combined_review_system_prompt(workspace_root: str, self_repo_root: 
         'Reply with ONLY one JSON object (no markdown code fence): '
         '{"safe_auto": true or false, "writes_files": true or false, "manipulation": true or false, "reason": "brief"}. '
         "safe_auto=true ONLY if the script is unlikely to: "
-        f"(1) modify or delete files except under the user workspace ({workspace_root}), under workspace_config_dir, "
+        f"(1) modify or delete files except under the user workspace ({workspace_root}), under workspace_config_dir ({workspace_config_dir}), "
         "and files implied by ai_tracked_path_keys (session AI-created), or clearly NEW outputs under those dirs; "
+        f"Exception: all write operations (create/modify/delete) under {ws_cfg_temp} and "
+        f"{ws_cfg_cache} are always allowed — these are transient and cache directories. "
         f"The following directory is the {app_name} app itself and MUST NOT be modified or deleted: {self_repo_root}. "
         "(2) modify system configuration: Windows registry/services/firewall/hosts/machine env, Linux /etc system files, etc. "
         "writes_files=true if the script creates, modifies, or deletes any file (add/modify/delete), "
         "even under allowed dirs or ai_tracked_path_keys. "
         "writes_files=false only if the script is purely read-only and writes no files "
         "(e.g. only reads files or performs read-only network requests). "
-        "If manipulation is true, the host requires manual confirmation regardless of safe_auto/writes_files. "
+        "If manipulation is true, the host requires manual confirmation regardless of safe_auto/writes_files (except for temp/cache). "
         "Otherwise auto-skip user confirmation ONLY if writes_files is false AND safe_auto is true. "
         "If writes_files is true (the script writes files) or safe_auto is false, the user must confirm. "
         "When uncertain on safe_auto or writes_files, set both to false."
@@ -87,6 +94,7 @@ def build_special_mode_messages(
     memory_query_expansion_mode: bool,
     workspace_root: str = "",
     self_repo_root: str = "",
+    workspace_config_dir: str = "",
 ) -> Tuple[Optional[List[Dict[str, Any]]], bool, Optional[str]]:
     os_info = os.uname() if hasattr(os, "uname") else os.name
     date_time = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
@@ -97,6 +105,7 @@ def build_special_mode_messages(
         sys_prompt = _freedom_combined_review_system_prompt(
             workspace_root=workspace_root or "(unknown)",
             self_repo_root=self_repo_root or "(unknown)",
+            workspace_config_dir=workspace_config_dir or "",
         )
         return [
             {"role": "system", "content": sys_prompt},
