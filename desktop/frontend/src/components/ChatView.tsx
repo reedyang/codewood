@@ -2600,6 +2600,11 @@ function TranscriptMinimap({
 
     const chatView = container.closest('.chat-view');
     if (chatView) {
+      // getBoundingClientRect returns viewport pixels after the app zooms by
+      // scaling .window-root (transform: scale(zoomLevel)), while style.top and
+      // style.height below live in the unscaled local frame, so convert the
+      // measured region back to local pixels (same pattern as ContextMenu).
+      const k = zoomLevel;
       const containerRect = container.getBoundingClientRect();
       const chatViewRect = chatView.getBoundingClientRect();
       // Center the minimap in the whole message area — the transcript plus the
@@ -2608,9 +2613,10 @@ function TranscriptMinimap({
       // transcript.
       const dock = chatView.querySelector('.composer-dock');
       const regionBottom = dock ? dock.getBoundingClientRect().bottom : containerRect.bottom;
-      const regionHeight = Math.max(containerRect.height, regionBottom - containerRect.top);
+      const regionHeight = Math.max(containerRect.height, regionBottom - containerRect.top) / k;
+      const containerTopLocal = (containerRect.top - chatViewRect.top) / k;
       const contentHeight = Math.min(regionHeight, userCount * lineStep);
-      const nextTop = (containerRect.top - chatViewRect.top) + (regionHeight - contentHeight) / 2;
+      const nextTop = containerTopLocal + (regionHeight - contentHeight) / 2;
       setMinimapHeight(contentHeight);
       setMinimapTop(nextTop);
     }
@@ -2678,12 +2684,12 @@ function TranscriptMinimap({
       ro.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [historyTurns, liveTurns, unloadedCount, scrollRef]);
+  }, [historyTurns, liveTurns, unloadedCount, scrollRef, zoomLevel]);
 
   const handleMouseMove = (e: React.MouseEvent) => {
     const rect = minimapRef.current?.getBoundingClientRect();
     if (!rect || totalLines === 0) return;
-    const y = e.clientY - rect.top;
+    const y = (e.clientY - rect.top) / zoomLevel;
     const idx = Math.round(y / effStep);
     setHoveredIdx(Math.max(0, Math.min(idx, totalLines - 1)));
   };
@@ -2718,7 +2724,7 @@ function TranscriptMinimap({
   const handleClick = (e: React.MouseEvent) => {
     const rect = minimapRef.current?.getBoundingClientRect();
     if (!rect || totalLines === 0) return;
-    const y = e.clientY - rect.top;
+    const y = (e.clientY - rect.top) / zoomLevel;
     const idx = Math.round(y / effStep);
     const clickedIdx = Math.max(0, Math.min(idx, totalLines - 1));
     const container = scrollRef.current;
