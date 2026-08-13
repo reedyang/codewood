@@ -3664,6 +3664,85 @@ describe("AppContext backend crash recovery", () => {
       });
     });
 
+    it("keeps the sub-agent session marker pushed while running and on end", async () => {
+      render(
+        <AppProvider>
+          <TurnsProbe />
+        </AppProvider>,
+      );
+      await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+      act(() => {
+        apiMock.emit({
+          event: "turn_start",
+          data: { text: "run", chatId: "chat-1", workspaceId: "ws-1" },
+        });
+        apiMock.emit({
+          event: "output",
+          data: {
+            text: "\uE004• Ran in background image-analyzer\uE005\n\uE000Background sub-agent started (id=call_1)...",
+            bgTaskId: "call_1",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(
+          screen.getByTestId("turns").textContent || "[]",
+        ) as Turn[];
+        expect(turns[0].rounds[0].bgTaskId).toBe("call_1");
+      });
+
+      // The worker pushes the session marker while the sub-agent is running.
+      act(() => {
+        apiMock.emit({
+          event: "background_task_output",
+          data: {
+            taskId: "call_1",
+            text: "\uE008sa_live\uE009",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(
+          screen.getByTestId("turns").textContent || "[]",
+        ) as Turn[];
+        const text = turns[0].rounds[0].segments.map((s) => s.text).join("");
+        expect(text).toContain("\uE008sa_live\uE009");
+      });
+
+      // The final end event replaces the output block but must keep the marker.
+      act(() => {
+        apiMock.emit({
+          event: "background_task_output",
+          data: {
+            taskId: "call_1",
+            text: "final answer\n",
+            end: true,
+            status: "completed",
+            chatId: "chat-1",
+            workspaceId: "ws-1",
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const turns = JSON.parse(
+          screen.getByTestId("turns").textContent || "[]",
+        ) as Turn[];
+        const round = turns[0].rounds[0];
+        expect(round.bgTaskEnded).toBe(true);
+        const text = round.segments.map((s) => s.text).join("");
+        expect(text).toContain("final answer");
+        expect(text).toContain("\uE008sa_live\uE009");
+      });
+    });
+
     it("keeps the background round spinning across round_start/round_end", async () => {
       render(
         <AppProvider>
