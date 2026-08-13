@@ -11,6 +11,7 @@ vi.mock("../state/AppContext", () => ({
         "activity.working": "Working...",
         "activity.thinking": "Thinking",
         "thinking.show": "Thinking",
+        "msg.copy": "Copy",
       };
       return translations[key] ?? key;
     },
@@ -350,6 +351,43 @@ describe("StepsView", () => {
     expect(screen.queryByText("Exploring sub-agent architecture...")).toBeNull();
     expect(screen.getByText("Explored sub-agent architecture for 41.3s")).toBeTruthy();
     expect(screen.getByTitle("View sub-agent session")).toBeTruthy();
+  });
+
+  it("shows a hover-only copy button on a shell row that copies the full command", () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <StepsView
+        text={[
+          "\uE004• Ran git status --short\uE005",
+          "\uE00Agit status --short\uE00B",
+          "\uE000some output\uE001",
+        ].join("\n")}
+      />,
+    );
+
+    const copyBtn = screen.getByTitle("Copy");
+    expect(copyBtn).toBeTruthy();
+    fireEvent.click(copyBtn);
+    expect(writeText).toHaveBeenCalledWith("git status --short");
+  });
+
+  it("renders the copy button on a shell row without captured output", () => {
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <StepsView
+        text={[
+          "\uE004• Ran git status\uE005",
+          "\uE00Agit status\uE00B",
+        ].join("\n")}
+      />,
+    );
+
+    const copyBtn = screen.getByTitle("Copy");
+    expect(copyBtn).toBeTruthy();
+    fireEvent.click(copyBtn);
+    expect(writeText).toHaveBeenCalledWith("git status");
   });
 });
 

@@ -91,8 +91,8 @@ class ConsoleUtilsTests(unittest.TestCase):
 
     def test_escape_gui_sentinels_replaces_private_use_chars(self):
         self.assertEqual(
-            escape_gui_sentinels("a\ue000b\ue001c\ue004d\ue005e"),
-            "a\\uE000b\\uE001c\\uE004d\\uE005e",
+            escape_gui_sentinels("a\ue000b\ue001c\ue00ad\ue00be"),
+            "a\\uE000b\\uE001c\\uE00Ad\\uE00Be",
         )
 
     def test_escape_gui_sentinels_leaves_plain_text_and_ansi_untouched(self):
@@ -105,8 +105,12 @@ class ConsoleUtilsTests(unittest.TestCase):
         escaped = escape_gui_sentinels(all_sentinels)
         self.assertNotIn("\ue000", escaped)
         self.assertNotIn("\ue009", escaped)
+        self.assertNotIn("\ue00a", escaped)
+        self.assertNotIn("\ue00b", escaped)
         self.assertIn("\\uE000", escaped)
         self.assertIn("\\uE009", escaped)
+        self.assertIn("\\uE00A", escaped)
+        self.assertIn("\\uE00B", escaped)
 
 
 if __name__ == "__main__":
