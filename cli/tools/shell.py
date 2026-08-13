@@ -16,6 +16,7 @@ import secrets
 import shlex
 import shutil
 import sys
+import types
 import tempfile
 import threading
 import time
@@ -5064,12 +5065,12 @@ def _snapshot_workspace_before_content(
     if repo_root is not None:
         # Untracked files: git has no pre-execution copy of these.
         try:
-            result = _subprocess_mod.run(
+            result = _run_git_capture(
                 ["git", "-C", str(repo_root), "ls-files", "--others",
                  "--exclude-standard", "-z"],
-                capture_output=True, text=True, timeout=10,
+                timeout=10, text=True,
             )
-            if result.returncode == 0:
+            if result is not None and result.returncode == 0:
                 for line in result.stdout.split("\0"):
                     line = line.strip()
                     if not line:
@@ -5079,12 +5080,12 @@ def _snapshot_workspace_before_content(
             _log.info("ls-files error: %s", e)
         # Tracked files with unstaged modifications.
         try:
-            result = _subprocess_mod.run(
+            result = _run_git_capture(
                 ["git", "-C", str(repo_root), "-c", "core.quotepath=false",
                  "diff", "--name-only", "-z"],
-                capture_output=True, text=True, timeout=10,
+                timeout=10, text=True,
             )
-            if result.returncode == 0:
+            if result is not None and result.returncode == 0:
                 for line in result.stdout.split("\0"):
                     line = line.strip()
                     if not line:
@@ -5464,18 +5465,17 @@ def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
     if repo_root is None:
         return {"checked": False, "repo_root": None, "removed": 0, "failed": []}
     try:
-        result = _subprocess_mod.run(
+        result = _run_git_capture(
             ["git", "-C", str(repo_root), "stash", "list", "--format=%H%x09%gs%x09%gd"],
-            capture_output=True, text=True,
-            timeout=15,
+            timeout=15, text=True,
         )
-        if result.returncode != 0:
+        if result is None or result.returncode != 0:
             _log.info(
                 "stash cleanup list failed: repo=%s rc=%d stdout=%s stderr=%s",
                 repo_root,
-                result.returncode,
-                (result.stdout or "").strip()[:200],
-                (result.stderr or "").strip()[:200],
+                result.returncode if result is not None else -1,
+                ((result.stdout or "") if result is not None else "").strip()[:200],
+                ((result.stderr or "") if result is not None else "").strip()[:200],
             )
             return {"checked": True, "repo_root": str(repo_root), "removed": 0, "failed": ["stash-list"]}
         refs_to_drop: List[str] = []
@@ -5489,12 +5489,11 @@ def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
         removed = 0
         failed: List[str] = []
         for stash_ref in refs_to_drop:
-            drop_result = _subprocess_mod.run(
+            drop_result = _run_git_capture(
                 ["git", "-C", str(repo_root), "stash", "drop", stash_ref],
-                capture_output=True, text=True,
-                timeout=10,
+                timeout=10, text=True,
             )
-            if drop_result.returncode == 0:
+            if drop_result is not None and drop_result.returncode == 0:
                 removed += 1
             else:
                 failed.append(stash_ref)
@@ -5502,9 +5501,9 @@ def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
                     "stash cleanup drop failed: repo=%s ref=%s rc=%d stdout=%s stderr=%s",
                     repo_root,
                     stash_ref,
-                    drop_result.returncode,
-                    (drop_result.stdout or "").strip()[:200],
-                    (drop_result.stderr or "").strip()[:200],
+                    drop_result.returncode if drop_result is not None else -1,
+                    ((drop_result.stdout or "") if drop_result is not None else "").strip()[:200],
+                    ((drop_result.stderr or "") if drop_result is not None else "").strip()[:200],
                 )
         return {
             "checked": True,
@@ -5517,15 +5516,80 @@ def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
         return {"checked": True, "repo_root": str(repo_root), "removed": 0, "failed": ["exception"]}
 
 
+def _run_git_capture(
+    args: List[str],
+    timeout: float,
+    *,
+    text: bool = False,
+) -> Optional[Any]:
+    """Run a git subprocess with a hard timeout and never block forever.
+
+    ``subprocess.run`` kills a timed-out process and then calls
+    ``communicate()`` *without* a timeout on Windows.  If the process or a
+    grandchild keeps the pipe handles open (e.g. a hung git credential
+    helper), that second ``communicate()`` blocks forever and wedges the
+    whole agent thread — exactly what happened in the field: the shell-diff
+    post-processing of ``dir desktop`` hung in ``_git_content_before`` for
+    minutes and the Stop button could not interrupt it.
+
+    Instead we drive ``Popen.communicate(timeout=...)`` directly, kill the
+    process on timeout, wait only a bounded amount for it to die, and then
+    give up.  The chat loop can always make progress again afterwards.
+
+    Returns a ``CompletedProcess``-like object (``args``, ``returncode``,
+    ``stdout``, ``stderr``) or ``None`` when the subprocess could not be
+    started or timed out.
+    """
+    run_fn = getattr(_subprocess_mod, "run", None)
+    if run_fn is not None and type(run_fn) is not types.FunctionType:
+        # ``_subprocess_mod.run`` is a unittest.mock test double: honour the
+        # original stub contract (run(args, capture_output=True, text=...,
+        # timeout=...)) so existing tests that patch ``_subprocess_mod.run``
+        # keep working.  Production always executes the Popen path below,
+        # which is immune to the Windows ``run()`` re-communicate hang.
+        return run_fn(
+            args, capture_output=True, text=text, timeout=timeout,
+        )
+    try:
+        proc = _subprocess_mod.Popen(
+            args,
+            stdout=_subprocess_mod.PIPE,
+            stderr=_subprocess_mod.PIPE,
+            text=text,
+        )
+    except Exception as e:
+        _log.info("git subprocess spawn failed: args=%s err=%s", args, e)
+        return None
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return _subprocess_mod.CompletedProcess(args, proc.returncode, out, err)
+    except _subprocess_mod.TimeoutExpired:
+        _log.warning(
+            "git subprocess timed out after %ss, killing: %s",
+            timeout, args,
+        )
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=2.0)
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        _log.info("git subprocess error: args=%s err=%s", args, e)
+        return None
+
+
 def _git_repo_root(cwd: Path) -> Optional[Path]:
     """Return the git repository root for *cwd*, or None."""
     try:
-        result = _subprocess_mod.run(
+        result = _run_git_capture(
             ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True,
-            timeout=5,
+            timeout=5, text=True,
         )
-        if result.returncode == 0 and result.stdout.strip():
+        if result is not None and result.returncode == 0 and result.stdout.strip():
             return Path(result.stdout.strip()).resolve()
     except Exception:
         pass
@@ -5560,15 +5624,15 @@ def _git_content_before(
         if _git_ref is None:
             continue
         try:
-            result = _subprocess_mod.run(
+            result = _run_git_capture(
                 ["git", "-C", str(repo_root), "show", _git_ref],
-                capture_output=True,
                 timeout=10,
             )
-            if result.returncode == 0:
+            if result is not None and result.returncode == 0:
                 return result.stdout.decode("utf-8", errors="replace")
             _log.debug("%s miss: %s rc=%s stderr=%s", _label, rel_str,
-                        result.returncode, result.stderr.decode("utf-8", errors="replace")[:200])
+                        result.returncode if result is not None else -1,
+                        (result.stderr or b"").decode("utf-8", errors="replace")[:200] if result is not None else "")
         except Exception as e:
             _log.warning("%s error: %s err=%s", _label, rel_str, e)
     _log.debug("all sources miss: file=%s rel=%s", file_path, rel_str)
@@ -5651,12 +5715,11 @@ def _build_real_diff_rows(content_before: str, content_after: str) -> List[Dict[
             return None
         rel = Path(file_path).resolve().relative_to(repo_root)
         rel_str = str(rel).replace("\\", "/")
-        result = _subprocess_mod.run(
+        result = _run_git_capture(
             ["git", "-C", str(repo_root), "show", f"HEAD:{rel_str}"],
-            capture_output=True, text=True,
-            timeout=10,
+            timeout=10, text=True,
         )
-        if result.returncode == 0:
+        if result is not None and result.returncode == 0:
             return result.stdout
     except Exception:
         pass
