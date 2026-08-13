@@ -1708,17 +1708,63 @@ class WindowsSandboxBackend(SandboxBackend):
 
         # The shell tool now runs every command through PowerShell, so the
         # sandbox dispatches PowerShell directly instead of emulating
-        # ``cmd /c``.  ``-EncodedCommand`` keeps the whole payload as a
-        # plain-ASCII base64 token, so the runner's CreateProcess command-line
-        # parsing cannot mangle quotes, spaces or multi-line scripts.  The
-        # bare ``powershell`` name resolves via the sandbox user's PATH
-        # (System32), matching the old bare ``cmd.exe`` fallback.
-        encoded = base64.b64encode(
-            str(command or "").encode("utf-16-le")
-        ).decode("ascii")
-        cmdline = "powershell -NoProfile -NonInteractive -EncodedCommand {}".format(
-            encoded
-        )
+        # ``cmd /c``.  ``-File`` with a temp .ps1 inside the ACL-granted
+        # runtime dir is used rather than ``-EncodedCommand``: on PowerShell
+        # 5.1 a redirected stderr serializes error records as a bare ``#<
+        # CLIXML`` header with no payload under ``-EncodedCommand`` (the error
+        # text is silently lost), while ``-File`` emits plain text, so
+        # permission failures such as "Access is denied" stay visible.  The
+        # file also keeps the LogonW command line tiny and free of quoting
+        # hazards.  The bare ``powershell`` name resolves via the sandbox
+        # user's PATH (System32).
+        tmp_dir = _shared_sandbox_root() / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        script_file = tmp_dir / f"cmd-{secrets.token_hex(8)}.ps1"
+        try:
+            # utf-8-sig: Windows PowerShell 5.1 reads .ps1 as ANSI unless a
+            # BOM marks it UTF-8, so non-ASCII commands would be mangled.
+            script_file.write_text(
+                "$ProgressPreference = 'SilentlyContinue'\n"
+                "$__cw_err0 = $Error.Count\n"
+                + str(command or "")
+                + "\n"
+                # Surface PowerShell's own failure state as the process exit
+                # code: external programs propagate via $LASTEXITCODE, while
+                # non-terminating errors (e.g. a denied file redirect that
+                # prints "Access is denied" but would otherwise exit 0) are
+                # detected through the error-record count.
+                "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+                "if ($Error.Count -gt $__cw_err0) { exit 1 }\n"
+                "exit 0",
+                encoding="utf-8-sig",
+            )
+        except OSError:
+            _log.warning(
+                "sandbox ps1 write failed (%s); falling back to EncodedCommand",
+                script_file,
+                exc_info=True,
+            )
+            script_file = None
+        if script_file is not None:
+            cmdline = 'powershell -NoProfile -NonInteractive -File "{}"'.format(
+                script_file
+            )
+        else:
+            encoded = base64.b64encode(
+                (
+                    "$ProgressPreference = 'SilentlyContinue'\n"
+                    "$__cw_err0 = $Error.Count\n"
+                    + str(command or "")
+                    + "\n"
+                    "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+                    "if ($Error.Count -gt $__cw_err0) { exit 1 }\n"
+                    "exit 0"
+                ).encode("utf-16-le")
+            ).decode("ascii")
+            cmdline = (
+                "powershell -NoProfile -NonInteractive -EncodedCommand "
+                + encoded
+            )
 
         # Sandbox user environment: the child keeps the real user's profile /
         # temp paths (reads there are allowed by the profile ACL grant).
@@ -1783,7 +1829,6 @@ class WindowsSandboxBackend(SandboxBackend):
         cap_sid = _cap_sid_for_level(config_dir, level)
         # The runner reports the child exit code through a small file inside the
         # sandbox runtime dir (inherited pipe handles do not survive LogonW).
-        tmp_dir = _shared_sandbox_root() / "tmp"
         exit_file = (
             tmp_dir
             / f"exit-{secrets.token_hex(8)}.tmp"
@@ -1928,6 +1973,11 @@ class WindowsSandboxBackend(SandboxBackend):
                     os.unlink(cmd_file)
                 except OSError:
                     pass
+            if script_file is not None:
+                try:
+                    os.unlink(script_file)
+                except OSError:
+                    pass
             win_err = ctypes.WinError(ctypes.get_last_error())
             if win_err.winerror == 5:
                 # The most common packaged-app failure: the sandbox user could
@@ -1970,6 +2020,9 @@ class WindowsSandboxBackend(SandboxBackend):
                 pass
 
         stdout_file = os.fdopen(stdout_r, "rb", buffering=0)
+        cleanup_paths = [str(cmd_file)] if cmd_file is not None else []
+        if script_file is not None:
+            cleanup_paths.append(str(script_file))
         return WindowsSandboxProcess(
             w,
             int(pi.hProcess),
@@ -1979,7 +2032,7 @@ class WindowsSandboxBackend(SandboxBackend):
             stdout_file,
             stdin_file,
             str(exit_file),
-            [str(cmd_file)] if cmd_file is not None else None,
+            cleanup_paths or None,
             None,
         )
 
