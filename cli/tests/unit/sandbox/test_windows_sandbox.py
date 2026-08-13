@@ -501,8 +501,9 @@ class ShellRunnerExePathTests(unittest.TestCase):
 
 class SandboxRunnerMirrorTests(unittest.TestCase):
     """``_ensure_sandbox_runner_copy`` mirrors the packaged runner into the
-    ACL-granted sandbox runtime dir so ``CreateProcessWithLogonW`` can start
-    it as the sandbox user regardless of where the app is installed."""
+    ACL-granted sandbox ``runner`` dir (outside the per-command ``tmp``
+    scratch dir) so ``CreateProcessWithLogonW`` can start it as the sandbox
+    user regardless of where the app is installed."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -511,6 +512,14 @@ class SandboxRunnerMirrorTests(unittest.TestCase):
         self._root_patch = _patch_shared_root(self.shared)
         self._root_patch.start()
         self.addCleanup(self._root_patch.stop)
+        # Mirroring calls the best-effort ACL grant; in unit tests the sandbox
+        # users don't exist, so a real PowerShell round-trip would be slow and
+        # would not change the mirror outcome.  Stub it out.
+        self._acl_patch = patch(
+            "cli.core.sandbox.windows._ps_grant_read_group", return_value=0
+        )
+        self._acl_patch.start()
+        self.addCleanup(self._acl_patch.stop)
 
     def _make_bundle(self, name="shell-runner", with_internal=True):
         src = self.shared / "install" / name
@@ -533,13 +542,26 @@ class SandboxRunnerMirrorTests(unittest.TestCase):
         target = Path(mirrored)
         self.assertTrue(target.is_file())
         self.assertTrue(
-            str(target).startswith(str(self.shared / "tmp" / "runner"))
+            str(target).startswith(str(self.shared / "runner"))
         )
         self.assertTrue((target.parent / "_internal" / "runner.dll").is_file())
         first_mtime = os.path.getmtime(target)
-        # A second call with an unchanged source must not recopy (same mtime).
+        # A second call with an unchanged source must hit the process-lifetime
+        # cache and not recopy (same mtime).
         self.assertEqual(_ensure_sandbox_runner_copy(str(exe)), mirrored)
         self.assertEqual(os.path.getmtime(target), first_mtime)
+
+    def test_mirror_lives_outside_tmp_scratch_dir(self):
+        # The runner must NOT be mirrored under ``tmp``: per-command cleanup
+        # sweeps that directory, which would delete the mirror and force a
+        # multi-GB re-copy on the very next spawn.
+        exe = self._make_bundle()
+        mirrored = _ensure_sandbox_runner_copy(str(exe))
+        self.assertNotIn(
+            os.path.normcase("tmp"),
+            Path(os.path.normcase(str(Path(mirrored).relative_to(self.shared)))).parts,
+        )
+        self.assertTrue(Path(mirrored).is_file())
 
     def test_refreshes_when_source_newer(self):
         exe = self._make_bundle()
@@ -549,6 +571,16 @@ class SandboxRunnerMirrorTests(unittest.TestCase):
         mirrored2 = _ensure_sandbox_runner_copy(str(exe))
         self.assertEqual(mirrored2, mirrored)
         self.assertGreaterEqual(os.path.getmtime(Path(mirrored2)), future)
+
+    def test_cache_ignored_when_mirror_deleted(self):
+        # If the mirror is gone (e.g. the runner dir was cleaned up between
+        # processes), a cached hit must not return a stale path — re-mirror.
+        exe = self._make_bundle()
+        mirrored = _ensure_sandbox_runner_copy(str(exe))
+        os.remove(mirrored)
+        mirrored2 = _ensure_sandbox_runner_copy(str(exe))
+        self.assertTrue(Path(mirrored2).is_file())
+        self.assertEqual(mirrored2, mirrored)
 
     def test_flat_layout_mirrors_exe_and_internal_only(self):
         app_base = self.shared / "install"

@@ -584,9 +584,14 @@ def _ps_grant_read_group(path: str) -> int:
     files); skipping it keeps repeated provisioning fast and prevents
     duplicate ACEs from accumulating.
     """
+    # NOTE: placeholder replacement, not ``.format`` — the PowerShell body
+    # contains literal ``{`` / ``}`` (foreach/if/try blocks) that would make
+    # ``str.format`` raise ``ValueError: unexpected '{'``.  The function is
+    # best-effort (callers swallow failures), so a broken format string would
+    # silently never grant anything.
     ps = (
-        "$p='{0}'; $acl=Get-Acl -LiteralPath $p; "
-        "$id=New-Object System.Security.Principal.NTAccount('{1}'); "
+        "$p='@@PATH@@'; $acl=Get-Acl -LiteralPath $p; "
+        "$id=New-Object System.Security.Principal.NTAccount('@@GROUP@@'); "
         "$sid=$id.Translate([System.Security.Principal.SecurityIdentifier]); "
         "$rule=New-Object System.Security.AccessControl.FileSystemAccessRule("
         "$sid,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow'); "
@@ -604,7 +609,9 @@ def _ps_grant_read_group(path: str) -> int:
         "  } "
         "}; "
         "if (-not $exists) { $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p $acl }"
-    ).format(path, SANDBOX_USERS_GROUP)
+    ).replace("@@PATH@@", str(path).replace("'", "''")).replace(
+        "@@GROUP@@", SANDBOX_USERS_GROUP
+    )
     return _run_process(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]).returncode
 
 
@@ -1115,23 +1122,35 @@ def _cap_sid_for_level(config_dir: Any, level: str) -> str:
 def _shell_runner_exe_path() -> Optional[str]:
     """Locate the packaged ``shell-runner.exe`` next to the frozen app.
 
-    The onedir bundle ships ``shell-runner.exe`` in the same folder as
-    ``codewood.exe`` (built together by ``build/codewood.spec``) so both share
-    one ``_internal`` runtime. The older nested layout is accepted as a
-    fallback. Returns ``None`` in development so the python ``-c`` loader
-    path is used instead.
+    Preferred layout: ``shell-runner\\shell-runner.exe`` — the runner is
+    packaged SEPARATELY by ``build/shell_runner.spec`` into its own tiny
+    one-dir bundle (standard library only, a few MB), so the sandbox mirror
+    never copies the main app's multi-GB ``_internal``. The older flat layout
+    (``shell-runner.exe`` sharing codewood's ``_internal``) is accepted as a
+    fallback for installs built before the runner was split out. Returns
+    ``None`` in development so the python ``-c`` loader path is used instead.
     """
     if not getattr(sys, "frozen", False):
         return None
     base = Path(sys.executable).resolve().parent
     for candidate in (
-        base / "shell-runner.exe",
         base / "shell-runner" / "shell-runner.exe",
         base / "_internal" / "shell-runner" / "shell-runner.exe",
+        base / "shell-runner.exe",
     ):
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+#: Process-lifetime cache of runner mirrors: ``(src_exe, mtime, size) ->
+#: mirrored path``.  The packaged runner is immutable within one process
+#: (and across installs until the app is updated), so after the first
+#: successful mirror every spawn reuses it instead of re-copying a multi-GB
+#: bundle.  The key carries the source mtime+size so an app update (new
+#: shell-runner.exe) naturally invalidates the cache; a hit also re-checks
+#: that the mirrored file still exists.
+_runner_mirror_cache: Dict[Tuple[str, float, int], str] = {}
 
 
 def _ensure_sandbox_runner_copy(runner_exe: str) -> str:
@@ -1147,30 +1166,46 @@ def _ensure_sandbox_runner_copy(runner_exe: str) -> str:
     runs never hit this because the runner is the venv interpreter inside an
     ACL-open tree.
 
-    The sandbox runtime dirs under ``tmp`` are ACL-granted to the sandbox
-    users during provisioning, so mirror the runner bundle there and launch
-    from the mirror.  The mirror is refreshed when the source executable is
-    newer (an app update).  Best-effort: any failure returns the original
-    path so the regular (now diagnostic) spawn error is raised instead of
-    silently changing behaviour.
+    The sandbox runtime dirs are ACL-granted to the sandbox users during
+    provisioning, so mirror the runner bundle there and launch from the
+    mirror.  The mirror lives in ``<sandbox_root>\\runner`` — OUTSIDE the
+    per-command ``tmp`` scratch dir — so sandbox cleanup never deletes it and
+    forces a multi-GB re-copy on the next spawn.  The mirror is refreshed
+    when the source executable is newer (an app update).  Best-effort: any
+    failure returns the original path so the regular (now diagnostic) spawn
+    error is raised instead of silently changing behaviour.
     """
     try:
         src_exe = Path(runner_exe).resolve()
         if not src_exe.is_file():
             return runner_exe
+        # Process-lifetime cache: a fresh runner is immutable, so skip the
+        # (potentially GB-scale) mirror on every spawn once it succeeded.
+        # Keyed by (path, mtime, size) so an app update re-mirrors; a hit is
+        # only honored while the mirrored file is still on disk.
+        try:
+            _src_stat = src_exe.stat()
+            _cache_key = (str(src_exe), _src_stat.st_mtime, _src_stat.st_size)
+        except OSError:
+            _cache_key = None
+        if _cache_key is not None:
+            cached = _runner_mirror_cache.get(_cache_key)
+            if cached and Path(cached).is_file():
+                return cached
         src_dir = src_exe.parent
         app_base = (
             Path(sys.executable).resolve().parent
             if getattr(sys, "frozen", False)
             else None
         )
-        target_root = _shared_sandbox_root() / "tmp" / "runner"
+        target_root = _shared_sandbox_root() / "runner"
         internal_name = "_internal"
 
         def _fresh(dst_exe: Path, src_internal: Path, dst_internal: Path) -> bool:
             return bool(
                 dst_exe.is_file()
                 and os.path.getmtime(src_exe) <= os.path.getmtime(dst_exe)
+                and os.path.getsize(src_exe) == os.path.getsize(dst_exe)
                 and (not src_internal.is_dir() or dst_internal.is_dir())
             )
 
@@ -1208,6 +1243,21 @@ def _ensure_sandbox_runner_copy(runner_exe: str) -> str:
         _log.info(
             "sandbox runner mirrored: %s -> %s", runner_exe, mirrored
         )
+        # Self-heal the ACL on the mirror dir: a pre-existing install that
+        # provisioned before the ``runner`` dir existed (or a fresh mirror
+        # after cleanup) must still let the sandbox users read/execute the
+        # mirrored bundle.  Idempotent and cheap on the mirror path (which
+        # already did the heavy copy), so a missing grant is fixed here
+        # without an extra per-spawn PowerShell round-trip.
+        try:
+            _ps_grant_read_group(str(Path(mirrored).parent))
+        except Exception:
+            _log.warning(
+                "granting sandbox runner mirror read access failed",
+                exc_info=True,
+            )
+        if _cache_key is not None:
+            _runner_mirror_cache[_cache_key] = mirrored
         return mirrored
     except Exception:
         _log.info(
@@ -2442,6 +2492,25 @@ class WindowsSandboxBackend(SandboxBackend):
             _ps_grant_modify_sid(str(directory), cap_sids["workspace"])
             _ps_grant_modify_sid(str(directory), cap_sids["readonly"])
         emit("sandbox runtime dirs: ready")
+
+        # The mirrored sandbox runner lives OUTSIDE ``tmp`` (so per-command
+        # cleanup never deletes it and forces a multi-GB re-copy) in
+        # ``<sandbox_root>\runner``.  The sandbox users must be able to READ
+        # and EXECUTE the runner bundle, but must never be able to WRITE it
+        # (a writable runner would let a sandboxed command replace the
+        # process that derives its restricted token).  Grant ReadAndExecute
+        # only, with inheritance so the mirrored ``_internal`` tree stays
+        # readable.  Idempotent: ``_ps_grant_read_group`` skips when the
+        # group already holds the exact ACE.
+        runner_dir = sandbox_root / "runner"
+        runner_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            _ps_grant_read_group(str(runner_dir))
+        except Exception:
+            _log.warning(
+                "granting sandbox runner dir read access failed",
+                exc_info=True,
+            )
 
         # Source builds launch the runner with the bundled Python interpreter,
         # so the sandbox users must be able to read it (interpreter + stdlib).

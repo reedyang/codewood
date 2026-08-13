@@ -36,27 +36,6 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-# Second entry point: the sandbox command runner. It is spawned by
-# CreateProcessWithLogonW under a sandbox user and needs no Python
-# interpreter at runtime. Bundled into the SAME one-dir folder so both
-# executables share one _internal/ runtime (no duplicated python313.dll /
-# base_library.zip). Only the standard library is used (ctypes/struct/
-# argparse/os), so this Analysis stays tiny.
-a2 = Analysis(
-    ['..\\cli\\core\\sandbox\\windows_runner.py'],
-    pathex=['.venv-windows\\Lib\\site-packages'],
-    binaries=[],
-    datas=[],
-    hiddenimports=[],
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    noarchive=False,
-    optimize=0,
-)
-pyz2 = PYZ(a2.pure)
-
 exe = EXE(
     pyz,
     a.scripts,
@@ -76,26 +55,8 @@ exe = EXE(
     icon=['app_icon.ico'],
     manifest='codewood.exe.manifest',
 )
-exe2 = EXE(
-    pyz2,
-    a2.scripts,
-    [],
-    exclude_binaries=True,
-    name='shell-runner',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
 coll = COLLECT(
     exe,
-    exe2,
     a.binaries,
     a.datas,
     strip=False,

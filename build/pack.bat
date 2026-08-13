@@ -97,12 +97,22 @@ rem resolved relative to --specpath. So the venv path must NOT use "../../".
 rem 1) codewood.exe (console, one-dir) carries ALL terminal-UI and GUI
 rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
 rem    Uses the pre-generated spec file which includes the application manifest.
-rem    The same build also emits shell-runner.exe into the SAME one-dir folder
-rem    (see build\codewood.spec): the sandbox command runner spawned by
-rem    CreateProcessWithLogonW, sharing one _internal\ runtime with codewood.exe.
+rem    The sandbox runner is NOT part of this bundle: it is packaged separately
+rem    by build\shell_runner.spec (step 1b) into its own tiny one-dir bundle so
+rem    the sandbox mirror never copies the main app's multi-GB _internal\.
 "%PYINSTALLER%" --noconfirm "build\\codewood.spec"
 if errorlevel 1 (
   echo codewood.exe build failed.
+  exit /b 1
+)
+
+rem 1b) shell-runner.exe: standalone sandbox command runner (Windows only).
+rem    Uses only the standard library (ctypes/struct/argparse/os), so its
+rem    bundle stays tiny (a few MB vs. the main app's multi-GB _internal\).
+rem    Output: dist\codewood\shell-runner\shell-runner.exe (+ shell-runner\_internal\).
+"%PYINSTALLER%" --noconfirm --distpath "dist\\codewood" "build\\shell_runner.spec"
+if errorlevel 1 (
+  echo shell-runner.exe build failed.
   exit /b 1
 )
 
@@ -125,7 +135,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem dist\codew
 echo PyInstaller build completed. The shippable folder is "dist\codewood".
 echo   codewood\codewood.exe       - terminal UI (default) and "codewood app" for the GUI
 echo   codewood\codewood-gui.exe   - double-click to open the GUI without a console window
-echo   codewood\shell-runner.exe   - sandbox command runner (shared _internal)
+echo   codewood\shell-runner\shell-runner.exe - sandbox command runner (standalone tiny bundle)
+echo                                  (sandbox mirror copies only this folder, not _internal)
 
 rem ---- Resolve the application version so the artifact filenames carry the
 rem ---- version + platform info (e.g. CodeWood-0.0.1-windows-x64-...).

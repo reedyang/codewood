@@ -8,7 +8,7 @@ AGENTS.override.md
 dist
 build/codewood
 build/codewood-gui
-build/shell-runner
+build/shell_runner
 todos.md
 todos
 models/
