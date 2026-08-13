@@ -391,6 +391,52 @@ describe("StepsView", () => {
   });
 });
 
+describe("TurnView streaming thinking collapse reporting", () => {
+  it("reports collapsed streaming thinking to the ancestor, lifting the hold on expand", () => {
+    const handlers = { onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() };
+    const onStreamingThinkingCollapsedChange = vi.fn();
+    const runningTurn: Turn = {
+      id: 7,
+      userText: "hi",
+      rounds: [
+        {
+          id: 71,
+          waitStartedAt: 1000,
+          waitEndedAt: null,
+          thinkingText: "reasoning in progress",
+          thinkingStartedAt: 1000,
+          thinkingEndedAt: null,
+          segments: [],
+        },
+      ],
+      startedAt: 1000,
+      endedAt: null,
+    };
+
+    render(
+      <TurnView
+        turn={runningTurn}
+        now={2000}
+        negIndex={-1}
+        handlers={handlers}
+        onStreamingThinkingCollapsedChange={onStreamingThinkingCollapsedChange}
+      />,
+    );
+
+    // Collapsed by default while streaming → the ancestor is told to hold
+    // off auto-scrolling the transcript to the bottom on its stream ticks.
+    expect(onStreamingThinkingCollapsedChange).toHaveBeenLastCalledWith(true);
+
+    // Expanding the thought lifts the hold (it now occupies real height).
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    expect(onStreamingThinkingCollapsedChange).toHaveBeenLastCalledWith(false);
+
+    // Collapsing it again re-engages the hold.
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    expect(onStreamingThinkingCollapsedChange).toHaveBeenLastCalledWith(true);
+  });
+});
+
 describe("liveTurnToHistoryTurn", () => {
   it("maps a settled live turn (tool rounds + final answer) into the history shape so it collapses into \"Worked for\"", () => {
     const live: Turn = {

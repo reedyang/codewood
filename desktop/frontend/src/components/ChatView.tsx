@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -1291,6 +1292,15 @@ export function ChatView() {
   // in-flight streaming turn can't yank them back down while they read
   // earlier messages. Re-pins as soon as they scroll back to the bottom.
   const stickToBottomRef = useRef<boolean>(true);
+  // Count of live reasoning panels that are currently COLLAPSED while their
+  // text keeps streaming. While > 0, live transcript updates must not force
+  // the scrollbar to the bottom: a collapsed thought adds no layout height,
+  // so every stream tick would otherwise yank the viewport out from under
+  // an in-progress mouse-wheel scroll over earlier messages.
+  const collapsedStreamingThinkingRef = useRef(0);
+  const handleStreamingThinkingCollapsed = useCallback((collapsed: boolean) => {
+    collapsedStreamingThinkingRef.current += collapsed ? 1 : -1;
+  }, []);
   // Once history has loaded at least one turn (or a live turn appeared), the
   // splash should not reappear during subsequent refreshes (e.g. after editing
   // the first message and sending a new one). Reset when switching to a
@@ -1463,11 +1473,11 @@ export function ChatView() {
   // that needs a full layout pass before scrollHeight is accurate).
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && stickToBottomRef.current) {
+    if (el && stickToBottomRef.current && collapsedStreamingThinkingRef.current === 0) {
       // Defer to rAF so the browser has laid out the full dialog content
       // (command code block, diff preview) before we read scrollHeight.
       requestAnimationFrame(() => {
-        if (el && stickToBottomRef.current) {
+        if (el && stickToBottomRef.current && collapsedStreamingThinkingRef.current === 0) {
           el.scrollTop = el.scrollHeight;
         }
       });
@@ -2058,6 +2068,7 @@ export function ChatView() {
                       negIndex={liveNeg[entry.index]}
                       handlers={messageHandlers}
                       compactNotice={compactNotice?.anchorTurnId === turn.id ? compactNotice : null}
+                      onStreamingThinkingCollapsedChange={handleStreamingThinkingCollapsed}
                     />
                   );
                 })()}
@@ -2954,14 +2965,36 @@ function ThinkingPanel({
   thinkingText,
   running,
   timerText,
+  onStreamingCollapsedChange,
 }: {
   thinkingText: string;
   running: boolean;
   timerText?: string;
+  /** Notifies an ancestor while this panel is COVERED up (collapsed) but its
+   *  reasoning text is still streaming in. The ancestor uses this to skip
+   *  auto-scrolling the transcript to the bottom — a collapsed thought adds
+   *  no layout height, so force-scrolling on every stream tick would yank
+   *  the viewport out from under the user's mouse wheel. */
+  onStreamingCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const { t } = useApp();
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!onStreamingCollapsedChange) {
+      return;
+    }
+    const active = running && !expanded;
+    if (active) {
+      onStreamingCollapsedChange(true);
+    }
+    return () => {
+      if (active) {
+        onStreamingCollapsedChange(false);
+      }
+    };
+  }, [running, expanded, onStreamingCollapsedChange]);
 
   useEffect(() => {
     if (expanded && running && scrollRef.current) {
@@ -3602,10 +3635,12 @@ export function LiveRoundView({
   round,
   now,
   forceSettled = false,
+  onStreamingThinkingCollapsedChange,
 }: {
   round: TurnRound;
   now: number;
   forceSettled?: boolean;
+  onStreamingThinkingCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const { t } = useApp();
   const selection = String(round.selection || "").trim();
@@ -3656,6 +3691,7 @@ export function LiveRoundView({
         <ThinkingPanel
           thinkingText={round.thinkingText}
           running={thinkingRunning}
+          onStreamingCollapsedChange={onStreamingThinkingCollapsedChange}
           timerText={(() => {
             const startedAt = round.thinkingStartedAt ?? round.waitStartedAt;
             const endedAt = round.thinkingEndedAt ?? round.waitEndedAt ?? now;
@@ -3705,12 +3741,14 @@ export function TurnView({
   negIndex,
   handlers,
   compactNotice,
+  onStreamingThinkingCollapsedChange,
 }: {
   turn: Turn;
   now: number;
   negIndex: number;
   handlers: MessageHandlers;
   compactNotice: CompactNoticeData | null;
+  onStreamingThinkingCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const { t, state } = useApp();
   const [settle, setSettle] = useState(false);
@@ -3804,6 +3842,7 @@ export function TurnView({
             round={group.round}
             now={now}
             forceSettled={index < liveGroups.length - 1}
+            onStreamingThinkingCollapsedChange={onStreamingThinkingCollapsedChange}
           />
         );
       })}
