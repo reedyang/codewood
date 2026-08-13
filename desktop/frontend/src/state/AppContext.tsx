@@ -3402,6 +3402,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const sendNextPending = useCallback(
     async (chatKeyVal: string) => {
+      // A queue-jump (Steer) may have landed between this timer being
+      // scheduled (by the previous turn's idle) and it firing. The jump
+      // removes its message from the queue synchronously and sets the
+      // suppression marker, so when the marker is present this timer must
+      // bail out (consuming it) instead of auto-sending the next queued
+      // message ahead of the jumped one — that race previously sent the
+      // jumped message twice, duplicating it in the transcript.
+      if (suppressAutoSendOnceRef.current[chatKeyVal]) {
+        delete suppressAutoSendOnceRef.current[chatKeyVal];
+        return;
+      }
       const inputs = pendingInputsByChatRef.current[chatKeyVal];
       if (!inputs || inputs.length === 0) {
         return;
@@ -3628,19 +3639,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!chatId) {
         return;
       }
-      // The idle that closes the PAUSED turn must not drain the queue: the
-      // remaining messages stay queued until the jumped task finishes, then
-      // auto-send resumes (one per turn). Set the marker BEFORE pausing so it
-      // is already in place if the paused turn's idle races the POST response.
-      if (busyByChatRef.current[key]) {
-        suppressAutoSendOnceRef.current[key] = true;
-      }
-      // Pause the running task first: the backend interrupts the current turn
-      // (same cooperative mechanism as Stop) while keeping the interrupted
-      // shell call's notice as "interrupted to add more information" instead
-      // of a plain cancel.
-      await client.pause(chatId, wsId);
-      // Drop this message from the pending queue now that it is being sent.
+      // Drop this message from the pending queue SYNCHRONOUSLY, before any
+      // await. Two drains can otherwise race this jump and send the message
+      // twice:
+      //   - the idle that closes the PAUSED turn (marker consumed in the
+      //     idle handler), and
+      //   - a 200ms auto-send timer the PREVIOUS idle already scheduled when
+      //     the turn finished just before this click (the jump lands while
+      //     the chat is no longer busy). Removing the message now makes that
+      //     timer a no-op, and the suppression marker below stops it from
+      //     sending the next queued message ahead of the jumped one.
+      suppressAutoSendOnceRef.current[key] = true;
       const remaining = inputs.filter((_, i) => i !== index);
       setPendingInputsByChat((prev) => {
         const next = { ...prev, [key]: remaining };
@@ -3658,9 +3667,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       void persistPendingInputs(chatId, wsId, remaining);
       setTodoDockVisible(false);
-      // Send the jumped message immediately. The backend queues it until the
-      // paused turn unwinds, then processes it before any auto-sent follow-up.
-      await client.sendInput(text, true, chatId, wsId);
+      try {
+        // Pause the running task first: the backend interrupts the current turn
+        // (same cooperative mechanism as Stop) while keeping the interrupted
+        // shell call's notice as "interrupted to add more information" instead
+        // of a plain cancel.
+        await client.pause(chatId, wsId);
+        // Send the jumped message immediately. The backend queues it until the
+        // paused turn unwinds, then processes it before any auto-sent follow-up.
+        await client.sendInput(text, true, chatId, wsId);
+      } catch (err) {
+        // A failed jump must not silently eat the message: restore it at the
+        // head of the queue and re-enable auto-send so the next turn still
+        // picks it up.
+        delete suppressAutoSendOnceRef.current[key];
+        setPendingInputsByChat((prev) => {
+          const existing = prev[key] ?? [];
+          if (existing.includes(text)) {
+            return prev;
+          }
+          const next = { ...prev, [key]: [text, ...existing] };
+          return next;
+        });
+        setPendingAutoSendByChat((prev) => ({ ...prev, [key]: true }));
+        return;
+      }
     },
     [client, persistPendingInputs],
   );
