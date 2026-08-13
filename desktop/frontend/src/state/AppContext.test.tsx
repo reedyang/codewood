@@ -511,6 +511,7 @@ function PendingJumpProbe() {
       <button onClick={() => { void sendInput("msg-A"); }}>queue A</button>
       <button onClick={() => { void sendInput("msg-B"); }}>queue B</button>
       <button onClick={() => { void sendInput("msg-C"); }}>queue C</button>
+      <button onClick={() => { void sendPendingInputNow(0); }}>jump index 0</button>
       <button onClick={() => { void sendPendingInputNow(1); }}>jump index 1</button>
       <button onClick={() => { void startPendingInputs(); }}>start queue</button>
       <pre data-testid="pending-state">
@@ -1969,6 +1970,107 @@ describe("AppContext thinking rounds", () => {
       const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
       expect(st.pendingInputs).toEqual(["msg-C"]);
     });
+  });
+
+  it("does not double-send a jumped message when the previous idle already scheduled auto-send", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // A turn is streaming: messages queue up.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue B" }));
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-B"]);
+    });
+
+    // The turn finishes BEFORE the user clicks Steer: the idle handler clears
+    // busy and schedules the 200ms auto-send of the queue head.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({
+            chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }],
+          }),
+        },
+      });
+    });
+
+    // The user clicks Steer while the auto-send timer is still pending, and
+    // the pause round-trip is slow enough that the timer fires first. The jump
+    // must win: msg-B is sent exactly once and the queue is not drained ahead
+    // of the jumped message.
+    apiMock.pause.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(resolve, 300)),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "jump index 0" }));
+    });
+
+    // Let both the 200ms auto-send timer and the slow pause complete.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    expect(apiMock.pause).toHaveBeenCalledWith("chat-1", "ws-1");
+    expect(apiMock.sendInput).toHaveBeenCalledTimes(1);
+    expect(apiMock.sendInput).toHaveBeenCalledWith("msg-B", true, "chat-1", "ws-1");
+    const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+    expect(st.pendingInputs).toEqual([]);
+    expect(st.pendingAutoSend).toBe(false);
+  });
+
+  it("restores a jumped message when the jump send fails", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue B" }));
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-B"]);
+    });
+
+    // The send fails after the message was removed from the queue: it must be
+    // restored at the head instead of silently disappearing.
+    apiMock.pause.mockImplementationOnce(async () => undefined);
+    apiMock.sendInput.mockImplementationOnce(async () => {
+      throw new Error("network down");
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "jump index 0" }));
+    });
+
+    const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+    expect(st.pendingInputs).toEqual(["msg-B"]);
+    expect(st.pendingAutoSend).toBe(true);
   });
 
   it("drains the remaining queue one per turn after the jumped task completes", async () => {
