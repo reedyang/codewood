@@ -412,4 +412,107 @@ describe("transcript minimap vertical centering", () => {
       }
     }
   }, 30000);
+
+  it("keeps the minimap centered after zooming in", async () => {
+    // Emulate the app's zoom: .window-root is scaled with
+    // transform: scale(2), so getBoundingClientRect returns viewport px
+    // (local px * 2) while style.top/height stay in the unscaled local frame.
+    window.localStorage.setItem("codewood.zoomLevel", "2");
+    const ZOOM = 2;
+    const scrollHeightDesc = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollHeight",
+    );
+    const clientHeightDesc = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    const rectDesc = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "getBoundingClientRect",
+    );
+    const rect = (top: number, bottom: number) => ({
+      top: top * ZOOM,
+      bottom: bottom * ZOOM,
+      height: (bottom - top) * ZOOM,
+      left: 0,
+      right: 800,
+      width: 800,
+      x: 0,
+      y: top * ZOOM,
+      toJSON: () => ({}),
+    });
+
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        return 3000;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return 800;
+      },
+    });
+    Object.defineProperty(Element.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: Element) {
+        const cls = String((this as HTMLElement).className || "");
+        if (cls.includes("chat-view")) return rect(0, 1056);
+        if (cls.includes("composer-dock")) return rect(800, 1056);
+        if (cls.includes("transcript")) return rect(44, 800);
+        return rect(0, 0);
+      },
+    });
+
+    try {
+      apiMock.getChatHistory.mockImplementation(async () => ({
+        turns: [
+          { userText: "one", rounds: [{ waitSeconds: 0, text: "a", tools: "" }], timestamp: new Date().toISOString() },
+          { userText: "two", rounds: [{ waitSeconds: 0, text: "b", tools: "" }], timestamp: new Date().toISOString() },
+          { userText: "three", rounds: [{ waitSeconds: 0, text: "c", tools: "" }], timestamp: new Date().toISOString() },
+        ],
+        start: 0,
+        total: 3,
+      }));
+
+      render(
+        <AppProvider>
+          <ChatView />
+        </AppProvider>,
+      );
+      await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+      await waitFor(() => expect(apiMock.getChatHistory).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(document.querySelector(".transcript-minimap")).toBeTruthy(),
+      );
+
+      const minimap = document.querySelector(
+        ".transcript-minimap",
+      ) as HTMLElement;
+      // style.top lives in the unscaled local frame, so zooming in must not
+      // shift the value: still 44 + (1012 - 27) / 2 = 536.5.
+      expect(minimap.style.top).toBe("536.5px");
+      expect(minimap.style.height).toBe("27px");
+      expect(minimap.querySelectorAll(".minimap-line")).toHaveLength(3);
+    } finally {
+      window.localStorage.removeItem("codewood.zoomLevel");
+      if (scrollHeightDesc) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDesc);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollHeight;
+      }
+      if (clientHeightDesc) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).clientHeight;
+      }
+      if (rectDesc) {
+        Object.defineProperty(Element.prototype, "getBoundingClientRect", rectDesc);
+      } else {
+        delete (Element.prototype as Partial<Element>).getBoundingClientRect;
+      }
+    }
+  }, 30000);
 });
