@@ -8657,6 +8657,7 @@ class Agent:
         if str(tool_name).strip().lower() == "shell":
             cmd = str(a.get("command") or "").strip()
             cmd = tools_shell.strip_redundant_cd_prefix(self, cmd)
+            cmd = tools_shell.relativize_cd_target_for_display(self, cmd)
             m = re.match(
                 r"(?is)^(?:powershell(?:\.exe)?)\s+-ExecutionPolicy\s+Bypass\s+-Command\s+(?P<payload>.+)$",
                 cmd,

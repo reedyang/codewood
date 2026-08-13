@@ -4392,12 +4392,31 @@ def strip_redundant_cd_prefix(agent: Any, command: str) -> str:
     also lets ``_classify_no_match_exit`` recognise the trailing search tool
     when the model writes ``cd … && rg …`` / ``cd …; rg …``.
     """
+    parsed = _parse_cd_prefix(agent, command)
+    if parsed is None:
+        return command
+    cd_token, sep, _quoted, target, cwd, tail = parsed
+    if _paths_equal(target, cwd):
+        return tail[len(sep):].lstrip()  # skip ``&&`` / ``;``
+    return command
+
+
+def _parse_cd_prefix(agent: Any, command: str):
+    """Parse a leading ``cd``/``pushd`` prefix into its parts.
+
+    Returns ``(cd_token, sep, quoted, target, cwd, tail)`` when ``command``
+    starts with a ``cd <path> &&`` / ``cd <path>;`` (or ``pushd``) prefix whose
+    path resolves, else ``None``.  ``target`` and ``cwd`` are resolved paths
+    (the workspace root is preferred as the reference when available),
+    ``quoted`` records whether the path was wrapped in quotes, and ``tail`` is
+    the remainder after ``sep``, already stripped.
+    """
     s = str(command or "")
     for cd_token, _cd_len in _CD_AND_DELIMITERS:
         if not s.startswith(cd_token):
             continue
         rest = s[len(cd_token):]
-        # Find the path: everything up to the next ``&&`` (outside quotes).
+        # Find the path: everything up to the next ``&&`` / ``;`` (outside quotes).
         path_str, after_path = _split_cd_prefix_path_and_tail(rest)
         if path_str is None or after_path is None:
             continue
@@ -4405,9 +4424,18 @@ def strip_redundant_cd_prefix(agent: Any, command: str) -> str:
         sep = "&&" if tail.startswith("&&") else (";" if tail.startswith(";") else None)
         if sep is None:
             continue
+        raw_path = str(path_str).strip()
+        if not raw_path:
+            continue
+        quoted = (
+            raw_path[0] in ('"', "'")
+            and len(raw_path) >= 2
+            and raw_path[-1] == raw_path[0]
+        )
+        path_clean = raw_path[1:-1] if quoted else raw_path
         # Normalise both paths for comparison (workspace root when available).
         try:
-            target = Path(str(path_str).strip().strip('"').strip("'"))
+            target = Path(path_clean)
             cwd = _resolve_shell_execution_cwd(agent)
             root_raw = getattr(agent, "workspace_root", None)
             if root_raw:
@@ -4424,11 +4452,35 @@ def strip_redundant_cd_prefix(agent: Any, command: str) -> str:
                 target = target.resolve()
             cwd = cwd.resolve()
         except Exception:
-            return command
-        if _paths_equal(target, cwd):
-            return tail[len(sep):].lstrip()  # skip ``&&`` / ``;``
+            return None
+        return cd_token, sep, quoted, target, cwd, tail
+    return None
+
+
+def relativize_cd_target_for_display(agent: Any, command: str) -> str:
+    """Rewrite ``cd <abs-subdir>;`` to ``cd <rel-subdir>;`` for the GUI/TUI summary.
+
+    When a ``cd``/``pushd`` target lives inside the workspace root, the tool-call
+    description reads better as a workspace-relative path (``cd cli; git`` instead
+    of ``cd D:\\…\\cli; git``).  Only the displayed text is rewritten; callers
+    that need the exact command keep using the original string.
+    """
+    parsed = _parse_cd_prefix(agent, command)
+    if parsed is None:
         return command
-    return command
+    cd_token, sep, quoted, target, cwd, tail = parsed
+    rel_str = ""
+    try:
+        rp = os.path.relpath(str(target), str(cwd))
+        if rp != "." and rp != ".." and not rp.startswith(".." + os.sep):
+            rel_str = rp.replace(os.sep, "/")
+    except Exception:
+        pass
+    if not rel_str:
+        return command
+    rel_display = f'"{rel_str}"' if quoted else rel_str
+    sep_text = " && " if sep == "&&" else "; "
+    return f"{cd_token.rstrip()} {rel_display}{sep_text}{tail[len(sep):].lstrip()}"
 
 
 def _split_cd_prefix_path_and_tail(s: str) -> tuple[Optional[str], Optional[str]]:
