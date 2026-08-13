@@ -1890,6 +1890,115 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             record = _read_first_chat_record(workspace)
             self.assertEqual(record.get("messages") or [], [])
 
+    def test_lazy_load_skips_record_files_and_marks_placeholders(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "workspace_id": "ws-1",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"}],
+                    ),
+                    self._make_chat(
+                        "chat-b",
+                        "B",
+                        "2026-06-18 09:11:00",
+                        [{"role": "user", "content": "world", "created_at": "2026-06-18 09:11:00"}],
+                    ),
+                ],
+            }
+            manager.save_chat_state()
+
+            # Wipe the in-memory state so a reload reads from disk.
+            agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "workspace_id": "ws-1", "chats": []}
+            agent.conversation_history = []
+            manager.load_chat_state(create_default_chat=False, lazy_records=True)
+
+            chats = manager.chat_entries()
+            self.assertEqual(len(chats), 2)
+            # Placeholders carry the index summary but no messages.
+            for c in chats:
+                self.assertTrue(c.get("_lazy_placeholder"), f"chat {c['id']} not placeholder")
+                self.assertEqual(c.get("messages") or [], [])
+                self.assertEqual(c["id"] in ("chat-a", "chat-b"), True)
+                self.assertTrue(str(c.get("_record_file") or "").endswith(".json"))
+
+    def test_lazy_placeholder_save_does_not_truncate_disk_record(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "workspace_id": "ws-1",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"}],
+                    ),
+                ],
+            }
+            manager.save_chat_state()
+            disk_record = _read_first_chat_record(workspace)
+            self.assertEqual([m.get("content") for m in disk_record["messages"]], ["hello"])
+
+            # Reload lazily, then mark the placeholder dirty (e.g. unread flag)
+            # and save: the on-disk record must keep its messages.
+            agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "workspace_id": "ws-1", "chats": []}
+            agent.conversation_history = []
+            manager.load_chat_state(create_default_chat=False, lazy_records=True)
+            chat_a = manager.find_chat_by_id("chat-a")
+            self.assertTrue(chat_a.get("_lazy_placeholder"))
+            manager.mark_chat_dirty("chat-a")
+            manager.save_chat_state()
+
+            record = _read_first_chat_record(workspace)
+            self.assertEqual([m.get("content") for m in (record.get("messages") or [])], ["hello"])
+
+    def test_refresh_hydrates_lazy_placeholder_to_full_record(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-1"
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "workspace_id": "ws-1",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "hello", "created_at": "2026-06-18 09:10:00"}],
+                    ),
+                ],
+            }
+            manager.save_chat_state()
+
+            agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "workspace_id": "ws-1", "chats": []}
+            agent.conversation_history = []
+            manager.load_chat_state(create_default_chat=False, lazy_records=True)
+            self.assertTrue(manager.find_chat_by_id("chat-a").get("_lazy_placeholder"))
+
+            ok = manager.refresh_chat_record_from_disk("chat-a")
+            self.assertTrue(ok)
+            chat_a = manager.find_chat_by_id("chat-a")
+            self.assertFalse(chat_a.get("_lazy_placeholder", False))
+            self.assertEqual([m.get("content") for m in chat_a["messages"]], ["hello"])
+
 
 if __name__ == "__main__":
     unittest.main()

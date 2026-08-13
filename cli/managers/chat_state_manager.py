@@ -1063,6 +1063,45 @@ class ChatStateManager:
                     or not record_path.exists()
                     or str(chat.get("updated_at") or "") != last_written.get(record_path.name, "")
                 )
+                is_lazy_placeholder = bool(chat.get("_lazy_placeholder", False))
+                # A lazily-loaded placeholder that needs a full write must be
+                # hydrated from disk first (or dropped from the write set):
+                # writing its empty ``messages`` would truncate the record.
+                lazy_write_blocked = False
+                if needs_full and bool(chat.get("_lazy_placeholder", False)):
+                    # A lazily-loaded summary entry (GUI workspace-switch fast
+                    # path) has NO messages in memory. If something marked it
+                    # dirty (e.g. the unread flag), writing it back would
+                    # truncate the on-disk record to an empty chat. Instead
+                    # hydrate the full record from disk so the save is
+                    # harmless: either disk wins (newer) or the hydrated copy
+                    # preserves the real messages. This mirrors the
+                    # disk-newer-wins branch below.
+                    try:
+                        with open(record_path, "r", encoding="utf-8") as f:
+                            disk_raw = json.load(f)
+                        if isinstance(disk_raw, dict) and str(disk_raw.get("id") or "") == cid:
+                            preserved_archived = bool(chat.get("archived", False))
+                            preserved_unread = chat.get("has_unread")
+                            refreshed = self._validate_chat_entry(disk_raw)
+                            refreshed["archived"] = preserved_archived
+                            if isinstance(preserved_unread, bool):
+                                refreshed["has_unread"] = preserved_unread
+                            refreshed["_record_file"] = record_file
+                            chat.clear()
+                            chat.update(refreshed)
+                    except Exception:
+                        # If the record cannot be read, keep the summary entry;
+                        # the write path below will not clobber anything it
+                        # cannot read (it re-reads disk before overwriting).
+                        # Mark the entry so the write path skips the record
+                        # entirely rather than writing empty messages.
+                        lazy_write_blocked = True
+                    if not bool(chat.get("_lazy_placeholder", False)):
+                        # Hydration replaced the placeholder with the full
+                        # record; normal write logic now applies.
+                        is_lazy_placeholder = False
+                        pass
                 if not needs_full:
                     # Cheap disk-newer-wins check for a clean chat: read only
                     # the record header (``updated_at`` is near the top) instead
@@ -1100,6 +1139,14 @@ class ChatStateManager:
                                 dirty_keys.discard(f"{dirty_scope}::{cid}")
                         except Exception:
                             pass
+                    index_chats.append(_index_entry())
+                    continue
+
+                if is_lazy_placeholder and lazy_write_blocked:
+                    # Could not hydrate the placeholder and it needs a full
+                    # write: skip the record write (keep the index entry) so
+                    # the on-disk messages are never replaced by an empty
+                    # in-memory list.
                     index_chats.append(_index_entry())
                     continue
 
@@ -1407,7 +1454,21 @@ class ChatStateManager:
                 return cid
             i += 1
 
-    def load_chat_state(self, create_default_chat: bool = True) -> None:
+    def load_chat_state(
+        self, create_default_chat: bool = True, lazy_records: bool = False
+    ) -> None:
+        """Load the agent's focused workspace's chat index + records into memory.
+
+        ``lazy_records`` (GUI workspace-switch fast path): only the chat index
+        (``chats.json``) is read; individual record files are NOT parsed. Each
+        chat gets a lightweight summary entry (no ``messages``) so the sidebar
+        and state snapshot render without paying the cost of loading every
+        chat's full history (which for large workspaces can be hundreds of
+        MB). The chat the user actually opens is fully loaded by the caller
+        via ``refresh_chat_record_from_disk`` right before ``activate_chat``.
+        Summary-only entries stay clean on save (their ``updated_at`` matches
+        the on-disk record), so nothing is ever written back from them.
+        """
         p = self.chat_state_path()
         self._agent._startup_chat_state_warning = ""
         # Workspace this index is expected to belong to. ``load_chat_state``
@@ -1471,6 +1532,29 @@ class ChatStateManager:
                 record_file = str(index_entry.get("record_file") or "").strip()
                 if not record_file:
                     raise ValueError("chat record_file required")
+                if lazy_records:
+                    now = self._now_text()
+                    chat = {
+                        "id": cid,
+                        "name": str(index_entry.get("name") or "New Chat"),
+                        "name_source": str(index_entry.get("name_source") or "default"),
+                        "created_at": str(index_entry.get("created_at") or "").strip() or now,
+                        "updated_at": str(index_entry.get("updated_at") or "").strip() or now,
+                        "model_provider": str(index_entry.get("model_provider") or "").strip(),
+                        "model_name": str(index_entry.get("model_name") or "").strip(),
+                        "reasoning_level": "",
+                        "mode": _read_chat_mode(index_entry),
+                        "messages": [],
+                        "archived": bool(index_entry.get("archived", False)),
+                        "first_user_message_at": str(index_entry.get("first_user_message_at") or "").strip(),
+                        "pending_inputs": [],
+                        "_lazy_placeholder": True,
+                        "_record_file": record_file,
+                    }
+                    if "has_unread" in index_entry and isinstance(index_entry.get("has_unread"), bool):
+                        chat["has_unread"] = index_entry["has_unread"]
+                    chats.append(chat)
+                    continue
                 try:
                     record_path = self._resolve_chat_record_path(record_file)
                     with open(record_path, "r", encoding="utf-8") as f:
@@ -1556,20 +1640,31 @@ class ChatStateManager:
             # gone (e.g. a chat deleted by a peer process) so pasted images and
             # preview sidecars never outlive their chat.
             self.cleanup_orphan_chat_data()
-            self.activate_chat(
-                active,
-                announce=False,
-                clear_screen=False,
-                print_history=False,
-                persist=False,
-            )
-            # The active chat is being displayed on load, so any unread flag it
-            # carried over from a previous session no longer applies. Other
-            # chats keep theirs (persistent blue dots until opened).
-            try:
-                self.set_chat_unread(active, False)
-            except Exception:
+            if lazy_records:
+                # Lazy mode leaves activation to the caller: the caller is
+                # opening a specific chat (select_chat) and will hydrate its
+                # full record via ``refresh_chat_record_from_disk`` right
+                # before ``activate_chat``. Activating a summary-only
+                # placeholder here would bind an empty conversation to the
+                # active chat's session and could clobber a live runtime's
+                # session state.
                 pass
+            else:
+                self.activate_chat(
+                    active,
+                    announce=False,
+                    clear_screen=False,
+                    print_history=False,
+                    persist=False,
+                )
+                # The active chat is being displayed on load, so any unread
+                # flag it carried over from a previous session no longer
+                # applies. Other chats keep theirs (persistent blue dots
+                # until opened).
+                try:
+                    self.set_chat_unread(active, False)
+                except Exception:
+                    pass
         except Exception as e:
             logger.exception(
                 "load_chat_state failed for %s; resetting chat state. total_chats=%d, active=%s, error=%s",

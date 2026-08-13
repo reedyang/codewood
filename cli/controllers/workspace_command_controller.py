@@ -225,7 +225,11 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
 
 
 def workspace_switch_command(
-    agent: Any, selector: str, *, create_default_chat: bool = True
+    agent: Any,
+    selector: str,
+    *,
+    create_default_chat: bool = True,
+    lazy_records: bool = False,
 ) -> str:
     default_workspace_id = _default_workspace_id()
     entry = agent._workspace_entry_by_selector(selector)
@@ -244,7 +248,21 @@ def workspace_switch_command(
     )
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
-    agent._refresh_workspace_runtime(create_default_chat=create_default_chat)
+    refresh = getattr(agent, "_refresh_workspace_runtime", None)
+    if refresh is None:
+        raise AttributeError("agent._refresh_workspace_runtime is required")
+    try:
+        import inspect
+
+        sig = inspect.signature(refresh)
+        if "lazy_records" in sig.parameters:
+            refresh(
+                create_default_chat=create_default_chat, lazy_records=lazy_records
+            )
+        else:
+            refresh(create_default_chat=create_default_chat)
+    except (TypeError, ValueError):
+        refresh(create_default_chat=create_default_chat)
     # Globals now point at the target workspace, but the session still carries
     # the previous chat's id/history (its active chat is bound later by
     # ``_activate_chat``). Persist only the position metadata here; syncing
