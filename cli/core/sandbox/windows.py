@@ -1783,8 +1783,9 @@ class WindowsSandboxBackend(SandboxBackend):
         cap_sid = _cap_sid_for_level(config_dir, level)
         # The runner reports the child exit code through a small file inside the
         # sandbox runtime dir (inherited pipe handles do not survive LogonW).
+        tmp_dir = _shared_sandbox_root() / "tmp"
         exit_file = (
-            _shared_sandbox_root() / "tmp"
+            tmp_dir
             / f"exit-{secrets.token_hex(8)}.tmp"
         )
         # The runner must be a python that the sandbox user can actually read.
@@ -1848,8 +1849,8 @@ class WindowsSandboxBackend(SandboxBackend):
         cmd_file: Optional[Path] = None
         runner_cmdline = subprocess.list2cmdline(_runner_argv(cmdline))
         if len(runner_cmdline) > _LOGONW_CMDLINE_SAFE_LIMIT:
-            tmp.mkdir(parents=True, exist_ok=True)
-            cmd_file = tmp / f"cmd-{secrets.token_hex(8)}.txt"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            cmd_file = tmp_dir / f"cmd-{secrets.token_hex(8)}.txt"
             try:
                 cmd_file.write_text(cmdline, encoding="utf-8")
             except OSError:
