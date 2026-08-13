@@ -34,6 +34,7 @@ from cli.core.sandbox.windows import (
     _save_secret,
     _users_ready_path,
     launch_elevated_setup,
+    _run_set_password,
     _shell_runner_exe_path,
     _select_user,
 )
@@ -1254,9 +1255,13 @@ class WindowsSandboxBackendCleanupTests(unittest.TestCase):
             ):
                 self.backend.cleanup_workspace_acls(str(root), self.config_dir)
             icacls_calls = [c for c in calls if c[0] == "icacls"]
-            self.assertEqual(len(icacls_calls), 6)
-            self.assertTrue(all("/t" in c and "/q" in c for c in icacls_calls))
-            names = {c[3] for c in icacls_calls}
+            # One batched invocation per root (all three identities in a
+            # single icacls call); the inheritable ACEs are dropped without a
+            # recursive ``/t`` walk (auto-inheritance cleans the descendants).
+            self.assertEqual(len(icacls_calls), 1)
+            self.assertIn("/q", icacls_calls[0])
+            self.assertNotIn("/t", icacls_calls[0])
+            names = {icacls_calls[0][3], icacls_calls[0][4], icacls_calls[0][5]}
             self.assertEqual(
                 names,
                 {SANDBOX_USER_OFFLINE, SANDBOX_USER_ONLINE, SANDBOX_USERS_GROUP},
@@ -1304,6 +1309,27 @@ class WindowsSandboxBackendCleanupTests(unittest.TestCase):
         ):
             self.backend.cleanup_workspace_acls(str(self._tmp.name), self.config_dir)
         self.assertEqual(_acl_record_path().parent, Path(self._tmp.name))
+
+    def test_run_set_password_enables_separately_without_enabled_flag(self):
+        # Windows 11 (build 26200) Set-LocalUser has no -Enabled parameter
+        # (NamedParameterNotFound); the in-place refresh must enable via the
+        # separate Enable-LocalUser cmdlet and set the password without the
+        # flag, otherwise every refresh fails and falls back to recreate.
+        calls = []
+
+        def fake_run(argv, timeout=180, stdin_data=None):
+            calls.append(" ".join(argv))
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with patch("cli.core.sandbox.windows._run_process", side_effect=fake_run):
+            _run_set_password("CodewoodSandOffline", "Pw!12345")
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Enable-LocalUser -Name 'CodewoodSandOffline'", calls[0])
+        self.assertIn(
+            "Set-LocalUser -Name 'CodewoodSandOffline' -Password", calls[1]
+        )
+        self.assertNotIn("-Enabled", calls[1])
 
 
 class SandboxStateSharedRootTests(unittest.TestCase):
