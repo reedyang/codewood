@@ -42,8 +42,9 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         ok = self.agent._execute_file_directly("python helloworld.py")
         self.assertTrue(ok)
-        called_cmd = popen_mock.call_args[0][0]
-        self.assertEqual(called_cmd, "python helloworld.py")
+        called = popen_mock.call_args[0][0]
+        called_cmd = called[-1] if isinstance(called, list) else called
+        self.assertTrue(called_cmd.endswith("python helloworld.py"), called_cmd)
 
     @patch("subprocess.Popen")
     def test_bare_py_script_is_wrapped_with_python(self, popen_mock):
@@ -52,7 +53,8 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         ok = self.agent._execute_file_directly("helloworld.py --flag")
         self.assertTrue(ok)
-        called_cmd = popen_mock.call_args[0][0]
+        called = popen_mock.call_args[0][0]
+        called_cmd = called[-1] if isinstance(called, list) else called
         self.assertIn("python", called_cmd.lower())
         self.assertIn("helloworld.py", called_cmd.lower())
         self.assertIn("--flag", called_cmd.lower())

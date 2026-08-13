@@ -6833,6 +6833,7 @@ class Agent:
         import time
 
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        _clixml_filter = tools_shell._ClixmlStreamFilter()
         # Batched rendering keeps terminal updates efficient while preserving
         # low-latency streaming for sparse/slow command output.
         flush_interval_sec = 0.08
@@ -6898,6 +6899,7 @@ class Agent:
                 if not chunk:
                     break
                 text_chunk = decoder.decode(chunk, final=False)
+                text_chunk = _clixml_filter.feed(text_chunk)
                 if text_chunk:
                     if isinstance(capture_chunks, list):
                         capture_chunks.append(text_chunk)
@@ -6915,6 +6917,8 @@ class Agent:
                                 pending_has_newline = True
                         _flush_pending(force=False)
             tail = decoder.decode(b"", final=True)
+            tail = _clixml_filter.feed(tail)
+            _clixml_filter.flush()
             if tail:
                 if isinstance(capture_chunks, list):
                     capture_chunks.append(tail)
@@ -7097,32 +7101,42 @@ class Agent:
         self._start_interrupt_monitor(cancel_task_on_interrupt=False)
         status_ticker.start()
         try:
-            _winpty_proc = None
-            if getattr(tools_shell, "_WINPTY_PTYPROCESS", None) is not None and subprocess.Popen is tools_shell._ORIG_SUBPROCESS_POPEN:
-                try:
-                    _comspec = os.environ.get("COMSPEC") or "cmd.exe"
-                    _raw_pty = tools_shell._WINPTY_PTYPROCESS.spawn(
-                        [_comspec, "/c", command],
-                        cwd=str(cwd),
-                        env=None,
-                    )
-                    _winpty_proc = tools_shell._WinPtyProc(_raw_pty)
-                    _winpty_proc.stdin = tools_shell._WinPtyWriter(_raw_pty)
-                    process = _winpty_proc
-                except Exception:
-                    _winpty_proc = None
+            # Direct shell commands run through PowerShell on Windows (the
+            # same argv form the shell tool uses) instead of cmd.exe.  WinPTY
+            # is intentionally not used: its ConPTY can interfere with
+            # PowerShell -Command output capture and keep the child alive.
+            _shell_argv = (
+                tools_shell._windows_powershell_command_argv(command)
+                if os.name == "nt"
+                else None
+            )
             if process is None:
-                process = subprocess.Popen(
-                    command,
-                    shell=True,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    # Merge stderr into stdout so rendered output order follows
-                    # real arrival order and avoids cross-thread stream races.
-                    stderr=subprocess.STDOUT,
-                    cwd=str(cwd),
-                    text=False,
-                )
+                if _shell_argv is not None:
+                    process = subprocess.Popen(
+                        _shell_argv,
+                        shell=False,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        # Merge stderr into stdout so rendered output order
+                        # follows real arrival order and avoids cross-thread
+                        # stream races.
+                        stderr=subprocess.STDOUT,
+                        cwd=str(cwd),
+                        text=False,
+                    )
+                else:
+                    process = subprocess.Popen(
+                        command,
+                        shell=True,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        # Merge stderr into stdout so rendered output order
+                        # follows real arrival order and avoids cross-thread
+                        # stream races.
+                        stderr=subprocess.STDOUT,
+                        cwd=str(cwd),
+                        text=False,
+                    )
             self._register_interruptible_process(process)
             t_out: Optional[threading.Thread] = None
             stdout_pipe = getattr(process, "stdout", None)

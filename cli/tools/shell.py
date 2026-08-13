@@ -403,6 +403,144 @@ def _collapse_cr_output(text: str) -> str:
     return "\n".join(out)
 
 
+_POWERSHELL_CLIXML_DOC_RE = re.compile(
+    r"<Objs Version=\"1\.1\.0\.1\" "
+    r"xmlns=\"http://schemas\.microsoft\.com/powershell/2004/04\">.*?</Objs>",
+    re.DOTALL,
+)
+_POWERSHELL_CLIXML_HEADER_RE = re.compile(r"(?m)^#< CLIXML[^\r\n]*\r?\n")
+_POWERSHELL_CLIXML_ORPHAN_RE = re.compile(r"</?Objs(?: [^>]*)?>")
+
+
+def _strip_powershell_clixml_output(text: str) -> str:
+    """Remove Windows PowerShell 5.1 progress CLIXML noise from captured output.
+
+    When stderr is redirected, Windows PowerShell 5.1 serializes progress
+    records as a CLIXML document (``#< CLIXML`` header plus an ``<Objs
+    Version="1.1.0.1" ...>`` blob, e.g. the engine's "Preparing modules for
+    first use." record).  The tool merges stderr into stdout, so this noise
+    would otherwise pollute every AI-visible result.  The header and document
+    can be split around real output, so each fragment is removed
+    independently.
+    """
+    s = str(text or "")
+    s = _POWERSHELL_CLIXML_DOC_RE.sub("", s)
+    s = _POWERSHELL_CLIXML_HEADER_RE.sub("", s)
+    s = _POWERSHELL_CLIXML_ORPHAN_RE.sub("", s)
+    return s
+
+
+class _ClixmlStreamFilter:
+    """Stateful filter that strips PowerShell 5.1 progress CLIXML noise from a
+    live output stream.
+
+    PowerShell 5.1 serializes progress records to the redirected stderr as a
+    ``#< CLIXML`` header line plus ``<Objs ...>...</Objs>`` documents (e.g.
+    the engine's "Preparing modules for first use." record).  The stream is
+    consumed in arbitrary chunks and the header / document tags can be split
+    across chunk boundaries, so the filter only holds back bytes that could
+    still be the start of a header line or document tag.  Real output passes
+    through unchanged; an incomplete CLIXML fragment at stream end is dropped.
+    """
+
+    _START_TAG = (
+        '<Objs Version="1.1.0.1" '
+        'xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    )
+    _END_TAG = "</Objs>"
+    _HEADER = "#< CLIXML"
+
+    def __init__(self) -> None:
+        self._head_buf = ""
+        self._header_done = False
+        self._in_doc = False
+        self._tail = ""
+        self._doc_tail = ""
+
+    @staticmethod
+    def _suffix_prefix_len(text: str, target: str) -> int:
+        """Longest ``k`` such that ``text[-k:] == target[:k]`` (k < len(target))."""
+        maxk = min(len(text), len(target) - 1)
+        k = 0
+        for kk in range(1, maxk + 1):
+            if text[-kk:] == target[:kk]:
+                k = kk
+        return k
+
+    def feed(self, text: str) -> str:
+        s = str(text or "")
+        if not s:
+            return ""
+        out: List[str] = []
+        if not self._header_done:
+            probe = self._head_buf + s
+            nl = probe.find("\n")
+            if nl < 0:
+                hold = self._suffix_prefix_len(probe, self._HEADER)
+                if len(probe) > hold:
+                    emit, self._head_buf = (
+                        probe[:len(probe) - hold],
+                        probe[len(probe) - hold:],
+                    )
+                    out.append(emit)
+                    self._header_done = True
+                    s = self._head_buf
+                    self._head_buf = ""
+                else:
+                    self._head_buf = probe
+                    s = ""
+            else:
+                head, rest = probe[:nl], probe[nl + 1:]
+                self._header_done = True
+                self._head_buf = ""
+                if head.rstrip("\r") != self._HEADER:
+                    out.append(head + "\n")
+                s = rest
+        while s:
+            if self._in_doc:
+                probe = self._doc_tail + s
+                end = probe.find(self._END_TAG)
+                if end < 0:
+                    keep = len(self._END_TAG) - 1
+                    self._doc_tail = probe[-keep:] if len(probe) > keep else probe
+                    break
+                self._in_doc = False
+                self._doc_tail = ""
+                s = probe[end + len(self._END_TAG):]
+                if s.startswith("\r\n"):
+                    s = s[2:]
+                elif s.startswith("\n"):
+                    s = s[1:]
+                continue
+            probe = self._tail + s
+            start = probe.find(self._START_TAG)
+            if start < 0:
+                hold = self._suffix_prefix_len(probe, self._START_TAG)
+                if len(probe) > hold:
+                    emit, self._tail = (
+                        probe[:len(probe) - hold],
+                        probe[len(probe) - hold:],
+                    )
+                    out.append(emit)
+                else:
+                    self._tail = probe
+                break
+            self._tail = ""
+            if start:
+                out.append(probe[:start])
+            self._in_doc = True
+            s = probe[start + len(self._START_TAG):]
+        return "".join(out)
+
+    def flush(self) -> str:
+        self._head_buf = ""
+        self._tail = ""
+        self._doc_tail = ""
+        self._header_done = True
+        self._in_doc = False
+        return ""
+
+
 def _handle_backspace_collapse(text: str) -> str:
     """Process \\b (backspace) overwrite semantics on a single line."""
     if "\b" not in text:
@@ -1085,43 +1223,85 @@ def _append_completed_output_lines(
         pending_state["text"] = parts[-1] if parts else ""
 
 
-def _enforce_windows_powershell_command_prefix(command: str) -> Dict[str, Any]:
+def _windows_powershell_executable() -> str:
+    """Return the PowerShell executable used to run shell commands on Windows."""
+    for candidate in ("pwsh", "powershell"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return "powershell"
+
+
+def _windows_powershell_command_argv(
+    command: str, *, interactive: bool = False
+) -> List[str]:
+    """Build the argv that runs a bare PowerShell command directly.
+
+    ``-Command`` hands the exact script string to PowerShell with no
+    cmd.exe round-trip; complex (multi-line) scripts use ``-EncodedCommand``
+    so the payload is delivered verbatim with zero quoting concerns.  A
+    ``$ProgressPreference`` prefix keeps Windows PowerShell 5.1 from
+    serializing progress records as CLIXML noise on stderr.
+    """
+    argv: List[str] = [_windows_powershell_executable(), "-NoProfile"]
+    if not interactive:
+        argv.append("-NonInteractive")
+    script = "$ProgressPreference = 'SilentlyContinue'; " + command
+    if "\n" in script or "\r" in script:
+        argv.append("-EncodedCommand")
+        argv.append(_encode_powershell_script_as_encoded_command(script))
+    else:
+        argv.extend(["-Command", script])
+    return argv
+
+
+def _unwrap_windows_powershell_wrapper(command: str) -> str:
+    """Normalize a Windows shell command for direct PowerShell execution.
+
+    The shell tool now executes commands directly in PowerShell, so the
+    legacy ``powershell -ExecutionPolicy Bypass -Command "<command>"``
+    wrapper models used to emit is redundant: unwrap it (including the
+    ``-EncodedCommand`` form) so the script runs directly instead of
+    spawning a nested PowerShell. Bare PowerShell commands pass through
+    unchanged.
+    """
     if os.name != "nt":
-        return {"ok": True, "command": command}
+        return command
     cmd = str(command or "").strip()
     if not cmd:
-        return {"ok": True, "command": command}
-    # Models occasionally wrap the entire ``powershell ...`` invocation in an
-    # extra pair of double quotes (typically because over-eager JSON escaping
-    # left ``\"`` markers around the whole token). cmd.exe then tries to
-    # locate an executable literally named ``"powershell ..."`` and fails
-    # with ``The system cannot find the path specified.``. Peel a single
-    # surrounding double-quote layer when doing so reveals a recognizable
-    # ``powershell`` invocation.
-    if len(cmd) >= 2 and cmd[0] == '"' and cmd[-1] == '"':
-        inner = cmd[1:-1].strip()
-        if re.match(r"(?i)^powershell(?:\.exe)?\b", inner):
-            cmd = inner
-    if not re.match(r"(?i)^powershell(?:\.exe)?\b", cmd):
-        return {"ok": True, "command": cmd}
-    m = re.match(
-        r"(?is)^powershell(?:\.exe)?\s+-ExecutionPolicy\s+Bypass\s+-Command\s+(.+)$",
-        cmd,
-    )
-    if not m:
-        return {
-            "ok": False,
-            "error": 'On Windows, PowerShell must be called as: powershell -ExecutionPolicy Bypass -Command "<command>"',
-        }
-    # Normalize executable token to `powershell` while preserving the command payload.
-    payload = m.group(1).strip()
-    return {"ok": True, "command": f"powershell -ExecutionPolicy Bypass -Command {payload}"}
+        return command
+    for _ in range(4):
+        if len(cmd) >= 2 and cmd[0] == '"' and cmd[-1] == '"':
+            inner = cmd[1:-1].strip()
+            if re.match(r"(?i)^(?:powershell|pwsh)(?:\.exe)?\b", inner):
+                cmd = inner
+        if not re.match(r"(?i)^(?:powershell|pwsh)(?:\.exe)?\b", cmd):
+            break
+        m = _WIN_POWERSHELL_COMMAND_RE.match(cmd)
+        if m:
+            payload_raw = m.group("payload").strip()
+            payload, _ = _strip_powershell_payload_quotes(payload_raw)
+            cmd = _decode_powershell_literal_escapes(payload).strip()
+            continue
+        m = re.match(
+            r"(?is)^(?:powershell|pwsh)(?:\.exe)?\s+"
+            r"(?:-ExecutionPolicy\s+Bypass\s+)?-EncodedCommand\s+(\S+)\s*$",
+            cmd,
+        )
+        if m:
+            try:
+                cmd = base64.b64decode(m.group(1).strip()).decode("utf-16-le").strip()
+            except Exception:
+                break
+            continue
+        break
+    return cmd
 
 
-# Match a ``powershell ... -Command <payload>`` invocation in a way that's
+# Match a ``powershell|pwsh ... -Command <payload>`` invocation in a way that's
 # tolerant of mixed casing and the optional ``.exe`` suffix.
 _WIN_POWERSHELL_COMMAND_RE = re.compile(
-    r"(?is)^(?P<exe>powershell(?:\.exe)?)\s+(?P<head>(?:-ExecutionPolicy\s+Bypass\s+)?)"
+    r"(?is)^(?P<exe>(?:powershell|pwsh)(?:\.exe)?)\s+(?P<head>(?:-ExecutionPolicy\s+Bypass\s+)?)"
     r"-Command\s+(?P<payload>.+)$"
 )
 
@@ -1596,10 +1776,11 @@ def action_shell_command(
     command = enforce_workspace_rg_for_shell_command(agent, command)
     command = tune_7z_output_for_piped_terminal(command, agent)
     command = _enforce_git_no_pager_for_shell_command(command)
-    enforce_res = _enforce_windows_powershell_command_prefix(command)
-    if not enforce_res.get("ok", False):
-        return {"success": False, "error": str(enforce_res.get("error", "PowerShell command format is invalid"))}
-    command = str(enforce_res.get("command") or command)
+    # Commands now run directly in PowerShell on Windows: unwrap the legacy
+    # ``powershell -ExecutionPolicy Bypass -Command "..."`` wrapper models
+    # used to emit so the script runs directly instead of spawning a nested
+    # PowerShell.
+    command = _unwrap_windows_powershell_wrapper(command)
     # Rescue common Windows PowerShell quoting failures (literal ``\n`` in
     # here-strings, over-escaped wrappers, etc.) without changing the user-
     # visible command summary that already got captured upstream.
@@ -1904,6 +2085,7 @@ def action_shell_command(
                             except Exception:
                                 pass
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    _clixml_filter = _ClixmlStreamFilter()
                     realtime_started = False
                     try:
                         while True:
@@ -1914,6 +2096,7 @@ def action_shell_command(
                             if not chunk:
                                 break
                             text_chunk = decoder.decode(chunk, final=False)
+                            text_chunk = _clixml_filter.feed(text_chunk)
                             if text_chunk:
                                 with stream_chunks_lock:
                                     bucket.append(text_chunk)
@@ -1929,6 +2112,8 @@ def action_shell_command(
                                                 pass
                                     _safe_console_write(text_chunk, target, append_newline=False)
                         tail = decoder.decode(b"", final=True)
+                        tail = _clixml_filter.feed(tail)
+                        _clixml_filter.flush()
                         if tail:
                             with stream_chunks_lock:
                                 bucket.append(tail)
@@ -1953,16 +2138,28 @@ def action_shell_command(
 
                 try:
                     process = None
-                    process = subprocess.Popen(
-                        command,
-                        shell=True,
-                        cwd=str(execution_cwd.resolve()),
-                        env=run_env,
-                        stdin=sys.stdin,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=False,
-                    )
+                    if os.name == "nt":
+                        process = subprocess.Popen(
+                            _windows_powershell_command_argv(command, interactive=True),
+                            shell=False,
+                            cwd=str(execution_cwd.resolve()),
+                            env=run_env,
+                            stdin=sys.stdin,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=False,
+                        )
+                    else:
+                        process = subprocess.Popen(
+                            command,
+                            shell=True,
+                            cwd=str(execution_cwd.resolve()),
+                            env=run_env,
+                            stdin=sys.stdin,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=False,
+                        )
                     reg_proc = getattr(agent, "_register_interruptible_process", None)
                     if callable(reg_proc):
                         reg_proc(process)
@@ -1980,6 +2177,7 @@ def action_shell_command(
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
                     out = _collapse_cr_output(out)
+                    out = _strip_powershell_clixml_output(out)
                     consume_abort = getattr(agent, "_consume_process_aborted", None)
                     if callable(consume_abort):
                         aborted_by_user = bool(consume_abort(process))
@@ -2011,6 +2209,12 @@ def action_shell_command(
                 stream_chunks_lock = threading.Lock()
                 create_streams = getattr(agent, "_create_direct_shell_output_streams", None)
                 process_ref: Dict[str, Any] = {"process": None}
+                # Precompute the PowerShell argv in the main thread so the
+                # worker (which races the test patch windows / user interrupt)
+                # reaches Popen with zero per-command work beyond the baseline.
+                _shell_argv_pre: Optional[List[str]] = None
+                if os.name == "nt":
+                    _shell_argv_pre = _windows_powershell_command_argv(command)
                 # Set once the main flow abandons the round on a user interrupt:
                 # the background worker stops live display echo and discards the
                 # residual pipe output instead of waiting for it to drain.
@@ -2178,6 +2382,7 @@ def action_shell_command(
                             except Exception:
                                 pass
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    _clixml_filter = _ClixmlStreamFilter()
                     realtime_started = False
 
                     def _write_display_chunk(text: str) -> None:
@@ -2201,6 +2406,7 @@ def action_shell_command(
                             if not chunk:
                                 break
                             text_chunk = decoder.decode(chunk, final=False)
+                            text_chunk = _clixml_filter.feed(text_chunk)
                             if text_chunk:
                                 activity_state["last_activity"] = time.time()
                                 with stream_chunks_lock:
@@ -2221,6 +2427,8 @@ def action_shell_command(
                                             pass
                                 _write_display_chunk(text_chunk)
                         tail = decoder.decode(b"", final=True)
+                        tail = _clixml_filter.feed(tail)
+                        _clixml_filter.flush()
                         if tail:
                             activity_state["last_activity"] = time.time()
                             with stream_chunks_lock:
@@ -2341,54 +2549,38 @@ def action_shell_command(
                             worker_state["return_code"] = -1
                             worker_state["done"].set()
                             return
-                        _winpty_obj = None
-                        # PowerShell -Command invocations don't need a pty;
-                        # winpty's ConPTY can interfere with output capture.
-                        _is_ps_command = bool(
-                            re.match(r"(?i)^powershell(?:\.exe)?\s", command.strip())
-                        )
-                        # pywinpty spawn() passes argv through subprocess.list2cmdline
-                        # which escapes internal double-quotes with backslashes (Unix
-                        # convention).  cmd.exe does not recognise that convention, so
-                        # commands that contain their own double quotes would receive
-                        # mangled arguments.  Skip the winpty path for those commands
-                        # and let them fall through to the regular pipe-based Popen
-                        # which uses shell=True and preserves quoting correctly.
-                        _command_has_quotes = '"' in command
-                        if (
-                            # A sandbox plan has already supplied a process.
-                            # Never replace it with WinPTY: WinPTY starts the
-                            # command as the desktop user and would bypass the
-                            # sandbox identity and its ACL restrictions.
-                            process is None
-                            and _WINPTY_PTYPROCESS is not None
-                            and subprocess.Popen is _ORIG_SUBPROCESS_POPEN
-                            and not _is_ps_command
-                            and not _command_has_quotes
-                        ):
-                            try:
-                                _comspec = run_env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
-                                _raw_pty = _WINPTY_PTYPROCESS.spawn(
-                                    [_comspec, "/c", command],
+                        # The shell tool now runs commands directly in
+                        # PowerShell on Windows; build the argv up front so the
+                        # Popen path uses the exact invocation.  WinPTY is not
+                        # used for PowerShell ``-Command``: its ConPTY can
+                        # interfere with output capture and keep the child
+                        # alive (the old cmd.exe wrapper exited cleanly,
+                        # PowerShell does not), so every Windows command runs
+                        # through the regular pipe-based Popen (argv form).
+                        _shell_argv = _shell_argv_pre
+                        if process is None:
+                            if _shell_argv is not None:
+                                process = subprocess.Popen(
+                                    _shell_argv,
+                                    shell=False,
                                     cwd=str(execution_cwd.resolve()),
                                     env=run_env,
+                                    stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    text=False,
                                 )
-                                _winpty_obj = _WinPtyProc(_raw_pty)
-                                _winpty_obj.stdin = _WinPtyWriter(_raw_pty)
-                                process = _winpty_obj
-                            except Exception:
-                                _winpty_obj = None
-                        if process is None:
-                            process = subprocess.Popen(
-                                command,
-                                shell=True,
-                                cwd=str(execution_cwd.resolve()),
-                                env=run_env,
-                                stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT,
-                                text=False,
-                            )
+                            else:
+                                process = subprocess.Popen(
+                                    command,
+                                    shell=True,
+                                    cwd=str(execution_cwd.resolve()),
+                                    env=run_env,
+                                    stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    text=False,
+                                )
                         process_ref["process"] = process
                         if run_input is not None:
                             try:
@@ -2546,6 +2738,7 @@ def action_shell_command(
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
                     out = _collapse_cr_output(out)
+                    out = _strip_powershell_clixml_output(out)
                     _log.info("sandbox shell captured out: %r", out[:300])
                     _spawn_error = str(worker_state.get("spawn_error") or "")
                     if _spawn_error:
@@ -4119,15 +4312,26 @@ def _rg_stderr_retry(
         return None
     try:
         import subprocess as _rg_retry_subprocess
-        proc = _rg_retry_subprocess.run(
-            stripped,
-            shell=True,
-            cwd=str(execution_cwd.resolve()),
-            env=run_env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        if os.name == "nt":
+            proc = _rg_retry_subprocess.run(
+                _windows_powershell_command_argv(stripped),
+                shell=False,
+                cwd=str(execution_cwd.resolve()),
+                env=run_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        else:
+            proc = _rg_retry_subprocess.run(
+                stripped,
+                shell=True,
+                cwd=str(execution_cwd.resolve()),
+                env=run_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
         err = str(proc.stderr or "").strip()
         if err:
             _rg_stderr_retry._cache[cache_key] = err

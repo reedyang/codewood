@@ -23,6 +23,7 @@ steps run on the user's own files and need none.
 from __future__ import annotations
 
 import ctypes
+import base64
 import json
 import logging
 import os
@@ -1705,16 +1706,19 @@ class WindowsSandboxBackend(SandboxBackend):
 
         w = _win()
 
-        # Emulate subprocess's shell=True so cmd builtins and redirection are
-        # interpreted by the sandboxed command processor. Keep exactly one
-        # wrapper: an additional inner ``cmd /c`` changes quoting semantics.
-        # Do not wrap ``command`` in quotes: cmd only strips the outer quotes
-        # when the *whole* command line starts with a quote (the exe token
-        # prevents that), so ``cmd.exe /c "echo hi"`` would hand the trailing
-        # quote to the command. subprocess.shell=True uses the same bare
-        # ``comspec /c <command>`` form.
-        comspec = env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
-        cmdline = "{} /c {}".format(comspec, command)
+        # The shell tool now runs every command through PowerShell, so the
+        # sandbox dispatches PowerShell directly instead of emulating
+        # ``cmd /c``.  ``-EncodedCommand`` keeps the whole payload as a
+        # plain-ASCII base64 token, so the runner's CreateProcess command-line
+        # parsing cannot mangle quotes, spaces or multi-line scripts.  The
+        # bare ``powershell`` name resolves via the sandbox user's PATH
+        # (System32), matching the old bare ``cmd.exe`` fallback.
+        encoded = base64.b64encode(
+            str(command or "").encode("utf-16-le")
+        ).decode("ascii")
+        cmdline = "powershell -NoProfile -NonInteractive -EncodedCommand {}".format(
+            encoded
+        )
 
         # Sandbox user environment: the child keeps the real user's profile /
         # temp paths (reads there are allowed by the profile ACL grant).

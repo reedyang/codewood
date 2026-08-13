@@ -12,7 +12,10 @@ Use `read` to inspect file contents. Use `offset` and `limit` to page through la
 
 ## `shell` Tool
 
-Use for running commands. Prefer built-in tools first. On Windows, prefix non-read file ops with `powershell -ExecutionPolicy Bypass -Command "..."`.
+Use for running commands. Prefer built-in tools first.
+[[if $os="Windows"]]
+- On Windows, commands run directly in PowerShell: write native cmdlets (`Get-ChildItem`, `Get-Content`, ...) without a `powershell -Command` prefix.
+[[endif]]
 
 If a shell result says `sandbox_related: true`, the failure was likely caused by the sandbox: reflect on whether the command is necessary; if it truly is, you may re-run it with `bypass_sandbox: true` (one-time, user-approved). A rejected escalation ends the task.
 
