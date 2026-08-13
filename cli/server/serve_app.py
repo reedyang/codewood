@@ -2995,7 +2995,7 @@ class ServeApp:
                 )
 
                 with contextlib.redirect_stdout(io.StringIO()):
-                    workspace_switch_command(agent, wsid)
+                    workspace_switch_command(agent, wsid, lazy_records=True)
                 switched = True
         except Exception:
             if switched:
@@ -3005,7 +3005,7 @@ class ServeApp:
                     )
 
                     with contextlib.redirect_stdout(io.StringIO()):
-                        workspace_switch_command(agent, original_wsid)
+                        workspace_switch_command(agent, original_wsid, lazy_records=True)
                 except Exception:
                     pass
             return False
@@ -3902,7 +3902,7 @@ class ServeApp:
                     # becomes a persistent stray chat before the requested
                     # chat is activated.
                     workspace_switch_command(
-                        agent, wsid, create_default_chat=False
+                        agent, wsid, create_default_chat=False, lazy_records=True
                     )
 
                 _WORKSPACE_ROUTE_LOGGER.info(
@@ -7241,7 +7241,7 @@ class ServeApp:
                     refresh_workspace_acls(agent, str(root))
                 except Exception:
                     pass
-                agent._refresh_workspace_runtime(create_default_chat=False)
+                agent._refresh_workspace_runtime(create_default_chat=False, lazy_records=True)
                 agent._save_current_workspace_position(sync_messages=False)
                 self.broadcaster.publish(
                     "idle", self._route(state=_build_state(agent))
@@ -7280,7 +7280,7 @@ class ServeApp:
             except Exception:
                 pass
             # Don't auto-create a default chat — the GUI enters draft mode.
-            agent._refresh_workspace_runtime(create_default_chat=False)
+            agent._refresh_workspace_runtime(create_default_chat=False, lazy_records=True)
             agent._save_current_workspace_position(sync_messages=False)
         except Exception:
             return None
@@ -7364,7 +7364,7 @@ class ServeApp:
             # Don't auto-create a default chat; the frontend will enter
             # draft mode when the fallback workspace has no chats.
             agent._save_current_workspace_position(sync_messages=False)
-            agent._refresh_workspace_runtime(create_default_chat=False)
+            agent._refresh_workspace_runtime(create_default_chat=False, lazy_records=True)
             fallback_id = default_ws_id
         else:
             agent._save_workspace_state()
@@ -7405,7 +7405,7 @@ class ServeApp:
                 )
 
                 with contextlib.redirect_stdout(io.StringIO()):
-                    workspace_switch_command(agent, wsid)
+                    workspace_switch_command(agent, wsid, lazy_records=True)
                 with self._ws_persist_lock:
                     self._ws_persist_ctx.clear()
 
@@ -7474,7 +7474,7 @@ class ServeApp:
 
             if switched:
                 with agent._chat_state_lock:
-                    workspace_switch_command(agent, wsid)
+                    workspace_switch_command(agent, wsid, lazy_records=True)
             with agent._chat_state_lock:
                 target = agent._resolve_chat_selector(cid)
                 rid = str(target.get("id") or "") if target else ""
@@ -7525,6 +7525,13 @@ class ServeApp:
                     with self._runtimes_lock:
                         has_runtime = next_id in self._runtimes
                     if not has_runtime:
+                        # Hydrate the next chat from disk before activating it:
+                        # after a lazy workspace switch the in-memory entry may
+                        # still be a summary placeholder without messages.
+                        try:
+                            agent._refresh_chat_record_from_disk(next_id)
+                        except Exception:
+                            pass
                         agent._activate_chat(
                             next_id,
                             announce=False,
@@ -7537,7 +7544,7 @@ class ServeApp:
             # (idleForFocused=false) and marks remaining chats as unread.
             if switched:
                 with agent._chat_state_lock:
-                    workspace_switch_command(agent, original_wsid)
+                    workspace_switch_command(agent, original_wsid, lazy_records=True)
         except Exception:
             return False
         self.broadcaster.publish(

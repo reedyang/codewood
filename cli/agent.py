@@ -1351,8 +1351,12 @@ class Agent:
     def _next_chat_id(self) -> str:
         return self._chat_state_manager.next_chat_id()
 
-    def _load_chat_state(self, create_default_chat: bool = True) -> None:
-        self._chat_state_manager.load_chat_state(create_default_chat=create_default_chat)
+    def _load_chat_state(
+        self, create_default_chat: bool = True, lazy_records: bool = False
+    ) -> None:
+        self._chat_state_manager.load_chat_state(
+            create_default_chat=create_default_chat, lazy_records=lazy_records
+        )
 
     def _refresh_chat_record_from_disk(self, chat_id: str) -> bool:
         """Re-read one chat record so cross-process amendments are picked up.
@@ -7548,7 +7552,9 @@ class Agent:
             except Exception:
                 pass
 
-    def _refresh_workspace_runtime(self, create_default_chat: bool = True) -> None:
+    def _refresh_workspace_runtime(
+        self, create_default_chat: bool = True, lazy_records: bool = False
+    ) -> None:
         # Don't block the switch on the previous workspace's memory worker.
         # shutdown(wait=True) waits for an in-flight indexing task (e.g. one
         # triggered by a just-sent message) which can take seconds; the old
@@ -7560,7 +7566,21 @@ class Agent:
         self._cleanup_workspace_shell_stashes_if_needed()
         self._ensure_workspace_dirs()
         self.history_manager = HistoryManager(str(self.workspace_config_dir), language=getattr(self, "display_language", "en") or "en")
-        self._load_chat_state(create_default_chat=create_default_chat)
+        load_chat = getattr(self, "_load_chat_state", None)
+        if load_chat is not None:
+            try:
+                import inspect
+
+                sig = inspect.signature(load_chat)
+                if "lazy_records" in sig.parameters:
+                    load_chat(
+                        create_default_chat=create_default_chat,
+                        lazy_records=lazy_records,
+                    )
+                else:
+                    load_chat(create_default_chat=create_default_chat)
+            except (TypeError, ValueError):
+                load_chat(create_default_chat=create_default_chat)
         if self.input_handler is not None:
             try:
                 if hasattr(self.input_handler, "update_workspace_directory"):
