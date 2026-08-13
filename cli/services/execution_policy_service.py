@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..ai.ai_special_mode_prompts import InternalCallMode
 from ..core.security import command_security
 
 
@@ -677,7 +678,7 @@ def ai_assess_ephemeral_script_combined(
         payload,
         context="",
         stream=False,
-        freedom_combined_review=True,
+        internal_mode=InternalCallMode.FREEDOM_COMBINED_REVIEW,
     )
     if not isinstance(raw, str):
         return combined_review_on_model_failure(
@@ -707,7 +708,7 @@ def ai_assess_ephemeral_script_combined(
 def ai_assess_writes_files(agent: Any, command: Dict[str, Any]) -> Tuple[bool, str]:
     payload = json.dumps(command, ensure_ascii=False)
     raw = agent.call_ai(
-        payload, context="", stream=False, minimal_classifier=True
+        payload, context="", stream=False, internal_mode=InternalCallMode.MINIMAL_CLASSIFIER
     )
     if not isinstance(raw, str):
         return True, _t(agent, "execution_policy.review.model_invalid_type", fallback="Model returned an invalid type")

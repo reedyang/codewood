@@ -17,6 +17,7 @@ from ..core.config.model_providers import (
 )
 from ..core.console_utils import _ansi_gray
 from ..core.logging.app_logging import get_logger
+from ..ai.ai_special_mode_prompts import InternalCallMode
 
 MEMORY_RETRIEVAL_ROUNDS = 3
 MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
@@ -1346,7 +1347,7 @@ class SessionMemoryService:
                 + blob,
                 context="",
                 stream=False,
-                session_summary_mode=True,
+                internal_mode=InternalCallMode.SESSION_SUMMARY,
             )
         except Exception:
             return
@@ -1513,7 +1514,7 @@ class SessionMemoryService:
         body = (user_input or "").strip()
         payload = ((ref + "\n\n---\n\n") if ref else "") + "[Current user question] (Use only to extract retrieval terms and synonymous entities. Do not answer the user directly.)\n" + body
         try:
-            raw = self.agent.call_ai(payload, context="", stream=False, memory_query_expansion_mode=True)
+            raw = self.agent.call_ai(payload, context="", stream=False, internal_mode=InternalCallMode.MEMORY_QUERY_EXPANSION)
         except Exception:
             get_logger().exception("Experiential memory: query expansion LLM call failed")
             return None

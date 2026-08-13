@@ -11,6 +11,7 @@ from cli.ai.ai_provider_clients import (
     _call_openai_with_suffix_strategy,
     _stream_openai_like_response,
 )
+from cli.ai.ai_special_mode_prompts import InternalCallMode
 from cli.core.config.config_env import resolve_env_placeholder, resolve_string_values_in_data
 
 
@@ -23,8 +24,7 @@ def _payload(reasoning_effort):
         image_data=None,
         image_user_idx=None,
         image_user_text="",
-        session_summary_mode=False,
-        memory_query_expansion_mode=False,
+        internal_mode=InternalCallMode.REGULAR,
         tool_schemas=None,
         tool_choice=None,
         force_disable_thinking=False,
@@ -227,8 +227,7 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
                         image_data=None,
                         image_user_idx=None,
                         image_user_text="",
-                        session_summary_mode=False,
-                        memory_query_expansion_mode=False,
+                        internal_mode=InternalCallMode.REGULAR,
                         tool_schemas=None,
                         tool_choice=None,
                         append_history=lambda *_args, **_kwargs: None,
@@ -268,8 +267,7 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
                         image_data=None,
                         image_user_idx=None,
                         image_user_text="",
-                        session_summary_mode=False,
-                        memory_query_expansion_mode=False,
+                        internal_mode=InternalCallMode.REGULAR,
                         tool_schemas=None,
                         tool_choice=None,
                         append_history=lambda *_args, **_kwargs: None,
@@ -334,8 +332,7 @@ class ResponsesApiContentContractTests(unittest.TestCase):
                 image_data=None,
                 image_user_idx=None,
                 image_user_text="",
-                session_summary_mode=False,
-                memory_query_expansion_mode=False,
+                internal_mode=InternalCallMode.REGULAR,
                 tool_schemas=None,
                 tool_choice=None,
                 force_disable_thinking=False,

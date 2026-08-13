@@ -1,8 +1,31 @@
 ﻿import os
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.app_info import get_app_prompt_name, get_app_prompt_slug_kebab
+
+
+class InternalCallMode(str, Enum):
+    """Internal (non-regular) LLM call mode. Exactly one applies per call."""
+
+    REGULAR = ""
+    FREEDOM_COMBINED_REVIEW = "freedom_combined_review"
+    MINIMAL_CLASSIFIER = "minimal_classifier"
+    SESSION_SUMMARY = "session_summary"
+    CHAT_TITLE = "chat_title"
+    MEMORY_QUERY_EXPANSION = "memory_query_expansion"
+
+
+# Modes whose model output is bounded (512 tokens) and which suppress
+# reasoning_effort: short, machine-consumed internal payloads.
+INTERNAL_CAPPED_MODES = frozenset(
+    {
+        InternalCallMode.SESSION_SUMMARY,
+        InternalCallMode.CHAT_TITLE,
+        InternalCallMode.MEMORY_QUERY_EXPANSION,
+    }
+)
 
 
 def _freedom_combined_review_system_prompt(workspace_root: str, self_repo_root: str, workspace_config_dir: str = "") -> str:
@@ -85,13 +108,18 @@ SESSION_SUMMARY_SYSTEM_PROMPT = (
     "Output body text only: no markdown title, no JSON, and do not repeat these instructions."
 )
 
+CHAT_TITLE_SYSTEM_PROMPT = (
+    "You are a chat title generator. Output only the title text with no explanation.\n"
+    "Task: Generate a short title from the user's first message using the same language as the message.\n"
+    "Requirements: 4-64 characters; no trailing punctuation; avoid words like 'Chat/session/title/first message'.\n"
+    "If the message is very short, extract a concise intent phrase.\n"
+    "Output body text only: no markdown, no JSON, no quotes, and do not repeat these instructions."
+)
+
 def build_special_mode_messages(
     user_input: str,
     stream: bool,
-    minimal_classifier: bool,
-    freedom_combined_review: bool,
-    session_summary_mode: bool,
-    memory_query_expansion_mode: bool,
+    internal_mode: InternalCallMode = InternalCallMode.REGULAR,
     workspace_root: str = "",
     self_repo_root: str = "",
     workspace_config_dir: str = "",
@@ -99,7 +127,7 @@ def build_special_mode_messages(
     os_info = os.uname() if hasattr(os, "uname") else os.name
     date_time = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
 
-    if freedom_combined_review:
+    if internal_mode is InternalCallMode.FREEDOM_COMBINED_REVIEW:
         if stream:
             return None, False, "❌ Error: streaming mode is not supported for freedom-mode combined review."
         sys_prompt = _freedom_combined_review_system_prompt(
@@ -121,7 +149,7 @@ def build_special_mode_messages(
             },
         ], False, None
 
-    if minimal_classifier:
+    if internal_mode is InternalCallMode.MINIMAL_CLASSIFIER:
         if stream:
             return None, False, "❌ Error: streaming mode is not supported for internal safety classification."
         return [
@@ -137,7 +165,7 @@ def build_special_mode_messages(
             },
         ], False, None
 
-    if memory_query_expansion_mode:
+    if internal_mode is InternalCallMode.MEMORY_QUERY_EXPANSION:
         if stream:
             return None, False, "❌ Error: streaming mode is not supported for memory query expansion."
         return [
@@ -145,7 +173,15 @@ def build_special_mode_messages(
             {"role": "user", "content": user_input},
         ], False, None
 
-    if session_summary_mode:
+    if internal_mode is InternalCallMode.CHAT_TITLE:
+        if stream:
+            return None, False, "❌ Error: streaming mode is not supported for chat title generation."
+        return [
+            {"role": "system", "content": CHAT_TITLE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_input},
+        ], False, None
+
+    if internal_mode is InternalCallMode.SESSION_SUMMARY:
         if stream:
             return None, False, "❌ Error: streaming mode is not supported for session summary."
         return [
@@ -154,4 +190,3 @@ def build_special_mode_messages(
         ], False, None
 
     return None, True, None
-
