@@ -438,7 +438,12 @@ def _locate_hunk_start(
     fuzz: int = 0,
 ) -> Optional[int]:
     # Always try exact match at target_idx first — cheapest path.
-    if _hunk_matches_at(old_lines, target_idx, hunk_lines, fuzz=0):
+    # Only trust it when target_idx is at/after src_idx: a hunk whose
+    # declared position falls behind the already-consumed region (stale
+    # @@ numbers) must not match inside lines a previous hunk replaced.
+    if target_idx >= src_idx and _hunk_matches_at(
+        old_lines, target_idx, hunk_lines, fuzz=0
+    ):
         return target_idx
 
     # Anchor search is always exact (the first context / deletion line).
@@ -473,7 +478,7 @@ def _locate_hunk_start(
             continue
         for offset in range(-wider, wider + 1):
             test_pos = probe + offset
-            if test_pos < 0 or test_pos > len(old_lines) or test_pos == probe:
+            if test_pos < src_idx or test_pos >= len(old_lines) or test_pos == probe:
                 continue
             if test_pos in tested_extra:
                 continue
@@ -807,7 +812,7 @@ def action_apply_unified_patch(
             else:
                 old_start_no = int(old_start)
                 target_idx = 0 if old_start_no <= 0 else old_start_no - 1
-            if target_idx < src_idx or target_idx > len(old_lines):
+            if target_idx > len(old_lines):
                 return {
                     "success": False,
                     "error": (
@@ -816,6 +821,16 @@ def action_apply_unified_patch(
                         f"@@ line numbers."
                     ),
                 }
+            # A hunk whose declared position is behind the current scan
+            # position (target_idx < src_idx) is NOT an out-of-file error:
+            # AI-generated patches often carry stale @@ numbers while the
+            # real content sits later in the file (e.g. an earlier hunk was
+            # fuzz-located far from its declared line).  Let the locator
+            # search forward from src_idx; it returns None when the content
+            # is genuinely absent, and the anchor/context errors below stay
+            # accurate.  Previously this case wrongly reported e.g.
+            # "Hunk start line 631 is outside file (file has 1247 lines)"
+            # even though 631 was well within the file.
             located_idx = _locate_hunk_start(old_lines, src_idx, target_idx, hunk["lines"], fuzz=fuzz)
             if located_idx is None:
                 format_err = _validate_hunk_lines(hunk["lines"])
