@@ -29,6 +29,7 @@ from cli.core.sandbox.windows import (
     _load_secret,
     _random_password,
     _record_acl_dirs,
+    _rebuilt_flag_path,
     _secret_path,
     _save_secret,
     _users_ready_path,
@@ -57,10 +58,11 @@ class _SyncThread:
 
     def __init__(self, target=None, daemon=None, **kwargs):
         self._target = target
+        self._args = tuple(kwargs.get("args", ()) or ())
 
     def start(self):
         if self._target is not None:
-            self._target()
+            self._target(*self._args)
 
 
 class RandomPasswordTests(unittest.TestCase):
@@ -242,6 +244,149 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
         # the whole provisioning fail.
         self.assertTrue(result["ok"], result["errors"])
 
+    def test_provision_users_refreshes_password_in_place(self):
+        # Credentials mismatch (first verify fails) but both accounts exist;
+        # the in-place refresh restores logon, so the accounts (and their
+        # SIDs) are kept: no ACL sweep, no delete/recreate.
+        original = {"offline": _random_password(), "online": _random_password()}
+        _save_secret(self.config_dir, original)
+        calls = []
+
+        def fake_run(argv, timeout=180, stdin_data=None):
+            calls.append(" ".join(argv))
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process", side_effect=fake_run
+        ), patch.object(
+            self.backend,
+            "verify_credentials",
+            side_effect=[False, True],
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ):
+            result = self.backend.provision_users(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        joined = "\n".join(calls)
+        self.assertIn("Set-LocalUser", joined)
+        self.assertNotIn("Remove-LocalUser", joined)
+        self.assertNotIn("New-LocalUser", joined)
+        self.assertNotIn("icacls /remove:g", joined)
+        # The stored secret is untouched on the refresh path.
+        self.assertEqual(_load_secret(self.config_dir), original)
+        # Group membership is still ensured for the kept accounts.
+        self.assertIn("Add-LocalGroupMember", joined)
+
+    def test_provision_users_rotates_password_when_policy_rejects(self):
+        # The local password policy (history/complexity) rejects setting the
+        # account password back to the stored secret; the refresh must rotate
+        # to a fresh password, persist it, and keep the account SID instead
+        # of falling back to delete+recreate.
+        _save_secret(
+            self.config_dir,
+            {"offline": "OLDPASSW0RD!", "online": _random_password()},
+        )
+        calls = []
+
+        def fake_run(argv, timeout=180, stdin_data=None):
+            cmd = " ".join(argv)
+            calls.append(cmd)
+            if "Set-LocalUser" in cmd and "OLDPASSW0RD!" in cmd:
+                return SimpleNamespace(
+                    returncode=1, stderr="InvalidPasswordException", stdout=""
+                )
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process", side_effect=fake_run
+        ), patch.object(
+            self.backend,
+            "verify_credentials",
+            side_effect=[False, True],
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ):
+            result = self.backend.provision_users(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        joined = "\n".join(calls)
+        # No SID-changing rebuild: the account is kept, only the secret
+        # rotates to a fresh password that satisfies the policy.
+        self.assertNotIn("Remove-LocalUser", joined)
+        self.assertNotIn("New-LocalUser", joined)
+        saved = _load_secret(self.config_dir)
+        self.assertNotEqual(saved["offline"], "OLDPASSW0RD!")
+        self.assertGreaterEqual(len(saved["offline"]), 14)
+        self.assertTrue(any(c.isdigit() for c in saved["offline"]))
+        self.assertTrue(any(not c.isalnum() for c in saved["offline"]))
+
+    def test_provision_users_falls_back_to_recreate_when_refresh_fails(self):
+        # Set-LocalUser fails (e.g. foreign/disabled account), so the old
+        # behaviour runs: sweep first, then delete and recreate the users.
+        _save_secret(
+            self.config_dir,
+            {"offline": _random_password(), "online": _random_password()},
+        )
+        calls = []
+
+        def fake_run(argv, timeout=180, stdin_data=None):
+            cmd = " ".join(argv)
+            calls.append(cmd)
+            if "Set-LocalUser" in cmd:
+                return SimpleNamespace(returncode=1, stderr="boom", stdout="")
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process", side_effect=fake_run
+        ), patch.object(
+            self.backend,
+            "verify_credentials",
+            return_value=False,
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ):
+            result = self.backend.provision_users(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        joined = "\n".join(calls)
+        self.assertIn("Set-LocalUser", joined)
+        self.assertIn("Remove-LocalUser", joined)
+        self.assertIn("New-LocalUser", joined)
+        # The sweep still runs before the SID-changing deletion.
+        cleanup_idx = next(
+            i for i, c in enumerate(calls) if "icacls" in c and "/remove:g" in c
+        )
+        remove_idx = next(i for i, c in enumerate(calls) if "Remove-LocalUser" in c)
+        self.assertLess(cleanup_idx, remove_idx)
+
     def test_provision_users_writes_ready_flag(self):
         _save_secret(
             self.config_dir,
@@ -270,6 +415,151 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
         data = json.loads(ready.read_text(encoding="utf-8"))
         self.assertTrue(data["users_ready"])
         self.assertTrue(data["firewall_ok"])
+
+    def test_provision_users_writes_rebuilt_flag_when_recreating(self):
+        _save_secret(
+            self.config_dir,
+            {"offline": _random_password(), "online": _random_password()},
+        )
+        flag = _rebuilt_flag_path(self.config_dir)
+        self.assertFalse(flag.exists())
+
+        def fake_run(argv, timeout=180, stdin_data=None):
+            cmd = " ".join(argv)
+            if "Set-LocalUser" in cmd:
+                return SimpleNamespace(returncode=1, stderr="boom", stdout="")
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process", side_effect=fake_run
+        ), patch.object(
+            self.backend,
+            "verify_credentials",
+            return_value=False,
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ):
+            result = self.backend.provision_users(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        # The rebuild must leave a marker so the serve-side ACL phase knows
+        # to re-propagate the sandbox ACEs over pre-existing files.
+        self.assertTrue(flag.exists())
+
+    def test_provision_users_keeps_no_rebuilt_flag_when_refreshed(self):
+        _save_secret(
+            self.config_dir,
+            {"offline": _random_password(), "online": _random_password()},
+        )
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process",
+            return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+        ), patch.object(
+            self.backend,
+            "verify_credentials",
+            side_effect=[False, True],
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ):
+            result = self.backend.provision_users(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        # In-place password refresh keeps the SIDs: no rebuild, no flag.
+        self.assertFalse(_rebuilt_flag_path(self.config_dir).exists())
+
+    def test_provision_acls_repropagates_after_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            (ws / ".git").mkdir()
+            _rebuilt_flag_path(self.config_dir).write_text(
+                json.dumps({"rebuilt_at": 1}), encoding="utf-8"
+            )
+            calls = []
+
+            def fake_run(argv, timeout=180, stdin_data=None):
+                calls.append(" ".join(argv))
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            with patch(
+                "cli.core.sandbox.windows._user_exists", return_value=True
+            ), patch(
+                "cli.core.sandbox.windows._run_process", side_effect=fake_run
+            ), patch(
+                "cli.core.sandbox.windows._load_or_create_cap_sids",
+                return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+            ), patch(
+                "cli.core.sandbox.windows._ps_grant_modify_sid"
+            ), patch(
+                "cli.core.sandbox.windows._ps_grant_read_group", return_value=0
+            ), patch(
+                "cli.core.sandbox.windows._grant_profile_read", return_value=True
+            ), patch(
+                "cli.core.sandbox.windows.threading.Thread", _SyncThread
+            ):
+                result = self.backend.provision_acls(
+                    self.config_dir, str(ws), "workspace_write"
+                )
+
+            self.assertTrue(result["ok"], result["errors"])
+            joined = "\n".join(calls)
+            self.assertIn("Apply-Tree", joined)
+            # Workspace in write mode, runtime dirs in runtime mode, and the
+            # protected .git subtree excluded from the grant propagation.
+            self.assertIn("'write'", joined)
+            self.assertIn("'runtime'", joined)
+            self.assertIn(str((ws / ".git").resolve()), joined)
+            # The marker is consumed once the propagation finished.
+            self.assertFalse(_rebuilt_flag_path(self.config_dir).exists())
+
+    def test_provision_acls_skips_repropagation_without_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            (ws / ".git").mkdir()
+            calls = []
+
+            def fake_run(argv, timeout=180, stdin_data=None):
+                calls.append(" ".join(argv))
+                return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+            with patch(
+                "cli.core.sandbox.windows._user_exists", return_value=True
+            ), patch(
+                "cli.core.sandbox.windows._run_process", side_effect=fake_run
+            ), patch(
+                "cli.core.sandbox.windows._load_or_create_cap_sids",
+                return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+            ), patch(
+                "cli.core.sandbox.windows._ps_grant_modify_sid"
+            ), patch(
+                "cli.core.sandbox.windows._ps_grant_read_group", return_value=0
+            ), patch(
+                "cli.core.sandbox.windows._grant_profile_read", return_value=True
+            ):
+                result = self.backend.provision_acls(
+                    self.config_dir, str(ws), "workspace_write"
+                )
+
+            self.assertTrue(result["ok"], result["errors"])
+            self.assertNotIn("Apply-Tree", "\n".join(calls))
+            self.assertFalse(_rebuilt_flag_path(self.config_dir).exists())
 
     def test_provision_acls_refuses_without_users(self):
         with patch("cli.core.sandbox.windows._user_exists", return_value=False):
