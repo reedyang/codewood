@@ -861,6 +861,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     notice: CompactNoticeData | null;
     version: number;
   }>({ chatKey: "", notice: null, version: 0 });
+  // The backend emits one ``compact_notice`` SSE event per streamed summary
+  // chunk.  With a very long transcript every body update re-renders the whole
+  // message list, so without coalescing the live summary visibly flickers
+  // while it streams in.  Coalesce ``stream`` phases to one render per frame;
+  // ``start`` / ``done`` still apply immediately.
+  const compactStreamRafRef = useRef<number>(0);
   // Live 429/503 retry countdown keyed by workspace-qualified chat key. The
   // backend publishes one tick per second while it backs off before the next
   // retry (3s, then 2^n capped at 60s, forever); the UI renders the latest
@@ -2817,34 +2823,55 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!eventKey || !title) {
             break;
           }
-          // History and streaming turns are separate lists.  Anchor this
-          // streamed summary to the live turn that was current on arrival, so
-          // it remains after its user entry instead of above it.
-          const liveTurns = turnsByChatRef.current[eventKey] ?? EMPTY_TURNS;
-          const anchorTurnId = liveTurns.length > 0
-            ? liveTurns[liveTurns.length - 1].id
-            : undefined;
-          setCompactNoticeState((state) => ({
-            chatKey: eventKey,
-            notice: {
-              ...buildCompactNoticeData(title, body, {
-                stage: String(compactData.stage ?? "") || undefined,
-                mode: String(compactData.mode ?? "") || undefined,
-              }),
-              // Stream chunks update the body but retain the original anchor.
-              anchorTurnId:
-                state.chatKey === eventKey && state.notice?.anchorTurnId !== undefined
-                  ? state.notice.anchorTurnId
-                  : anchorTurnId,
-              // The final notice replaces its streamed predecessors. Keep the
-              // original slot so a later user turn cannot jump above it.
-              createdAt:
-                state.chatKey === eventKey && state.notice?.createdAt !== undefined
-                  ? state.notice.createdAt
-                  : Date.now(),
-            },
-            version: state.version + 1,
-          }));
+          const applyCompactNotice = () => {
+            // History and streaming turns are separate lists.  Anchor this
+            // streamed summary to the live turn that was current on arrival,
+            // so it remains after its user entry instead of above it.
+            const liveTurns = turnsByChatRef.current[eventKey] ?? EMPTY_TURNS;
+            const anchorTurnId = liveTurns.length > 0
+              ? liveTurns[liveTurns.length - 1].id
+              : undefined;
+            setCompactNoticeState((state) => ({
+              chatKey: eventKey,
+              notice: {
+                ...buildCompactNoticeData(title, body, {
+                  stage: String(compactData.stage ?? "") || undefined,
+                  mode: String(compactData.mode ?? "") || undefined,
+                }),
+                // Stream chunks update the body but retain the original anchor.
+                anchorTurnId:
+                  state.chatKey === eventKey && state.notice?.anchorTurnId !== undefined
+                    ? state.notice.anchorTurnId
+                    : anchorTurnId,
+                // The final notice replaces its streamed predecessors. Keep
+                // the original slot so a later user turn cannot jump above it.
+                createdAt:
+                  state.chatKey === eventKey && state.notice?.createdAt !== undefined
+                    ? state.notice.createdAt
+                    : Date.now(),
+              },
+              version: state.version + 1,
+            }));
+          };
+          if (String(compactData.stage ?? "") === "stream") {
+            // One SSE event per model chunk: coalesce into a single render per
+            // animation frame so a long transcript doesn't re-render (and
+            // visibly flicker) on every token.  ``start`` / ``done`` apply
+            // immediately so the banner and final summary never lag.
+            if (compactStreamRafRef.current) {
+              cancelAnimationFrame(compactStreamRafRef.current);
+            }
+            compactStreamRafRef.current = requestAnimationFrame(() => {
+              compactStreamRafRef.current = 0;
+              applyCompactNotice();
+            });
+          } else {
+            if (compactStreamRafRef.current) {
+              cancelAnimationFrame(compactStreamRafRef.current);
+              compactStreamRafRef.current = 0;
+            }
+            applyCompactNotice();
+          }
           break;
         }
         case "output": {
@@ -5241,11 +5268,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ? { chatKey: "", notice: null, version: state.version + 1 }
           : state,
       );
-      const result = await client.compactContext(
-        activeChatIdRef.current,
-        activeWorkspaceIdRef.current,
-      );
-      if (!result.ok && result.text && activeKey) {
+      const chatId = activeChatIdRef.current;
+      const wsId = activeWorkspaceIdRef.current;
+      const result = await client.compactContext(chatId, wsId);
+      if (result.ok) {
+        // The backend compacted the conversation synchronously, but no
+        // idle/state SSE event follows a manual compact (the agent was
+        // already idle), so the frontend transcript would keep showing the
+        // pre-compaction messages until the user switches chats or sends the
+        // next message.  Reload the history of the chat that was compacted so
+        // the persisted summary turn renders immediately and the compacted-
+        // away messages drop out.  Guarded by ``historyChatRef`` so a chat
+        // switch made while the HTTP request was in flight is untouched;
+        // ``loadChatHistory`` clears the live notice to avoid a duplicate.
+        if (historyChatRef.current === chatKey(wsId, chatId)) {
+          await loadChatHistory({ chatId, wsId });
+        }
+      } else if (!result.ok && result.text && activeKey) {
         setCompactNoticeState((state) => ({
           chatKey: activeKey,
           notice: buildCompactNoticeData(result.text ?? ""),

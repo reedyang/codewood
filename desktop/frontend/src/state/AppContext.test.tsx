@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => {
   const setChatModel = vi.fn(async () => true);
   const setChatReasoning = vi.fn(async () => true);
   const savePendingInputs = vi.fn(async () => true);
+  const compactContext = vi.fn(async () => ({ ok: true }));
   const pause = vi.fn(async () => undefined);
   const syncModelPresets = vi.fn(async () => undefined);
   const deleteChat = vi.fn(async () => true);
@@ -43,6 +44,7 @@ const apiMock = vi.hoisted(() => {
     setChatModel,
     setChatReasoning,
     savePendingInputs,
+    compactContext,
     pause,
     syncModelPresets,
     deleteChat,
@@ -72,6 +74,7 @@ const apiMock = vi.hoisted(() => {
       setChatModel.mockClear();
       setChatReasoning.mockClear();
       savePendingInputs.mockClear();
+      compactContext.mockClear();
       pause.mockClear();
       syncModelPresets.mockClear();
       deleteChat.mockClear();
@@ -107,6 +110,7 @@ vi.mock("../api/client", () => ({
     setChatModel = apiMock.setChatModel;
     setChatReasoning = apiMock.setChatReasoning;
     savePendingInputs = apiMock.savePendingInputs;
+    compactContext = apiMock.compactContext;
     pause = apiMock.pause;
     syncModelPresets = apiMock.syncModelPresets;
     deleteChat = apiMock.deleteChat;
@@ -3867,5 +3871,146 @@ describe("AppContext backend crash recovery", () => {
         ).toBe(true);
       });
     });
+  });
+});
+
+describe("compactContext history refresh", () => {
+  beforeEach(() => {
+    apiMock.reset();
+    apiMock.getState.mockResolvedValue(buildState());
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    );
+    window.localStorage.clear();
+  });
+
+  it("reloads the transcript after a successful manual compact", async () => {
+    function CompactProbe() {
+      const { compactContext, historyTurns } = useApp();
+      return (
+        <>
+          <button onClick={() => void compactContext()}>compact</button>
+          <pre data-testid="history-and-turns">
+            {JSON.stringify({ history: historyTurns.map((h) => h.userText) })}
+          </pre>
+        </>
+      );
+    }
+
+    render(
+      <AppProvider>
+        <CompactProbe />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Initial snapshot: bind the active chat so the history loader runs and
+    // historyChatRef points at chat-1.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState(),
+        },
+      });
+    });
+    await waitFor(() => expect(apiMock.getChatHistory).toHaveBeenCalled());
+
+    const historyCallsBefore = apiMock.getChatHistory.mock.calls.length;
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "compact" }));
+    });
+    await waitFor(() => expect(apiMock.compactContext).toHaveBeenCalled());
+    // A successful manual compact must refresh the persisted transcript
+    // immediately (no idle/state SSE event follows a manual compact), so the
+    // summary turn renders without the user having to switch chats.
+    await waitFor(() => {
+      expect(apiMock.getChatHistory.mock.calls.length).toBeGreaterThan(
+        historyCallsBefore,
+      );
+    });
+  });
+
+  it("does not refresh a different chat when the user switched during compact", async () => {
+    let resolveCompact: (value: { ok: boolean }) => void = () => {};
+    apiMock.compactContext.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCompact = resolve;
+        }),
+    );
+
+    function CompactSwitchProbe() {
+      const { compactContext, switchToChat } = useApp();
+      return (
+        <>
+          <button onClick={() => void compactContext()}>compact</button>
+          <button onClick={() => void switchToChat("chat-2", "ws-1")}>
+            switch
+          </button>
+        </>
+      );
+    }
+
+    render(
+      <AppProvider>
+        <CompactSwitchProbe />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState(),
+        },
+      });
+    });
+    await waitFor(() => expect(apiMock.getChatHistory).toHaveBeenCalled());
+
+    // A compact starts while the user is viewing chat-1.  The HTTP request
+    // stays pending (the backend compacts synchronously in that handler).
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "compact" }));
+    });
+    await waitFor(() => expect(apiMock.compactContext).toHaveBeenCalled());
+
+    const historyCallsBefore = apiMock.getChatHistory.mock.calls.length;
+    // ...but the user switches to chat-2 while the request is still pending.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "switch" }));
+    });
+    await waitFor(() => expect(apiMock.selectChat).toHaveBeenCalled());
+    expect(apiMock.selectChat).toHaveBeenCalledWith("chat-2", "ws-1");
+    await waitFor(() => {
+      const lastCall = apiMock.getChatHistory.mock.calls[
+        apiMock.getChatHistory.mock.calls.length - 1
+      ] as unknown[];
+      // client.getChatHistory(before, limit, chatId, workspaceId)
+      expect(lastCall?.[2]).toBe("chat-2");
+    });
+    // When the compact response finally resolves, the post-compact refresh is
+    // keyed to the ORIGINAL chat (chat-1) and must not clobber chat-2.
+    await act(async () => {
+      resolveCompact({ ok: true });
+    });
+    expect(apiMock.getChatHistory.mock.calls.length).toBe(
+      historyCallsBefore + 1,
+    );
+    const lastCall = apiMock.getChatHistory.mock.calls[
+      apiMock.getChatHistory.mock.calls.length - 1
+    ] as unknown[];
+    expect(lastCall[2]).toBe("chat-2");
   });
 });
