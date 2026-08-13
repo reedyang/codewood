@@ -16,9 +16,6 @@ IMPORTANT: DO NOT ADD ANY COMMENTS unless asked.
 - Use the available search tools to understand the codebase and the user's query.
 - Implement the solution with all tools available to you.
 - Always use the `apply_patch` tool to write files, including brand-new files.
-[[if $os="Windows"]]
-- When invoking a PowerShell command, use: `powershell -ExecutionPolicy Bypass -Command "<command>"`. Do not wrap script execution in unnecessary PowerShell; use interpreters directly, e.g. `python tools/a.py --x 1`.
-[[endif]]
 - Verify with tests when possible. Check the README or codebase for the test approach.
 - When done, run lint and typecheck (e.g. `npm run lint`, `ruff`) if provided. If unsure, ask the user and suggest saving it to AGENTS.md.
 - NEVER commit changes unless the user explicitly asks.

@@ -3,7 +3,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cli.tools.shell import _enforce_windows_powershell_command_prefix
+from cli.tools.shell import _unwrap_windows_powershell_wrapper
+from cli.tools.shell import _windows_powershell_command_argv
+from cli.tools.shell import _strip_powershell_clixml_output
+from cli.tools.shell import _ClixmlStreamFilter
+from cli.tools.shell import _encode_powershell_script_as_encoded_command
 from cli.tools.shell import _normalize_windows_powershell_command_for_compat
 from cli.tools.shell import _enforce_git_no_pager_for_shell_command
 from cli.tools.shell import enforce_workspace_rg_for_shell_command
@@ -17,24 +21,159 @@ class ShellCommandPolicyTests(unittest.TestCase):
         def __init__(self, repo_root: str):
             self._self_repo_root = repo_root
 
-    def test_windows_powershell_requires_bypass_command_prefix(self):
+    def test_windows_bare_command_passes_through(self):
         with patch("cli.tools.shell.os.name", "nt"):
-            res = _enforce_windows_powershell_command_prefix(
-                'powershell -Command "Get-ChildItem -Force"'
+            self.assertEqual(
+                _unwrap_windows_powershell_wrapper("Get-ChildItem -Force"),
+                "Get-ChildItem -Force",
             )
-        self.assertFalse(res.get("ok", True))
-        self.assertIn("ExecutionPolicy Bypass -Command", str(res.get("error", "")))
 
-    def test_windows_powershell_exe_is_normalized(self):
+    def test_windows_powershell_wrapper_is_unwrapped(self):
         with patch("cli.tools.shell.os.name", "nt"):
-            res = _enforce_windows_powershell_command_prefix(
-                'powershell.exe -ExecutionPolicy Bypass -Command "Get-Date"'
+            res = _unwrap_windows_powershell_wrapper(
+                'powershell -ExecutionPolicy Bypass -Command "Get-Date"'
             )
-        self.assertTrue(res.get("ok"))
+        self.assertEqual(res, "Get-Date")
+
+    def test_windows_powershell_exe_and_pwsh_are_unwrapped(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            self.assertEqual(
+                _unwrap_windows_powershell_wrapper('powershell.exe -Command "Get-Date"'),
+                "Get-Date",
+            )
+            self.assertEqual(
+                _unwrap_windows_powershell_wrapper('pwsh -Command "Get-Date"'),
+                "Get-Date",
+            )
+
+    def test_unwrap_strips_outer_double_quote_wrapper(self):
+        with patch("cli.tools.shell.os.name", "nt"):
+            res = _unwrap_windows_powershell_wrapper(
+                '"powershell -ExecutionPolicy Bypass -Command \\"Get-Date\\""'
+            )
+        self.assertEqual(res, "Get-Date")
+
+    def test_unwrap_encoded_command_decodes_script(self):
+        script = "$x = @'\nline1\n'@; Write-Output $x"
+        encoded = _encode_powershell_script_as_encoded_command(script)
+        with patch("cli.tools.shell.os.name", "nt"):
+            res = _unwrap_windows_powershell_wrapper(
+                f"powershell -ExecutionPolicy Bypass -EncodedCommand {encoded}"
+            )
+        self.assertEqual(res, script)
+
+    def test_unwrap_noop_on_non_windows(self):
+        wrapped = 'powershell -Command "Get-Date"'
+        with patch("cli.tools.shell.os.name", "posix"):
+            self.assertEqual(_unwrap_windows_powershell_wrapper(wrapped), wrapped)
+
+    def test_windows_powershell_command_argv(self):
+        with patch(
+            "cli.tools.shell._windows_powershell_executable", return_value="powershell"
+        ):
+            argv = _windows_powershell_command_argv("Get-ChildItem -Force")
         self.assertEqual(
-            res.get("command"),
-            'powershell -ExecutionPolicy Bypass -Command "Get-Date"',
+            argv,
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ProgressPreference = 'SilentlyContinue'; Get-ChildItem -Force",
+            ],
         )
+
+    def test_windows_powershell_command_argv_interactive_omits_noninteractive(self):
+        with patch(
+            "cli.tools.shell._windows_powershell_executable", return_value="powershell"
+        ):
+            argv = _windows_powershell_command_argv("python", interactive=True)
+        self.assertNotIn("-NonInteractive", argv)
+        self.assertEqual(
+            argv[-1],
+            "$ProgressPreference = 'SilentlyContinue'; python",
+        )
+
+    def test_windows_powershell_command_argv_multiline_uses_encoded_command(self):
+        with patch(
+            "cli.tools.shell._windows_powershell_executable", return_value="powershell"
+        ):
+            argv = _windows_powershell_command_argv("$a = 1\n$a")
+        self.assertIn("-EncodedCommand", argv)
+        encoded = argv[-1]
+        self.assertEqual(
+            base64.b64decode(encoded).decode("utf-16-le"),
+            "$ProgressPreference = 'SilentlyContinue'; $a = 1\n$a",
+        )
+
+    def test_strip_powershell_clixml_output_removes_document_and_header(self):
+        doc = (
+            "#< CLIXML\r\n"
+            "real output\r\n"
+            "<Objs Version=\"1.1.0.1\" "
+            "xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">"
+            "<Obj S=\"progress\" RefId=\"0\">x</Obj></Objs>\r\n"
+        )
+        cleaned = _strip_powershell_clixml_output(doc)
+        self.assertNotIn("CLIXML", cleaned)
+        self.assertNotIn("<Objs", cleaned)
+        self.assertNotIn("</Objs>", cleaned)
+        self.assertIn("real output", cleaned)
+
+    def test_strip_powershell_clixml_output_handles_split_header_and_doc(self):
+        text = (
+            "#< CLIXML\n"
+            "npx ccusage codex\n"
+            "<Objs Version=\"1.1.0.1\" "
+            "xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">"
+            "<Obj S=\"progress\" RefId=\"0\">"
+            "<AV>Preparing modules for first use.</AV></Obj></Objs>\n"
+        )
+        cleaned = _strip_powershell_clixml_output(text)
+        self.assertNotIn("CLIXML", cleaned)
+        self.assertNotIn("<Objs", cleaned)
+        self.assertNotIn("</Objs>", cleaned)
+        self.assertEqual(cleaned.strip(), "npx ccusage codex")
+
+    def test_strip_powershell_clixml_output_keeps_normal_output(self):
+        self.assertEqual(
+            _strip_powershell_clixml_output("hello\nworld\n"),
+            "hello\nworld\n",
+        )
+
+    def test_clixml_stream_filter_drops_header_and_doc_split_across_chunks(self):
+        stream = (
+            "#< CLIXML\n"
+            "real output line\n"
+            '<Objs Version="1.1.0.1" '
+            'xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+            "<Obj S=\"progress\" RefId=\"0\">"
+            "<AV>Preparing modules for first use.</AV></Obj></Objs>\n"
+        )
+        f = _ClixmlStreamFilter()
+        out = "".join(f.feed(stream[i : i + 5]) for i in range(0, len(stream), 5))
+        out += f.flush()
+        self.assertEqual(out, "real output line\n")
+
+    def test_clixml_stream_filter_emits_plain_output_immediately(self):
+        f = _ClixmlStreamFilter()
+        self.assertEqual(f.feed("hello "), "hello ")
+        self.assertEqual(f.feed("world\n"), "world\n")
+        self.assertEqual(f.feed("tail"), "tail")
+        f.flush()
+
+    def test_clixml_stream_filter_buffers_doc_until_end_tag(self):
+        f = _ClixmlStreamFilter()
+        head = (
+            "#< CLIXML\nreal\n"
+            '<Objs Version="1.1.0.1" '
+            'xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+        )
+        self.assertEqual(f.feed(head), "real\n")
+        self.assertEqual(f.feed("<Obj>data</Obj>"), "")
+        self.assertEqual(f.feed("</Objs>"), "")
+        self.assertEqual(f.feed("after\n"), "after\n")
+        f.flush()
 
     def test_enforce_workspace_rg_for_shell_command_rewrites_plain_rg(self):
         agent = self._DummyAgent("D:/repo")
@@ -74,18 +213,6 @@ class ShellCommandPolicyTests(unittest.TestCase):
         self.assertIn("powershell -ExecutionPolicy Bypass -Command", summary)
         self.assertIn("rg -n TODO src", summary)
         self.assertNotIn("D:\\repo\\bin\\rg.exe", summary)
-
-    def test_enforce_strips_outer_double_quote_wrapper(self):
-        with patch("cli.tools.shell.os.name", "nt"):
-            res = _enforce_windows_powershell_command_prefix(
-                '"powershell -ExecutionPolicy Bypass -Command \\"Get-Date\\""'
-            )
-        self.assertTrue(res.get("ok"))
-        self.assertNotIn(
-            '"powershell',
-            res.get("command", ""),
-            "Outer wrapper should have been stripped before dispatch",
-        )
 
     def test_normalize_compat_no_change_for_simple_command(self):
         cmd = 'powershell -ExecutionPolicy Bypass -Command "Get-Date"'
