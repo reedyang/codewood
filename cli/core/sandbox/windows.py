@@ -841,8 +841,15 @@ def _missing_profile_read_dirs(children: Sequence[Path]) -> list:
         "-bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit; "
     )
     ps_lines.append("$dirs=@(")
-    for child in children:
-        ps_lines.append("  '{0}',".format(str(child).replace("'", "''")))
+    for index, child in enumerate(children):
+        # PowerShell rejects a trailing comma before ``)`` in an array
+        # literal (``@(1,2,)`` is a parse error: "Missing expression after
+        # ','"), which would fail the whole check script and silently report
+        # "nothing missing" -- so the last entry must not end with a comma.
+        sep = "," if index < len(children) - 1 else ""
+        ps_lines.append(
+            "  '{0}'{1}".format(str(child).replace("'", "''"), sep)
+        )
     ps_lines.append(");")
     ps_lines.append(
         "foreach ($p in $dirs) { "
@@ -875,6 +882,11 @@ def _missing_profile_read_dirs(children: Sequence[Path]) -> list:
         ],
         timeout=120,
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "profile read-ACE check failed: %s"
+            % ((result.stderr or result.stdout or "")[:400].strip())
+        )
     out = (result.stdout or "").strip()
     if not out:
         return []

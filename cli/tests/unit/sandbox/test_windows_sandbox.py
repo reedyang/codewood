@@ -27,6 +27,7 @@ from cli.core.sandbox.windows import (
     _load_acl_record,
     _load_pending_cleanup,
     _load_secret,
+    _missing_profile_read_dirs,
     _random_password,
     _record_acl_dirs,
     _rebuilt_flag_path,
@@ -1199,7 +1200,7 @@ class WindowsSandboxBackendAclTests(unittest.TestCase):
                 calls.append(argv)
                 if argv[0] == "powershell" and "Get-Acl" in " ".join(argv):
                     return SimpleNamespace(
-                        returncode=1,
+                        returncode=0,
                         stdout=str(Path.home() / "AppData") + "\n",
                         stderr="",
                     )
@@ -1223,6 +1224,41 @@ class WindowsSandboxBackendAclTests(unittest.TestCase):
                 all(c[1].startswith(str(Path.home())) for c in icacls_calls)
             )
             self.assertTrue(all("(OI)(CI)RX" in c[3] for c in icacls_calls))
+
+
+    def test_missing_profile_read_dirs_script_avoids_trailing_comma(self):
+        """PowerShell rejects ``@(1,2,)`` ("Missing expression after ','"),
+        so a trailing comma in the generated check script used to fail the
+        whole script, report "nothing missing", and skip the profile grants
+        entirely.  The last array entry must not end with a comma."""
+        children = [
+            Path.home() / "one",
+            Path.home() / "two",
+            Path.home() / "three",
+        ]
+        captured = {}
+
+        def fake_run(argv, timeout=180, stdin_data=None):
+            captured["script"] = argv[-1]
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("cli.core.sandbox.windows._run_process", side_effect=fake_run):
+            self.assertEqual(_missing_profile_read_dirs(children), [])
+
+        script = captured["script"]
+        self.assertIn("$dirs=@(", script)
+        self.assertNotIn(",);", script)
+        self.assertEqual(script.count("',"), len(children) - 1)
+
+    def test_missing_profile_read_dirs_raises_on_check_failure(self):
+        """A failed check script must raise so the caller logs/retries instead
+        of silently treating the failure as "all grants present"."""
+        with patch(
+            "cli.core.sandbox.windows._run_process",
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+        ):
+            with self.assertRaises(RuntimeError):
+                _missing_profile_read_dirs([Path.home() / "one"])
 
 
 class WindowsSandboxBackendCleanupTests(unittest.TestCase):
