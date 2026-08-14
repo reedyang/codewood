@@ -169,6 +169,8 @@ export const zhCN: Dict = {
   "chat.pendingListSendTip": "发送队列中的消息",
   "chat.pendingListCancel": "从队列中移除",
   "chat.pendingListSendNow": "立即发送",
+  "chat.steerHintQueue": "排队",
+  "chat.steerHintSteer": "插队执行",
   "msg.copy": "复制",
   "msg.paste": "粘贴",
   "msg.cut": "剪切",

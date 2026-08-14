@@ -289,6 +289,9 @@ interface AppContextValue {
   /** Pause the running task and send the pending input at the given index
    * immediately, removing it from the queue. */
   sendPendingInputNow: (index: number) => Promise<void>;
+  /** Pause the running task and send the given text immediately, bypassing
+   * the pending queue entirely (Ctrl/Cmd+Enter "Steer" from the composer). */
+  sendInputSteer: (text: string) => Promise<void>;
   compactContext: () => Promise<{ ok: boolean; text?: string }>;
   compactNotice: CompactNoticeData | null;
   /** Live 429/503 retry countdown per chat (workspace-qualified keys). */
@@ -3745,6 +3748,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client, persistPendingInputs],
   );
 
+  const sendInputSteer = useCallback(
+    async (text: string): Promise<void> => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+      const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      const { wsId, chatId } = parseChatKey(key);
+      if (!chatId) {
+        return;
+      }
+      const isBusy = busyByChatRef.current[key] ?? false;
+      if (!isBusy) {
+        await pendingModelConfigRef.current;
+        await client.sendInput(trimmed, true, chatId, wsId);
+        return;
+      }
+      // Busy: cooperative Steer — pause the running turn first (same mechanism
+      // as the pending-list jump) so the typed message lands immediately
+      // instead of queueing behind the current task.
+      suppressAutoSendOnceRef.current[key] = true;
+      try {
+        await client.pause(chatId, wsId);
+        await client.sendInput(trimmed, true, chatId, wsId);
+      } catch {
+        // A failed jump must not silently eat the message: drop the
+        // suppression and fall back to the pending queue so the next idle
+        // still picks it up.
+        delete suppressAutoSendOnceRef.current[key];
+        setPendingInputsByChat((prev) => {
+          const existing = prev[key] ?? [];
+          const next = { ...prev, [key]: [...existing, trimmed] };
+          return next;
+        });
+        setPendingAutoSendByChat((prev) => ({ ...prev, [key]: true }));
+      }
+    },
+    [client],
+  );
+
   const runCommand = useCallback(
     async (command: string) => {
       await client.sendInput(
@@ -5287,6 +5330,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     startPendingInputs,
     cancelPendingInput,
     sendPendingInputNow,
+    sendInputSteer,
     compactContext: async () => {
       setCompactNoticeState((state) =>
         state.notice

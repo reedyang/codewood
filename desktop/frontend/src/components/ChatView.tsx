@@ -51,6 +51,14 @@ import {
 import type { Segment, TokenKind } from "../utils/tokens";
 import { RichComposer } from "./RichComposer";
 
+// The modifier key shown in the Steer hint: Macs use the Command key, all
+// other platforms use Ctrl. Detection mirrors the browser's own platform
+// string so the GUI matches the OS it actually runs on.
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+const MOD_KEY = IS_MAC ? "⌘" : "Ctrl+";
+
 function ChatLoadingSplash() {
   return (
     <div className="chat-loading-splash" aria-hidden="true">
@@ -1159,6 +1167,7 @@ export function ChatView() {
     startPendingInputs,
     cancelPendingInput,
     sendPendingInputNow,
+    sendInputSteer,
     todoDockVisible,
     setTodoDockVisible,
     t,
@@ -1726,6 +1735,39 @@ export function ChatView() {
     await sendInput(message);
   };
 
+  // Ctrl/Cmd+Enter: "Steer" — while the model is busy the plain Enter queues
+  // the message behind the running task; this path pauses the turn first and
+  // sends the draft immediately (same cooperative interrupt as the pending
+  // list's Steer button). When idle it degrades to a normal send.
+  const submitSteer = async () => {
+    if (!canSend) {
+      return;
+    }
+    // While a request_user_input prompt is pending the turn is paused on the
+    // user's answer — steering has no meaning there, so behave like a normal
+    // send (answer the prompt).
+    if (askMoreInfo) {
+      await submit();
+      return;
+    }
+    await setPlanMode(chatMode === "plan");
+    const baseMessage = composeMessageText(segments);
+    const message = appendImageRefs(
+      baseMessage,
+      imageAttachments.map((a) => a.path),
+    );
+    const key = draftKey;
+    setSegments([]);
+    setImageAttachmentsByChat((prev) => ({ ...prev, [key]: [] }));
+    stickToBottomRef.current = true;
+    setTodoDockVisible(false);
+    if (busy) {
+      await sendInputSteer(message);
+    } else {
+      await sendInput(message);
+    }
+  };
+
   // Continue a plan-mode turn by clicking "Execute now". We disable plan
   // mode for the follow-up so the agent moves from planning to execution,
   // and we send a short prompt asking it to carry out the plan. The exact
@@ -1900,6 +1942,17 @@ export function ChatView() {
 
   const composer = (
     <div className="composer">
+      {busy && !askMoreInfo && canSend && (
+        <div className="steer-hint" role="status">
+          <span className="steer-hint-item">
+            <kbd>Enter</kbd> {t("chat.steerHintQueue")}
+          </span>
+          <span className="steer-hint-sep">·</span>
+          <span className="steer-hint-item">
+            <kbd>{MOD_KEY}Enter</kbd> {t("chat.steerHintSteer")}
+          </span>
+        </div>
+      )}
       <AttachmentStrip
         images={imageAttachments}
         onRemove={removeImageAttachment}
@@ -1908,6 +1961,7 @@ export function ChatView() {
         segments={segments}
         onChange={setSegments}
         onSubmit={() => void submit()}
+        onSubmitSteer={() => void submitSteer()}
         placeholder={t("chat.inputPlaceholder")}
         rows={3}
         onPasteImages={onPasteImages}

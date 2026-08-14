@@ -38,6 +38,9 @@ export interface RichComposerProps {
   segments: Segment[];
   onChange: (segments: Segment[]) => void;
   onSubmit: () => void;
+  /** Called on Ctrl/Cmd+Enter: send immediately, bypassing the pending queue
+   * (the parent decides what "Steer" means for the current chat state). */
+  onSubmitSteer?: () => void;
   placeholder?: string;
   rows?: number;
   /** Called with pasted clipboard bitmaps (as data URLs). When provided and
@@ -605,6 +608,7 @@ export function RichComposer({
   segments,
   onChange,
   onSubmit,
+  onSubmitSteer,
   placeholder,
   rows = 3,
   onPasteImages,
@@ -1779,6 +1783,14 @@ export function RichComposer({
           return;
         }
       }
+      // Ctrl/Cmd+Enter: "Steer" — jump the queue and send right away. The
+      // plain Enter handler below keeps its queueing behavior for busy chats;
+      // this modifier path is what lets the user interrupt mid-task.
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        onSubmitSteer?.();
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         onSubmit();
@@ -1790,6 +1802,7 @@ export function RichComposer({
       insertSelectedAtItem,
       insertSelectedSlashItem,
       onSubmit,
+      onSubmitSteer,
       redo,
       selectAllContent,
       undo,
