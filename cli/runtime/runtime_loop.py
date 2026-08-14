@@ -4894,10 +4894,10 @@ def run_agent_loop(agent: Any):
                     self._repaint_tool_call_feedback_if_failed(
                         tool_name,
                         args,
-                        failed=(not bool(result.get("success", True))) and (not aborted_tool_result),
+                        failed=(not bool(result.get("success", True))) or aborted_tool_result,
                         up_lines=repaint_up_lines,
                     )
-                    if _gui_stream and (not bool(result.get("success", True))) and (not aborted_tool_result):
+                    if _gui_stream and ((not bool(result.get("success", True))) or aborted_tool_result):
                         _gui_repaint = getattr(self, "_gui_tool_feedback_repaint", None)
                         if callable(_gui_repaint):
                             try:
