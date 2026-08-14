@@ -2739,6 +2739,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           startTurn(String(data.text ?? ""), eventKey);
           setBusyForChat(eventKey, true);
           streamingKeyRef.current = eventKey;
+          // A Steer paused the previous turn; if that turn interrupt idle was
+          // skipped (e.g. the idle snapshot still showed the chat running
+          // because the jumped task had already started), the suppression
+          // marker must NOT leak into the jumped task completion idle and
+          // swallow the pending queue — the queue resumes from the jumped
+          // task own idle instead.
+          delete suppressAutoSendOnceRef.current[eventKey];
           // A new turn supersedes any stale retry countdown for this chat.
           setRetryCountdownByChat((prev) => {
             if (!prev[eventKey]) return prev;
