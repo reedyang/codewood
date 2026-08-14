@@ -1515,10 +1515,27 @@ export function ChatView() {
     } else {
       // Routine history replacement while the user reads earlier messages:
       // keep their viewport anchored instead of jumping to the bottom.
-      el.scrollTop = Math.max(
-        0,
-        el.scrollTop + (el.scrollHeight - prevScrollHeightRef.current),
-      );
+      //
+      // A task-completion reload is special: the live turn just collapsed
+      // into the "Worked for" shell and then re-expanded (the settle
+      // transition), so a queued scroll event can unpin a user who was
+      // pinned at the bottom the whole time. If the reload then landed in
+      // the anchor branch with a stale (larger) prevScrollHeightRef, the
+      // negative delta would yank the viewport up to old messages. A user
+      // who is currently AT the bottom of the visible content (the browser
+      // clamped them there when the content shrank) should simply follow
+      // the new content's bottom instead of applying the delta.
+      const distanceFromBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distanceFromBottom <= 80) {
+        el.scrollTop = el.scrollHeight;
+        stickToBottomRef.current = true;
+      } else {
+        el.scrollTop = Math.max(
+          0,
+          el.scrollTop + (el.scrollHeight - prevScrollHeightRef.current),
+        );
+      }
       prevScrollHeightRef.current = el.scrollHeight;
     }
   }, [historyTurns]);
