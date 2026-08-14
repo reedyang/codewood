@@ -509,12 +509,13 @@ function HealthSendProbe() {
 }
 
 function PendingJumpProbe() {
-  const { pendingInputs, pendingAutoSend, sendInput, sendPendingInputNow, startPendingInputs } = useApp();
+  const { pendingInputs, pendingAutoSend, sendInput, sendInputSteer, sendPendingInputNow, startPendingInputs } = useApp();
   return (
     <>
       <button onClick={() => { void sendInput("msg-A"); }}>queue A</button>
       <button onClick={() => { void sendInput("msg-B"); }}>queue B</button>
       <button onClick={() => { void sendInput("msg-C"); }}>queue C</button>
+      <button onClick={() => { void sendInputSteer("steer-msg"); }}>steer now</button>
       <button onClick={() => { void sendPendingInputNow(0); }}>jump index 0</button>
       <button onClick={() => { void sendPendingInputNow(1); }}>jump index 1</button>
       <button onClick={() => { void startPendingInputs(); }}>start queue</button>
@@ -2075,6 +2076,82 @@ describe("AppContext thinking rounds", () => {
     const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
     expect(st.pendingInputs).toEqual(["msg-B"]);
     expect(st.pendingAutoSend).toBe(true);
+  });
+
+  it("steers a typed message immediately while busy, bypassing the queue", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // A turn is streaming: the composer Steer must NOT queue the message.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+
+    expect(apiMock.pause).toHaveBeenCalledWith("chat-1", "ws-1");
+    expect(apiMock.sendInput).toHaveBeenCalledWith("steer-msg", true, "chat-1", "ws-1");
+    const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+    expect(st.pendingInputs).toEqual([]);
+    expect(st.pendingAutoSend).toBe(false);
+  });
+
+  it("falls back to the pending queue when a steer send fails", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    apiMock.pause.mockImplementationOnce(async () => undefined);
+    apiMock.sendInput.mockImplementationOnce(async () => {
+      throw new Error("network down");
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+
+    // The failed jump must not eat the message: it lands in the pending queue
+    // so the next idle still picks it up.
+    const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+    expect(st.pendingInputs).toEqual(["steer-msg"]);
+    expect(st.pendingAutoSend).toBe(true);
+  });
+
+  it("sends normally without pausing when the chat is idle", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+
+    expect(apiMock.pause).not.toHaveBeenCalled();
+    expect(apiMock.sendInput).toHaveBeenCalledWith("steer-msg", true, "chat-1", "ws-1");
   });
 
   it("drains the remaining queue one per turn after the jumped task completes", async () => {
