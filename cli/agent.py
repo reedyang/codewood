@@ -241,6 +241,8 @@ SKILL_PROMPT_MAX_SECTION_CHARS = 2600
 DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
+# Fallback chat index file name for agents without a workspace id. Real
+# workspaces use ``<workspace id>.json`` in the global chats directory.
 CHAT_STATE_FILE = "chats.json"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
@@ -9009,8 +9011,9 @@ class Agent:
 
     def _apply_patch_preview_path(self) -> Optional[Path]:
         """Per-chat apply_patch preview sidecar path
-        (``chats/data/<record-stem>/previews.json``). One file per chat so it is
-        trivially associated with — and cleaned up alongside — its chat record."""
+        (``chats/<YYYY>/<MM>/<DD>/data/<record-stem>/previews.json``). One file
+        per chat so it is trivially associated with — and cleaned up alongside
+        — its chat record."""
         try:
             mgr = getattr(self, "_chat_state_manager", None)
             if mgr is None:

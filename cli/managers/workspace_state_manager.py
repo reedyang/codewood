@@ -97,12 +97,16 @@ class WorkspaceStateManager:
             # storage is always derived as ``root / <config dirname>`` and the
             # working directory follows the by-rule fallback in
             # ``apply_workspace_entry``. Legacy keys, if present, are ignored.
+            # ``archived`` (a workspace deleted by the user, kept in the
+            # registry for the 设置/已归档 page) IS preserved.
             entry: Dict[str, Any] = {
                 "id": workspace_id,
                 "name": name,
                 "kind": "custom",
                 "root": str(root_path),
             }
+            if bool(raw_entry.get("archived", False)):
+                entry["archived"] = True
             workspaces[workspace_id] = entry
 
         active = str(raw_state.get("active") or self._default_workspace_id)
@@ -190,6 +194,10 @@ class WorkspaceStateManager:
                 "kind": self._agent.workspace_kind,
                 "root": str(self._agent.workspace_root),
             }
+            # Applying an archived workspace (e.g. a chat deletion routed
+            # through a deleted workspace) must not un-archive the entry.
+            if bool(entry.get("archived", False)):
+                workspaces[self._agent.workspace_id]["archived"] = True
 
     def save_current_workspace_position(self, sync_messages: bool = True) -> None:
         # ``sync_messages`` flushes the calling thread's live session

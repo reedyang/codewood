@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 _SCHEMA_VERSION = 2
 _DB_DIR = "search"
 _DB_FILE = "chat_index.db"
-_CHATS_SUBDIR = "chats"
-_CHAT_STATE_FILE = "chats.json"
+# Per-workspace chat index files are named ``<workspace id>.json`` and live at
+# the top level of the global chats root (see ``ChatStateManager``).
 
 # Bounds so a single pathological message/query can never balloon the index.
 _MAX_TOKENS_PER_MESSAGE = 2000
@@ -410,7 +410,7 @@ class ChatSearchIndex:
     # -- indexing ---------------------------------------------------------
 
     def refresh_workspace(
-        self, ws_id: str, ws_name: str, storage_dir: Any
+        self, ws_id: str, ws_name: str, chats_root: Any
     ) -> Dict[str, Any]:
         """(Re)index every non-archived chat in one workspace.
 
@@ -418,8 +418,12 @@ class ChatSearchIndex:
         files whose fingerprint changed are re-tokenized.
         """
         stats = {"indexed": 0, "skipped": 0, "removed": 0, "chats": 0}
-        chats_dir = Path(storage_dir) / _CHATS_SUBDIR
-        index_path = chats_dir / _CHAT_STATE_FILE
+        # The chats root is the single global ``<global-config>/chats``
+        # directory shared by every workspace; the workspace's index is
+        # ``<workspace id>.json`` at its top level and record files are
+        # distributed under ``<YYYY>/<MM>/<DD>/`` date directories.
+        chats_root = Path(chats_root)
+        index_path = chats_root / f"{ws_id}.json"
         entries: List[Dict[str, Any]] = []
         try:
             if index_path.is_file():
@@ -440,10 +444,11 @@ class ChatSearchIndex:
             if bool(entry.get("archived", False)):
                 self.invalidate_chat(ws_id, cid)
                 continue
-            rel = Path(record_file)
-            if rel.is_absolute() or rel.name != record_file:
+            try:
+                record_path = (chats_root / record_file).resolve()
+                record_path.relative_to(chats_root.resolve())
+            except Exception:
                 continue
-            record_path = chats_dir / record_file
             if not record_path.is_file():
                 self.invalidate_chat(ws_id, cid)
                 continue

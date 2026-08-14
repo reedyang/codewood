@@ -15,7 +15,7 @@ _PNG_1x1 = base64.b64decode(
 
 class _FakeChatStateManager:
     """Minimal manager exposing the chat side-data directory under
-    ``<cfg>/chats/data/<record-stem>/`` used by the paste-image upload."""
+    ``<cfg>/chats/`` used by the paste-image upload (focused-workspace path)."""
 
     def __init__(self, cfg_dir: Path) -> None:
         self._cfg = Path(cfg_dir)
@@ -28,6 +28,17 @@ class _FakeChatStateManager:
         if not cid:
             return None
         return self.chat_records_dir() / "data" / f"record-{cid}"
+
+    def chat_data_dir(self, record_file: str):
+        rel = Path(record_file)
+        return self.chat_records_dir() / rel.parent / "data" / rel.stem
+
+    def is_path_under_chat_data(self, target) -> bool:
+        try:
+            Path(target).resolve().relative_to(self.chat_records_dir().resolve())
+            return True
+        except Exception:
+            return False
 
 
 class _FakeAgent:
@@ -89,7 +100,7 @@ class PasteImageTests(unittest.TestCase):
                 "config_dir": ws2_cfg,
                 "chat_state": {
                     "chats": [
-                        {"id": "c1", "_record_file": "other-record.json"},
+                        {"id": "c1", "_record_file": "2026/01/02/other-record.json"},
                     ]
                 },
             } if workspace_id == "ws-2" else None
@@ -98,7 +109,7 @@ class PasteImageTests(unittest.TestCase):
             saved = Path(res["path"])
             self.assertEqual(
                 saved.parent,
-                (ws2_cfg / "chats" / "data" / "other-record").resolve(),
+                (cfg / "chats" / "2026/01/02" / "data" / "other-record").resolve(),
             )
             self.assertEqual(saved.read_bytes(), _PNG_1x1)
 

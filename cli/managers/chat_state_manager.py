@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.localization import translate
+from ..config.app_info import get_app_global_config_dir
 
 logger = logging.getLogger("codewood.chat_state")
 
@@ -109,6 +110,74 @@ CHAT_STATE_VERSION = 1
 _PLAN_STATUSES = ("pending", "in_progress", "completed")
 _PLAN_MAX_ITEMS = 32
 _PLAN_MAX_STEP_CHARS = 200
+
+
+def archive_workspace_chats(ws_id: str, agent: Any = None) -> None:
+    """Mark every chat of ``ws_id`` as archived in its on-disk index.
+
+    Called when a workspace is deleted: the workspace entry is kept in the
+    registry (flagged archived) and its chats stay in the global chats
+    directory but become visible — and deletable — from the 设置/已归档
+    settings page. ``archived`` is stored only in the index, so no record
+    files need to be rewritten.
+    """
+    ws_id = str(ws_id or "").strip()
+    if not ws_id:
+        return
+    try:
+        # Resolve the chats root like the ChatStateManager does so tests /
+        # overrides are honored; production always resolves to the global
+        # ``<global-config>/chats`` directory.
+        chats_root = None
+        if agent is not None:
+            chats_root = getattr(agent, "_chats_root_override", None)
+            if chats_root is None:
+                try:
+                    mgr = getattr(agent, "_chat_state_manager", None)
+                    if mgr is not None:
+                        chats_root = mgr.chat_records_dir()
+                except Exception:
+                    chats_root = None
+        if chats_root is None:
+            chats_root = get_app_global_config_dir() / "chats"
+        index_path = Path(chats_root) / f"{ws_id}.json"
+        if not index_path.is_file():
+            return
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+        if not isinstance(index, dict):
+            return
+        chats = index.get("chats")
+        if not isinstance(chats, list):
+            return
+        changed = False
+        for c in chats:
+            if isinstance(c, dict) and not bool(c.get("archived", False)):
+                c["archived"] = True
+                changed = True
+        if changed:
+            with open(index_path, "w", encoding="utf-8") as f:
+                json.dump(index, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _parse_chat_date(text: Any) -> Optional[datetime]:
+    """Best-effort parse of a chat's ``created_at`` into a date.
+
+    Returns ``None`` when the value is missing or unparseable, so callers can
+    fall back to ``updated_at`` / file mtime / today.
+    """
+    t = str(text or "").strip()
+    if not t:
+        return None
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", t)
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
 
 _REPLY_NODE_KINDS = frozenset({"reasoning", "content", "tool_call"})
 _REPLY_RAW_KIND = "raw"
@@ -316,39 +385,104 @@ class ChatStateManager:
         return getattr(self._agent, "_chat_state_lock", None)
 
     def chat_state_path(self) -> Path:
-        return self.chat_records_dir() / self._chat_state_file
+        return self.chat_records_dir() / self._index_filename()
 
-    def chat_records_dir(self) -> Path:
+    def _index_filename(self) -> str:
+        """On-disk name of this workspace's chat index file.
+
+        The index used to be a shared ``chats.json`` per workspace; it is now
+        ``<workspace id>.json`` living at the top level of the global chats
+        root, so one global ``chats/`` directory serves every workspace. When
+        no workspace id is known (bare agents, unit tests) the constructor-
+        supplied fallback name is used.
+        """
+        wsid = self._expected_workspace_id()
+        if wsid:
+            return f"{wsid}.json"
+        return self._chat_state_file
+
+    def _chats_root(self) -> Path:
+        """The single global chats root (``<global-config>/chats``).
+
+        All workspaces' chat indexes, record files and side data live under
+        this one directory: indexes as ``<wsid>.json`` at the top level,
+        record files as ``<YYYY>/<MM>/<DD>/<hex>.json`` and per-chat side
+        data as ``<YYYY>/<MM>/<DD>/data/<record-stem>/``. A background chat
+        loop's thread-local persistence override may pin an explicit root
+        (always the same global root in production); tests override it via
+        ``agent._chats_root_override`` so they never touch the real user
+        config directory.
+        """
         ctx = self._persist_ctx()
         if ctx is not None:
-            cfg = ctx.get("config_dir")
-            if cfg:
-                return Path(cfg) / "chats"
-        return self._agent.workspace_config_dir / "chats"
+            root = ctx.get("chats_root")
+            if root:
+                return Path(root)
+        override = getattr(self._agent, "_chats_root_override", None)
+        if override:
+            return Path(override)
+        return get_app_global_config_dir() / "chats"
 
-    def _new_chat_record_filename(self) -> str:
+    def chat_records_dir(self) -> Path:
+        """The global chats root.
+
+        Chat record files no longer live flat in one directory; they are
+        distributed under ``<YYYY>/<MM>/<DD>/`` subdirectories of this root.
+        The name is kept so containment checks and callers that reason about
+        "the chats directory" keep working against the single global root.
+        """
+        return self._chats_root()
+
+    def _record_rel_dir_for_chat(self, chat: Optional[Dict[str, Any]] = None) -> str:
+        """``YYYY/MM/DD`` subdirectory a chat's record belongs in.
+
+        The date comes from the chat's creation date (``created_at``); when
+        the field is missing or unparseable the current date is used so a
+        record file can always be placed somewhere deterministic.
+        """
+        created = ""
+        if isinstance(chat, dict):
+            created = str(chat.get("created_at") or "").strip()
+        d = _parse_chat_date(created)
+        if d is None:
+            d = datetime.now()
+        return f"{d.year:04d}/{d.month:02d}/{d.day:02d}"
+
+    def _new_chat_record_filename(self, chat: Optional[Dict[str, Any]] = None) -> str:
         while True:
             name = f"{secrets.token_hex(16)}.json"
-            if name != self._chat_state_file and not (self.chat_records_dir() / name).exists():
-                return name
+            rel_dir = self._record_rel_dir_for_chat(chat)
+            rel = f"{rel_dir}/{name}"
+            if rel != self._index_filename() and not (self._chats_root() / rel).exists():
+                return rel
 
     def _chat_record_filename_for_chat(self, chat: Dict[str, Any]) -> str:
         existing = str(chat.get("_record_file") or "").strip()
         if existing:
             return existing
-        name = self._new_chat_record_filename()
+        name = self._new_chat_record_filename(chat)
         chat["_record_file"] = name
         return name
 
     def _resolve_chat_record_path(self, record_file: str) -> Path:
         name = str(record_file or "").strip()
         rel = Path(name)
-        if not name or rel.is_absolute() or rel.name != name:
-            raise ValueError("chat record_file must be a file name")
-        if name == self._chat_state_file:
+        parts = rel.parts
+        if (
+            not name
+            or rel.is_absolute()
+            or ".." in parts
+            or len(parts) != 4
+            or not parts[-1].endswith(".json")
+            or not (parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit())
+        ):
+            raise ValueError(
+                "chat record_file must be <YYYY>/<MM>/<DD>/<file>.json"
+            )
+        if name == self._index_filename() or name == "chats.json":
             raise ValueError("chat record_file cannot be the chat index file")
-        path = (self.chat_records_dir() / rel).resolve()
-        records_dir = self.chat_records_dir().resolve()
+        path = (self._chats_root() / rel).resolve()
+        records_dir = self._chats_root().resolve()
         try:
             path.relative_to(records_dir)
         except ValueError as exc:
@@ -365,17 +499,37 @@ class ChatStateManager:
     _CHAT_BACKUPS_DIRNAME = "backups"
 
     def _chat_data_dir_for_record_file(self, record_file: str) -> Optional[Path]:
-        """Resolve ``chats/data/<record-stem>/`` for a chat record file name."""
+        """Resolve ``chats/<date>/data/<record-stem>/`` for a chat record."""
         try:
             record_path = self._resolve_chat_record_path(record_file)
         except Exception:
             return None
-        stem = (
-            record_path.name[: -len(".json")]
-            if record_path.name.endswith(".json")
-            else record_path.name
-        )
-        return self.chat_records_dir() / self._CHAT_DATA_DIRNAME / stem
+        stem = record_path.stem
+        return record_path.parent / self._CHAT_DATA_DIRNAME / stem
+
+    def is_path_under_chat_data(self, target: Any) -> bool:
+        """Whether ``target`` resolves inside any chat's side-data directory.
+
+        Chat side data lives at ``chats/<YYYY>/<MM>/<DD>/data/<stem>/…``, i.e.
+        under a ``data`` directory that is a direct child of a numeric date
+        directory inside the global chats root. Used as the containment check
+        for serving pasted images / saved preview files.
+        """
+        try:
+            root = self._chats_root().resolve()
+            target = Path(target).resolve()
+            try:
+                rel = target.relative_to(root)
+            except ValueError:
+                return False
+            parts = rel.parts
+            if len(parts) < 5:
+                return False
+            if parts[3] != self._CHAT_DATA_DIRNAME:
+                return False
+            return parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit()
+        except Exception:
+            return False
 
     def chat_data_dir(self, record_file: str) -> Optional[Path]:
         """Public accessor for a chat record's side-data directory."""
@@ -491,23 +645,34 @@ class ChatStateManager:
             pass
 
     def cleanup_orphan_chat_data(self) -> None:
-        """Delete any ``chats/data/<stem>/`` whose sibling chat record
+        """Delete any ``chats/<date>/data/<stem>/`` whose sibling chat record
         ``<stem>.json`` no longer exists. Called at startup so side data never
         outlives its chat."""
         try:
-            records_dir = self.chat_records_dir()
-            data_root = records_dir / self._CHAT_DATA_DIRNAME
-            if not data_root.exists():
+            chats_root = self._chats_root()
+            if not chats_root.exists():
                 return
-            for child in data_root.iterdir():
-                try:
-                    if not child.is_dir():
-                        continue
-                    record = records_dir / f"{child.name}.json"
-                    if not record.exists():
-                        shutil.rmtree(child, ignore_errors=True)
-                except Exception:
-                    pass
+            for date_dir in chats_root.glob("*/*/*"):
+                if not date_dir.is_dir():
+                    continue
+                if not (
+                    date_dir.name.isdigit()
+                    and date_dir.parent.name.isdigit()
+                    and date_dir.parent.parent.name.isdigit()
+                ):
+                    continue
+                data_root = date_dir / self._CHAT_DATA_DIRNAME
+                if not data_root.exists():
+                    continue
+                for child in data_root.iterdir():
+                    try:
+                        if not child.is_dir():
+                            continue
+                        record = date_dir / f"{child.name}.json"
+                        if not record.exists():
+                            shutil.rmtree(child, ignore_errors=True)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -734,13 +899,13 @@ class ChatStateManager:
         }
 
     def _quarantine_foreign_index(self, index_path: Path, foreign_wsid: str) -> None:
-        """Move a ``chats.json`` that belongs to another workspace out of the way.
+        """Move an index that belongs to another workspace out of the way.
 
         Called when the index at ``index_path`` carries a ``workspace_id``
-        that differs from the workspace whose config dir it lives in — the
+        that differs from the workspace the index file name claims — the
         signature of a cross-workspace write (see the save guard). The foreign
         file is renamed (never silently deleted) to
-        ``chats.json.foreign-ws.<wsid>.<ts>`` so the workspace can rebuild a
+        ``<index>.foreign-ws.<wsid>.<ts>`` so the workspace can rebuild a
         fresh index while the evidence is kept for forensics/recovery.
         Best-effort: on failure the caller still raises and the reset path
         simply won't persist until the file is removed manually.
@@ -795,12 +960,14 @@ class ChatStateManager:
     # switching slow in workspaces with many/large chats. We now skip the
     # expensive read/serialize/write for chats that are unchanged since the
     # last time we loaded or wrote them, tracking dirtiness per chat. Keys are
-    # scoped by the workspace's records dir so same-id chats in different
-    # workspaces never share a dirty flag.
+    # scoped by the workspace (chats root + workspace id) so same-id chats in
+    # different workspaces never share a dirty flag — important now that the
+    # chats root is shared globally across all workspaces.
 
     def _dirty_scope(self) -> str:
         try:
-            return str(self.chat_records_dir().resolve())
+            wsid = self._expected_workspace_id()
+            return f"{self._chats_root().resolve()}::{wsid or 'default'}"
         except Exception:
             return "default"
 
@@ -1390,23 +1557,27 @@ class ChatStateManager:
                         known_record_files = known
                 except Exception:
                     known_record_files = set()
-                for stale in records_dir.glob("*.json"):
+                # Record files are distributed under ``YYYY/MM/DD/`` date
+                # directories of the shared chats root, so the sweep iterates
+                # the bounded set of relative paths this process has actually
+                # seen rather than globbing the whole (potentially large)
+                # global tree.
+                for stale in sorted(known_record_files):
                     try:
-                        if stale.resolve() == index_path.resolve():
+                        stale_path = self._resolve_chat_record_path(stale)
+                        if stale_path.resolve() in current_record_paths:
                             continue
-                        if stale.resolve() in current_record_paths:
-                            continue
-                        if stale.name not in known_record_files:
+                        if not stale_path.exists():
                             continue
                         logger.info(
                             "save_chat_state stale-sweep deleting record_file=%s "
                             "(not in current_index, known=%s)",
-                            stale.name,
-                            stale.name in known_record_files,
+                            stale,
+                            stale in known_record_files,
                         )
-                        stale.unlink()
+                        stale_path.unlink()
                         # Delete the chat's side-data directory alongside its record.
-                        self.delete_chat_data(stale.name)
+                        self.delete_chat_data(stale)
                     except Exception:
                         pass
 
@@ -1734,9 +1905,14 @@ class ChatStateManager:
         write) and is treated as corrupt instead of being loaded, so a
         background save can never re-persist another workspace's chats here.
         """
-        records_dir = Path(config_dir) / "chats"
-        index_path = records_dir / self._chat_state_file
         expected_wsid = str(expected_workspace_id or "").strip()
+        # Chat indexes and records now live in the global chats root keyed by
+        # workspace id; ``config_dir`` (the workspace's own config dir) is no
+        # longer where chats are stored. It is kept as a parameter for call
+        # compatibility, but the index path is derived from the workspace id.
+        records_dir = self._chats_root()
+        index_name = f"{expected_wsid}.json" if expected_wsid else self._chat_state_file
+        index_path = records_dir / index_name
         try:
             with open(index_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -1784,13 +1960,9 @@ class ChatStateManager:
                         chat["has_unread"] = index_entry["has_unread"]
                     chats.append(chat)
                     continue
-                rel = Path(record_file)
-                if rel.is_absolute() or rel.name != record_file:
-                    continue
-                record_path = (records_dir / rel).resolve()
                 try:
-                    record_path.relative_to(records_dir.resolve())
-                except ValueError:
+                    record_path = self._resolve_chat_record_path(record_file)
+                except Exception:
                     continue
                 try:
                     with open(record_path, "r", encoding="utf-8") as f:

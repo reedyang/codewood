@@ -10,7 +10,11 @@ from cli.managers.chat_state_manager import CHAT_STATE_VERSION, ChatStateManager
 
 
 def _chat_index_entry(chat):
-    record_file = chat.get("_record_file") or f"0123456789abcdef0123456789abcde{len(str(chat['id'])) % 10}.json"
+    # Record files now live in ``<YYYY>/<MM>/<DD>/`` date directories of the
+    # global chats root; index entries carry the full relative path.
+    record_file = chat.get("_record_file") or (
+        f"2026/01/02/0123456789abcdef0123456789abcde{len(str(chat['id'])) % 10}.json"
+    )
     return {
         "id": chat["id"],
         "name": chat.get("name", "New Chat"),
@@ -23,7 +27,7 @@ def _chat_index_entry(chat):
     }
 
 
-def _write_chat_store(workspace: Path, payload, workspace_id: str = ""):
+def _write_chat_store(workspace: Path, payload, workspace_id: str = "", index_name: str = ""):
     chats_dir = workspace / "chats"
     chats_dir.mkdir(parents=True, exist_ok=True)
     chats = [c for c in payload.get("chats", []) if isinstance(c, dict)]
@@ -37,18 +41,39 @@ def _write_chat_store(workspace: Path, payload, workspace_id: str = ""):
     for chat in chats:
         record_file = _chat_index_entry(chat)["record_file"]
         record_payload = {k: v for k, v in chat.items() if not str(k).startswith("_")}
-        (chats_dir / record_file).write_text(
+        record_path = chats_dir / record_file
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(
             json.dumps(record_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    (chats_dir / "chats.json").write_text(
+    index_name = (
+        index_name or (f"{workspace_id}.json" if workspace_id else "chats.json")
+    )
+    (chats_dir / index_name).write_text(
         json.dumps(index, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def _read_chat_index(workspace: Path):
-    return json.loads((workspace / "chats" / "chats.json").read_text(encoding="utf-8"))
+def _read_chat_index(workspace: Path, workspace_id: str = ""):
+    chats_dir = workspace / "chats"
+    if workspace_id:
+        index_name = f"{workspace_id}.json"
+        path = chats_dir / index_name
+    else:
+        path = chats_dir / "chats.json"
+        if not path.exists():
+            # Auto-discover the per-workspace index: tests set
+            # ``agent.workspace_id`` and the manager then writes ``<id>.json``.
+            candidates = sorted(
+                p
+                for p in chats_dir.glob("*.json")
+                if p.name != "chats.json" and not p.name.startswith("chats.json.")
+            )
+            if candidates:
+                path = candidates[0]
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _read_first_chat_record(workspace: Path):
@@ -58,13 +83,14 @@ def _read_first_chat_record(workspace: Path):
 
 
 def _assert_hash_record_file(testcase, record_file: str):
-    testcase.assertRegex(record_file, r"^[0-9a-f]{32}\.json$")
+    testcase.assertRegex(record_file, r"^\d{4}/\d{2}/\d{2}/[0-9a-f]{32}\.json$")
     testcase.assertNotEqual(record_file, "chat-1.json")
 
 
 class _FakeAgent:
     def __init__(self, workspace: Path):
         self.workspace_config_dir = workspace
+        self._chats_root_override = workspace / "chats"
         self._chat_state = {}
         self._chat_state_lock = threading.RLock()
         self.provider = "openai"
@@ -83,6 +109,7 @@ class _FakeAgent:
         self._last_context_window = 0
         self.remembered_history_anchor_indexes = []
         self.session_memory_service = None
+        self.workspace_id = ""
 
     def _apply_chat_model_from_entry(self, chat, persist_if_missing=False):
         self.applied_chat_model_calls += 1
@@ -113,7 +140,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                     {
                         "id": "chat-1",
                         "name": "Chat 1",
-                        "_record_file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+                        "_record_file": "2026/01/02/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
                     }
                 ],
             }
@@ -514,12 +541,12 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                     {
                         "id": "chat-1",
                         "name": "Chat 1",
-                        "_record_file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+                        "_record_file": "2026/01/02/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
                     }
                 ],
             }
             manager.save_chat_state()
-            index = _read_chat_index(workspace)
+            index = _read_chat_index(workspace, "ws-A")
             self.assertEqual(index.get("workspace_id"), "ws-A")
 
     def test_save_refuses_when_disk_index_belongs_to_other_workspace(self):
@@ -529,6 +556,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 workspace,
                 {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Existing"}]},
                 workspace_id="ws-B",
+                index_name="ws-A.json",
             )
             agent = _FakeAgent(workspace)
             agent.workspace_id = "ws-A"
@@ -541,18 +569,18 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                     {
                         "id": "chat-1",
                         "name": "Foreign",
-                        "_record_file": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
+                        "_record_file": "2026/01/02/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
                     }
                 ],
             }
             manager.save_chat_state()
-            index = _read_chat_index(workspace)
+            index = _read_chat_index(workspace, "ws-A")
             # The on-disk index must be untouched — no whole-index replacement.
             self.assertEqual(index.get("workspace_id"), "ws-B")
             self.assertEqual(index["chats"][0]["name"], "Existing")
             # And no foreign record file may have been copied over.
             self.assertFalse(
-                (workspace / "chats" / "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json").exists()
+                (workspace / "chats" / "2026/01/02/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json").exists()
             )
 
     def test_save_refuses_when_in_memory_state_belongs_to_other_workspace(self):
@@ -562,6 +590,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 workspace,
                 {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Existing"}]},
                 workspace_id="ws-A",
+                index_name="ws-A.json",
             )
             agent = _FakeAgent(workspace)
             agent.workspace_id = "ws-A"
@@ -574,15 +603,15 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                     {
                         "id": "chat-1",
                         "name": "Foreign",
-                        "_record_file": "cccccccccccccccccccccccccccccccc.json",
+                        "_record_file": "2026/01/02/cccccccccccccccccccccccccccccccc.json",
                     }
                 ],
             }
             manager.save_chat_state()
-            index = _read_chat_index(workspace)
+            index = _read_chat_index(workspace, "ws-A")
             self.assertEqual(index["chats"][0]["name"], "Existing")
             self.assertFalse(
-                (workspace / "chats" / "cccccccccccccccccccccccccccccccc.json").exists()
+                (workspace / "chats" / "2026/01/02/cccccccccccccccccccccccccccccccc.json").exists()
             )
 
     def test_load_quarantines_foreign_workspace_index(self):
@@ -592,17 +621,18 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 workspace,
                 {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Foreign"}]},
                 workspace_id="ws-B",
+                index_name="ws-A.json",
             )
             agent = _FakeAgent(workspace)
             agent.workspace_id = "ws-A"
             manager = ChatStateManager(agent, "chats.json")
             manager.load_chat_state()
-            index = _read_chat_index(workspace)
+            index = _read_chat_index(workspace, "ws-A")
             # The workspace recovers with a fresh index stamped for itself.
             self.assertEqual(index.get("workspace_id"), "ws-A")
             self.assertEqual(agent._chat_state.get("workspace_id"), "ws-A")
             # The foreign index is preserved for forensics, never deleted.
-            backups = list((workspace / "chats").glob("chats.json.foreign-ws.ws-B.*"))
+            backups = list((workspace / "chats").glob("ws-A.json.foreign-ws.ws-B.*"))
             self.assertEqual(len(backups), 1)
 
     def test_load_chat_state_snapshot_refuses_foreign_index(self):
@@ -612,6 +642,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 workspace,
                 {"active": "chat-1", "chats": [{"id": "chat-1", "name": "Foreign"}]},
                 workspace_id="ws-B",
+                index_name="ws-A.json",
             )
             agent = _FakeAgent(workspace)
             agent.workspace_id = "ws-A"
@@ -1251,7 +1282,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             workspace = Path(td)
             agent = _FakeAgent(workspace)
             manager = ChatStateManager(agent, "chats.json")
-            record_file = "0123456789abcdef0123456789abcde6.json"
+            record_file = "2026/01/02/0123456789abcdef0123456789abcde6.json"
             agent._chat_state = {
                 "version": 2,
                 "active": "chat-1",
@@ -1274,8 +1305,9 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             # The on-disk record holds a real conversation (e.g. loaded lazily
             # as an empty placeholder during a workspace switch); the empty
             # in-memory session must never overwrite it.
-            (workspace / "chats").mkdir(parents=True, exist_ok=True)
-            (workspace / "chats" / record_file).write_text(
+            record_path = workspace / "chats" / record_file
+            record_path.parent.mkdir(parents=True, exist_ok=True)
+            record_path.write_text(
                 json.dumps(
                     {
                         "id": "chat-1",
@@ -1344,7 +1376,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             workspace = Path(td)
             agent = _FakeAgent(workspace)
             manager = ChatStateManager(agent, "chats.json")
-            record_file = "0123456789abcdef0123456789abcde6.json"
+            record_file = "2026/01/02/0123456789abcdef0123456789abcde6.json"
             agent._chat_state = {
                 "version": 2,
                 "active": "chat-1",
@@ -1366,8 +1398,9 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             }
             agent.active_chat_id = "chat-1"
             agent.conversation_history = []
-            (workspace / "chats").mkdir(parents=True, exist_ok=True)
-            (workspace / "chats" / record_file).write_text(
+            record_path = workspace / "chats" / record_file
+            record_path.parent.mkdir(parents=True, exist_ok=True)
+            record_path.write_text(
                 json.dumps(
                     {"id": "chat-1", "name": "Main", "updated_at": "2026-07-08 15:00:00", "messages": []},
                     ensure_ascii=False,
@@ -1784,8 +1817,10 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             gui_mgr.save_chat_state()
 
             # Peer creates chat-z directly on disk (record + index entry).
-            peer_record = "ff00ff00ff00ff00ff00ff00ff00ff00.json"
-            (workspace / "chats" / peer_record).write_text(
+            peer_record = "2026/06/18/ff00ff00ff00ff00ff00ff00ff00ff00.json"
+            peer_path = workspace / "chats" / peer_record
+            peer_path.parent.mkdir(parents=True, exist_ok=True)
+            peer_path.write_text(
                 json.dumps(
                     {
                         "id": "chat-z",

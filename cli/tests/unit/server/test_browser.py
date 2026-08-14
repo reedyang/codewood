@@ -26,6 +26,13 @@ class _FakeChatStateManager:
             return None
         return self.chat_records_dir() / "data" / f"record-{cid}"
 
+    def is_path_under_chat_data(self, target) -> bool:
+        try:
+            Path(target).resolve().relative_to(self.chat_records_dir().resolve())
+            return True
+        except Exception:
+            return False
+
 
 class _FakeAgent:
     def __init__(self, cfg_dir: Path) -> None:

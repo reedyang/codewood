@@ -45,6 +45,7 @@ from ..core.console_utils import (
     GUI_FORCE_PROMPT_PREFIX,
 )
 from ..config.app_info import get_app_logger_root, get_app_slug_snake
+from ..config.app_info import get_app_global_config_dir
 from ..services.session_memory_service import (
     CONTEXT_COMPACTION_SUMMARY_PREFIX,
     _assistant_display_view,
@@ -158,17 +159,17 @@ def _open_in_file_manager(path: str) -> bool:
         return False
 
 
-def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
+def _read_workspace_chat_index(ws_id: str) -> List[Dict[str, Any]]:
     """Read chat summaries from a workspace's on-disk chat index.
 
     Returns ``[{id, name, updatedAt}]`` (possibly empty). The path is derived
     from trusted agent state, not from any client input.
     """
-    from ..agent import CHAT_STATE_FILE
+    from ..config.app_info import get_app_global_config_dir
 
     out: List[Dict[str, Any]] = []
     try:
-        index_path = os.path.join(str(storage_dir), "chats", CHAT_STATE_FILE)
+        index_path = get_app_global_config_dir() / "chats" / f"{ws_id}.json"
         if not os.path.isfile(index_path):
             return out
         with open(index_path, "r", encoding="utf-8") as f:
@@ -1573,6 +1574,7 @@ def _build_state_inner(agent: Any, workspace_id: str = "") -> Dict[str, Any]:
                         "root": root,
                         "active": ws_id == active_ws_id,
                         "isDefault": is_default,
+                        "archived": bool(entry.get("archived", False)),
                     }
                 )
     except Exception:
@@ -4722,10 +4724,9 @@ class ServeApp:
         ctx = self._persist_ctx_for_workspace(wsid)
         if not isinstance(ctx, dict):
             return None
-        cfg = ctx.get("config_dir")
         state = ctx.get("chat_state")
         chats = state.get("chats") if isinstance(state, dict) else None
-        if cfg is None or not isinstance(chats, list):
+        if not isinstance(chats, list):
             return None
         chat = next(
             (
@@ -4739,16 +4740,11 @@ class ServeApp:
         if not isinstance(chat, dict):
             return None
         record_file = str(chat.get("_record_file") or "").strip()
-        rel = Path(record_file)
-        if (
-            not record_file
-            or rel.is_absolute()
-            or rel.name != record_file
-            or record_file == "chats.json"
-        ):
+        if not record_file:
             return None
-        stem = record_file[:-len(".json")] if record_file.endswith(".json") else record_file
-        return Path(cfg) / "chats" / "data" / stem
+        # Side data now lives in the global chats root under the record's
+        # date directory; the manager resolves it from the record path.
+        return mgr.chat_data_dir(record_file)
 
     def _ensure_chat_file_changes_loaded(self, chat_id: str, workspace_id: str = "") -> None:
         """Lazily load one chat's ``file_changes.json`` sidecar into memory.
@@ -5034,17 +5030,11 @@ class ServeApp:
             mgr = getattr(self.agent, "_chat_state_manager", None)
             if mgr is None:
                 return None
-            records_dir = mgr.chat_records_dir()
-            data_root = (records_dir / "data").resolve()
             target = Path(str(path or "")).resolve()
-            # Containment check: target must live under chats/data, or under
-            # the workspace cache draft-attachments dir.
-            under_data = False
-            try:
-                target.relative_to(data_root)
-                under_data = True
-            except ValueError:
-                pass
+            # Containment check: target must live under a chat's side-data
+            # directory (``chats/<date>/data/<stem>/``), or under the
+            # workspace cache draft-attachments dir.
+            under_data = mgr.is_path_under_chat_data(target)
             if not under_data:
                 stage = self._draft_attachment_dir(workspace_id)
                 if stage is None:
@@ -5647,11 +5637,8 @@ class ServeApp:
             mgr = getattr(self.agent, "_chat_state_manager", None)
             if mgr is None:
                 return None
-            data_root = (mgr.chat_records_dir() / "data").resolve()
             target = Path(str(path or "")).resolve()
-            try:
-                target.relative_to(data_root)
-            except ValueError:
+            if not mgr.is_path_under_chat_data(target):
                 return None
             if not target.exists() or not target.is_file():
                 return None
@@ -6467,13 +6454,13 @@ class ServeApp:
         idx.warmup()
         for ws in self._enumerate_search_workspaces():
             try:
-                idx.refresh_workspace(ws["id"], ws["name"], ws["storage"])
+                idx.refresh_workspace(ws["id"], ws["name"], ws["chats_root"])
             except Exception:
                 pass
 
     def _enumerate_search_workspaces(self) -> List[Dict[str, Any]]:
         """Enumerate every known workspace (default + registered) with its
-        on-disk storage dir for the chat search indexer."""
+        global chats root for the chat search indexer."""
         agent = self.agent
         out: List[Dict[str, Any]] = []
         try:
@@ -6489,15 +6476,28 @@ class ServeApp:
             ws_id = str(entry.get("id") or "").strip()
             if not ws_id:
                 continue
+            # The chats root is the single global ``<global-config>/chats``
+            # directory; resolve it through the chat-state manager so a test /
+            # override root is honored consistently.
+            chats_root = None
             try:
-                storage = agent._workspace_storage_path(entry)
+                chats_root = getattr(agent, "_chats_root_override", None)
             except Exception:
-                continue
+                chats_root = None
+            if chats_root is None:
+                try:
+                    mgr = getattr(agent, "_chat_state_manager", None)
+                    if mgr is not None:
+                        chats_root = mgr.chat_records_dir()
+                except Exception:
+                    chats_root = None
+            if chats_root is None:
+                chats_root = get_app_global_config_dir() / "chats"
             out.append(
                 {
                     "id": ws_id,
                     "name": str(entry.get("name") or ""),
-                    "storage": Path(storage),
+                    "chats_root": chats_root,
                 }
             )
         return out
@@ -7683,10 +7683,14 @@ class ServeApp:
         return {"id": workspace_id, "name": name, "existing": False}
 
     def delete_workspace(self, workspace_id: str) -> Optional[Dict]:
-        """Delete a workspace from the registry, falling back to another
-        workspace if the deleted one was active.  Executes on the HTTP
-        thread — bypassing the chat runtime — so the SSE broadcast carries
-        a clean state with no session-bleed from the old chat.
+        """Archive (delete) a workspace, falling back to another workspace if
+        the deleted one was active.
+
+        The workspace entry is kept in the registry and flagged ``archived``;
+        its chat data stays in the global chats directory and remains visible
+        — and deletable — from the 设置/已归档 settings page. Executes on the
+        HTTP thread — bypassing the chat runtime — so the SSE broadcast
+        carries a clean state with no session-bleed from the old chat.
         """
         from ..controllers.workspace_command_controller import _default_workspace_id
 
@@ -7705,15 +7709,24 @@ class ServeApp:
         if active_deleted:
             agent._save_current_workspace_position()
 
+        # The workspace is NOT removed from the registry. It is flagged as
+        # archived so its chat records stay in place (chats live in the global
+        # chats directory and are never deleted by a workspace delete) and
+        # remain reachable — and deletable — from the 设置/已归档 settings page.
+        # The sidebar hides archived workspaces; only the archive page lists
+        # them.
         workspaces = agent._workspaces_state.get("workspaces", {})
         if isinstance(workspaces, dict):
-            workspaces.pop(wsid, None)
+            if wsid in workspaces:
+                workspaces[wsid]["archived"] = True
+        from ..managers.chat_state_manager import archive_workspace_chats
+
+        archive_workspace_chats(wsid, agent)
 
         # The workspace is forgotten: revoke the sandbox users/group/capability
         # SIDs' ACLs on its directory tree so the sandbox keeps no access to a
         # directory the app no longer tracks. This walks the whole tree and
-        # can take a while on large projects, so it runs in the background
-        # AFTER the registry entry is gone — the GUI must not wait for it.
+        # can take a while on large projects, so it runs in the background.
         # Best-effort, never raises.
         deleted_root = str(entry.get("root") or "")
         if deleted_root:
@@ -7735,11 +7748,7 @@ class ServeApp:
         fallback_id = ""
         if active_deleted:
             default_ws_id = _default_workspace_id()
-            default_entry = (
-                workspaces.get(default_ws_id)
-                if isinstance(workspaces.get(default_ws_id), dict)
-                else agent._default_workspace_entry()  # type: ignore[attr-defined]
-            )
+            default_entry = agent._default_workspace_entry()  # type: ignore[attr-defined]
             if isinstance(workspaces, dict):
                 workspaces[default_ws_id] = default_entry
             agent._apply_workspace_entry(default_entry, agent.work_directory)
@@ -7765,7 +7774,7 @@ class ServeApp:
         self.broadcaster.publish(
             "idle", self._route(state=_build_state(agent))
         )
-        return {"id": wsid, "wasActive": active_deleted, "fallbackId": fallback_id}
+        return {"id": wsid, "wasActive": active_deleted, "fallbackId": fallback_id, "archived": True}
 
     def new_chat(self, workspace_id: str = "", model: str = "", reasoning: str = "") -> Optional[str]:
         """Silently create and activate a new chat; return its id.
@@ -7984,13 +7993,10 @@ class ServeApp:
 
             # Non-active workspace: update its chat index directly on disk
             # without switching the active workspace.
-            from ..agent import CHAT_STATE_FILE
-
             entry = agent._workspace_entry_by_selector(wsid)
             if not entry:
                 return False
-            storage = agent._workspace_storage_path(entry)
-            index_path = storage / "chats" / CHAT_STATE_FILE
+            index_path = get_app_global_config_dir() / "chats" / f"{wsid}.json"
             if not index_path.exists():
                 return False
             with open(index_path, "r", encoding="utf-8") as f:
@@ -8066,11 +8072,7 @@ class ServeApp:
                 continue
             if str(entry.get("id") or "") != ws_id:
                 continue
-            try:
-                storage = agent._workspace_storage_path(entry)
-            except Exception:
-                return []
-            return _read_workspace_chat_index(storage)
+            return _read_workspace_chat_index(ws_id)
         return None
 
     # ----- file change undo / reapply -----------------------------------
@@ -9010,6 +9012,7 @@ class ServeApp:
             ctx = {
                 "workspace_id": wsid,
                 "config_dir": cfg,
+                "chats_root": get_app_global_config_dir() / "chats",
                 "chat_state": snapshot,
                 # RLock: sync_active_chat_messages holds it then re-enters via
                 # save_chat_state (mirrors the agent's reentrant chat lock).

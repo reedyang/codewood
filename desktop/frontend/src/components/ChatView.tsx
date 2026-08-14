@@ -4089,6 +4089,7 @@ function WorkspaceSelector({
   const filtered = workspaces.filter(
     (w) =>
       !w.isDefault &&
+      !w.archived &&
       w.name.toLowerCase().includes(search.trim().toLowerCase()),
   );
 

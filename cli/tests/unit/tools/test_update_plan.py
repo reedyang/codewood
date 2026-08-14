@@ -22,8 +22,10 @@ from cli.tools.plan import (
 class _FakeAgent:
     def __init__(self, workspace: Path) -> None:
         self.workspace_config_dir = workspace
+        self._chats_root_override = workspace / "chats"
         self._chat_state = {}
         self._chat_state_lock = threading.RLock()
+        self.workspace_id = ""
         self.provider = "openai"
         self.model_name = "gpt-4.1"
         self.active_chat_id = "chat-1"
@@ -339,8 +341,10 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             workspace = Path(td)
             chats_dir = workspace / "chats"
             chats_dir.mkdir(parents=True, exist_ok=True)
-            record_file = "0123456789abcdef0123456789abcdef.json"
-            (chats_dir / record_file).write_text(
+            record_file = "2026/01/02/0123456789abcdef0123456789abcdef.json"
+            record_path = chats_dir / record_file
+            record_path.parent.mkdir(parents=True, exist_ok=True)
+            record_path.write_text(
                 json.dumps(
                     {
                         "id": "chat-1",
@@ -397,6 +401,7 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             agent = _FakeAgent(workspace)
             manager = ChatStateManager(agent, "chats.json")
             agent._chat_state_manager = manager
+            agent.workspace_id = ""
             manager.load_chat_state()
             chat = manager.find_chat_by_id("chat-1")
             self.assertEqual(

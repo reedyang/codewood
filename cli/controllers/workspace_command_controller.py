@@ -159,7 +159,11 @@ def print_workspace_list(agent: Any) -> None:
             if str(entry.get("id")) == getattr(agent, "workspace_id", default_workspace_id)
             else " "
         )
-        print(_t(agent, "workspace.list.item", marker=marker, name=entry.get("name"), workspace_id=entry.get("id")))
+        archived = bool(entry.get("archived", False))
+        name_shown = (
+            f"{entry.get('name')} (archived)" if archived else entry.get("name")
+        )
+        print(_t(agent, "workspace.list.item", marker=marker, name=name_shown, workspace_id=entry.get("id")))
         print(_t(agent, "workspace.list.root", root=agent._workspace_root_path(entry)))
         print(_t(agent, "workspace.list.storage", storage=agent._workspace_storage_path(entry)))
         if entry.get("current_dir"):
@@ -437,9 +441,19 @@ def workspace_delete_command(agent: Any, arg_text: str) -> str:
     active_deleted = workspace_id == getattr(agent, "workspace_id", default_workspace_id)
     if active_deleted:
         agent._save_current_workspace_position()
+    # The workspace is NOT removed from the registry: it is flagged as
+    # archived so its chat data stays in the global chats directory and
+    # remains reachable — and deletable — from the 设置/已归档 settings page.
+    # ``--remove-files`` still deletes the workspace's own config/cache
+    # directory (``<root>/<config dirname>``), which no longer contains any
+    # chat records.
     workspaces = agent._workspaces_state.get("workspaces", {})
     if isinstance(workspaces, dict):
-        workspaces.pop(workspace_id, None)
+        if workspace_id in workspaces:
+            workspaces[workspace_id]["archived"] = True
+    from ..managers.chat_state_manager import archive_workspace_chats
+
+    archive_workspace_chats(workspace_id, agent)
     # Revoke the sandbox users/group/capability SIDs' ACLs on the forgotten
     # workspace tree (best-effort, never raises). This walks the whole tree
     # and can be slow on large projects, so it runs in the background AFTER

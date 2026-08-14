@@ -242,12 +242,15 @@ export const zhCN: Dict = {
   "sandbox.loadFailed": "无法加载沙箱设置。",
   "sandbox.unsupported": "当前平台暂不支持沙箱。",
   "archivedChats.empty": "暂无已归档对话。",
+  "archivedChats.workspaceArchived": "已删除的工作区",
   "archivedChats.unarchive": "取消归档",
   "archivedChats.removeWorkspaceAll": "全部移除",
   "archivedChats.removeWorkspaceAllTitle": "移除工作区“{name}”中的所有已归档对话？",
   "archivedChats.removeWorkspaceAllConfirm":
     "这将永久删除工作区“{name}”中的 {count} 个已归档对话。",
   "archivedChats.removeConfirm": "移除此已归档对话？",
+  "archivedChats.deletedWorkspaceHint":
+    "该工作区已被删除，其对话保留在此处，可以随时删除。",
   "settings.console.font": "字体",
   "settings.console.fontDefault": "默认",
   "settings.console.fontHint": "内嵌终端使用的字体（选择“默认”则使用内置等宽字体）。",
