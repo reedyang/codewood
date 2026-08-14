@@ -1168,6 +1168,7 @@ export function ChatView() {
     cancelPendingInput,
     sendPendingInputNow,
     sendInputSteer,
+    reorderPendingInput,
     todoDockVisible,
     setTodoDockVisible,
     t,
@@ -1881,12 +1882,41 @@ export function ChatView() {
 
   // Pending task list: shown when there are queued messages waiting to be sent.
   const [pendingHoverIdx, setPendingHoverIdx] = useState<number | null>(null);
+  // Drag-to-reorder: the index being dragged and the index currently hovered
+  // as a drop target. ``-1`` marks the list header (drop = move to the front).
+  const [dragFromIdx, setDragFromIdx] = useState<number | null>(null);
+  const [dropTargetIdx, setDropTargetIdx] = useState<number | null>(null);
   const pendingListRef = useRef<HTMLDivElement>(null);
   const hasPending = pendingInputs.length > 0;
 
+  const clearDragState = () => {
+    setDragFromIdx(null);
+    setDropTargetIdx(null);
+  };
+
   const pendingList = hasPending ? (
     <div className="pending-list" ref={pendingListRef}>
-      <div className="pending-list-header">
+      <div
+        className={`pending-list-header${dropTargetIdx === -1 ? " is-drop-target" : ""}`}
+        title={t("chat.pendingListReorderTip")}
+        onDragOver={(e) => {
+          if (dragFromIdx === null) {
+            return;
+          }
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (dropTargetIdx !== -1) {
+            setDropTargetIdx(-1);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (dragFromIdx !== null && dragFromIdx !== 0) {
+            reorderPendingInput(dragFromIdx, 0);
+          }
+          clearDragState();
+        }}
+      >
         <span className="pending-list-title">
           {t("chat.pendingListCount", { count: pendingInputs.length })}
         </span>
@@ -1895,6 +1925,7 @@ export function ChatView() {
             className="pending-list-send"
             title={t("chat.pendingListSendTip")}
             onClick={() => void startPendingInputs()}
+            draggable={false}
           >
             <Icon name="send" size={14} />
           </button>
@@ -1904,9 +1935,33 @@ export function ChatView() {
         {pendingInputs.map((text, i) => (
           <div
             key={i}
-            className={`pending-list-item${i === 0 && pendingAutoSend ? " is-next" : ""}`}
+            className={`pending-list-item${i === 0 && pendingAutoSend ? " is-next" : ""}${dragFromIdx === i ? " is-dragging" : ""}${dropTargetIdx === i ? " is-drop-target" : ""}`}
             onMouseEnter={() => setPendingHoverIdx(i)}
             onMouseLeave={() => setPendingHoverIdx(null)}
+            draggable
+            onDragStart={(e) => {
+              setDragFromIdx(i);
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", String(i));
+            }}
+            onDragOver={(e) => {
+              if (dragFromIdx === null) {
+                return;
+              }
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (dropTargetIdx !== i) {
+                setDropTargetIdx(i);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragFromIdx !== null && dragFromIdx !== i) {
+                reorderPendingInput(dragFromIdx, i);
+              }
+              clearDragState();
+            }}
+            onDragEnd={clearDragState}
             title={text}
           >
             <span className="pending-list-item-text">{text}</span>
@@ -1915,6 +1970,7 @@ export function ChatView() {
               title={t("chat.pendingListSendNow")}
               aria-label={t("chat.pendingListSendNow")}
               onClick={() => void sendPendingInputNow(i)}
+              draggable={false}
             >
               <Icon name="send" size={12} />
             </button>
@@ -1928,6 +1984,7 @@ export function ChatView() {
                   setSegments([{ kind: "text", value: removed }]);
                 }
               }}
+              draggable={false}
             >
               <Icon name="trash" size={12} />
             </button>
@@ -1937,6 +1994,26 @@ export function ChatView() {
           </div>
         ))}
       </div>
+      <div
+        className={`pending-list-drop-zone${dropTargetIdx === pendingInputs.length ? " is-drop-target" : ""}`}
+        onDragOver={(e) => {
+          if (dragFromIdx === null) {
+            return;
+          }
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (dropTargetIdx !== pendingInputs.length) {
+            setDropTargetIdx(pendingInputs.length);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (dragFromIdx !== null) {
+            reorderPendingInput(dragFromIdx, pendingInputs.length);
+          }
+          clearDragState();
+        }}
+      />
     </div>
   ) : null;
 
