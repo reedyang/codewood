@@ -6011,6 +6011,35 @@ h6.md-h {
   align-items: center;
   position: relative;
   line-height: 20px;
+  cursor: grab;
+}
+
+.pending-list-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.pending-list-item.is-dragging {
+  opacity: 0.4;
+}
+
+/* Drag indicator: horizontal line at the top of the drop target, same
+   as the sidebar workspace reorder. */
+.pending-list-item.is-drop-target {
+  border-top: 2px solid var(--accent);
+}
+
+.pending-list-header.is-drop-target {
+  border-top: 2px solid var(--accent);
+}
+
+/* Invisible strip below the list so the user can drop after the last
+   queued message (append at the end). */
+.pending-list-drop-zone {
+  height: 8px;
+}
+
+.pending-list-drop-zone.is-drop-target {
+  border-top: 2px solid var(--accent);
 }
 
 .pending-list-item:hover {

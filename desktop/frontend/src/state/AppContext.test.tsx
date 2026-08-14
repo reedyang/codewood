@@ -509,13 +509,15 @@ function HealthSendProbe() {
 }
 
 function PendingJumpProbe() {
-  const { pendingInputs, pendingAutoSend, sendInput, sendInputSteer, sendPendingInputNow, startPendingInputs } = useApp();
+  const { pendingInputs, pendingAutoSend, sendInput, sendInputSteer, sendPendingInputNow, startPendingInputs, reorderPendingInput } = useApp();
   return (
     <>
       <button onClick={() => { void sendInput("msg-A"); }}>queue A</button>
       <button onClick={() => { void sendInput("msg-B"); }}>queue B</button>
       <button onClick={() => { void sendInput("msg-C"); }}>queue C</button>
       <button onClick={() => { void sendInputSteer("steer-msg"); }}>steer now</button>
+      <button onClick={() => { reorderPendingInput(0, 2); }}>reorder 0 to 2</button>
+      <button onClick={() => { reorderPendingInput(1, 3); }}>reorder 1 to end</button>
       <button onClick={() => { void sendPendingInputNow(0); }}>jump index 0</button>
       <button onClick={() => { void sendPendingInputNow(1); }}>jump index 1</button>
       <button onClick={() => { void startPendingInputs(); }}>start queue</button>
@@ -2152,6 +2154,38 @@ describe("AppContext thinking rounds", () => {
 
     expect(apiMock.pause).not.toHaveBeenCalled();
     expect(apiMock.sendInput).toHaveBeenCalledWith("steer-msg", true, "chat-1", "ws-1");
+  });
+
+  it("reorders queued messages via drag-to-reorder slots", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+    act(() => {
+      apiMock.emit({ event: "turn_start", data: { text: "t", chatId: "chat-1", workspaceId: "ws-1" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue A" }));
+      fireEvent.click(screen.getByRole("button", { name: "queue B" }));
+      fireEvent.click(screen.getByRole("button", { name: "queue C" }));
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A", "msg-B", "msg-C"]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "reorder 0 to 2" }));
+    });
+    let st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+    expect(st.pendingInputs).toEqual(["msg-B", "msg-A", "msg-C"]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "reorder 1 to end" }));
+    });
+    st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+    expect(st.pendingInputs).toEqual(["msg-B", "msg-C", "msg-A"]);
+    expect(apiMock.savePendingInputs).toHaveBeenCalled();
   });
 
   it("drains the remaining queue one per turn after the jumped task completes", async () => {

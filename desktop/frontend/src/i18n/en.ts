@@ -169,6 +169,7 @@ export const en: Dict = {
   "chat.pendingListSendTip": "Send queued messages",
   "chat.pendingListCancel": "Remove from queue",
   "chat.pendingListSendNow": "Steer",
+  "chat.pendingListReorderTip": "Drag to reorder",
   "chat.steerHintQueue": "queues",
   "chat.steerHintSteer": "to steer",
   "msg.copy": "Copy",

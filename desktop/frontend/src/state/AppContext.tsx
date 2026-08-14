@@ -292,6 +292,9 @@ interface AppContextValue {
   /** Pause the running task and send the given text immediately, bypassing
    * the pending queue entirely (Ctrl/Cmd+Enter "Steer" from the composer). */
   sendInputSteer: (text: string) => Promise<void>;
+  /** Move the pending input at ``from`` to the ``to`` index (drag-to-reorder
+   * from the pending list). Persists the new order. */
+  reorderPendingInput: (from: number, to: number) => void;
   compactContext: () => Promise<{ ok: boolean; text?: string }>;
   compactNotice: CompactNoticeData | null;
   /** Live 429/503 retry countdown per chat (workspace-qualified keys). */
@@ -3676,6 +3679,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [persistPendingInputs],
   );
 
+  const reorderPendingInput = useCallback(
+    (from: number, to: number): void => {
+      const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      if (!key) {
+        return;
+      }
+      // ``to`` is the drop slot: the moved item lands BEFORE the element
+      // currently at ``to`` (a trailing drop zone passes ``to = length``
+      // to append at the end), matching the sidebar's indicator line.
+      const inputs = pendingInputsByChatRef.current[key];
+      if (
+        !inputs ||
+        from < 0 ||
+        from >= inputs.length ||
+        to < 0 ||
+        to > inputs.length ||
+        from === to
+      ) {
+        return;
+      }
+      const next = [...inputs];
+      const [moved] = next.splice(from, 1);
+      const insertAt = to > from ? to - 1 : to;
+      next.splice(insertAt, 0, moved);
+      setPendingInputsByChat((prev) => ({ ...prev, [key]: next }));
+      const { wsId, chatId } = parseChatKey(key);
+      if (chatId) {
+        void persistPendingInputs(chatId, wsId, next);
+      }
+    },
+    [persistPendingInputs],
+  );
+
   const sendPendingInputNow = useCallback(
     async (index: number): Promise<void> => {
       const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
@@ -5331,6 +5367,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     cancelPendingInput,
     sendPendingInputNow,
     sendInputSteer,
+    reorderPendingInput,
     compactContext: async () => {
       setCompactNoticeState((state) =>
         state.notice
