@@ -529,11 +529,12 @@ function PendingJumpProbe() {
 }
 
 function SteerOptimisticProbe() {
-  const { turns, sendInputSteer } = useApp();
+  const { turns, steerHoldTurnIds, sendInputSteer } = useApp();
   return (
     <>
       <button onClick={() => { void sendInputSteer("steer-msg"); }}>steer now</button>
       <pre data-testid="turns">{JSON.stringify(turns)}</pre>
+      <pre data-testid="steer-hold">{JSON.stringify(steerHoldTurnIds)}</pre>
     </>
   );
 }
@@ -2298,6 +2299,68 @@ describe("AppContext thinking rounds", () => {
       userText: "steer-msg",
       optimistic: false,
     });
+  });
+
+  it("keeps a steered-away turn expanded until the task chain finishes", async () => {
+    render(
+      <AppProvider>
+        <SteerOptimisticProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+    const turnIdA = String(JSON.parse(screen.getByTestId("turns").textContent || "[]")[0].id);
+
+    // The interrupted turn A is held open so its execution stays visible.
+    let hold = JSON.parse(screen.getByTestId("steer-hold").textContent || "[]");
+    expect(hold).toEqual([turnIdA]);
+
+    // The interrupt idle for turn A must NOT release the hold: the jumped task
+    // still has to run, so A collapses together with the rest of the chain.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+    hold = JSON.parse(screen.getByTestId("steer-hold").textContent || "[]");
+    expect(hold).toEqual([turnIdA]);
+
+    // The jumped task runs and finishes: the task chain is done, so the hold
+    // is released and A collapses together with the completed chain.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "steer-msg", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+    hold = JSON.parse(screen.getByTestId("steer-hold").textContent || "[]");
+    expect(hold).toEqual([]);
   });
 
   it("drains the remaining queue one per turn after the jumped task completes", async () => {

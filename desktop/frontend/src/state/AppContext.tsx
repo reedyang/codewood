@@ -292,6 +292,9 @@ interface AppContextValue {
   /** Pause the running task and send the given text immediately, bypassing
    * the pending queue entirely (Ctrl/Cmd+Enter "Steer" from the composer). */
   sendInputSteer: (text: string) => Promise<void>;
+  /** Live turn ids interrupted by a Steer (queue jump) that stay expanded
+   *  until the whole task chain finishes, then collapse with it. */
+  steerHoldTurnIds: string[];
   /** Move the pending input at ``from`` to the ``to`` index (drag-to-reorder
    * from the pending list). Persists the new order. */
   reorderPendingInput: (from: number, to: number) => void;
@@ -618,6 +621,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pendingInputsByChatRef.current = pendingInputsByChat;
     pendingAutoSendByChatRef.current = pendingAutoSendByChat;
   }, [pendingInputsByChat, pendingAutoSendByChat]);
+  // Turns interrupted by a Steer (Ctrl/Cmd+Enter queue jump) that should stay
+  // expanded instead of collapsing into the "Worked for" shell until the whole
+  // task chain finishes. Keyed by workspace-qualified chat key -> live turn ids.
+  const [steerHoldTurnsByChat, setSteerHoldTurnsByChat] = useState<Record<string, string[]>>({});
+  const steerHoldTurnsByChatRef = useRef<Record<string, string[]>>({});
+  useEffect(() => {
+    steerHoldTurnsByChatRef.current = steerHoldTurnsByChat;
+  }, [steerHoldTurnsByChat]);
   // Chats whose turn finished while the user was looking at a different chat.
   // They stay flagged as unread (blue dot in the sidebar) until opened. The
   // flag is persisted by the backend (``hasUnread`` on the chat summary) and
@@ -2622,22 +2633,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
               reloadHistoryRef.current();
             }
+            // A jump paused the current turn; the idle that closes THAT turn
+            // must not drain the queue. Consume the marker here and let the
+            // queue resume on the NEXT idle (after the jumped task finishes),
+            // so the remaining messages stay queued behind the jumped one.
+            const pendingList = eventKey ? pendingInputsByChatRef.current[eventKey] : undefined;
+            const suppressDrain = Boolean(eventKey && suppressAutoSendOnceRef.current[eventKey]);
+            if (suppressDrain && eventKey) {
+              delete suppressAutoSendOnceRef.current[eventKey];
+            }
             // Auto-send next pending input if auto-send is enabled for this chat.
-            if (eventKey && pendingAutoSendByChatRef.current[eventKey]) {
-              const pending = pendingInputsByChatRef.current[eventKey];
-              // A jump paused the current turn; the idle that closes THAT turn
-              // must not drain the queue. Consume the marker here and let the
-              // queue resume on the NEXT idle (after the jumped task finishes),
-              // so the remaining messages stay queued behind the jumped one.
-              const suppressDrain = Boolean(suppressAutoSendOnceRef.current[eventKey]);
-              if (suppressDrain) {
-                delete suppressAutoSendOnceRef.current[eventKey];
-              }
-              if (!suppressDrain && pending && pending.length > 0) {
-                setTimeout(() => {
-                  sendNextPendingRef.current(eventKey);
-                }, 200);
-              }
+            if (
+              eventKey &&
+              !suppressDrain &&
+              pendingAutoSendByChatRef.current[eventKey] &&
+              pendingList &&
+              pendingList.length > 0
+            ) {
+              setTimeout(() => {
+                sendNextPendingRef.current(eventKey);
+              }, 200);
+            }
+            // Steer-held turns (interrupted by a queue jump) stay expanded until
+            // the whole task chain finishes: release them on the final idle, i.e.
+            // when there are no more queued messages to auto-send.
+            if (eventKey && !suppressDrain && !(pendingList && pendingList.length > 0)) {
+              setSteerHoldTurnsByChat((prev) => {
+                if (!prev[eventKey] || prev[eventKey].length === 0) {
+                  return prev;
+                }
+                const next = { ...prev };
+                delete next[eventKey];
+                return next;
+              });
             }
           }
           // When the focused workspace changes to one with no active chat,
@@ -3719,6 +3747,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [persistPendingInputs],
   );
 
+  // Hold the currently running turn open so its in-flight execution stays
+  // visible after a Steer interrupts it; it collapses together with the rest
+  // of the task chain once the final idle lands.
+  const markSteerHold = useCallback((key: string) => {
+    const turns = turnsByChatRef.current[key];
+    if (!turns || turns.length === 0) {
+      return;
+    }
+    const last = turns[turns.length - 1];
+    if (last.endedAt !== null) {
+      return;
+    }
+    const turnId = String(last.id);
+    setSteerHoldTurnsByChat((prev) => {
+      const existing = prev[key] ?? [];
+      if (existing.includes(turnId)) {
+        return prev;
+      }
+      return { ...prev, [key]: [...existing, turnId] };
+    });
+  }, []);
+
   const sendPendingInputNow = useCallback(
     async (index: number): Promise<void> => {
       const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
@@ -3744,6 +3794,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       //     the chat is no longer busy). Removing the message now makes that
       //     timer a no-op, and the suppression marker below stops it from
       //     sending the next queued message ahead of the jumped one.
+      markSteerHold(key);
       suppressAutoSendOnceRef.current[key] = true;
       const remaining = inputs.filter((_, i) => i !== index);
       setPendingInputsByChat((prev) => {
@@ -3816,6 +3867,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Busy: cooperative Steer — pause the running turn first (same mechanism
       // as the pending-list jump) so the typed message lands immediately
       // instead of queueing behind the current task.
+      markSteerHold(key);
       suppressAutoSendOnceRef.current[key] = true;
       try {
         await client.pause(chatId, wsId);
@@ -5379,6 +5431,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     cancelPendingInput,
     sendPendingInputNow,
     sendInputSteer,
+    steerHoldTurnIds: activeKey ? (steerHoldTurnsByChat[activeKey] ?? []) : [],
     reorderPendingInput,
     compactContext: async () => {
       setCompactNoticeState((state) =>

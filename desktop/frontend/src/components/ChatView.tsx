@@ -2983,6 +2983,7 @@ function CompletedTurnView({
   handlers,
   settle = false,
   searchTarget = false,
+  holdOpen = false,
 }: {
   turn: HistoryTurn;
   negIndex: number;
@@ -2991,6 +2992,9 @@ function CompletedTurnView({
    *  paused): the "Worked for" shell is shown expanded first, then
    *  auto-collapses with an animation. */
   settle?: boolean;
+  /** True while this turn was interrupted by a Steer (queue jump): keep the
+   *  "Worked for" shell expanded until the whole task chain finishes. */
+  holdOpen?: boolean;
   /** True when this turn is the destination of a global chat search hit:
    *  its collapsed "Worked for" sections are force-expanded so the matched
    *  message content is visible before the jump/highlight runs. */
@@ -3101,8 +3105,8 @@ function CompletedTurnView({
             timerText={timerText}
             running={false}
             showTimer={true}
-            autoExpand={turnHasTarget || settle || searchTarget}
-            autoCollapseDelayMs={settle ? SETTLE_COLLAPSE_DELAY_MS : 0}
+            autoExpand={turnHasTarget || holdOpen || settle || searchTarget}
+            autoCollapseDelayMs={settle && !holdOpen ? SETTLE_COLLAPSE_DELAY_MS : 0}
             detailsBeforeText={true}
             detailsNode={<div className="worked-for-body">{detailNodes}</div>}
             textNode={null}
@@ -3910,7 +3914,7 @@ export function TurnView({
   compactNotice: CompactNoticeData | null;
   onStreamingThinkingCollapsedChange?: (collapsed: boolean) => void;
 }) {
-  const { t, state } = useApp();
+  const { t, state, steerHoldTurnIds } = useApp();
   const [settle, setSettle] = useState(false);
   const wasRunningRef = useRef(turn.endedAt === null);
 
@@ -3932,6 +3936,9 @@ export function TurnView({
   // reload. This happens when the settled turn is still held in the live bucket
   // (e.g. the post-idle history reload came back with an empty page yet).
   if (turn.endedAt !== null) {
+    // A Steer-interrupted turn stays expanded (holdOpen) until the whole task
+    // chain finishes; only then does its "Worked for" shell collapse.
+    const holdOpen = (steerHoldTurnIds ?? []).includes(String(turn.id));
     return (
       <>
         {compactNotice && (
@@ -3948,6 +3955,7 @@ export function TurnView({
           negIndex={negIndex}
           handlers={handlers}
           settle={settle}
+          holdOpen={holdOpen}
         />
       </>
     );
