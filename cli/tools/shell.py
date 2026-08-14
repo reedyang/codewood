@@ -3455,11 +3455,6 @@ def action_shell_command(
 
 def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
     if not agent._project_context_tool_allowed():
-        if agent._is_default_workspace():
-            return {
-                "success": False,
-                "error": "project_context_search is not supported in the Default workspace. Please switch to a non-Default workspace and try again.",
-            }
         return {
             "success": False,
             "error": "project_context_search has been disabled via configuration (project_context_search_enabled is false). Enable it in settings to use this tool.",

@@ -4380,6 +4380,14 @@ html[data-has-bg] .select {
   min-width: 0;
 }
 
+/* Workspace rows: the label button itself is content-sized (``.ws-label`` is
+   ``flex: 0 1 auto`` and lets ``.tree-flex`` take the slack), so the wrapping
+   tooltip must be content-sized too — otherwise the wrapper splits the row
+   with ``.tree-flex`` and squeezes the name into a short ellipsis. */
+.ws-row .hover-tooltip-wrap.tree-label-tip {
+  flex: 0 1 auto;
+}
+
 .hover-tooltip {
   position: fixed;
   z-index: 500;
@@ -4403,6 +4411,11 @@ html[data-has-bg] .select {
 .hover-tooltip-workspace {
   font-weight: 700;
   margin-top: 2px;
+}
+
+.hover-tooltip-index {
+  margin-top: 2px;
+  color: var(--text-muted);
 }
 
 .tree-label {

@@ -1810,6 +1810,180 @@ else:
     _ProjectFileWatcher = None
 
 
+class ProjectContextIndexManager:
+    """Holds one :class:`ProjectContextIndex` per workspace so every
+    workspace's index stays loaded and active regardless of which workspace
+    the agent is currently focused on.
+
+    Switching workspaces never rebinds or discards an in-memory index; it only
+    selects which instance ``search``/``call_graph``/``refresh_index`` operate
+    on.  Instances are keyed by their storage directory (each workspace has a
+    unique ``<root>/<config-dir>/indexes``), so a workspace that was active at
+    least once keeps its index warm, and workspaces created up front by
+    ``_schedule_project_context_refresh_for_all_workspaces`` are indexed even
+    if they are never focused.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._indexes: Dict[str, ProjectContextIndex] = {}
+        self._current_key: Optional[str] = None
+
+    @staticmethod
+    def _key_for(storage_dir: Path) -> str:
+        return str(Path(storage_dir).resolve())
+
+    def bind_workspace(
+        self,
+        workspace_root: Path,
+        storage_dir: Optional[Path] = None,
+    ) -> ProjectContextIndex:
+        """Ensure an index exists for the workspace and make it current.
+
+        Returns the workspace's index instance (creating it on first use).
+        Unlike the old single-instance behaviour this never throws away the
+        in-memory state of another workspace's index.
+        """
+        root = Path(workspace_root).resolve()
+        storage = (
+            Path(storage_dir).resolve()
+            if storage_dir is not None
+            else root / "indexes"
+        )
+        key = self._key_for(storage)
+        with self._lock:
+            idx = self._indexes.get(key)
+            if idx is None:
+                idx = ProjectContextIndex(workspace_root=root, storage_dir=storage)
+                self._indexes[key] = idx
+            self._current_key = key
+            return idx
+
+    def current(self) -> Optional[ProjectContextIndex]:
+        with self._lock:
+            if self._current_key is None:
+                return None
+            return self._indexes.get(self._current_key)
+
+    def all(self) -> List[ProjectContextIndex]:
+        with self._lock:
+            return list(self._indexes.values())
+
+    def status_for_storage(self, storage_dir: Optional[Path]) -> Optional[Dict[str, Any]]:
+        if storage_dir is None:
+            return None
+        key = self._key_for(storage_dir)
+        with self._lock:
+            idx = self._indexes.get(key)
+        if idx is None:
+            return None
+        try:
+            st = idx.status()
+        except Exception:
+            return None
+        return st if isinstance(st, dict) else None
+
+    def status_all(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for idx in self.all():
+            try:
+                st = idx.status()
+            except Exception:
+                st = {}
+            if isinstance(st, dict):
+                out.append(st)
+        return out
+
+    def status(self) -> Dict[str, Any]:
+        """Aggregated status across every workspace's index."""
+        entries = self.status_all()
+        if not entries:
+            return {
+                "success": True,
+                "files_total": 0,
+                "refresh_phase": "",
+                "refresh_progress_total": 0,
+                "refresh_progress_done": 0,
+                "refresh_progress_percent": 0,
+                "workspaces": [],
+            }
+        total = sum(int(e.get("files_total", 0) or 0) for e in entries)
+        # Pick the most "active" refresh phase across workspaces so the GUI
+        # keeps showing progress while any workspace is being (re)indexed.
+        priority = {
+            "scanning": 5,
+            "indexing": 4,
+            "saving": 3,
+            "starting": 3,
+            "error": 2,
+            "done": 0,
+            "": 0,
+        }
+        active = max(
+            entries,
+            key=lambda e: priority.get(str(e.get("refresh_phase", "") or "").lower(), 0),
+        )
+        phase = str(active.get("refresh_phase", "") or "")
+        # Keep the single-workspace status shape (the CLI tool surfaces these
+        # fields via ``status_only``): report the CURRENT workspace's root and
+        # index path alongside the aggregated numbers.
+        current = self.current()
+        current_root = str(getattr(current, "workspace_root", "") or "") if current is not None else ""
+        current_index = str(getattr(current, "index_path", "") or "") if current is not None else ""
+        return {
+            "success": True,
+            "workspace_root": current_root,
+            "index_path": current_index,
+            "files_total": total,
+            "refresh_phase": phase,
+            "refresh_progress_total": int(active.get("refresh_progress_total", 0) or 0),
+            "refresh_progress_done": int(active.get("refresh_progress_done", 0) or 0),
+            "refresh_progress_percent": int(active.get("refresh_progress_percent", 0) or 0),
+            "workspaces": entries,
+        }
+
+    def search(self, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        idx = self.current()
+        return idx.search(*args, **kwargs) if idx is not None else None
+
+    def call_graph(self, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        idx = self.current()
+        return idx.call_graph(*args, **kwargs) if idx is not None else None
+
+    def refresh_index(self, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        idx = self.current()
+        return idx.refresh_index(*args, **kwargs) if idx is not None else None
+
+    @property
+    def files(self) -> Dict[str, _FileEntry]:
+        idx = self.current()
+        return getattr(idx, "files", {}) if idx is not None else {}
+
+    @property
+    def _agent_params(self) -> Dict[str, Any]:
+        idx = self.current()
+        return getattr(idx, "_agent_params", {}) if idx is not None else {}
+
+    @_agent_params.setter
+    def _agent_params(self, value: Dict[str, Any]) -> None:
+        for idx in self.all():
+            idx._agent_params = value
+
+    def request_yield(self) -> None:
+        for idx in self.all():
+            try:
+                idx.request_yield()
+            except Exception:
+                pass
+
+    def shutdown(self) -> None:
+        for idx in self.all():
+            try:
+                idx.shutdown()
+            except Exception:
+                pass
+
+
 def _normalize_watch_rel(rel: str, root_s: str) -> str:
     """Rebase a watchdog event path onto the workspace root as a POSIX rel path.
 
