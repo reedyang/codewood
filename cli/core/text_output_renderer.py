@@ -632,19 +632,48 @@ def _reframe_proposed_plan_blocks(text: str) -> str:
     raw tags are an internal protocol marker, not something the user should read.
     We keep the plan body (so the TUI still shows the plan) but swap the literal
     tags for a clear header/footer so it reads as a dedicated section.
-    """
-    from .proposed_plan import PROPOSED_PLAN_OPEN_TAG, _PROPOSED_PLAN_RE
 
-    if not isinstance(text, str) or PROPOSED_PLAN_OPEN_TAG not in text:
+    A block whose closing tag has not arrived yet (live streaming) is reframed
+    with the banner header + the body-so-far (no footer), so the plan streams
+    progressively in the TUI instead of flashing the raw opener. Because the
+    body is stripped the same way as the complete-block render, the streaming
+    output is always a prefix of the final render — which keeps the live
+    append-stream delta math valid.
+    """
+    from .proposed_plan import _PROPOSED_PLAN_RE
+
+    if not isinstance(text, str) or "<proposed_plan" not in text.lower():
         return text
 
-    def _repl(m: "re.Match[str]") -> str:
-        body = (m.group(1) or "").strip()
-        if not body:
-            return ""
-        return f"\n\n{'─' * 8} Proposed Plan {'─' * 8}\n\n{body}\n\n{'─' * 31}\n"
+    def _banner_header() -> str:
+        return f"\n\n{'─' * 8} Proposed Plan {'─' * 8}\n\n"
 
-    return _PROPOSED_PLAN_RE.sub(_repl, text)
+    def _banner_footer() -> str:
+        return f"\n\n{'─' * 31}\n"
+
+    pieces: List[str] = []
+    pos = 0
+    for m in _PROPOSED_PLAN_RE.finditer(text):
+        pieces.append(text[pos : m.start()])
+        body = (m.group(1) or "").strip()
+        if body:
+            pieces.append(_banner_header() + body + _banner_footer())
+        pos = m.end()
+    tail = text[pos:]
+    # A dangling opener (the block header arrived but the closing tag has not
+    # yet): swap the opener for the banner header and keep the body-so-far.
+    open_idx = tail.lower().find("<proposed_plan")
+    if open_idx >= 0:
+        pieces.append(tail[:open_idx])
+        rest = tail[open_idx + len("<proposed_plan") :]
+        if rest.startswith(">"):
+            rest = rest[1:]
+        body = rest.strip()
+        if body:
+            pieces.append(_banner_header() + body)
+    else:
+        pieces.append(tail)
+    return "".join(pieces)
 
 
 def format_assistant_display_response(text: str) -> str:

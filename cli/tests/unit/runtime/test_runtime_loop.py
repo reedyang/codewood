@@ -444,8 +444,15 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, "Need info.")
 
-    def test_stream_visible_text_withholds_partial_proposed_plan_while_streaming(self):
+    def test_stream_visible_text_streams_proposed_plan_body_once_opener_complete(self):
+        # Once the full ``<proposed_plan>`` opener has arrived the body streams
+        # through so the plan appears progressively in GUI and TUI.
         raw = "Here is my thinking.\n\n<proposed_plan>\n# Plan\n- step"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw)
+
+    def test_stream_visible_text_withholds_partial_proposed_plan_opener(self):
+        raw = "Here is my thinking.\n\n<proposed_plan\n# Plan"
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, "Here is my thinking.")
 
@@ -460,6 +467,11 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertEqual(out_stream, raw)
         out_final = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out_final, raw)
+
+    def test_stream_visible_text_withholds_trailing_partial_opener_after_complete_one(self):
+        raw = "A\n<proposed_plan>\nx\n<propos"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "A\n<proposed_plan>\nx")
 
     def test_stream_visible_text_withholds_partial_tool_calls_tag(self):
         raw = "Working on it <tool"

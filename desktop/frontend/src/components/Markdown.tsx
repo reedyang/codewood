@@ -567,7 +567,7 @@ const PROPOSED_PLAN_RE = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/gi;
  * so the caller can fall back to the plain render path.
  */
 function renderWithProposedPlan(text: string, baseKey: string): ReactNode[] | null {
-  if (!text || !text.includes("<proposed_plan>")) {
+  if (!text || !text.includes("<proposed_plan")) {
     return null;
   }
   const nodes: ReactNode[] = [];
@@ -602,8 +602,36 @@ function renderWithProposedPlan(text: string, baseKey: string): ReactNode[] | nu
     }
   }
   // No COMPLETE block matched (e.g. the closing tag has not streamed yet):
-  // fall back to plain rendering of the whole text instead of recursing.
+  // render the pre-text plus a streaming "Proposed Plan" card holding the
+  // body-so-far, so the plan appears progressively while it is being
+  // generated instead of hiding until the closing tag lands. When the block
+  // completes the accumulated text re-renders through the card path above.
   if (last === 0) {
+    const dangling = text.match(/<proposed_plan\b/i);
+    if (dangling) {
+      const danglingIndex = dangling.index ?? 0;
+      const before = text.slice(0, danglingIndex).trim();
+      let body = text.slice(danglingIndex + dangling[0].length);
+      if (body.startsWith(">")) {
+        body = body.slice(1);
+      }
+      body = body.trim();
+      const streamingNodes: ReactNode[] = [];
+      if (before) {
+        streamingNodes.push(
+          <MarkdownBody key={`${baseKey}-dangling-pre`} text={before} />,
+        );
+      }
+      if (body) {
+        streamingNodes.push(
+          <div key={`${baseKey}-dangling-plan`} className="proposed-plan-card">
+            <div className="proposed-plan-card-title">Proposed Plan</div>
+            <MarkdownBody text={body} />
+          </div>,
+        );
+      }
+      return streamingNodes;
+    }
     return null;
   }
   const after = text.slice(last).trim();

@@ -151,6 +151,35 @@ describe("plan execute row across a revision", () => {
     apiMock.getState.mockResolvedValue(buildState());
   });
 
+  it("shows the execute row when the plan streams in chunks", async () => {
+    render(
+      <AppProvider>
+        <ChatView />
+      </AppProvider>,
+    );
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Plan turn streamed piece by piece: the opener, then the body, then the
+    // closing tag. The body must be visible mid-stream and the execute row
+    // must appear once the turn closes with a complete block.
+    act(() => {
+      emitTurnStart("draft a plan");
+      emitRoundStart();
+      emitThinking("thinking about the plan...");
+      emitAssistant("Here is my plan.\n\n");
+      emitAssistant("<proposed_plan>\n");
+      emitAssistant("# Plan\n- step one\n- step two");
+      emitAssistant("\n</proposed_plan>");
+      emitRoundEnd();
+      emitIdle(idleState(1, false));
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Yes, implement this plan")).toBeTruthy();
+    });
+    console.log("[streaming] execute row visible after chunked plan: OK");
+  }, 30000);
+
   it("shows the execute row after a revision whose plan arrives as step (output) segments", async () => {
     render(
       <AppProvider>
