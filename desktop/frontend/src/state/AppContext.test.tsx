@@ -27,6 +27,7 @@ const apiMock = vi.hoisted(() => {
   const deleteChat = vi.fn(async () => true);
   const deleteWorkspace = vi.fn(async () => ({ ok: true, id: "", wasActive: false, fallbackId: "" }));
   const forkChat = vi.fn(async () => "chat-3");
+  const newChatFromCompact = vi.fn(async () => "chat-4");
   const editChat = vi.fn(async () => true);
   const setExecutionPolicy = vi.fn(async () => true);
   const createWorkspace = vi.fn(async () => ({ ok: true, id: "ws-3" }));
@@ -50,6 +51,7 @@ const apiMock = vi.hoisted(() => {
     deleteChat,
     deleteWorkspace,
     forkChat,
+    newChatFromCompact,
     editChat,
     setExecutionPolicy,
     createWorkspace,
@@ -80,6 +82,7 @@ const apiMock = vi.hoisted(() => {
       deleteChat.mockClear();
       deleteWorkspace.mockClear();
       forkChat.mockClear();
+      newChatFromCompact.mockClear();
       editChat.mockClear();
       setExecutionPolicy.mockClear();
       createWorkspace.mockClear();
@@ -116,6 +119,7 @@ vi.mock("../api/client", () => ({
     deleteChat = apiMock.deleteChat;
     deleteWorkspace = apiMock.deleteWorkspace;
     forkChat = apiMock.forkChat;
+    newChatFromCompact = apiMock.newChatFromCompact;
     editChat = apiMock.editChat;
     setExecutionPolicy = apiMock.setExecutionPolicy;
     createWorkspace = apiMock.createWorkspace;
@@ -477,6 +481,15 @@ function EditHistoryProbe() {
       </button>
       <pre data-testid="edit-history-view">{JSON.stringify({ historyTurns, historyTotal })}</pre>
     </>
+  );
+}
+
+function CompactSummaryProbe() {
+  const { startChatFromCompactSummary } = useApp();
+  return (
+    <button onClick={() => { void startChatFromCompactSummary("title", "summary body"); }}>
+      start chat from compact
+    </button>
   );
 }
 
@@ -1862,6 +1875,31 @@ describe("AppContext thinking rounds", () => {
       resolveEdit?.();
       await Promise.resolve();
     });
+  });
+
+  it("starts a new chat from a compact summary without sending it", async () => {
+    render(
+      <AppProvider>
+        <CompactSummaryProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "start chat from compact" }));
+    });
+
+    await waitFor(() => {
+      // Carries the summary BODY to the current chat/workspace; the backend
+      // records it as the first ASSISTANT message without a model run.
+      expect(apiMock.newChatFromCompact).toHaveBeenCalledWith(
+        "chat-1",
+        "ws-1",
+        "summary body",
+      );
+    });
+    expect(apiMock.sendInput).toHaveBeenCalledTimes(0);
   });
 
   it("waits for a pending model switch before sending the next message", async () => {

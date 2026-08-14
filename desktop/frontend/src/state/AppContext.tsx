@@ -328,6 +328,7 @@ interface AppContextValue {
   /** Delete a chat (may leave the workspace chat-less, entering compose mode). */
   deleteChat: (chatId: string, workspaceId?: string) => Promise<void>;
   forkChat: (index: number) => Promise<void>;
+  startChatFromCompactSummary: (title: string, body: string) => Promise<void>;
   editChat: (index: number) => Promise<void>;
   /** Create + switch to a workspace from a directory path (workspace picker). */
   createWorkspace: (path: string) => Promise<boolean>;
@@ -4936,6 +4937,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client, clearTurns],
   );
 
+  // Start a brand-new chat seeded with a context-compaction summary: the
+  // backend names it "<current chat name> (N)" (guaranteed unique), records
+  // the summary as its first ASSISTANT message in the same compaction-summary
+  // wire format the source chat uses (role preserved, never a user prompt),
+  // WITHOUT triggering a model run, and switches the active chat. The state
+  // event carries the new id and the history effect reloads the new chat's
+  // transcript (mirrors forkChat).
+  const startChatFromCompactSummary = useCallback(
+    async (title: string, body: string) => {
+      const titleText = String(title || "").trim();
+      const bodyText = String(body || "").trim();
+      // The summary BODY is the conversation content; the banner title is
+      // compaction machinery the backend re-derives from the summary message's
+      // mode. Carry only the body (falling back to the title when empty).
+      const text = bodyText || titleText;
+      if (!text.trim()) {
+        return;
+      }
+      clearTurns();
+      historyChatRef.current = "\u0000";
+      await client.newChatFromCompact(
+        activeChatIdRef.current,
+        activeWorkspaceIdRef.current,
+        text,
+      );
+    },
+    [client, clearTurns],
+  );
+
   // Truncate the conversation at the given (negative, from-end) genuine-user
   // index (dedicated /chat-edit endpoint, the TUI-command equivalent). The
   // chat id is unchanged, so the activeChatId effect won't refire; instead we
@@ -5658,6 +5688,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDraftHasContent,
     deleteChat,
     forkChat,
+    startChatFromCompactSummary,
     editChat,
     createWorkspace,
     loadOlderHistory,

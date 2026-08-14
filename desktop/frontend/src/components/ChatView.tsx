@@ -252,17 +252,23 @@ function CompactNoticeView({
   title,
   body = "",
   stage = "",
+  onStartChat = null,
 }: {
   title: string;
   body?: string;
   stage?: string;
+  /** When set, renders a hover-only "new chat from this summary" action row
+   *  (same style as the user-message hover actions) below the notice. */
+  onStartChat?: (() => void) | null;
 }) {
+  const { t } = useApp();
   const noticeTitle = String(title || "").trim();
   const noticeBody = String(body || "").trim();
   if (!noticeTitle && !noticeBody) {
     return null;
   }
   const inProgress = stage === "start" || stage === "stream";
+  const showStartChat = !inProgress && onStartChat != null;
   return (
     <div className="compact-notice-block">
       {noticeTitle && (
@@ -277,6 +283,20 @@ function CompactNoticeView({
       {noticeBody && (
         <div className="compact-notice-body">
           <MarkdownText text={noticeBody} />
+        </div>
+      )}
+      {showStartChat && (
+        <div className="entry-actions compact-notice-actions">
+          <div className="entry-action-buttons">
+            <button
+              className="entry-action-btn"
+              title={t("msg.newFromCompact")}
+              aria-label={t("msg.newFromCompact")}
+              onClick={() => onStartChat?.()}
+            >
+              <Icon name="new-chat" size={14} />
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -1150,6 +1170,7 @@ export function ChatView() {
     setReasoning,
     pickFiles,
     forkChat,
+    startChatFromCompactSummary,
     editChat,
     setPlanMode,
     draftMode,
@@ -1868,6 +1889,7 @@ export function ChatView() {
         title={standaloneCompactNotice.title}
         body={standaloneCompactNotice.body}
         stage={standaloneCompactNotice.stage}
+        onStartChat={() => startChatFromCompactSummary(standaloneCompactNotice.title, standaloneCompactNotice.body)}
       />
     </div>
   ) : null;
@@ -2516,13 +2538,17 @@ export function HistoryRoundDetailView({
   round: HistoryRound;
   showText?: boolean;
 }) {
-  const { t } = useApp();
+  const { t, startChatFromCompactSummary } = useApp();
   const compactNoticeTitle = String(round.compactNoticeTitle || "");
   const compactNoticeBody = String(round.compactNoticeBody || "");
   if (compactNoticeTitle.trim().length > 0 || compactNoticeBody.trim().length > 0) {
     return (
       <div className="turn compact-notice-turn">
-        <CompactNoticeView title={compactNoticeTitle} body={compactNoticeBody} />
+        <CompactNoticeView
+          title={compactNoticeTitle}
+          body={compactNoticeBody}
+          onStartChat={() => startChatFromCompactSummary(compactNoticeTitle, compactNoticeBody)}
+        />
       </div>
     );
   }
@@ -3000,7 +3026,7 @@ function CompletedTurnView({
    *  message content is visible before the jump/highlight runs. */
   searchTarget?: boolean;
 }) {
-  const { t, pendingExpandSubAgentId, state } = useApp();
+  const { t, pendingExpandSubAgentId, state, startChatFromCompactSummary } = useApp();
   const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
   const turnHasTarget = pendingExpandSubAgentId !== "" &&
     detailRounds.some((r) => textContainsSubAgentSession(String(r.tools || ""), pendingExpandSubAgentId));
@@ -3035,7 +3061,11 @@ function CompletedTurnView({
     if (compactNoticeTitle.length > 0 || compactNoticeBody.length > 0) {
       compactNoticeNodes.push(
         <div className="turn compact-notice-turn" key={`compact-notice-${index}`}>
-          <CompactNoticeView title={compactNoticeTitle} body={compactNoticeBody} />
+          <CompactNoticeView
+            title={compactNoticeTitle}
+            body={compactNoticeBody}
+            onStartChat={() => startChatFromCompactSummary(compactNoticeTitle, compactNoticeBody)}
+          />
         </div>,
       );
       return;
@@ -3914,7 +3944,7 @@ export function TurnView({
   compactNotice: CompactNoticeData | null;
   onStreamingThinkingCollapsedChange?: (collapsed: boolean) => void;
 }) {
-  const { t, state, steerHoldTurnIds } = useApp();
+  const { t, state, steerHoldTurnIds, startChatFromCompactSummary } = useApp();
   const [settle, setSettle] = useState(false);
   const wasRunningRef = useRef(turn.endedAt === null);
 
@@ -3947,6 +3977,7 @@ export function TurnView({
               title={compactNotice.title}
               body={compactNotice.body}
               stage={compactNotice.stage}
+              onStartChat={() => startChatFromCompactSummary(compactNotice.title, compactNotice.body)}
             />
           </div>
         )}
@@ -3985,6 +4016,7 @@ export function TurnView({
             title={compactNotice.title}
             body={compactNotice.body}
             stage={compactNotice.stage}
+            onStartChat={() => startChatFromCompactSummary(compactNotice.title, compactNotice.body)}
           />
         </div>
       )}

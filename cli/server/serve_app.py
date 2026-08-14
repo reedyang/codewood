@@ -45,7 +45,10 @@ from ..core.console_utils import (
     GUI_FORCE_PROMPT_PREFIX,
 )
 from ..config.app_info import get_app_logger_root, get_app_slug_snake
-from ..services.session_memory_service import _assistant_display_view
+from ..services.session_memory_service import (
+    CONTEXT_COMPACTION_SUMMARY_PREFIX,
+    _assistant_display_view,
+)
 
 _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 _WORKSPACE_ROUTE_LOGGER = logging.getLogger(
@@ -652,7 +655,18 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                                         "tools": "",
                                         "selection": "",
                                         "thinking": "",
-                                        "compactNoticeTitle": str(compact_display.get("title") or ""),
+                                        # When the compaction summary IS the
+                                        # chat's first message (e.g. a chat
+                                        # seeded from a summary), drop the
+                                        # "Context compacted" banner line —
+                                        # there is no prior context to have
+                                        # been compacted, so the banner would
+                                        # be meaningless.
+                                        "compactNoticeTitle": (
+                                            ""
+                                            if idx == 0
+                                            else str(compact_display.get("title") or "")
+                                        ),
                                         "compactNoticeBody": str(compact_display.get("body") or ""),
                                     }
                                 ],
@@ -3264,6 +3278,133 @@ class ServeApp:
                     new_id = str(agent._chat_state.get("active") or "")
                 except Exception:
                     pass
+        except Exception:
+            return {"ok": False}
+        finally:
+            self._restore_workspace(original_wsid)
+        if not new_id or new_id == cid:
+            return {"ok": False}
+        self.broadcaster.publish(
+            "state", self._route(state=_build_state(agent))
+        )
+        return {"ok": True, "chatId": new_id}
+
+    def chat_new_from_compact(
+        self,
+        chat_id: str = "",
+        workspace_id: str = "",
+        first_message: str = "",
+    ) -> Dict[str, Any]:
+        """Create a new chat seeded with a context-compaction summary (GUI
+        "new chat from compact summary" button).
+
+        Mirrors :meth:`chat_fork` (workspace-scoped, runs on the HTTP thread)
+        but the new chat is EMPTY of prior turns: only ``first_message`` (the
+        compact-summary body) is recorded as its first message in the SAME
+        wire format a real compaction produces: an ``assistant`` message whose
+        content is the ``[CONTEXT_COMPACTION_SUMMARY]`` JSON payload (role and
+        format preserved "as-is" so the GUI renders it as a compact-notice
+        turn and the model later receives it as an ``assistant``
+        ``[Context summary]`` message — never as a user prompt). The model is
+        intentionally NOT invoked — the user continues the conversation from
+        there. The new chat is named after the source chat with a unique
+        numeric suffix (``name (2)``, ``name (3)``, ...) via the same
+        ``_unique_fork_chat_name`` helper the fork command uses, so repeated
+        clicks never collide. The active chat is switched to the new chat so
+        the GUI's state event reloads its transcript.
+        """
+        agent = self.agent
+        cid, wsid = self._resolve_chat_scope(chat_id, workspace_id)
+        if not cid:
+            return {"ok": False}
+        original_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+        if not self._switch_to_workspace_safe(wsid or original_wsid):
+            return {"ok": False}
+        new_id = ""
+        try:
+            with self._session_scope_for_chat(cid, wsid or original_wsid):
+                agent.active_chat_id = cid
+                refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
+                if callable(refresh):
+                    refresh(cid)
+                from ..controllers.chat_command_controller import (
+                    _unique_fork_chat_name,
+                )
+
+                source = agent._find_chat_by_id(cid)
+                if not source:
+                    return {"ok": False}
+                base_name = str(
+                    source.get("name")
+                    or getattr(agent, "active_chat_name", "")
+                    or ""
+                )
+                if not base_name:
+                    from ..core.localization import (
+                        get_display_language,
+                        translate,
+                    )
+
+                    base_name = translate(
+                        "chat.new.default_name", get_display_language(agent)
+                    )
+                new_name = _unique_fork_chat_name(agent, base_name)
+                new_id = agent._next_chat_id()
+                entry = agent._new_chat_entry(new_id, name=new_name)
+                entry["name_source"] = "manual"
+                message_text = str(first_message or "").strip()
+                if message_text:
+                    created_at = datetime.datetime.now().strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    # Inherit the compaction mode from the source chat's most
+                    # recent summary (best-effort) so the banner title in the
+                    # new chat matches what the user saw; defaults to manual.
+                    mode = "manual"
+                    sms = getattr(agent, "session_memory_service", None)
+                    try:
+                        if sms is not None:
+                            parse = getattr(
+                                sms, "parse_context_compaction_summary_content", None
+                            )
+                            if callable(parse):
+                                for _m in reversed(list(source.get("messages") or [])):
+                                    if not isinstance(_m, dict):
+                                        continue
+                                    _p = parse(str(_m.get("content") or ""))
+                                    if isinstance(_p, dict):
+                                        mode = str(_p.get("mode") or "") or "manual"
+                                        break
+                    except Exception:
+                        mode = "manual"
+                    payload = {
+                        "kind": "context_compaction_summary",
+                        "summary": message_text,
+                        "mode": mode,
+                        "created_at": created_at,
+                    }
+                    entry["messages"] = [
+                        {
+                            "role": "assistant",
+                            "content": CONTEXT_COMPACTION_SUMMARY_PREFIX
+                            + json.dumps(payload, ensure_ascii=False),
+                            "created_at": created_at,
+                        }
+                    ]
+                entry["model_provider"] = str(source.get("model_provider") or "")
+                entry["model_name"] = str(source.get("model_name") or "")
+                entry["reasoning_level"] = str(source.get("reasoning_level") or "")
+                agent._chat_entries().append(entry)
+                agent._chat_state["active"] = new_id
+                agent._save_chat_state()
+                # The user is now composing in this new chat, so record it as
+                # the focused chat (mirrors new_chat): without this the focus
+                # marker still points at the previously opened chat and the
+                # new chat's first completed turn is misclassified as a
+                # background completion, leaving a persistent unread dot.
+                track = getattr(self, "_track_focus", None)
+                if callable(track):
+                    track(new_id, wsid or None)
         except Exception:
             return {"ok": False}
         finally:
@@ -9292,6 +9433,15 @@ def _make_handler(app: ServeApp):
                 except (TypeError, ValueError):
                     index = -1
                 result = app.chat_fork(chat_id, ws_id, index)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/chat-new-from-compact":
+                chat_id = str(body.get("chatId") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                first_message = str(body.get("firstMessage") or "")[:20000]
+                result = app.chat_new_from_compact(
+                    chat_id, ws_id, first_message
+                )
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/chat-edit":

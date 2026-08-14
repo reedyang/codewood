@@ -375,6 +375,28 @@ class StructuredTurnGroupingTests(unittest.TestCase):
         self.assertEqual(compact_round["compactNoticeTitle"], "Context compacted")
         self.assertEqual(compact_round["compactNoticeBody"], "Compacted summary body")
 
+    def test_first_message_compaction_summary_drops_banner_title(self):
+        # A chat seeded from a compact summary starts with the summary as its
+        # very first message; nothing was compacted before it, so the
+        # "Context compacted" banner line must be omitted (body stays).
+        agent = _FakeAgent()
+        agent.session_memory_service = _FakeCompactionSessionMemoryService()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": "SUMMARY",
+                "created_at": "2026-07-08 18:21:41",
+            },
+        ]
+
+        turns = _build_structured_turns(agent)
+
+        self.assertEqual(len(turns), 1)
+        compact_round = turns[0]["rounds"][0]
+        self.assertEqual(turns[0]["userText"], "")
+        self.assertEqual(compact_round["compactNoticeTitle"], "")
+        self.assertEqual(compact_round["compactNoticeBody"], "Compacted summary body")
+
     def test_hides_internal_compact_prompt_user_message(self):
         # The compact prompt is appended to the conversation as an ``_internal``
         # user message; the GUI turn builder must not surface it as a turn

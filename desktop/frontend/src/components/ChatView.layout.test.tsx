@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { liveTurnToHistoryTurn } from "./ChatView";
 import type { Turn } from "../api/types";
 
+const startChatFromCompactSummaryMock = vi.hoisted(() => vi.fn());
+
 vi.mock("../state/AppContext", () => ({
   useApp: () => ({
     t: (key: string) => {
@@ -12,9 +14,11 @@ vi.mock("../state/AppContext", () => ({
         "activity.thinking": "Thinking",
         "thinking.show": "Thinking",
         "msg.copy": "Copy",
+        "msg.newFromCompact": "New chat from summary",
       };
       return translations[key] ?? key;
     },
+    startChatFromCompactSummary: startChatFromCompactSummaryMock,
   }),
 }));
 
@@ -547,6 +551,66 @@ describe("TurnView compact notice placement", () => {
     expect(
       summary.compareDocumentPosition(user) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+  });
+
+  it("offers a new-chat action on a completed compact summary", () => {
+    render(
+      <TurnView
+        turn={{
+          id: 11,
+          userText: "已完成任务的消息",
+          rounds: [],
+          startedAt: 1000,
+          endedAt: 2000,
+        }}
+        now={3000}
+        negIndex={-1}
+        handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
+        compactNotice={{
+          title: "Context compacted",
+          body: "formatted summary",
+          text: "Context compacted",
+          stage: "done",
+          anchorTurnId: 11,
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "New chat from summary" }),
+    );
+    expect(startChatFromCompactSummaryMock).toHaveBeenCalledWith(
+      "Context compacted",
+      "formatted summary",
+    );
+  });
+
+  it("hides the new-chat action while a summary is still streaming", () => {
+    render(
+      <TurnView
+        turn={{
+          id: 12,
+          userText: "正在流式摘要的消息",
+          rounds: [],
+          startedAt: 1000,
+          endedAt: null,
+        }}
+        now={1100}
+        negIndex={-1}
+        handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
+        compactNotice={{
+          title: "Compacting context",
+          body: "streamed compact summary",
+          text: "Compacting context",
+          stage: "stream",
+          anchorTurnId: 12,
+        }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "New chat from summary" }),
+    ).toBeNull();
   });
 });
 

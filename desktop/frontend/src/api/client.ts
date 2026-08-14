@@ -154,6 +154,32 @@ export class ApiClient {
     }
   }
 
+  /** Create a new chat seeded with a context-compaction summary: the source
+   *  chat's name plus a unique " (N)" suffix, with ``firstMessage`` recorded
+   *  as the new chat's first user message (no model call is triggered). The
+   *  backend switches the active chat so the state event reloads it. Returns
+   *  the new chat id (or "" on failure). */
+  async newChatFromCompact(
+    chatId = "",
+    workspaceId = "",
+    firstMessage = "",
+  ): Promise<string> {
+    try {
+      const res = await fetch(`${this.base}/chat-new-from-compact`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, workspaceId, firstMessage }),
+      });
+      if (!res.ok) {
+        return "";
+      }
+      const data = (await res.json()) as { chatId?: string };
+      return data.chatId ?? "";
+    } catch {
+      return "";
+    }
+  }
+
   /** Truncate the chat at the given (negative, from-end) genuine-user index. */
   async editChat(chatId = "", workspaceId = "", index = -1): Promise<boolean> {
     try {
