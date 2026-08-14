@@ -2188,6 +2188,62 @@ describe("AppContext thinking rounds", () => {
     expect(apiMock.savePendingInputs).toHaveBeenCalled();
   });
 
+  it("drains the pending queue when the interrupted turn idle was skipped", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Task A runs; two messages queue behind it.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue A" }));
+      fireEvent.click(screen.getByRole("button", { name: "queue B" }));
+    });
+
+    // Steer a message: the suppression marker is set for the interrupt idle.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+
+    // The backend goes straight to the jumped task: the interrupted turn idle
+    // never reaches us (its snapshot already showed the chat running), so the
+    // suppression marker would leak into the jumped task completion idle and
+    // swallow the pending queue. The turn_start must clear the stale marker.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "steer-msg", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+
+    // The jumped task finished: the queue must resume and send msg-A.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+    expect(apiMock.sendInput).toHaveBeenCalledWith("msg-A", true, "chat-1", "ws-1");
+    const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+    expect(st.pendingInputs).toEqual(["msg-B"]);
+  });
+
   it("drains the remaining queue one per turn after the jumped task completes", async () => {
     render(
       <AppProvider>
