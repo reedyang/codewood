@@ -3632,7 +3632,48 @@ class ServeApp:
                 result = {"hidden": True}
                 result.update(rg_data)
                 return result
+
+            # Aggregate across every workspace's index.  ``status()`` sums the
+            # file counts and reports the most active refresh phase, so the GUI
+            # status bar reflects all workspaces instead of only the focused
+            # one.
             st = idx.status()
+            per_workspace: List[Dict[str, Any]] = []
+            try:
+                raw = agent._workspaces_state.get("workspaces", {})
+                default_ws_id = str(getattr(agent, "workspace_id", ""))
+            except Exception:
+                raw = {}
+                default_ws_id = ""
+            if isinstance(raw, dict):
+                for entry in raw.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    ws_id = str(entry.get("id") or "")
+                    try:
+                        root = str(agent._workspace_root_path(entry))
+                        storage = agent._workspace_storage_path(entry) / "indexes"
+                    except Exception:
+                        root = str(entry.get("root") or "")
+                        storage = None
+                    is_default = (
+                        str(entry.get("kind") or "").lower() == "default"
+                        or (bool(default_ws_id) and ws_id == default_ws_id)
+                    )
+                    ws_st = idx.status_for_storage(storage) if storage is not None else None
+                    per_workspace.append(
+                        {
+                            "id": ws_id,
+                            "name": str(entry.get("name") or ""),
+                            "root": root,
+                            "is_default": is_default,
+                            "files_total": int((ws_st or {}).get("files_total", 0) or 0),
+                            "refresh_phase": str((ws_st or {}).get("refresh_phase", "") or ""),
+                            "refresh_progress_total": int((ws_st or {}).get("refresh_progress_total", 0) or 0),
+                            "refresh_progress_done": int((ws_st or {}).get("refresh_progress_done", 0) or 0),
+                            "refresh_progress_percent": int((ws_st or {}).get("refresh_progress_percent", 0) or 0),
+                        }
+                    )
             result = {
                 "hidden": False,
                 "files_total": int(st.get("files_total", 0)),
@@ -3642,6 +3683,7 @@ class ServeApp:
                 "refresh_progress_total": int(st.get("refresh_progress_total", 0)),
                 "refresh_progress_done": int(st.get("refresh_progress_done", 0)),
                 "refresh_progress_percent": int(st.get("refresh_progress_percent", 0)),
+                "workspaces": per_workspace,
             }
             result.update(rg_data)
             return result

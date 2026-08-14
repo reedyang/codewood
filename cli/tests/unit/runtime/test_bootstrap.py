@@ -17,10 +17,14 @@ class _FakeAgent:
         self.validation_calls = 0
         self.memory_bg_calls = 0
         self.project_context_calls = 0
+        self.all_workspaces_project_context_calls = 0
         self.cleanup_calls = 0
 
     def _schedule_project_context_refresh_background(self, force=False, reason=""):
         self.project_context_calls += 1
+
+    def _schedule_project_context_refresh_for_all_workspaces(self):
+        self.all_workspaces_project_context_calls += 1
 
     def _schedule_model_validation_background(self):
         self.validation_calls += 1
@@ -84,6 +88,7 @@ class BootstrapTests(unittest.TestCase):
 
         with (
             patch("cli.runtime.bootstrap.ProjectContextIndex"),
+            patch("cli.runtime.bootstrap.ProjectContextIndexManager"),
             patch("cli.runtime.bootstrap.ToolDispatcher"),
         ):
             bootstrap.setup_runtime_services(agent)
@@ -93,6 +98,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(agent.validation_calls, 1)
         self.assertEqual(agent.memory_bg_calls, 1)
         self.assertEqual(agent.project_context_calls, 1)
+        self.assertEqual(agent.all_workspaces_project_context_calls, 1)
 
 
 if __name__ == "__main__":

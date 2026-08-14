@@ -6,6 +6,7 @@ from pathlib import Path
 from cli.agent import Agent
 from cli.tools.project_context_index import (
     ProjectContextIndex,
+    ProjectContextIndexManager,
     _normalize_watch_rel,
     _CallEdge,
     _FileEntry,
@@ -158,6 +159,35 @@ class ProjectContextIndexTests(unittest.TestCase):
             self.assertNotEqual(bound_root.name, work_directory.name)
             self.assertEqual(bound_storage.name, "indexes")
             self.assertEqual(bound_storage.parent.name, workspace_config_dir.name)
+
+    def test_manager_keeps_every_workspace_index_active(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            mgr = ProjectContextIndexManager()
+            ws_a_root = base / "a"
+            ws_b_root = base / "b"
+            ws_a_root.mkdir()
+            ws_b_root.mkdir()
+            storage_a = base / "sa" / "indexes"
+            storage_b = base / "sb" / "indexes"
+
+            idx_a = mgr.bind_workspace(ws_a_root, storage_dir=storage_a)
+            idx_b = mgr.bind_workspace(ws_b_root, storage_dir=storage_b)
+
+            # Switching to B keeps A's instance alive in memory.
+            self.assertIs(mgr.current(), idx_b)
+            self.assertEqual(len(mgr.all()), 2)
+            self.assertEqual(mgr.status_for_storage(storage_a), idx_a.status())
+
+            # Rebinding A returns the SAME instance — nothing is discarded on a
+            # workspace switch.
+            self.assertIs(mgr.bind_workspace(ws_a_root, storage_dir=storage_a), idx_a)
+
+            # Aggregated status covers every workspace.
+            agg = mgr.status()
+            self.assertTrue(agg["success"])
+            self.assertEqual(agg["files_total"], 0)
+            mgr.shutdown()
 
     def test_sqlite_roundtrip_persists_symbols_imports_and_calls(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:

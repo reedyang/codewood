@@ -37,8 +37,22 @@ export interface ContextUsagePart {
   tokens: number;
 }
 
+/** Per-workspace project-context index state, as reported by /index-status. */
+export interface WorkspaceIndexStatus {
+  id: string;
+  name: string;
+  root: string;
+  is_default: boolean;
+  files_total: number;
+  refresh_phase: string;
+  refresh_progress_total: number;
+  refresh_progress_done: number;
+  refresh_progress_percent: number;
+}
+
 export interface IndexStatus {
   hidden: boolean;
+  /** Aggregated indexed-file count across every workspace. */
   files_total: number;
   workspace_name: string;
   is_default_workspace: boolean;
@@ -46,6 +60,9 @@ export interface IndexStatus {
   refresh_progress_total: number;
   refresh_progress_done: number;
   refresh_progress_percent: number;
+  /** Per-workspace breakdown; lets hover tips show each workspace's own
+   *  index state while the status bar shows the aggregate. */
+  workspaces?: WorkspaceIndexStatus[];
   rg_status?: string;
   rg_message?: string;
 }

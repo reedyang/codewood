@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import { useApp } from "../state/AppContext";
-import type { WorkspaceSummary } from "../api/types";
+import type { WorkspaceIndexStatus, WorkspaceSummary } from "../api/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Icon } from "./Icon";
 import { HoverTooltip } from "./HoverTooltip";
 import { buildChatMenuItems, chatKey } from "./chatMenu";
+import { useIndexStatus } from "../utils/useIndexStatus";
 
 function formatRelative(value?: string, now = Date.now()): string {
   if (!value) {
@@ -208,6 +209,28 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     }
     return map;
   }, [workspaces]);
+
+  // Per-workspace index state (shared poller with the status bar) so each
+  // workspace row's hover tip can show that workspace's own index info.
+  const indexStatus = useIndexStatus(client);
+  const workspaceIndexById = useMemo(() => {
+    const map: Record<string, WorkspaceIndexStatus> = {};
+    for (const ws of indexStatus?.workspaces ?? []) {
+      map[ws.id] = ws;
+    }
+    return map;
+  }, [indexStatus]);
+
+  const workspaceIndexLine = (wsId: string): string => {
+    const info = workspaceIndexById[wsId];
+    if (!info) return "";
+    const phase = info.refresh_phase;
+    if (phase === "scanning" || phase === "indexing" || phase === "saving") {
+      return `Indexing ${Math.max(0, Math.floor(info.refresh_progress_percent ?? 0))}%`;
+    }
+    const files = info.files_total ?? 0;
+    return `Index: ${files.toLocaleString()} file${files !== 1 ? "s" : ""}`;
+  };
 
   // Chats per workspace.  The live ``activeChats`` list may only replace the
   // cache once the backend confirms it is describing the workspace the user
@@ -550,15 +573,25 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
             renderRenameRow()
           ) : (
             <>
-              <button
-                className="tree-label ws-label"
-                title={ws.root}
-                onClick={() => toggleWorkspaceExpanded(ws.id)}
+              <HoverTooltip
+                className="tree-label-tip"
+                content={
+                  <>
+                    <div className="hover-tooltip-topic">{ws.name}</div>
+                    <div className="hover-tooltip-workspace">{ws.root}</div>
+                    <div className="hover-tooltip-index">{workspaceIndexLine(ws.id)}</div>
+                  </>
+                }
               >
-                <Icon name={open ? "folder-open" : "folder"} size={15} className="muted-icon" />
-                <span className="tree-name">{ws.name}</span>
-                <Icon name="chevron" size={14} className={`chevron tree-inline-chevron ${open ? "open" : ""}`} />
-              </button>
+                <button
+                  className="tree-label ws-label"
+                  onClick={() => toggleWorkspaceExpanded(ws.id)}
+                >
+                  <Icon name={open ? "folder-open" : "folder"} size={15} className="muted-icon" />
+                  <span className="tree-name">{ws.name}</span>
+                  <Icon name="chevron" size={14} className={`chevron tree-inline-chevron ${open ? "open" : ""}`} />
+                </button>
+              </HoverTooltip>
               <span className="tree-flex" />
               <button
                 className="tree-more"

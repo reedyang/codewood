@@ -30,6 +30,7 @@ from ..core.config.subagents_loader import (
 )
 from ..tooling.dispatcher import ToolDispatcher
 from ..tools.project_context_index import ProjectContextIndex
+from ..tools.project_context_index import ProjectContextIndexManager
 
 DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT = 85
 
@@ -538,7 +539,8 @@ def setup_runtime_services(agent: Any) -> None:
     agent._workspace_runtime_generation = 0
     agent._project_context_refresh_gate = threading.Lock()
     agent._project_context_refresh_inflight = False
-    agent._project_context_index = ProjectContextIndex(
+    agent._project_context_index = ProjectContextIndexManager()
+    agent._project_context_index.bind_workspace(
         workspace_root=agent.workspace_root,
         storage_dir=(agent.workspace_config_dir / "indexes"),
     )
@@ -549,6 +551,13 @@ def setup_runtime_services(agent: Any) -> None:
         pass
     try:
         agent._schedule_project_context_refresh_background(force=False, reason="startup")
+    except Exception:
+        pass
+    # Keep every workspace's project-context index active, not just the one
+    # currently focused: schedule background refreshes for all registered
+    # workspaces so switching workspaces never has to rebuild from scratch.
+    try:
+        agent._schedule_project_context_refresh_for_all_workspaces()
     except Exception:
         pass
     agent._schedule_model_validation_background()

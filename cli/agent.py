@@ -576,9 +576,6 @@ class Agent:
         )
 
     def _project_context_tool_allowed(self) -> bool:
-        # Hard policy: not available in Default workspace.
-        if self._is_default_workspace():
-            return False
         # Soft switch: user can disable via config.
         return bool(getattr(self, "project_context_search_enabled", True))
 
@@ -610,12 +607,6 @@ class Agent:
         reason_text = str(reason or "background")
         pc_logger = get_logger(f"{get_app_logger_root()}.project_context")
 
-        if reason_text == "startup":
-            if not self._project_context_tool_allowed():
-                with gate:
-                    self._project_context_refresh_inflight = False
-                return True
-
         try:
             pc_logger.info(
                 "Project context refresh scheduled: reason=%s workspace=%s storage=%s",
@@ -625,7 +616,10 @@ class Agent:
             pass
 
         try:
-            index.bind_workspace(target_root, storage_dir=target_storage)
+            # The manager keeps one index per workspace; bind_workspace
+            # returns the instance for THIS workspace without touching the
+            # in-memory state of the others.
+            index = index.bind_workspace(target_root, storage_dir=target_storage)
         except Exception:
             with gate:
                 self._project_context_refresh_inflight = False
@@ -647,6 +641,80 @@ class Agent:
                 self._project_context_refresh_inflight = False
             return False
         return True
+
+    def _schedule_project_context_refresh_for_all_workspaces(self) -> None:
+        """Ensure every registered workspace has its own active index.
+
+        Each workspace's index instance is created up front (loading any
+        already-built on-disk index) and, when it has no data yet, refreshed in
+        the background one workspace at a time.  After this, switching between
+        workspaces never has to rebuild an index from scratch, and the GUI
+        status bar / hover tips can aggregate every workspace's index state.
+        """
+        mgr = getattr(self, "_project_context_index", None)
+        if mgr is None or not self._project_context_tool_allowed():
+            return
+        try:
+            raw = self._workspaces_state.get("workspaces", {})
+        except Exception:
+            return
+        if not isinstance(raw, dict):
+            return
+
+        jobs: List[Any] = []
+        for entry in raw.values():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                root = self._workspace_root_path(entry)
+                storage = self._workspace_storage_path(entry) / "indexes"
+            except Exception:
+                continue
+            try:
+                idx = mgr.bind_workspace(root, storage_dir=storage)
+            except Exception:
+                continue
+            jobs.append((idx, root))
+        if not jobs:
+            return
+
+        def _run() -> None:
+            # Chain the subprocess refreshes so only one indexer runs at a
+            # time; each ``start_subprocess_refresh`` spawns a child process
+            # that scans a whole workspace.
+            def _chain(remaining: List[Any]) -> None:
+                if not remaining:
+                    return
+                idx, _root = remaining[0]
+                rest = remaining[1:]
+                if len(getattr(idx, "files", {})) > 0:
+                    _chain(rest)
+                    return
+
+                def _on_done() -> None:
+                    try:
+                        with idx._lock:
+                            idx._load()
+                    except Exception:
+                        pass
+                    _chain(rest)
+
+                try:
+                    ok = idx.start_subprocess_refresh(on_done=_on_done)
+                except Exception:
+                    ok = False
+                if not ok:
+                    _chain(rest)
+
+            _chain(jobs)
+
+        try:
+            threading.Thread(
+                target=_run, daemon=True,
+                name=f"{get_app_logger_root()}-pcs-all-workspaces",
+            ).start()
+        except Exception:
+            pass
 
     def _path_identity_key(self, path: Path) -> str:
         return self._workspace_state_manager.path_identity_key(path)
