@@ -242,12 +242,19 @@ def workspace_switch_command(
     prev_root = str(getattr(agent, "workspace_root", "") or "")
     target_ws = str(entry.get("id") or "")
     target_root = str(entry.get("root") or "")
-    logger.info(
+    logger.debug(
         "workspace_switch start: prev_ws=%s prev_root=%s -> target_ws=%s target_root=%s",
         prev_ws, prev_root, target_ws, target_root,
     )
+    import time as _time
+
+    _t0 = _time.perf_counter()
     agent._save_current_workspace_position()
+    _t1 = _time.perf_counter()
+    logger.debug("ws-switch-timing save_position=%.3fs", _t1 - _t0)
     agent._apply_workspace_entry(entry, agent.work_directory)
+    _t2 = _time.perf_counter()
+    logger.debug("ws-switch-timing apply_entry=%.3fs", _t2 - _t1)
     refresh = getattr(agent, "_refresh_workspace_runtime", None)
     if refresh is None:
         raise AttributeError("agent._refresh_workspace_runtime is required")
@@ -263,12 +270,16 @@ def workspace_switch_command(
             refresh(create_default_chat=create_default_chat)
     except (TypeError, ValueError):
         refresh(create_default_chat=create_default_chat)
+    _t3 = _time.perf_counter()
+    logger.debug("ws-switch-timing refresh_runtime=%.3fs", _t3 - _t2)
     # Globals now point at the target workspace, but the session still carries
     # the previous chat's id/history (its active chat is bound later by
     # ``_activate_chat``). Persist only the position metadata here; syncing
     # messages would duplicate the previous chat's history into a same-id chat
     # of the target workspace.
     agent._save_current_workspace_position(sync_messages=False)
+    _t4 = _time.perf_counter()
+    logger.debug("ws-switch-timing save_position_no_sync=%.3fs total=%.3fs", _t4 - _t3, _t4 - _t0)
     # Keep the sandbox usable in the newly activated workspace: a brand-new
     # root has no capability-SID grants, so sandboxed shell commands would be
     # unable to write it. Best-effort, no elevation needed; no-op when the
@@ -276,10 +287,21 @@ def workspace_switch_command(
     try:
         from ..core.sandbox import refresh_workspace_acls
 
-        refresh_workspace_acls(agent, target_root)
+        # ACL application shells out to ``powershell.exe`` (0.5-1.5s per
+        # invocation) and is idempotent, so it must never block the workspace
+        # switch. Run it on a background thread; the sandbox self-heals by
+        # the time the user issues the first sandboxed command.
+        import threading
+
+        threading.Thread(
+            target=refresh_workspace_acls,
+            args=(agent, target_root),
+            name=f"{get_app_logger_root()}-workspace-acl-{target_ws}",
+            daemon=True,
+        ).start()
     except Exception:
         pass
-    logger.info(
+    logger.debug(
         "workspace_switch done: target_ws=%s target_root=%s",
         target_ws, target_root,
     )

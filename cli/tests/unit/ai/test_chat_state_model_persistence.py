@@ -624,6 +624,91 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(snapshot.get("workspace_id"), "ws-A")
             self.assertEqual([c.get("id") for c in snapshot.get("chats", [])], ["chat-1"])
 
+    def test_load_chat_state_snapshot_lazy_records_skips_record_reads(self):
+        # The background-workspace persistence context must not read every
+        # record file under its lock (multi-MB records stalled select_chat by
+        # ~0.3-0.8s); lazy placeholders from the index are sufficient because
+        # save_chat_state hydrates them on demand before writing.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent.workspace_id = "ws-A"
+            _write_chat_store(
+                workspace,
+                {
+                    "active": "chat-1",
+                    "chats": [
+                        {
+                            "id": "chat-1",
+                            "name": "Big",
+                            "updated_at": "2026-07-08 15:00:00",
+                            "messages": [
+                                {"role": "user", "content": "x", "created_at": "2026-07-08 15:10:00"}
+                            ],
+                        }
+                    ],
+                },
+                workspace_id="ws-A",
+            )
+
+            snapshot = manager.load_chat_state_snapshot(
+                workspace, expected_workspace_id="ws-A", lazy_records=True
+            )
+
+            chat = snapshot["chats"][0]
+            self.assertEqual(chat.get("id"), "chat-1")
+            self.assertEqual(chat.get("name"), "Big")
+            self.assertTrue(chat.get("_lazy_placeholder"))
+            self.assertEqual(chat.get("messages"), [])
+            self.assertTrue(chat.get("_record_file"))
+
+    def test_save_hydrates_placeholder_preserving_pending_inputs(self):
+        # A lazy placeholder that received a pending input queue before the
+        # save must keep that queue when save_chat_state hydrates the full
+        # record from disk (background-workspace ctx scenario).
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent.workspace_id = "ws-A"
+            _write_chat_store(
+                workspace,
+                {
+                    "active": "chat-1",
+                    "chats": [
+                        {
+                            "id": "chat-1",
+                            "name": "Big",
+                            "updated_at": "2026-07-08 15:00:00",
+                            "messages": [
+                                {"role": "user", "content": "persisted", "created_at": "2026-07-08 15:10:00"}
+                            ],
+                        }
+                    ],
+                },
+                workspace_id="ws-A",
+            )
+            snapshot = manager.load_chat_state_snapshot(
+                workspace, expected_workspace_id="ws-A", lazy_records=True
+            )
+            agent._chat_state = snapshot
+            agent.active_chat_id = "chat-1"
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertTrue(chat.get("_lazy_placeholder"))
+            chat["pending_inputs"] = ["draft message"]
+            manager.mark_chat_dirty("chat-1")
+
+            manager.save_chat_state()
+
+            hydrated = manager.find_chat_by_id("chat-1")
+            self.assertFalse(hydrated.get("_lazy_placeholder"))
+            self.assertEqual(hydrated.get("pending_inputs"), ["draft message"])
+            self.assertEqual(
+                [m.get("content") for m in hydrated.get("messages") or []],
+                ["persisted"],
+            )
+
     def test_clear_chat_context_clears_messages(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))
@@ -1122,6 +1207,183 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
             self.assertEqual(chat.get("updated_at"), fake_now)
+
+    def test_sync_active_chat_messages_refuses_empty_history_over_in_memory_messages(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "2026-07-08 15:00:00",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [
+                            {"role": "user", "content": "persisted", "created_at": "2026-07-08 15:10:00"}
+                        ],
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent.conversation_history = []
+
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            manager.sync_active_chat_messages()
+
+            # An empty live history must never truncate a chat that already
+            # holds messages in memory (stale active_chat_id after a workspace
+            # switch whose conversation_history was never hydrated).
+            self.assertEqual(save_calls, [])
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertEqual(len(chat.get("messages") or []), 1)
+
+    def test_sync_active_chat_messages_refuses_empty_history_over_disk_record(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            record_file = "0123456789abcdef0123456789abcde6.json"
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "2026-07-08 15:00:00",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [],
+                        "_record_file": record_file,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent.conversation_history = []
+            # The on-disk record holds a real conversation (e.g. loaded lazily
+            # as an empty placeholder during a workspace switch); the empty
+            # in-memory session must never overwrite it.
+            (workspace / "chats").mkdir(parents=True, exist_ok=True)
+            (workspace / "chats" / record_file).write_text(
+                json.dumps(
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "updated_at": "2026-07-08 15:00:00",
+                        "messages": [
+                            {"role": "user", "content": "persisted", "created_at": "2026-07-08 15:10:00"},
+                            {"role": "assistant", "content": "reply", "created_at": "2026-07-08 15:11:00"},
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            manager.sync_active_chat_messages()
+
+            self.assertEqual(save_calls, [])
+            disk_record = json.loads(
+                (workspace / "chats" / record_file).read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(disk_record.get("messages") or []), 2)
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertEqual(chat.get("messages"), [])
+
+    def test_sync_active_chat_messages_still_clears_truly_empty_fresh_chat(self):
+        # A brand-new chat that never persisted anything may still be synced
+        # with an empty history: there is no real record to protect.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [],
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent.conversation_history = []
+
+            manager.sync_active_chat_messages()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertEqual(chat.get("messages"), [])
+
+    def test_sync_active_chat_messages_allow_empty_explicitly_clears_record(self):
+        # The explicit edit path (``/chat edit`` truncating the first user
+        # message) passes ``allow_empty=True``: the empty history is intended
+        # and must clear the on-disk record, bypassing the data-safety guard.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            record_file = "0123456789abcdef0123456789abcde6.json"
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "2026-07-08 15:00:00",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [
+                            {"role": "user", "content": "persisted", "created_at": "2026-07-08 15:10:00"}
+                        ],
+                        "_record_file": record_file,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent.conversation_history = []
+            (workspace / "chats").mkdir(parents=True, exist_ok=True)
+            (workspace / "chats" / record_file).write_text(
+                json.dumps(
+                    {"id": "chat-1", "name": "Main", "updated_at": "2026-07-08 15:00:00", "messages": []},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            manager.sync_active_chat_messages(allow_empty=True)
+
+            self.assertEqual(save_calls, ["saved"])
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertEqual(chat.get("messages"), [])
 
 
 class RefreshChatRecordFromDiskTests(unittest.TestCase):

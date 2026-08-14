@@ -93,7 +93,7 @@ class _FakeEditAgent:
         self.clear_pending_calls = 0
         self.input_handler = _FakeInputHandler()
 
-    def _sync_active_chat_messages(self):
+    def _sync_active_chat_messages(self, allow_empty: bool = False):
         self.sync_calls += 1
 
     def _save_chat_state(self):
@@ -245,7 +245,7 @@ class _FakeForkAgent:
         self.saved = 0
         self.input_handler = _FakeInputHandler()
 
-    def _sync_active_chat_messages(self):
+    def _sync_active_chat_messages(self, allow_empty: bool = False):
         chat = self._find_chat_by_id(self.active_chat_id)
         if chat is not None:
             chat["messages"] = list(self.conversation_history)

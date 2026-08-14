@@ -2570,6 +2570,30 @@ class McpManager:
         self._recent_logs: "deque[str]" = deque(maxlen=200)
         self._init_server_status()
 
+    def update_workspace(
+        self,
+        workspace_dir: Optional[Path] = None,
+        tool_policy_parent: Optional[Path] = None,
+    ) -> None:
+        """Retarget workspace-scoped state without restarting any client.
+
+        MCP servers are configured globally (``<config_dir>/mcp.jsonc``) and
+        their client processes are shared across workspaces, so switching the
+        focused workspace must NOT shut down / recreate the manager (that
+        terminates every stdio subprocess and can block the UI for seconds).
+        Only the per-workspace tool-policy path changes; the disabled-tools
+        policy is reloaded from the new location (falling back to empty when
+        the new workspace has no policy file).
+        """
+        if workspace_dir is not None:
+            self.workspace_dir = Path(workspace_dir)
+        if tool_policy_parent is not None:
+            with self._policy_lock:
+                self._tool_policy_path = (
+                    Path(tool_policy_parent) / "mcp_tool_policy.json"
+                )
+                self._disabled_tools_by_server = self._load_disabled_tools_policy()
+
     def _load_disabled_tools_policy(self) -> Dict[str, set[str]]:
         out: Dict[str, set[str]] = {}
         try:

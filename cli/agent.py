@@ -1369,8 +1369,8 @@ class Agent:
         """
         return self._chat_state_manager.refresh_chat_record_from_disk(chat_id)
 
-    def _sync_active_chat_messages(self) -> None:
-        self._chat_state_manager.sync_active_chat_messages()
+    def _sync_active_chat_messages(self, allow_empty: bool = False) -> None:
+        self._chat_state_manager.sync_active_chat_messages(allow_empty=allow_empty)
 
     def _persist_active_chat_usage_snapshot(self) -> None:
         self._chat_state_manager.persist_active_chat_usage_snapshot()
@@ -7555,6 +7555,16 @@ class Agent:
     def _refresh_workspace_runtime(
         self, create_default_chat: bool = True, lazy_records: bool = False
     ) -> None:
+        import time as _time
+
+        _t0 = _time.perf_counter()
+
+        def _seg(label: str) -> None:
+            # Cumulative time since the start of the switch; consecutive
+            # samples' deltas cover 100% of the function so an untracked slow
+            # region (e.g. a lock wait inside a call) shows up as a gap.
+            _log_ws_timing(label, _time.perf_counter() - _t0)
+
         # Don't block the switch on the previous workspace's memory worker.
         # shutdown(wait=True) waits for an in-flight indexing task (e.g. one
         # triggered by a just-sent message) which can take seconds; the old
@@ -7564,8 +7574,11 @@ class Agent:
         # migration) waits.
         self._shutdown_workspace_services(wait=False)
         self._cleanup_workspace_shell_stashes_if_needed()
+        _seg("shutdown_services+stash")
         self._ensure_workspace_dirs()
+        _seg("ensure_dirs")
         self.history_manager = HistoryManager(str(self.workspace_config_dir), language=getattr(self, "display_language", "en") or "en")
+        _seg("history_manager")
         load_chat = getattr(self, "_load_chat_state", None)
         if load_chat is not None:
             try:
@@ -7581,6 +7594,7 @@ class Agent:
                     load_chat(create_default_chat=create_default_chat)
             except (TypeError, ValueError):
                 load_chat(create_default_chat=create_default_chat)
+        _seg("load_chat_state")
         if self.input_handler is not None:
             try:
                 if hasattr(self.input_handler, "update_workspace_directory"):
@@ -7591,6 +7605,7 @@ class Agent:
                     self.input_handler.reset_command_history(self.history_manager.get_all_history())
             except Exception:
                 pass
+        _seg("input_handler")
 
         self._allowlist_shell_paths = {}
         self._allowlist_shell_exes = set()
@@ -7599,25 +7614,56 @@ class Agent:
         self._load_confirm_allowlist()
         self._freedom_script_review_entries = {}
         self._load_freedom_script_review_cache()
+        _seg("allowlist_caches")
 
-        self._shutdown_mcp_runtime()
-        self.mcp_manager = McpManager(
-            self.config_dir,
-            self.mcp_config,
-            self.workspace_config_dir,
-            tool_policy_parent=self.workspace_config_dir,
-            language=getattr(self, "display_language", "en") or "en",
-        )
-        self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
+        # MCP servers are configured globally (<config_dir>/mcp.jsonc) and
+        # their client processes are shared across ALL workspaces. Recreating
+        # the manager on every workspace switch would shut down every stdio
+        # subprocess (e.g. windbg, gitlab, playwright) and block the GUI
+        # switch for seconds. Reuse the live manager and only retarget its
+        # workspace-scoped tool policy; create it once on first use.
+        existing_mcp = getattr(self, "mcp_manager", None)
+        if existing_mcp is not None:
+            try:
+                existing_mcp.update_workspace(
+                    workspace_dir=self.workspace_config_dir,
+                    tool_policy_parent=self.workspace_config_dir,
+                )
+            except Exception:
+                pass
+        else:
+            self.mcp_manager = McpManager(
+                self.config_dir,
+                self.mcp_config,
+                self.workspace_config_dir,
+                tool_policy_parent=self.workspace_config_dir,
+                language=getattr(self, "display_language", "en") or "en",
+            )
+            self.mcp_manager.register_client_method_handler(
+                "elicitation/create", self._handle_mcp_elicitation_create
+            )
+        _seg("mcp_manager_setup")
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
-        self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
+        _seg("mcp_preload_async")
+        # Rebuild the system prompt exactly once per workspace switch:
+        # ``_reload_skills`` already recomposes it when the skill dirs
+        # fingerprint changes (which it almost always does across workspaces);
+        # only when the fingerprint is unchanged (e.g. neither workspace has a
+        # skills dir) do we recompose here so the new workspace's AGENTS.md /
+        # config content is picked up.
+        skills_before = getattr(self, "_skills_dirs_fingerprint", "")
         self._reload_skills()
+        if getattr(self, "_skills_dirs_fingerprint", "") == skills_before:
+            self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
+        _seg("reload_skills+compose")
         self._update_skills_watcher_workspace()
+        _seg("skills_watcher")
         self.memory_service = None
 
 
         self._schedule_memory_service_background()
         self._schedule_project_context_refresh_background(force=False, reason="workspace-refresh")
+        _seg("refresh_runtime_total")
 
     def _schedule_memory_service_background(self) -> None:
         """Initialize experiential memory in the background: import memory_manager in this thread, then construct MemoryService (Markdown backend, no heavy dependency)."""
@@ -9953,6 +9999,16 @@ class Agent:
         except Exception as e:
             print(translate("warning.execution_failed", self._ui_language(), error=e))
             return False
+
+
+def _log_ws_timing(label: str, seconds: float) -> None:
+    """Log a workspace-switch timing sample under a greppable marker."""
+    try:
+        from .core.logging.app_logging import get_logger
+
+        get_logger().debug("ws-switch-timing %s=%.3fs", label, seconds)
+    except Exception:
+        pass
 
 
 

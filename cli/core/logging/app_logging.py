@@ -6,10 +6,28 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
 from ...config.app_info import get_app_log_filename, get_app_logger_root
+
+
+class _MillisecondFormatter(logging.Formatter):
+    """Log formatter with millisecond-precision timestamps.
+
+    ``logging``'s built-in ``formatTime`` has no ``%f`` support, so emit the
+    date-time plus a 3-digit millisecond fraction manually. Kept intentionally
+    small; the fraction only appears when the date format carries ``.%f``.
+    """
+
+    def formatTime(self, record: logging.LogRecord, datefmt: Optional[str] = None) -> str:
+        ct = self.converter(record.created)
+        if datefmt and "%f" in datefmt:
+            base = time.strftime(datefmt.replace(".%f", ""), ct)
+            return f"{base}.{int(record.msecs):03d}"
+        return super().formatTime(record, datefmt)
+
 
 _LOGGER_NAME = get_app_logger_root()
 _file_handler_installed = False
@@ -42,9 +60,9 @@ def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging
         fh = logging.FileHandler(log_path, encoding="utf-8")
         fh.setLevel(level)
         fh.setFormatter(
-            logging.Formatter(
+            _MillisecondFormatter(
                 "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
+                datefmt="%Y-%m-%d %H:%M:%S.%f",
             )
         )
         root.addHandler(fh)
