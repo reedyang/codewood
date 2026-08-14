@@ -4924,6 +4924,13 @@ html[data-has-bg] .select {
   justify-content: center;
 }
 
+/* Hover-only action row on compact summaries, styled exactly like the
+   user-message hover actions (same .entry-actions classes) so the "start a
+   new chat from this summary" button matches the transcript's look. */
+.compact-notice-turn:hover .compact-notice-actions {
+  visibility: visible;
+}
+
 .compact-notice-block {
   display: flex;
   flex-direction: column;

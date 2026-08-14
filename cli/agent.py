@@ -2017,10 +2017,16 @@ class Agent:
                     compact_display = self.session_memory_service.build_context_compaction_display_payload(
                         compact_payload
                     )
-                    try:
-                        self.session_memory_service._print_compaction_banner(compact_display["title"])
-                    except Exception:
-                        print(compact_display["title"])
+                    # A summary that IS the chat's first message (e.g. a chat
+                    # seeded from a compact summary) has no prior context to
+                    # have been compacted, so its "Context compacted" banner
+                    # line is dropped. ``idx`` is relative to the sliced
+                    # ``hist`` here, so the absolute position is ``start+idx``.
+                    if start + idx != 0:
+                        try:
+                            self.session_memory_service._print_compaction_banner(compact_display["title"])
+                        except Exception:
+                            print(compact_display["title"])
                     if compact_display["body"]:
                         display_response = format_assistant_display_response(compact_display["body"])
                         if display_response:
@@ -2317,7 +2323,11 @@ class Agent:
                 compact_display = self.session_memory_service.build_context_compaction_display_payload(
                     compact_summary
                 )
-                self.session_memory_service._print_compaction_banner(compact_display["title"])
+                # Drop the "Context compacted" banner when the summary is the
+                # chat's very first message (a chat seeded from a compact
+                # summary): nothing was compacted before it.
+                if idx != 0:
+                    self.session_memory_service._print_compaction_banner(compact_display["title"])
                 if compact_display["body"]:
                     display_response = format_assistant_display_response(compact_display["body"])
                     if display_response:

@@ -176,6 +176,7 @@ export const zhCN: Dict = {
   "msg.paste": "粘贴",
   "msg.cut": "剪切",
   "msg.fork": "复刻",
+  "msg.newFromCompact": "基于此摘要开启新对话",
   "msg.edit": "编辑",
 
   "workspace.title": "工作区",

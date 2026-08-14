@@ -176,6 +176,7 @@ export const en: Dict = {
   "msg.paste": "Paste",
   "msg.cut": "Cut",
   "msg.fork": "Fork",
+  "msg.newFromCompact": "New chat from this summary",
   "msg.edit": "Edit",
 
   "workspace.title": "Workspaces",

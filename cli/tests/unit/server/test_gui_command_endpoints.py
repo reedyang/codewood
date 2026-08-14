@@ -7,6 +7,7 @@ now runs directly on the HTTP thread, workspace-scoped, without touching the
 slash-command machinery.
 """
 
+import json
 import threading
 import time
 import unittest
@@ -14,6 +15,7 @@ from unittest.mock import Mock, patch
 
 from cli.agent import Agent
 from cli.server.serve_app import ServeApp
+from cli.services.session_memory_service import CONTEXT_COMPACTION_SUMMARY_PREFIX
 
 
 class _FakeBroadcaster:
@@ -87,6 +89,9 @@ def _app(agent):
     stub._restore_workspace = getattr(ServeApp, "_restore_workspace").__get__(
         stub, _Stub
     )
+    stub.chat_new_from_compact = getattr(
+        ServeApp, "chat_new_from_compact"
+    ).__get__(stub, _Stub)
     stub.chat_fork = getattr(ServeApp, "chat_fork").__get__(stub, _Stub)
     stub.chat_edit = getattr(ServeApp, "chat_edit").__get__(stub, _Stub)
     stub.set_execution_policy = getattr(
@@ -145,6 +150,117 @@ class ServeAppGuiCommandEndpointTests(unittest.TestCase):
         # An edit leaves the chat id unchanged; the frontend reloads history on
         # the next idle event (not via the active-chat change effect).
         self.assertTrue(any(e == "idle" for e, _ in app.broadcaster.published))
+
+    def test_chat_new_from_compact_creates_seeded_chat_with_unique_name(self):
+        agent = _agent()
+        agent._chat_state["chats"][0].update(
+            {
+                "model_provider": "openai",
+                "model_name": "gpt",
+                "reasoning_level": "high",
+            }
+        )
+        # A prior compaction summary in the source chat whose mode the new
+        # chat's seeded summary should inherit for its banner title.
+        agent._chat_state["chats"][0]["messages"] = [
+            {
+                "role": "assistant",
+                "content": CONTEXT_COMPACTION_SUMMARY_PREFIX
+                + json.dumps(
+                    {
+                        "kind": "context_compaction_summary",
+                        "summary": "old summary",
+                        "mode": "auto",
+                        "created_at": "2026-08-01 10:00:00",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ]
+
+        class _FakeSms:
+            def parse_context_compaction_summary_content(self, content):
+                text = str(content or "")
+                if not text.startswith(CONTEXT_COMPACTION_SUMMARY_PREFIX):
+                    return None
+                try:
+                    payload = json.loads(
+                        text[len(CONTEXT_COMPACTION_SUMMARY_PREFIX):]
+                    )
+                except Exception:
+                    return None
+                return payload if isinstance(payload, dict) else None
+
+        agent.session_memory_service = _FakeSms()
+        agent._next_chat_id = lambda: "chat-new"
+
+        def _new_chat_entry(cid, name=None):
+            return {
+                "id": cid,
+                "name": name or "",
+                "messages": [],
+                "name_source": "auto",
+                "model_provider": "",
+                "model_name": "",
+                "reasoning_level": "",
+            }
+
+        agent._new_chat_entry = _new_chat_entry
+        agent._save_chat_state = lambda: None
+        app = _app(agent)
+
+        result = app.chat_new_from_compact(
+            "chat-1", "ws-1", "summary body"
+        )
+
+        self.assertEqual(result, {"ok": True, "chatId": "chat-new"})
+        new_chat = agent._find_chat_by_id("chat-new")
+        self.assertEqual(new_chat["name"], "Chat 1 (2)")
+        self.assertEqual(new_chat["name_source"], "manual")
+        self.assertEqual(len(new_chat["messages"]), 1)
+        message = new_chat["messages"][0]
+        # The summary is carried over as an ASSISTANT compaction-summary
+        # message (same wire format the runtime persists), not a user prompt.
+        self.assertEqual(message["role"], "assistant")
+        self.assertTrue(
+            message["content"].startswith(CONTEXT_COMPACTION_SUMMARY_PREFIX)
+        )
+        payload = json.loads(
+            message["content"][len(CONTEXT_COMPACTION_SUMMARY_PREFIX):]
+        )
+        self.assertEqual(payload["kind"], "context_compaction_summary")
+        self.assertEqual(payload["summary"], "summary body")
+        self.assertEqual(payload["mode"], "auto")
+        self.assertEqual(new_chat["model_provider"], "openai")
+        self.assertEqual(new_chat["model_name"], "gpt")
+        self.assertEqual(new_chat["reasoning_level"], "high")
+        # The new chat becomes the active chat and a state event is broadcast.
+        self.assertEqual(agent._chat_state["active"], "chat-new")
+        self.assertTrue(any(e == "state" for e, _ in app.broadcaster.published))
+
+    def test_chat_new_from_compact_increments_existing_numeric_suffix(self):
+        agent = _agent()
+        agent._chat_state["chats"].append(
+            {"id": "chat-3", "name": "Chat 1 (2)", "messages": []}
+        )
+        agent._next_chat_id = lambda: "chat-new"
+        agent._new_chat_entry = lambda cid, name=None: {
+            "id": cid,
+            "name": name or "",
+            "messages": [],
+            "name_source": "auto",
+        }
+        agent._save_chat_state = lambda: None
+        app = _app(agent)
+
+        result = app.chat_new_from_compact("chat-1", "ws-1", "summary")
+
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(agent._find_chat_by_id("chat-new")["name"], "Chat 1 (3)")
+        self.assertEqual(
+            agent._find_chat_by_id("chat-new")["messages"][0]["role"],
+            "assistant",
+        )
 
     def test_set_execution_policy_applies_and_persists(self):
         agent = _agent()
