@@ -54,3 +54,32 @@ describe("Markdown emphasis boundary rule", () => {
     expect(strongs[0].textContent).toBe("x");
   });
 });
+
+describe("Markdown proposed-plan rendering", () => {
+  it("renders a complete proposed-plan block as a card", () => {
+    const { container } = render(
+      <MarkdownText text={"<proposed_plan>\n# Plan\n- step one\n</proposed_plan>"} />,
+    );
+    expect(container.querySelectorAll(".proposed-plan-card").length).toBe(1);
+    expect(container.querySelectorAll(".proposed-plan-card-title").length).toBe(1);
+    expect(container.textContent).toContain("step one");
+    expect(container.textContent).not.toContain("<proposed_plan>");
+  });
+
+  it("renders a dangling opener as a streaming card with the body-so-far", () => {
+    // The closing tag has not streamed yet (live generation): the plan body
+    // must appear progressively inside the card instead of being hidden.
+    const { container } = render(
+      <MarkdownText
+        text={"Intro\n\n<proposed_plan>\n# Plan\n- step one\n- step two"}
+      />,
+    );
+    expect(container.querySelectorAll(".proposed-plan-card").length).toBe(1);
+    expect(container.querySelectorAll(".proposed-plan-card-title").length).toBe(1);
+    expect(container.textContent).toContain("Intro");
+    expect(container.textContent).toContain("step one");
+    expect(container.textContent).toContain("step two");
+    expect(container.textContent).not.toContain("<proposed_plan");
+    expect(container.textContent).not.toContain("</proposed_plan>");
+  });
+});

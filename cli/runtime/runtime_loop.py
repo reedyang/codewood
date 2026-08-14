@@ -1214,22 +1214,26 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
     # ``<proposed_plan>`` is a real protocol block we DO want to keep in the
     # final text (the GUI renders it as a card and the host parses it), but a
     # partial opening tag streamed before the block is complete would leak the
-    # literal ``<proposed_plan`` / ``<propose`` text. While streaming, withhold
-    # from the first ``<proposed_plan`` opener onward until the matching close
-    # tag has arrived; once complete (or final), let it through untouched.
+    # literal ``<proposed_plan`` / ``<propose`` text. While streaming we only
+    # withhold the opener until it is complete; once ``<proposed_plan>`` has
+    # fully arrived the body streams through so the plan appears progressively
+    # in both GUI and TUI (the TUI formatter reframes the opener into the
+    # "Proposed Plan" banner, the GUI frontend renders the streaming card).
     if not final:
         open_idx = lowered.find("<proposed_plan")
-        if open_idx >= 0 and "</proposed_plan>" not in lowered:
+        if open_idx >= 0 and not s[open_idx + len("<proposed_plan") :].startswith(">"):
+            # Opener not complete yet (``<proposed_plan`` / ``<propos``):
+            # withhold everything from the opener onward.
             starts.append(open_idx)
-        else:
-            # Withhold a trailing partial of the literal ``<proposed_plan>``
-            # opener split across chunks (e.g. buffer ends with ``<propos``).
-            opener = "<proposed_plan>"
-            max_check = min(len(opener) - 1, len(s))
-            for prefix_len in range(max_check, 1, -1):
-                if lowered.endswith(opener[:prefix_len]):
-                    starts.append(len(s) - prefix_len)
-                    break
+        # Withhold a trailing partial of the literal ``<proposed_plan>`` opener
+        # split across chunks (e.g. buffer ends with ``<propos``), even when an
+        # earlier complete opener already passed through.
+        opener = "<proposed_plan>"
+        max_check = min(len(opener) - 1, len(s))
+        for prefix_len in range(max_check, 1, -1):
+            if lowered.endswith(opener[:prefix_len]):
+                starts.append(len(s) - prefix_len)
+                break
         # Withhold a trailing partial of ``<tool_calls`` / ``<|assistant``
         # split across chunks so ``<tool`` never flashes before the full tag.
         for opener in ("<tool_calls", "<|assistant"):

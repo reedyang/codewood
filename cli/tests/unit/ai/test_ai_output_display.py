@@ -207,6 +207,17 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertNotIn("<proposed_plan>", out)
         self.assertIn("Proposed Plan", out)
 
+    def test_format_assistant_display_response_reframes_streaming_proposed_plan(self):
+        # A block whose closing tag has not arrived yet (live streaming) is
+        # reframed with the banner header + the body-so-far so the TUI streams
+        # the plan progressively instead of flashing the raw opener.
+        text = "<proposed_plan>\n# Plan\n- step one\n- step two"
+        out = aoh.format_assistant_display_response(text)
+        self.assertNotIn("<proposed_plan", out)
+        self.assertIn("Proposed Plan", out)
+        self.assertIn("step one", out)
+        self.assertIn("step two", out)
+
     def test_format_assistant_display_response_highlights_key_tokens(self):
         text = (
             "1. Check https://127.0.0.1:4001 and OPENAI_API_KEY\n"

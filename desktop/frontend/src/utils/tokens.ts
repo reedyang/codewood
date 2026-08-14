@@ -233,10 +233,12 @@ export function stripLeakedToolMarkup(text: string): string {
   // Leaked tool-calls / assistant envelope openers (with optional remainder).
   s = s.replace(/<tool_calls\b[\s\S]*?(?:<\/tool_calls>|$)/gi, "");
   s = s.replace(/<\|assistant\b[\s\S]*$/gi, "");
-  // Dangling proposed_plan opener with no matching close: drop from the opener
-  // to end. Complete blocks (open + close) are preserved untouched.
-  if (s.includes("<proposed_plan>") && !/<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(s)) {
-    s = s.replace(/<proposed_plan\b[\s\S]*$/i, "");
+  // Dangling proposed_plan opener with no matching close: strip ONLY the
+  // opener tag (keep the body) so an in-progress plan streams visibly instead
+  // of hiding until the closing tag arrives. Complete blocks (open + close)
+  // are preserved untouched.
+  if (s.includes("<proposed_plan") && !/<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(s)) {
+    s = s.replace(/<proposed_plan[^>\n]*>?/i, "");
   }
   return s;
 }
