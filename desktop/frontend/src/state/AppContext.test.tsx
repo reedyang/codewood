@@ -528,6 +528,16 @@ function PendingJumpProbe() {
   );
 }
 
+function SteerOptimisticProbe() {
+  const { turns, sendInputSteer } = useApp();
+  return (
+    <>
+      <button onClick={() => { void sendInputSteer("steer-msg"); }}>steer now</button>
+      <pre data-testid="turns">{JSON.stringify(turns)}</pre>
+    </>
+  );
+}
+
 function StreamingStateMergeProbe() {
   const { state } = useApp();
   return (
@@ -2242,6 +2252,52 @@ describe("AppContext thinking rounds", () => {
     expect(apiMock.sendInput).toHaveBeenCalledWith("msg-A", true, "chat-1", "ws-1");
     const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
     expect(st.pendingInputs).toEqual(["msg-B"]);
+  });
+
+  it("echoes a steered message immediately and reconciles it on turn_start", async () => {
+    render(
+      <AppProvider>
+        <SteerOptimisticProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+
+    // The steered message lands on screen right away, even while the pause and
+    // send round-trips are still in flight.
+    let turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns[turns.length - 1]).toMatchObject({
+      userText: "steer-msg",
+      optimistic: true,
+    });
+    expect(apiMock.pause).toHaveBeenCalledWith("chat-1", "ws-1");
+    expect(apiMock.sendInput).toHaveBeenCalledWith("steer-msg", true, "chat-1", "ws-1");
+
+    // The authoritative turn_start for the steered message reconciles the
+    // optimistic turn in place: no duplicate transcript row.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "steer-msg", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns).toHaveLength(2);
+    expect(turns[turns.length - 1]).toMatchObject({
+      userText: "steer-msg",
+      optimistic: false,
+    });
   });
 
   it("drains the remaining queue one per turn after the jumped task completes", async () => {

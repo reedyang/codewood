@@ -3802,6 +3802,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!chatId) {
         return;
       }
+      // Echo the steered message on screen immediately, even while the pause
+      // and send round-trips are still in flight. The backend ``turn_start``
+      // reconciles this optimistic turn in place (see ``startTurn``), so the
+      // message is never displayed twice.
+      startOptimisticTurn(trimmed, key);
       const isBusy = busyByChatRef.current[key] ?? false;
       if (!isBusy) {
         await pendingModelConfigRef.current;
@@ -3828,7 +3833,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setPendingAutoSendByChat((prev) => ({ ...prev, [key]: true }));
       }
     },
-    [client],
+    [client, startOptimisticTurn],
   );
 
   const runCommand = useCallback(
