@@ -1730,7 +1730,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
     const hasServer =
       server.pinnedWorkspaceIds.length > 0 ||
-      server.pinnedChatIds.length > 0;
+      server.pinnedChatIds.length > 0 ||
+      server.workspaceOrder.length > 0;
     if (hasServer) {
       setUiPrefs(server);
       saveUiPrefs(server);
@@ -1739,7 +1740,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const local = loadUiPrefs();
     if (
       local.pinnedWorkspaceIds.length > 0 ||
-      local.pinnedChatIds.length > 0
+      local.pinnedChatIds.length > 0 ||
+      local.workspaceOrder.length > 0
     ) {
       void client.setUiPrefs(local);
     }
