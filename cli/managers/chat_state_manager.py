@@ -899,11 +899,20 @@ class ChatStateManager:
         # shared index/records, or the stale-record sweep below could race a
         # sibling save. The lock is an RLock, so callers that already hold it
         # (activate_chat, sync_active_chat_messages, ...) are unaffected.
+        import time as _time
+
+        _t_save0 = _time.perf_counter()
         lock = self._active_chat_state_lock()
         if lock is None:
-            return self._save_chat_state_locked()
-        with lock:
-            return self._save_chat_state_locked()
+            result = self._save_chat_state_locked()
+        else:
+            with lock:
+                result = self._save_chat_state_locked()
+        logger.debug(
+            "ws-switch-timing save_chat_state=%.3fs",
+            _time.perf_counter() - _t_save0,
+        )
+        return result
 
     @staticmethod
     def _parse_record_timestamp(value: Any) -> float:
@@ -1022,6 +1031,8 @@ class ChatStateManager:
                 self._agent._last_saved_chat_updated_at = last_written
             dirty_keys = self._dirty_ids()
             dirty_scope = self._dirty_scope()
+            _full_path_count = 0
+            _wrote_count = 0
 
             def _index_entry() -> Dict[str, Any]:
                 return {
@@ -1063,6 +1074,7 @@ class ChatStateManager:
                     or not record_path.exists()
                     or str(chat.get("updated_at") or "") != last_written.get(record_path.name, "")
                 )
+                _full_path_count += int(bool(needs_full))
                 is_lazy_placeholder = bool(chat.get("_lazy_placeholder", False))
                 # A lazily-loaded placeholder that needs a full write must be
                 # hydrated from disk first (or dropped from the write set):
@@ -1083,10 +1095,18 @@ class ChatStateManager:
                         if isinstance(disk_raw, dict) and str(disk_raw.get("id") or "") == cid:
                             preserved_archived = bool(chat.get("archived", False))
                             preserved_unread = chat.get("has_unread")
+                            # A pending input queue written onto the placeholder
+                            # just before this save must survive the hydration
+                            # (background-workspace ctx placeholders are the
+                            # common case: save_pending_inputs sets it, then a
+                            # sibling save hydrates from disk).
+                            preserved_pending = chat.get("pending_inputs")
                             refreshed = self._validate_chat_entry(disk_raw)
                             refreshed["archived"] = preserved_archived
                             if isinstance(preserved_unread, bool):
                                 refreshed["has_unread"] = preserved_unread
+                            if isinstance(preserved_pending, list) and preserved_pending:
+                                refreshed["pending_inputs"] = preserved_pending
                             refreshed["_record_file"] = record_file
                             chat.clear()
                             chat.update(refreshed)
@@ -1316,6 +1336,7 @@ class ChatStateManager:
                                     with open(tmp_path, "w", encoding="utf-8") as f:
                                         f.write(new_text)
                                     _safe_replace(tmp_path, record_path)
+                                    _wrote_count += 1
                                     index_dirty = True
                 # The record now reflects the in-memory chat (written or already
                 # identical on disk); mark it clean so the next save skips it.
@@ -1323,6 +1344,12 @@ class ChatStateManager:
                     last_written[record_path.name] = str(chat.get("updated_at") or "")
                     dirty_keys.discard(f"{dirty_scope}::{cid}")
                 index_chats.append(_index_entry())
+
+            logger.debug(
+                "ws-switch-timing save_chat_state_full_paths=%d wrote=%d",
+                _full_path_count,
+                _wrote_count,
+            )
 
             # Detect chat additions/deletions or active-chat changes even when
             # no record was rewritten: the index must be updated.
@@ -1687,7 +1714,10 @@ class ChatStateManager:
             )
 
     def load_chat_state_snapshot(
-        self, config_dir: Path, expected_workspace_id: str = ""
+        self,
+        config_dir: Path,
+        expected_workspace_id: str = "",
+        lazy_records: bool = False,
     ) -> Dict[str, Any]:
         """Load a workspace's chat index+records into a standalone dict.
 
@@ -1730,6 +1760,29 @@ class ChatStateManager:
                 cid = str(index_entry.get("id") or "").strip()
                 record_file = str(index_entry.get("record_file") or "").strip()
                 if not cid or not record_file:
+                    continue
+                if lazy_records:
+                    now = self._now_text()
+                    chat = {
+                        "id": cid,
+                        "name": str(index_entry.get("name") or "New Chat"),
+                        "name_source": str(index_entry.get("name_source") or "default"),
+                        "created_at": str(index_entry.get("created_at") or "").strip() or now,
+                        "updated_at": str(index_entry.get("updated_at") or "").strip() or now,
+                        "model_provider": str(index_entry.get("model_provider") or "").strip(),
+                        "model_name": str(index_entry.get("model_name") or "").strip(),
+                        "reasoning_level": "",
+                        "mode": _read_chat_mode(index_entry),
+                        "messages": [],
+                        "archived": bool(index_entry.get("archived", False)),
+                        "first_user_message_at": str(index_entry.get("first_user_message_at") or "").strip(),
+                        "pending_inputs": [],
+                        "_lazy_placeholder": True,
+                        "_record_file": record_file,
+                    }
+                    if "has_unread" in index_entry and isinstance(index_entry.get("has_unread"), bool):
+                        chat["has_unread"] = index_entry["has_unread"]
+                    chats.append(chat)
                     continue
                 rel = Path(record_file)
                 if rel.is_absolute() or rel.name != record_file:
@@ -1849,7 +1902,7 @@ class ChatStateManager:
                     return True
         return False
 
-    def sync_active_chat_messages(self) -> None:
+    def sync_active_chat_messages(self, allow_empty: bool = False) -> None:
         history = list(getattr(self._agent, "conversation_history", None) or [])
         msgs = []
         for m in history:
@@ -1943,7 +1996,7 @@ class ChatStateManager:
                 from ..config.app_info import get_app_logger_root
                 from ..core.logging.app_logging import get_logger
 
-                get_logger(f"{get_app_logger_root()}.serve.wsswitch").info(
+                get_logger(f"{get_app_logger_root()}.serve.wsswitch").debug(
                     f"sync chat={self._agent.active_chat_id} found={bool(chat)} "
                     f"dir={self.chat_records_dir()} hist={len(history)}"
                 )
@@ -1954,6 +2007,38 @@ class ChatStateManager:
             prev_messages = list(chat.get("messages") or [])
             prev_count = len(prev_messages)
             new_count = len(msgs)
+            # Data-safety guard: never let an empty live history overwrite a
+            # record that holds real messages. The only legitimate ways to
+            # clear a chat are the explicit edit path (``/chat edit`` passing
+            # ``allow_empty=True``) and ``clear_chat_context`` (which does not
+            # go through this sync); an empty sync here means the session was
+            # reset or rebound (e.g. a workspace switch with a stale
+            # ``active_chat_id`` whose
+            # ``conversation_history`` was never hydrated), and writing it
+            # back would truncate the on-disk record to an empty chat. The
+            # explicit edit path passes ``allow_empty=True`` to clear on purpose.
+            if new_count == 0 and not allow_empty:
+                disk_has_messages = False
+                try:
+                    record_file = self._chat_record_filename_for_chat(chat)
+                    record_path = self._resolve_chat_record_path(record_file)
+                    if record_path.exists():
+                        with open(record_path, "r", encoding="utf-8") as f:
+                            disk_raw = json.load(f)
+                        if isinstance(disk_raw, dict):
+                            disk_has_messages = bool(disk_raw.get("messages"))
+                except Exception:
+                    disk_has_messages = False
+                if disk_has_messages or prev_count > 0:
+                    logger.warning(
+                        "sync_active_chat_messages: refusing to write empty history "
+                        "over existing chat messages chat=%s prev=%d new=%d "
+                        "disk_has_messages=%s dir=%s",
+                        getattr(self._agent, "active_chat_id", "?"),
+                        prev_count, new_count, disk_has_messages,
+                        self.chat_records_dir(),
+                    )
+                    return
             # Detect message count anomalies that suggest cross-workspace
             # contamination: if the new message count is significantly larger
             # than the previous count in a single sync (not incremental growth
@@ -2222,18 +2307,30 @@ class ChatStateManager:
         print_history: bool = False,
         persist: bool = True,
     ) -> str:
-        logger.info(
+        logger.debug(
             "activate_chat enter chat_id=%s prev_active=%s persist=%s",
             chat_id,
             str(getattr(self._agent, "active_chat_id", "") or ""),
             persist,
         )
+        import time as _time
+
+        _a0 = _time.perf_counter()
+
+        def _seg(label: str) -> None:
+            logger.debug(
+                "ws-switch-timing activate_%s=%.3fs",
+                label,
+                _time.perf_counter() - _a0,
+            )
+
         with self._agent._chat_state_lock:
             prev_active_chat_id = str(getattr(self._agent, "active_chat_id", "") or "").strip()
             prev_operation_results = list(getattr(self._agent, "operation_results", None) or [])
             chat = self.find_chat_by_id(chat_id)
             if not chat:
                 return f"❌ Chat not found: {chat_id}"
+            _seg("find_chat")
             # Bind the calling thread to this chat's session so every
             # per-session assignment below (conversation_history, plan,
             # usage, ...) targets the right SessionState when multiple chat
@@ -2245,6 +2342,7 @@ class ChatStateManager:
             self._agent.active_chat_id = chat_id
             self._agent.active_chat_name = str(chat.get("name") or "New Chat")
             self._agent.conversation_history = list(chat.get("messages") or [])
+            _seg("bind+copy_history")
             hist_len = len(self._agent.conversation_history)
             # Reconcile session injection tracking when restoring history.
             # When switching to a different chat, clear cross-chat contamination
@@ -2260,9 +2358,12 @@ class ChatStateManager:
                     prev_active_chat_id, chat_id, hist_len,
                 )
             self._reconcile_session_injected_from_history()
+            _seg("reconcile")
             self.refresh_active_chat_plan_from_messages()
+            _seg("plan")
             # Resume the sticky Plan/Agent mode this chat was last left in.
             self.restore_active_chat_plan_mode()
+            _seg("restore_mode")
             # Keep in-memory tool outcomes when reloading the same chat so
             # history replay can preserve failed/success visual markers.
             if chat_id == prev_active_chat_id:
@@ -2272,10 +2373,12 @@ class ChatStateManager:
             self._agent._session_summary_llm = ""
             self._agent._session_summary_rolling = ""
             self._agent._last_llm_summary_pair_count = 0
+            _seg("summary_reset")
             try:
                 self._agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
             except Exception:
                 pass
+            _seg("apply_model")
             # Always pin this chat's model onto the (now bound) session, even
             # when _apply_chat_model_from_entry short-circuited because the
             # selector already matched the globals: a concurrent chat could
@@ -2287,7 +2390,9 @@ class ChatStateManager:
             except Exception:
                 pass
             self._apply_chat_usage_snapshot(chat)
+            _seg("usage_snapshot")
             self._notify_gui_context_usage_changed()
+            _seg("notify_gui")
             try:
                 svc = getattr(self._agent, "session_memory_service", None)
                 schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
@@ -2307,8 +2412,10 @@ class ChatStateManager:
                     remember(0 if print_history else len(list(self._agent.conversation_history or [])))
             except Exception:
                 pass
+            _seg("schedule")
             if persist:
                 self.save_chat_state()
+                _seg("save")
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")
         if print_history:

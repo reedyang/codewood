@@ -4013,6 +4013,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (target?: { chatId?: string; wsId?: string; before?: number }) => {
       const cid = target?.chatId ?? activeChatIdRef.current;
       const wsId = target?.wsId ?? activeWorkspaceIdRef.current;
+      const _t0 = performance.now();
       // ``getChatHistory`` always returns the focused chat's history, so the
       // live-turn bucket to reconcile is the focused workspace's composite
       // key for ``cid``.
@@ -4034,6 +4035,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
       try {
         const page = await client.getChatHistory(target?.before, INITIAL_HISTORY, cid, wsId);
+        void (client as any).logFrontendTrace?.("ws-switch", {
+          phase: "loadChatHistory",
+          wsId,
+          chatId: cid,
+          before: target?.before ?? null,
+          ms: Math.round(performance.now() - _t0),
+          total: page.total,
+        });
         // The user switched to a different chat while we were fetching.
         if (historyChatRef.current !== expectedKey) {
           return;
@@ -4307,6 +4316,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (workspaceId && workspaceId !== prevWsId) {
         pendingFocusWsIdRef.current = workspaceId;
       }
+      const _t0 = performance.now();
       const ok = await client.selectChat(chatId, workspaceId);
       if (!ok) {
         setHistoryLoading(false);
@@ -4327,6 +4337,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         chatId,
         wsId: targetWsId,
         before: opts?.before,
+      });
+      void (client as any).logFrontendTrace?.("ws-switch", {
+        phase: "switchToChat",
+        wsId: targetWsId,
+        chatId,
+        crossWorkspace: Boolean(workspaceId) && workspaceId !== prevWsId,
+        ms: Math.round(performance.now() - _t0),
+        ok,
       });
     },
     [client, dropSettledLiveTurns, loadChatHistory, t],
@@ -4350,10 +4368,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : state,
       );
       pendingFocusWsIdRef.current = workspaceId;
+      const _t0 = performance.now();
       const ok = await client.selectChat("", workspaceId);
       if (!ok) {
         return;
       }
+      void (client as any).logFrontendTrace?.("ws-switch", {
+        phase: "selectWorkspace",
+        wsId: workspaceId,
+        ms: Math.round(performance.now() - _t0),
+        ok,
+      });
       // The new workspace's active chat id arrives via the idle state event,
       // which triggers the history effect above to load its turns.
       historyChatRef.current = "\u0000";

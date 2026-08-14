@@ -44,15 +44,15 @@ from ..core.console_utils import (
     GUI_DIFF_BEGIN,
     GUI_FORCE_PROMPT_PREFIX,
 )
-from ..config.app_info import get_app_slug_snake
+from ..config.app_info import get_app_logger_root, get_app_slug_snake
 from ..services.session_memory_service import _assistant_display_view
 
 _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 _WORKSPACE_ROUTE_LOGGER = logging.getLogger(
-    f"{get_app_slug_snake()}.workspace_routing"
+    f"{get_app_logger_root()}.workspace_routing"
 )
 _SSE_LOGGER = logging.getLogger(
-    f"{get_app_slug_snake()}.sse"
+    f"{get_app_logger_root()}.sse"
 )
 
 # Matches CSI / SGR and most other ANSI escape sequences.
@@ -3734,6 +3734,7 @@ class ServeApp:
             recent_finish = self._chat_runtime_recently_finished(
                 focus_chat, wsid or None,
             )
+            _t_h0 = time.perf_counter()
             current_ws = str(getattr(self.agent, "workspace_id", "") or "").strip()
             same_ws = (not wsid) or (wsid == current_ws)
             if focus_chat and not is_busy and not recent_finish and same_ws:
@@ -3741,29 +3742,62 @@ class ServeApp:
                     refresh = getattr(self.agent, "_refresh_chat_record_from_disk", None)
                     if callable(refresh):
                         refresh(focus_chat)
-                        # Rebind the session so conversation_history
-                        # reflects the freshly re-validated chat dict.
-                        self.agent._activate_chat(
-                            focus_chat,
-                            announce=False,
-                            clear_screen=False,
-                            print_history=False,
-                            persist=False,
+                        _WORKSPACE_ROUTE_LOGGER.debug(
+                            "ws-switch-timing get_chat_history_refresh=%.3fs chat=%s",
+                            time.perf_counter() - _t_h0,
+                            str(focus_chat or ""),
                         )
+                        # Rebind the session so conversation_history reflects
+                        # the freshly re-validated chat dict. Skip the rebind
+                        # when this chat is already the active one (e.g. the
+                        # GUI just switched to it via select_chat, which
+                        # activated it): re-activating a large chat re-runs
+                        # history reconciliation and plan scanning, which can
+                        # cost ~1s per loadChatHistory request.
+                        active_id = str(
+                            getattr(self.agent, "active_chat_id", "") or ""
+                        ).strip()
+                        if active_id != str(focus_chat or "").strip():
+                            self.agent._activate_chat(
+                                focus_chat,
+                                announce=False,
+                                clear_screen=False,
+                                print_history=False,
+                                persist=False,
+                            )
                 except Exception:
                     pass
             # Lazily load this chat's file_changes.json sidecar so the
             # [FILE_CHANGE_REF] markers in the history resolve to real diff
             # summaries — done per chat, only for the chat being opened.
             if focus_chat:
+                _t_h1 = time.perf_counter()
                 try:
                     self._ensure_chat_file_changes_loaded(focus_chat, wsid)
                 except Exception:
                     pass
+                _WORKSPACE_ROUTE_LOGGER.debug(
+                    "ws-switch-timing get_chat_history_file_changes=%.3fs chat=%s",
+                    time.perf_counter() - _t_h1,
+                    str(focus_chat or ""),
+                )
+            _t_h2 = time.perf_counter()
             with self._session_scope_for_chat(focus_chat, wsid):
-                turns = _build_structured_turns(self.agent)
+                turns = self._cached_structured_turns(focus_chat)
+            _WORKSPACE_ROUTE_LOGGER.debug(
+                "ws-switch-timing get_chat_history_turns=%.3fs chat=%s",
+                time.perf_counter() - _t_h2,
+                str(focus_chat or ""),
+            )
         except Exception:
             turns = []
+        _WORKSPACE_ROUTE_LOGGER.debug(
+            "ws-switch-timing get_chat_history chat=%s ws=%s msgs=%d turns=%d",
+            str(focus_chat or ""),
+            str(wsid or ""),
+            len(list(getattr(self.agent, "conversation_history", None) or [])),
+            len(turns),
+        )
         total = len(turns)
         if limit <= 0:
             limit = 12
@@ -3773,6 +3807,82 @@ class ServeApp:
             end = before
         start = max(0, end - limit)
         return {"turns": turns[start:end], "start": start, "total": total}
+
+    def _cached_structured_turns(self, chat_id: str) -> List[Dict[str, Any]]:
+        """Return structured turns for the focused chat, cached by content fingerprint.
+
+        Building turns runs per-message regex rendering over the whole history,
+        which for a multi-thousand-message chat costs ~1s per call. The GUI
+        history endpoint re-enters this on every ``loadChatHistory`` request
+        (initial load, pagination, repeated focus events), so cache the result
+        keyed by the chat identity plus a cheap content fingerprint (message
+        count, chat ``updated_at``, last message timestamp). Any edit or new
+        message bumps one of these and rebuilds the cache.
+
+        Safety: this is a read-only memoization — it never writes to disk and
+        never mutates chat records. A lazy placeholder (not yet hydrated) is
+        deliberately NOT cached, so a transient empty history can never be
+        memoized under a real chat's fingerprint.
+        """
+        agent = self.agent
+        try:
+            with agent._chat_state_lock:
+                chat = agent._chat_state_manager.find_chat_by_id(chat_id)
+                if chat is None:
+                    return _build_structured_turns(agent)
+                placeholder = bool(chat.get("_lazy_placeholder", False))
+                updated_at = str(chat.get("updated_at") or "")
+        except Exception:
+            placeholder = True
+            updated_at = ""
+        history = list(getattr(agent, "conversation_history", None) or [])
+        last_ts = ""
+        if history:
+            last = history[-1]
+            if isinstance(last, dict):
+                last_ts = str(last.get("created_at") or "")
+        key = (
+            str(getattr(agent, "workspace_id", "") or "").strip(),
+            str(chat_id or "").strip(),
+            len(history),
+            updated_at,
+            last_ts,
+        )
+        cache = getattr(self, "_turns_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._turns_cache = cache
+        if not placeholder:
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+        # Share an in-flight build for the same key: the GUI's first
+        # loadChatHistory races the background pre-warm started by
+        # select_chat. Without this, both threads re-render the whole
+        # history (~1s) instead of one building and the other waiting.
+        inflight = getattr(self, "_turns_build_inflight", None)
+        if not isinstance(inflight, dict):
+            inflight = {}
+            self._turns_build_inflight = inflight
+        evt = inflight.get(key)
+        if evt is not None:
+            evt.wait(timeout=5.0)
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+        if placeholder:
+            return _build_structured_turns(agent)
+        evt = threading.Event()
+        inflight[key] = evt
+        try:
+            turns = _build_structured_turns(agent)
+            if len(cache) >= 64:
+                cache.clear()
+            cache[key] = turns
+            return turns
+        finally:
+            inflight.pop(key, None)
+            evt.set()
 
     def export_chat(
         self, chat_id: str, file_path: str, workspace_id: str = ""
@@ -3844,13 +3954,16 @@ class ServeApp:
         ``chat_id`` may be empty to only switch workspace.
         """
         import contextlib
+        import time as _time
+
+        _t0 = _time.perf_counter()
 
         cid = str(chat_id or "").strip()
         wsid = str(workspace_id or "").strip()
         if not cid and not wsid:
             return False
         agent = self.agent
-        _WORKSPACE_ROUTE_LOGGER.info(
+        _WORKSPACE_ROUTE_LOGGER.debug(
             "select-chat request target_ws=%s target_chat=%s current_ws=%s current_chat=%s",
             wsid,
             cid,
@@ -3889,6 +4002,8 @@ class ServeApp:
                                 save()
                 except Exception:
                     pass
+                _t1 = _time.perf_counter()
+                _WORKSPACE_ROUTE_LOGGER.debug("ws-switch-timing select_chat_busy_save=%.3fs", _t1 - _t0)
 
                 from ..controllers.workspace_command_controller import (
                     workspace_switch_command,
@@ -3904,8 +4019,10 @@ class ServeApp:
                     workspace_switch_command(
                         agent, wsid, create_default_chat=False, lazy_records=True
                     )
+                _t2 = _time.perf_counter()
+                _WORKSPACE_ROUTE_LOGGER.debug("ws-switch-timing select_chat_switch=%.3fs", _t2 - _t1)
 
-                _WORKSPACE_ROUTE_LOGGER.info(
+                _WORKSPACE_ROUTE_LOGGER.debug(
                     "select-chat switched target_ws=%s actual_ws=%s active_chat=%s chats=%s",
                     wsid,
                     str(getattr(agent, "workspace_id", "") or ""),
@@ -3917,12 +4034,23 @@ class ServeApp:
                     ],
                 )
 
+                _t_ws0 = _time.perf_counter()
                 with self._ws_persist_lock:
                     self._ws_persist_ctx.clear()
+                _WORKSPACE_ROUTE_LOGGER.debug(
+                    "ws-switch-timing select_chat_ws_ctx_clear=%.3fs",
+                    _time.perf_counter() - _t_ws0,
+                )
             if cid:
+                _t_cid = _time.perf_counter()
+                _t_lock0 = _time.perf_counter()
                 with agent._chat_state_lock:
                     target = agent._resolve_chat_selector(cid)
                     rid = str(target.get("id") or "") if target else ""
+                _WORKSPACE_ROUTE_LOGGER.debug(
+                    "ws-switch-timing select_chat_resolve_lock=%.3fs",
+                    _time.perf_counter() - _t_lock0,
+                )
                 if not rid:
                     _WORKSPACE_ROUTE_LOGGER.warning(
                         "select-chat missing target target_ws=%s target_chat=%s actual_ws=%s",
@@ -3931,7 +4059,7 @@ class ServeApp:
                         str(getattr(agent, "workspace_id", "") or ""),
                     )
                     return False
-                _WORKSPACE_ROUTE_LOGGER.info(
+                _WORKSPACE_ROUTE_LOGGER.debug(
                     "select-chat resolved target_ws=%s requested_chat=%s resolved_chat=%s name=%r busy=%s",
                     wsid,
                     cid,
@@ -3957,15 +4085,69 @@ class ServeApp:
                             refresh(rid)
                     except Exception:
                         pass
+                    # Pre-warm the structured-turns memo in the background as
+                    # soon as the record is in memory (the record now carries
+                    # the full history) so the GUI's first loadChatHistory —
+                    # which races select_chat and cold-builds ~1s of regex
+                    # rendering over a multi-thousand-message history — hits
+                    # the memoized cache instead of waiting on a fresh build.
+                    try:
+                        threading.Thread(
+                            target=self._prewarm_turns_cache,
+                            args=(
+                                rid,
+                                wsid or str(getattr(agent, "workspace_id", "") or ""),
+                            ),
+                            daemon=True,
+                        ).start()
+                    except Exception:
+                        pass
+                    try:
+                        _prev_index_active = str(
+                            agent._chat_state.get("active") or ""
+                        ).strip() if isinstance(getattr(agent, "_chat_state", None), dict) else ""
+                    except Exception:
+                        _prev_index_active = ""
                     result = agent._activate_chat(
                         rid, announce=False, clear_screen=False, print_history=False, persist=False
                     )
                     if result:
                         return False
+                    _t3 = _time.perf_counter()
+                    _WORKSPACE_ROUTE_LOGGER.debug("ws-switch-timing select_chat_activate=%.3fs", _t3 - _t_cid)
                     try:
-                        save = getattr(agent, "_save_chat_state", None)
-                        if callable(save):
-                            save()
+                        # The activate just bound this chat's session. When the
+                        # index already pointed at it (``_prev_index_active``)
+                        # and nothing was marked dirty, the record + index are
+                        # already current on disk (refresh() reloaded the
+                        # record above), so the full save is redundant — it
+                        # re-serializes multi-MB active-chat records
+                        # (~0.4-0.6s) just to compare byte-identical content.
+                        # Any real change goes through a tracked path (sync
+                        # bumps ``updated_at``/dirty, unread/edits mark dirty),
+                        # and those paths persist immediately.
+                        _needs_save = True
+                        try:
+                            _mgr = getattr(agent, "_chat_state_manager", None)
+                            _dirty = _mgr is not None and (
+                                _mgr._dirty_key(rid) in _mgr._dirty_ids()
+                            )
+                            _needs_save = (_prev_index_active != rid) or _dirty
+                        except Exception:
+                            _needs_save = True
+                        if _needs_save:
+                            _t_save = _time.perf_counter()
+                            save = getattr(agent, "_save_chat_state", None)
+                            if callable(save):
+                                save()
+                            _WORKSPACE_ROUTE_LOGGER.debug(
+                                "ws-switch-timing select_chat_post_activate_save=%.3fs",
+                                _time.perf_counter() - _t_save,
+                            )
+                        else:
+                            _WORKSPACE_ROUTE_LOGGER.debug(
+                                "ws-switch-timing select_chat_post_activate_save=skipped"
+                            )
                     except Exception:
                         pass
                 # The user opened this chat — its unread blue dot is cleared.
@@ -3985,6 +4167,8 @@ class ServeApp:
                     pass
         except Exception:
             return False
+        _t_end = _time.perf_counter()
+        _WORKSPACE_ROUTE_LOGGER.debug("ws-switch-timing select_chat_total=%.3fs", _t_end - _t0)
         threading.Thread(
             target=lambda: self.broadcaster.publish(
                 "state", self._route(state=_build_state(agent))
@@ -4409,6 +4593,31 @@ class ServeApp:
         if data_dir is None:
             return
         _load_file_changes_store(self.agent, scope_key, data_dir)
+
+    def _prewarm_turns_cache(self, chat_id: str, workspace_id: str = "") -> None:
+        """Best-effort background build of the structured-turns memo for a chat.
+
+        select_chat spawns this right after refreshing the focused chat's
+        record (before activate finishes) so the GUI's first
+        ``loadChatHistory`` request — which cold-builds ~1s of regex rendering
+        over a multi-thousand-message history — hits the memoized cache
+        instead. Mirrors the chat_history handler's order: the chat's
+        file-changes sidecar is loaded first so the ``[FILE_CHANGE_REF]``
+        markers resolve the same way. ``conversation_history`` is a
+        thread-bound session property, so setting it here only affects this
+        thread's session. Read-only; never writes to disk.
+        """
+        try:
+            with self._session_scope_for_chat(chat_id, workspace_id):
+                self._ensure_chat_file_changes_loaded(chat_id, workspace_id)
+                chat = self.agent._chat_state_manager.find_chat_by_id(chat_id)
+                if chat is not None:
+                    self.agent.conversation_history = list(
+                        chat.get("messages") or []
+                    )
+                self._cached_structured_turns(chat_id)
+        except Exception:
+            pass
 
     def save_pasted_image(
         self, chat_id: str, data_url: str, workspace_id: str = ""
@@ -8603,7 +8812,15 @@ class ServeApp:
                 return None
             try:
                 snapshot = self.agent._chat_state_manager.load_chat_state_snapshot(
-                    cfg, expected_workspace_id=wsid
+                    cfg,
+                    expected_workspace_id=wsid,
+                    # Index-only placeholders: this context exists to let a
+                    # background loop persist ITS OWN workspace without touching
+                    # the focused globals. Reading every record (dozens, some
+                    # multi-MB) under _ws_persist_lock stalled select_chat for
+                    # ~0.3-0.8s; save_chat_state hydrates placeholders from
+                    # disk on demand before writing.
+                    lazy_records=True,
                 )
             except Exception:
                 return None
@@ -8980,7 +9197,7 @@ def _make_handler(app: ServeApp):
                     from ..config.app_info import get_app_logger_root
                     from ..core.logging.app_logging import get_logger
 
-                    get_logger(f"{get_app_logger_root()}.workspace_routing").info(
+                    get_logger(f"{get_app_logger_root()}.workspace_routing").debug(
                         "frontend-trace phase=%s data=%s",
                         phase,
                         json.dumps(data, ensure_ascii=False, default=str)[:4000],

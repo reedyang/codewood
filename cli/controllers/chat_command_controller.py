@@ -382,7 +382,7 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
         except Exception:
             pass
         try:
-            agent._sync_active_chat_messages()
+            agent._sync_active_chat_messages(allow_empty=True)
         except Exception:
             pass
         # The history was rewound, so the cached assembled-history prefix is only
