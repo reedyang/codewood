@@ -303,6 +303,145 @@ describe("transcript scroll anchoring after task completion", () => {
       }
     }
   }, 30000);
+
+  it("stays at the bottom when the completion reload lands after the live turn collapsed under a pinned user", async () => {
+    // Models the task-completion sequence with dynamic content heights:
+    //   - initial load: 2000px (two history turns)
+    //   - live turn streams: content grows (not modeled; the user stays pinned)
+    //   - task ends: the live turn collapses into the "Worked for" shell and
+    //     then re-expands (the settle transition); the collapse clamps the
+    //     browser scrollbar to the bottom of the short content (600px) and a
+    //     queued scroll event then fires while the content is tall again,
+    //     flipping the "pinned" flag off even though the user never scrolled.
+    //   - post-completion history reload: new page is 1400px (completed turn).
+    // The viewport must remain at the bottom of the new content instead of
+    // being yanked up by the anchor branch's stale-height delta.
+    let currentScrollTop = 0;
+    let modelHeight = 2000;
+    const scrollHeightDesc = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollHeight",
+    );
+    const clientHeightDesc = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    const scrollTopDesc = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollTop",
+    );
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        return modelHeight;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return 800;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        return currentScrollTop;
+      },
+      set(value) {
+        // A real browser clamps scrollTop to the current content's max.
+        const max = Math.max(0, modelHeight - 800);
+        currentScrollTop = Math.min(max, Math.max(0, Number(value) || 0));
+      },
+    });
+
+    const historyTurn = (userText: string, text: string) => ({
+      userText,
+      rounds: [{ waitSeconds: 0, text, tools: "" }],
+      timestamp: new Date().toISOString(),
+    });
+
+    try {
+      apiMock.getChatHistory.mockImplementation(async () => ({
+        turns: [historyTurn("first", "a"), historyTurn("second", "b")],
+        start: 0,
+        total: 2,
+      }));
+
+      render(
+        <AppProvider>
+          <ChatView />
+        </AppProvider>,
+      );
+      await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+      await waitFor(() => expect(apiMock.getChatHistory).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(document.querySelector(".transcript")).toBeTruthy(),
+      );
+      // Initial load pins the transcript to the bottom (2000 - 800).
+      expect(currentScrollTop).toBe(1200);
+
+      const transcript = document.querySelector(
+        ".transcript",
+      ) as HTMLElement;
+
+      // The task finishes: the live turn collapses ("Worked for" shell), the
+      // browser clamps the pinned scrollbar to the bottom of the short
+      // content, and the settle re-expansion fires a late scroll event that
+      // reads a large distance and flips the pin off.
+      act(() => {
+        modelHeight = 1400;
+        currentScrollTop = 600;
+        fireEvent.scroll(transcript);
+      });
+      act(() => {
+        modelHeight = 2000;
+        fireEvent.scroll(transcript);
+      });
+
+      // The post-completion history reload replaces the turns array with a
+      // page that includes the completed turn (1400px).
+      apiMock.getChatHistory.mockImplementation(async () => ({
+        turns: [
+          historyTurn("first", "a"),
+          historyTurn("second", "b"),
+          historyTurn("task", "done"),
+        ],
+        start: 0,
+        total: 3,
+      }));
+      act(() => {
+        modelHeight = 1400;
+      });
+      await act(async () => {
+        emitIdle(idleState(3, false));
+      });
+      await waitFor(() => {
+        expect(apiMock.getChatHistory.mock.calls.length).toBeGreaterThanOrEqual(
+          2,
+        );
+      });
+
+      // The reload must NOT yank a user who is at the bottom up to old
+      // messages: the viewport stays at the bottom (1400 - 800 = 600).
+      expect(currentScrollTop).toBe(600);
+    } finally {
+      if (scrollHeightDesc) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDesc);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollHeight;
+      }
+      if (clientHeightDesc) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDesc);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).clientHeight;
+      }
+      if (scrollTopDesc) {
+        Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDesc);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
+      }
+    }
+  }, 30000);
 });
 
 describe("transcript minimap vertical centering", () => {
