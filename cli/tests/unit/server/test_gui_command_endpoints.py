@@ -8,14 +8,21 @@ slash-command machinery.
 """
 
 import json
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from cli.agent import Agent
 from cli.server.serve_app import ServeApp
 from cli.services.session_memory_service import CONTEXT_COMPACTION_SUMMARY_PREFIX
+
+# Real ``Agent`` objects / ``archive_workspace_chats`` resolve the chats root to
+# the user-level global config dir unless an override is set; tests must never
+# touch the live config directory.
+_TEST_CHATS_ROOT = Path(tempfile.mkdtemp(prefix="cw-test-chats-"))
 
 
 class _FakeBroadcaster:
@@ -64,6 +71,9 @@ def _agent(active_chat: str = "chat-1") -> Agent:
     )
     # Lazily installs the per-chat session registry (real Agent machinery).
     agent._session_for_key("")
+    # Pin the chats root to a temp dir so ``delete_workspace`` /
+    # ``archive_workspace_chats`` never resolves the real global config dir.
+    agent._chats_root_override = _TEST_CHATS_ROOT
     return agent
 
 
@@ -362,10 +372,16 @@ class ServeAppGuiCommandEndpointTests(unittest.TestCase):
         ) as cleanup:
             result = app.delete_workspace("ws-2")
 
-        # The registry entry is gone BEFORE the request returns.
-        self.assertEqual(result, {"id": "ws-2", "wasActive": False, "fallbackId": ""})
-        self.assertNotIn(
-            "ws-2", agent._workspaces_state.get("workspaces", {})
+        # The workspace is archived, NOT removed: its entry stays in the
+        # registry (flagged ``archived``) so its chats remain reachable from
+        # the 设置/已归档 page and can be deleted there.
+        self.assertEqual(
+            result,
+            {"id": "ws-2", "wasActive": False, "fallbackId": "", "archived": True},
+        )
+        self.assertIn("ws-2", agent._workspaces_state.get("workspaces", {}))
+        self.assertTrue(
+            agent._workspaces_state["workspaces"]["ws-2"].get("archived", False)
         )
         # The sandbox ACL cleanup runs on a background thread (does not block
         # the HTTP response); wait for it to fire.
@@ -374,6 +390,36 @@ class ServeAppGuiCommandEndpointTests(unittest.TestCase):
             time.sleep(0.005)
         cleanup.assert_called_once_with(agent, "D:/ws2")
         self.assertTrue(any(e == "idle" for e, _ in app.broadcaster.published))
+
+    def test_delete_workspace_archives_chats_in_global_index(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            agent = _agent()
+            agent._chats_root_override = root
+            (root / "ws-2.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "active": "chat-1",
+                        "workspace_id": "ws-2",
+                        "chats": [
+                            {"id": "chat-1", "name": "A", "record_file": "2026/01/02/a.json", "archived": False},
+                            {"id": "chat-2", "name": "B", "record_file": "2026/01/02/b.json"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app = _app(agent)
+            with patch("cli.core.sandbox.cleanup_workspace_acls"):
+                app.delete_workspace("ws-2")
+            index = json.loads((root / "ws-2.json").read_text(encoding="utf-8"))
+            self.assertTrue(all(c["archived"] for c in index["chats"]))
+            self.assertEqual(agent._workspaces_state["workspaces"]["ws-2"]["archived"], True)
 
     def test_delete_workspace_returns_none_for_missing_or_default(self):
         app = _app(_agent())

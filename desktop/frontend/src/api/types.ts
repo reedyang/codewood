@@ -4,6 +4,10 @@ export interface WorkspaceSummary {
   root: string;
   active: boolean;
   isDefault?: boolean;
+  /** True when the workspace was deleted (archived): it stays in the
+   *  registry so its chats remain reachable from the 已归档 settings page,
+   *  but it is hidden from the sidebar and workspace pickers. */
+  archived?: boolean;
 }
 
 /** Per-model cumulative cache-hit statistics from the AI provider. */

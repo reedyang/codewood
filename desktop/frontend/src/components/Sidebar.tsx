@@ -131,7 +131,9 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     });
   }, [expandedWorkspaceIds]);
 
-  const workspaces = state?.workspaces ?? [];
+  // Deleted (archived) workspaces stay in the registry so their chats remain
+  // reachable from the 已归档 settings page, but they are hidden here.
+  const workspaces = (state?.workspaces ?? []).filter((w) => !w.archived);
   const activeWsId = activeWorkspaceId;
   const backendWsId = state?.workspace.id ?? "";
 

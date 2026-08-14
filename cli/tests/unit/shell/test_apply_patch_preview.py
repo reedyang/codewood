@@ -1015,8 +1015,8 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
 
 
 class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
-    """Per-chat side data lives under ``chats/data/<record-stem>/``, is deleted
-    wholesale with its chat, and orphans are cleaned up at startup."""
+    """Per-chat side data lives under ``chats/<YYYY>/<MM>/<DD>/data/<record-stem>/``,
+    is deleted wholesale with its chat, and orphans are cleaned up at startup."""
 
     def _manager(self, cfg_dir: Path):
         from cli.managers.chat_state_manager import ChatStateManager
@@ -1026,6 +1026,7 @@ class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
 
         agent = _Stub()
         agent.workspace_config_dir = Path(cfg_dir)
+        agent._chats_root_override = Path(cfg_dir) / "chats"
         mgr = ChatStateManager(agent, "chats.json")
         return mgr
 
@@ -1033,18 +1034,18 @@ class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = Path(d)
             mgr = self._manager(cfg)
-            data_dir = cfg / "chats" / "data" / "abc"
+            data_dir = cfg / "chats" / "2026/01/02" / "data" / "abc"
             data_dir.mkdir(parents=True, exist_ok=True)
             (data_dir / "previews.json").write_text("{}", encoding="utf-8")
             (data_dir / "img_x.png").write_bytes(b"\x89PNG")
-            mgr.delete_chat_data("abc.json")
+            mgr.delete_chat_data("2026/01/02/abc.json")
             self.assertFalse(data_dir.exists())
 
     def test_cleanup_orphan_data(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = Path(d)
             mgr = self._manager(cfg)
-            records = cfg / "chats"
+            records = cfg / "chats" / "2026/01/02"
             data_root = records / "data"
             data_root.mkdir(parents=True, exist_ok=True)
             # Orphan: no sibling record.

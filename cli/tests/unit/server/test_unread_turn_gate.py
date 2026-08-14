@@ -24,6 +24,7 @@ def _build_app(workspace: Path):
         work_directory=str(workspace),
         provider="openai",
         config_dir=str(workspace / "cfg"),
+        chats_root_override=str(workspace / "chats"),
     )
     mgr = agent._chat_state_manager
     c1 = mgr.new_chat_entry("chat-1", name="Alpha")

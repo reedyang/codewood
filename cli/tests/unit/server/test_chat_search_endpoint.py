@@ -27,8 +27,10 @@ class _FakeAgent:
 
 
 class _AgentWithWorkspaces:
-    def __init__(self, storage: Path) -> None:
+    def __init__(self, root: Path) -> None:
         self.workspace_id = "ws_default"
+        self._chats_root_override = root / "chats"
+        storage = root / "ws-a" / ".codewood"
         self._workspaces_state = {
             "workspaces": {
                 "ws_default": {"id": "ws_default", "name": "Default", "kind": "default"},
@@ -94,23 +96,25 @@ class ServeAppChatSearchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             storage = root / "ws-a" / ".codewood"
-            chats_dir = storage / "chats"
+            chats_dir = root / "chats"
             chats_dir.mkdir(parents=True)
-            (chats_dir / "chats.json").write_text(
-                json.dumps(
-                    {
-                        "chats": [
-                            {
-                                "id": "c1",
-                                "name": "Integration Chat",
-                                "record_file": "a.json",
-                                "archived": False,
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
+            index_payload = json.dumps(
+                {
+                    "chats": [
+                        {
+                            "id": "c1",
+                            "name": "Integration Chat",
+                            "record_file": "a.json",
+                            "archived": False,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
             )
+            # One index per workspace (``<workspace id>.json``); both
+            # workspaces share the same single chat here.
+            (chats_dir / "ws_default.json").write_text(index_payload, encoding="utf-8")
+            (chats_dir / "ws_other.json").write_text(index_payload, encoding="utf-8")
             (chats_dir / "a.json").write_text(
                 json.dumps(
                     {
@@ -128,7 +132,7 @@ class ServeAppChatSearchTests(unittest.TestCase):
             )
             index = ChatSearchIndex(root / "global")
             stub = _Stub()
-            stub.agent = _AgentWithWorkspaces(storage)
+            stub.agent = _AgentWithWorkspaces(root)
             stub._chat_search = index
             stub._enumerate_search_workspaces = getattr(
                 ServeApp, "_enumerate_search_workspaces"

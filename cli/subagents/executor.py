@@ -55,7 +55,7 @@ class SubAgentSessionStore:
     """Manages persistence of sub-agent sessions to disk.
 
     Sessions are stored as JSON files under the chat's data directory:
-    ``chats/data/<chat-id>/subagent-sessions/<session-id>.json``
+    ``chats/<YYYY>/<MM>/<DD>/data/<record-stem>/subagent-sessions/<session-id>.json``
     """
 
     _SUBAGENT_SESSIONS_DIRNAME = "subagent-sessions"

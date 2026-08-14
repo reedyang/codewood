@@ -243,12 +243,15 @@ export const en: Dict = {
   "sandbox.loadFailed": "Could not load sandbox settings.",
   "sandbox.unsupported": "Sandboxing is not supported on this platform yet.",
   "archivedChats.empty": "No archived chats.",
+  "archivedChats.workspaceArchived": "deleted workspace",
   "archivedChats.unarchive": "Unarchive",
   "archivedChats.removeWorkspaceAll": "Remove All",
   "archivedChats.removeWorkspaceAllTitle": "Remove all archived chats in \"{name}\"?",
   "archivedChats.removeWorkspaceAllConfirm":
     "This permanently deletes {count} archived chat(s) in workspace \"{name}\".",
   "archivedChats.removeConfirm": "Remove this archived chat?",
+  "archivedChats.deletedWorkspaceHint":
+    "This workspace was deleted; its chats are kept here and can be removed.",
   "settings.console.font": "Font",
   "settings.console.fontDefault": "Default",
   "settings.console.fontHint":

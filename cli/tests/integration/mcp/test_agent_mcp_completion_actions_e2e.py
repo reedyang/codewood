@@ -115,6 +115,7 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
                 params={},
                 work_directory=str(self.repo_root),
                 config_dir=str(self.config_dir),
+                chats_root_override=str(self.config_dir / "chats"),
             )
 
 

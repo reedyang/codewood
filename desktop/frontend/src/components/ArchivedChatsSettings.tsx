@@ -10,6 +10,7 @@ interface ArchivedChat extends WorkspaceChatSummary {
 interface WorkspaceGroup {
   wsId: string;
   wsName: string;
+  wsArchived: boolean;
   chats: ArchivedChat[];
 }
 
@@ -49,6 +50,14 @@ export function ArchivedChatsSettings() {
     return map;
   }, [state?.workspaces]);
 
+  const wsArchivedMap = useMemo(() => {
+    const map: Record<string, boolean> = {};
+    for (const ws of state?.workspaces ?? []) {
+      map[ws.id] = Boolean(ws.archived);
+    }
+    return map;
+  }, [state?.workspaces]);
+
   const groups: WorkspaceGroup[] = useMemo(() => {
     const byWs = new Map<string, ArchivedChat[]>();
     for (const [wsId, chats] of Object.entries(workspaceChats)) {
@@ -83,11 +92,16 @@ export function ArchivedChatsSettings() {
     const result: WorkspaceGroup[] = [];
     for (const [wsId, chats] of byWs) {
       chats.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-      result.push({ wsId, wsName: wsNames[wsId] ?? wsId, chats });
+      result.push({
+        wsId,
+        wsName: wsNames[wsId] ?? wsId,
+        wsArchived: Boolean(wsArchivedMap[wsId]),
+        chats,
+      });
     }
     result.sort((a, b) => a.wsName.localeCompare(b.wsName));
     return result;
-  }, [workspaceChats, state, wsNames]);
+  }, [workspaceChats, state, wsNames, wsArchivedMap]);
 
   const handleUnarchive = useCallback(
     (chat: ArchivedChat) => {
@@ -132,7 +146,18 @@ export function ArchivedChatsSettings() {
           {groups.map((group) => (
             <div key={group.wsId} className="archived-chat-group">
               <div className="archived-chat-group-header">
-                <span className="archived-chat-group-name">{group.wsName}</span>
+                <span className="archived-chat-group-name">
+                  {group.wsName}
+                  {group.wsArchived && (
+                    <span
+                      className="archived-chat-group-deleted"
+                      title={t("archivedChats.deletedWorkspaceHint")}
+                    >
+                      {" "}
+                      ({t("archivedChats.workspaceArchived")})
+                    </span>
+                  )}
+                </span>
                 <span className="archived-chat-group-count">{group.chats.length}</span>
                 <button
                   className="archived-chat-group-remove-all"
@@ -147,13 +172,15 @@ export function ArchivedChatsSettings() {
                     <div className="archived-chat-info">
                       <span className="archived-chat-name">{chat.name}</span>
                     </div>
-                    <button
-                      className="archived-chat-unarchive"
-                      onClick={() => handleUnarchive(chat)}
-                      title={t("archivedChats.unarchive")}
-                    >
-                      {t("archivedChats.unarchive")}
-                    </button>
+                    {!group.wsArchived && (
+                      <button
+                        className="archived-chat-unarchive"
+                        onClick={() => handleUnarchive(chat)}
+                        title={t("archivedChats.unarchive")}
+                      >
+                        {t("archivedChats.unarchive")}
+                      </button>
+                    )}
                     <button
                       className="archived-chat-remove"
                       onClick={() => setChatToDelete(chat)}

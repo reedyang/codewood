@@ -318,6 +318,7 @@ class RunSubagentBackgroundTests(unittest.TestCase):
             work_directory=td,
             provider="openai",
             config_dir=str(Path(td) / "cfg"),
+            chats_root_override=str(Path(td) / "chats"),
         )
         agent.conversation_history = []
         agent.conversation_history.append(
@@ -397,6 +398,7 @@ class RunSubagentBackgroundTests(unittest.TestCase):
             work_directory=td,
             provider="openai",
             config_dir=str(Path(td) / "cfg"),
+            chats_root_override=str(Path(td) / "chats"),
         )
         emitted = []
         agent._gui_bg_task_output_emit = lambda task_id, text, end=False, status="", return_code=None: emitted.append(
@@ -471,6 +473,7 @@ class RunSubagentBackgroundTests(unittest.TestCase):
             work_directory=td,
             provider="openai",
             config_dir=str(Path(td) / "cfg"),
+            chats_root_override=str(Path(td) / "chats"),
         )
         agent.conversation_history = []
         agent.conversation_history.append(

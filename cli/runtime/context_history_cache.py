@@ -24,8 +24,8 @@ model parameters. Because different API kinds serialize history differently,
 the cache is keyed by the API kind (replay mode) plus the assistant clip budget;
 switching the API kind simply re-generates the cache.
 
-The cache file lives at ``chats/data/<record-stem>/`` alongside the chat record's
-other side data.
+The cache file lives at ``chats/<YYYY>/<MM>/<DD>/data/<record-stem>/`` alongside
+the chat record's other side data.
 """
 
 from __future__ import annotations

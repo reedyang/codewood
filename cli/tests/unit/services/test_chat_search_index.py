@@ -28,8 +28,9 @@ def _write_chat(
     name: str,
     messages: list,
     archived: bool = False,
+    ws_id: str = "ws1",
 ) -> None:
-    index_path = chats_dir / "chats.json"
+    index_path = chats_dir / f"{ws_id}.json"
     chats = []
     if index_path.exists():
         data = json.loads(index_path.read_text(encoding="utf-8"))
@@ -95,8 +96,7 @@ class ChatSearchIndexTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.global_dir = self.root / "global"
-        self.storage = self.root / "ws1" / ".codewood"
-        self.chats_dir = self.storage / "chats"
+        self.chats_dir = self.root / "chats"
         self.chats_dir.mkdir(parents=True)
         self.index = ChatSearchIndex(self.global_dir)
 
@@ -104,7 +104,7 @@ class ChatSearchIndexTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _index_default_workspace(self) -> dict:
-        return self.index.refresh_workspace("ws1", "Workspace 1", self.storage)
+        return self.index.refresh_workspace("ws1", "Workspace 1", self.chats_dir)
 
     def test_tokenizer_shared_between_index_and_query(self):
         _write_chat(
@@ -306,9 +306,9 @@ class ChatSearchIndexTests(unittest.TestCase):
         self.assertEqual(self.index.search("保留")["total"], 1)
         # Simulate a chat deleted by another process: refresh must drop it.
         (self.chats_dir / "b.json").unlink()
-        index = json.loads((self.chats_dir / "chats.json").read_text(encoding="utf-8"))
+        index = json.loads((self.chats_dir / "ws1.json").read_text(encoding="utf-8"))
         index["chats"] = [c for c in index["chats"] if c["id"] != "c2"]
-        (self.chats_dir / "chats.json").write_text(
+        (self.chats_dir / "ws1.json").write_text(
             json.dumps(index, ensure_ascii=False), encoding="utf-8"
         )
         stats = self._index_default_workspace()
@@ -323,8 +323,7 @@ class ChatSearchIndexTests(unittest.TestCase):
             "工作区一",
             [{"role": "user", "content": "跨区搜索", "created_at": "2026-01-01 10:00:00"}],
         )
-        storage2 = self.root / "ws2" / ".codewood"
-        chats2 = storage2 / "chats"
+        chats2 = self.root / "chats2"
         chats2.mkdir(parents=True)
         _write_chat(
             chats2,
@@ -332,9 +331,10 @@ class ChatSearchIndexTests(unittest.TestCase):
             "a.json",
             "工作区二",
             [{"role": "user", "content": "跨区搜索", "created_at": "2026-01-01 10:00:00"}],
+            ws_id="ws2",
         )
         self._index_default_workspace()
-        self.index.refresh_workspace("ws2", "Workspace 2", storage2)
+        self.index.refresh_workspace("ws2", "Workspace 2", chats2)
         r = self.index.search("跨区")
         self.assertEqual(r["total"], 2)
         ws_ids = {(h["wsId"], h["wsName"]) for h in r["results"]}

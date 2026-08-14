@@ -345,6 +345,7 @@ class ShellBackgroundTests(unittest.TestCase):
             work_directory=td,
             provider="openai",
             config_dir=str(Path(td) / "cfg"),
+            chats_root_override=str(Path(td) / "chats"),
         )
         agent._freedom_auto_confirm = lambda cmd: True
 
@@ -385,6 +386,7 @@ class ShellBackgroundTests(unittest.TestCase):
             work_directory=td,
             provider="openai",
             config_dir=str(Path(td) / "cfg"),
+            chats_root_override=str(Path(td) / "chats"),
         )
         agent._freedom_auto_confirm = lambda cmd: True
         agent.sandbox_level = "full_access"

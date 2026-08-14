@@ -241,6 +241,8 @@ SKILL_PROMPT_MAX_SECTION_CHARS = 2600
 DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
+# Fallback chat index file name for agents without a workspace id. Real
+# workspaces use ``<workspace id>.json`` in the global chats directory.
 CHAT_STATE_FILE = "chats.json"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
@@ -250,7 +252,7 @@ INPUT_PROMPT = "› "
 
 
 class Agent:
-    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
+    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None, chats_root_override: Optional[str] = None):
         startup_work_directory = Path(work_directory) if work_directory else Path.cwd()
 
         # Route the per-chat execution attributes (conversation_history, etc.)
@@ -266,6 +268,13 @@ class Agent:
         )
 
         self.config_dir = bootstrap.resolve_config_dir(config_dir)
+        # Tests construct real ``Agent`` objects without a thread-local persist
+        # context; without an explicit root they would resolve the chats root to
+        # the REAL user-level global config dir (``get_app_global_config_dir() /
+        # "chats"``) and overwrite live chat data. ``chats_root_override`` lets a
+        # test pin the chats root to a temp dir for the whole lifecycle
+        # (including the construction-time ``load_chat_state``).
+        self._chats_root_override = str(chats_root_override) if chats_root_override else None
         self._workspace_state_manager = WorkspaceStateManager(
             self,
             default_workspace_id=DEFAULT_WORKSPACE_ID,
@@ -9009,8 +9018,9 @@ class Agent:
 
     def _apply_patch_preview_path(self) -> Optional[Path]:
         """Per-chat apply_patch preview sidecar path
-        (``chats/data/<record-stem>/previews.json``). One file per chat so it is
-        trivially associated with — and cleaned up alongside — its chat record."""
+        (``chats/<YYYY>/<MM>/<DD>/data/<record-stem>/previews.json``). One file
+        per chat so it is trivially associated with — and cleaned up alongside
+        — its chat record."""
         try:
             mgr = getattr(self, "_chat_state_manager", None)
             if mgr is None:
