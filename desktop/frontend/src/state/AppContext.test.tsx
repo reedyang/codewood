@@ -509,7 +509,7 @@ function HealthSendProbe() {
 }
 
 function PendingJumpProbe() {
-  const { pendingInputs, pendingAutoSend, sendInput, sendInputSteer, sendPendingInputNow, startPendingInputs, reorderPendingInput } = useApp();
+  const { pendingInputs, pendingAutoSend, turns, steerHoldTurnIds, sendInput, sendInputSteer, sendPendingInputNow, startPendingInputs, reorderPendingInput } = useApp();
   return (
     <>
       <button onClick={() => { void sendInput("msg-A"); }}>queue A</button>
@@ -524,6 +524,8 @@ function PendingJumpProbe() {
       <pre data-testid="pending-state">
         {JSON.stringify({ pendingInputs, pendingAutoSend })}
       </pre>
+      <pre data-testid="turns">{JSON.stringify(turns)}</pre>
+      <pre data-testid="steer-hold">{JSON.stringify(steerHoldTurnIds)}</pre>
     </>
   );
 }
@@ -2199,7 +2201,7 @@ describe("AppContext thinking rounds", () => {
     expect(apiMock.savePendingInputs).toHaveBeenCalled();
   });
 
-  it("drains the pending queue when the interrupted turn idle was skipped", async () => {
+  it("drains the pending queue after the jumped task finishes", async () => {
     render(
       <AppProvider>
         <PendingJumpProbe />
@@ -2226,9 +2228,10 @@ describe("AppContext thinking rounds", () => {
     });
 
     // The backend goes straight to the jumped task: the interrupted turn idle
-    // never reaches us (its snapshot already showed the chat running), so the
-    // suppression marker would leak into the jumped task completion idle and
-    // swallow the pending queue. The turn_start must clear the stale marker.
+    // arrives with a snapshot that STILL shows the chat running (the jumped
+    // task already started). It settles the interrupted turn and consumes its
+    // suppression marker there, so the marker cannot leak into the jumped
+    // task completion idle and swallow the pending queue.
     act(() => {
       apiMock.emit({
         event: "turn_start",
@@ -2241,12 +2244,22 @@ describe("AppContext thinking rounds", () => {
         data: {
           chatId: "chat-1",
           workspaceId: "ws-1",
-          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: true }] }),
         },
       });
     });
 
     // The jumped task finished: the queue must resume and send msg-A.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 250));
     });
@@ -2361,6 +2374,361 @@ describe("AppContext thinking rounds", () => {
     });
     hold = JSON.parse(screen.getByTestId("steer-hold").textContent || "[]");
     expect(hold).toEqual([]);
+  });
+
+  it("echoes a jumped pending message immediately", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // A task runs and a message queues behind it.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "long running task", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue A" }));
+    });
+    await waitFor(() => {
+      const st = JSON.parse(screen.getByTestId("pending-state").textContent || "{}");
+      expect(st.pendingInputs).toEqual(["msg-A"]);
+    });
+
+    // Jump the queued message: it echoes on screen right away (optimistic),
+    // even while the pause and send round-trips are still in flight.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "jump index 0" }));
+    });
+    const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns).toHaveLength(2);
+    expect(turns[turns.length - 1]).toMatchObject({
+      userText: "msg-A",
+      optimistic: true,
+    });
+    expect(apiMock.pause).toHaveBeenCalledWith("chat-1", "ws-1");
+    expect(apiMock.sendInput).toHaveBeenCalledWith("msg-A", true, "chat-1", "ws-1");
+  });
+
+  it("settles the interrupted turn when its idle arrives after the jumped message echoed", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Task A runs with a tool round.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    // Task A runs an earlier (successful) tool call, then a shell call that is
+    // still in flight when the user steers. Each call streams in with a green
+    // bullet (the backend's running color).
+    act(() => {
+      apiMock.emit({
+        event: "output",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          text: "\uE004\x1b[38;2;19;161;14m•\x1b[0m Ran codex usage\uE005",
+        },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "output",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          text: "\uE004\x1b[38;2;19;161;14m•\x1b[0m Ran slow command\uE005\uE000",
+        },
+      });
+    });
+
+    // The user jumps a queued message: it echoes on screen as an optimistic
+    // turn BEFORE the backend pause/unwind round-trips land.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue A" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "jump index 0" }));
+    });
+    let turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns).toHaveLength(2);
+
+    // The interrupt idle for turn A arrives while the snapshot shows the chat
+    // idle (the jumped message is still queued on the backend): the idle must
+    // settle A — NOT the trailing optimistic jumped turn, which is still
+    // waiting for its authoritative turn_start.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+    turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns[0].endedAt).not.toBeNull();
+    expect(turns[1].endedAt).toBeNull();
+    // The interrupted turn stays held open (its steps remain visible) until
+    // the jumped task finishes — the interrupt idle must NOT release the hold.
+    const hold = JSON.parse(screen.getByTestId("steer-hold").textContent || "[]");
+    expect(hold).toContain(String(turns[0].id));
+    // ONLY the in-flight shell call (the trailing prompt row) is repainted
+    // red; the earlier completed call keeps its green bullet. No interrupted
+    // banner is set.
+    const stepText = turns[0].rounds
+      .flatMap((r) => r.segments)
+      .filter((s) => s.kind === "step")
+      .map((s) => s.text)
+      .join("");
+    expect(stepText).toContain("\x1b[38;2;19;161;14m•");
+    expect(stepText.match(/\x1b\[38;2;19;161;14m•/g)).toHaveLength(1);
+    expect(stepText).toContain("\x1b[38;2;255;77;77m•");
+    expect(stepText.match(/\x1b\[38;2;255;77;77m•/g)).toHaveLength(1);
+
+    // The authoritative turn_start for the jumped message reconciles the
+    // optimistic turn in place; its own idle later settles it.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "msg-A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+    turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns[turns.length - 1].endedAt).not.toBeNull();
+  });
+
+  it("keeps a steered-away turn in the live bucket across the post-idle history reload", async () => {
+    apiMock.getChatHistory.mockResolvedValue({
+      turns: [
+        {
+          userText: "task A",
+          rounds: [],
+          timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+          startedAt: Date.now() - 1000,
+          endedAt: Date.now(),
+        },
+      ],
+      start: 0,
+      total: 1,
+    });
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Task A runs; the user steers a message in (single pending, queue empties).
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+
+    // The interrupt idle arrives while the snapshot shows the chat idle. Its
+    // post-idle history reload must NOT move the held turn A out of the live
+    // bucket: A renders expanded there via holdOpen until the chain finishes.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(apiMock.getChatHistory.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns[0].userText).toBe("task A");
+    expect(turns[0].endedAt).not.toBeNull();
+    expect(turns[1].userText).toBe("steer-msg");
+    expect(turns[1].endedAt).toBeNull();
+    const hold = JSON.parse(screen.getByTestId("steer-hold").textContent || "[]");
+    expect(hold).toContain(String(turns[0].id));
+  });
+
+  it("does not repaint tool calls red when the interrupted turn had none in flight", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Task A runs two tool calls that BOTH complete (their command output
+    // blocks are closed before the user steers).
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "output",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          text: "\uE004\x1b[38;2;19;161;14m•\x1b[0m Ran read demo\uE005\uE000ok\uE001",
+        },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "output",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          text: "\uE004\x1b[38;2;19;161;14m•\x1b[0m Ran grep pattern\uE005\uE000hit\uE001",
+        },
+      });
+    });
+
+    // Steer: the pause interrupts the turn while no tool call is in flight.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "queue A" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "jump index 0" }));
+    });
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+
+    const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    const stepText = turns[0].rounds
+      .flatMap((r) => r.segments)
+      .filter((s) => s.kind === "step")
+      .map((s) => s.text)
+      .join("");
+    expect(stepText).not.toContain("\x1b[38;2;255;77;77m•");
+    expect(stepText.match(/\x1b\[38;2;19;161;14m•/g)).toHaveLength(2);
+  });
+
+  it("settles the interrupted turn when its idle is skipped by the jumped task", async () => {
+    render(
+      <AppProvider>
+        <PendingJumpProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    // Task A runs with a tool round, then the user steers a message in.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "task A", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "steer now" }));
+    });
+
+    // The backend goes straight to the jumped task: turn A interrupt idle
+    // arrives with a snapshot that STILL shows the chat running (the jumped
+    // task already started), so the normal settlement path is skipped.
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "steer-msg", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: true }] }),
+        },
+      });
+    });
+
+    // The interrupted turn A must settle (its tool call stops spinning),
+    // while the jumped turn B keeps streaming.
+    let turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns[0].endedAt).not.toBeNull();
+    expect(turns[turns.length - 1].endedAt).toBeNull();
+
+    // The jumped task finishes: B settles on its own idle.
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+          state: buildState({ chats: [{ id: "chat-1", name: "Chat 1", active: true, running: false }] }),
+        },
+      });
+    });
+    turns = JSON.parse(screen.getByTestId("turns").textContent || "[]");
+    expect(turns[turns.length - 1].endedAt).not.toBeNull();
   });
 
   it("drains the remaining queue one per turn after the jumped task completes", async () => {

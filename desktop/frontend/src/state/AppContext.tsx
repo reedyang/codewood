@@ -461,6 +461,34 @@ const CMD_PROMPT_BEGIN = "\uE004";
 const CMD_PROMPT_END = "\uE005";
 const CMD_OUTPUT_BEGIN = "\uE000";
 const CMD_OUTPUT_END = "\uE001";
+const RED_BULLET = "\x1b[38;2;255;77;77m";
+
+// Repaint the LAST tool-call prompt bullet in red. Used when a Steer
+// interrupts the running turn: the backend intentionally skips the failure
+// repaint for aborted calls, so the live transcript would keep the green
+// running bullet until a history reload. Only the call that was in flight
+// (the trailing prompt row) is repainted; earlier calls that completed stay
+// green.
+function repaintLastInterruptedBullet(text: string): string {
+  const begin = text.lastIndexOf(CMD_PROMPT_BEGIN);
+  if (begin < 0) {
+    return text;
+  }
+  const rest = text.slice(begin + CMD_PROMPT_BEGIN.length);
+  const m = rest.match(/^((?:\x1b\[[0-9;]*m)*.)/);
+  if (!m) {
+    return text;
+  }
+  const bullet = m[1].replace(/\x1b\[[0-9;]*m/g, "");
+  return (
+    text.slice(0, begin) +
+    CMD_PROMPT_BEGIN +
+    RED_BULLET +
+    bullet +
+    "\x1b[0m" +
+    rest.slice(m[0].length)
+  );
+}
 // Sentinels wrapping a sub-agent session id (kept in sync with
 // cli/core/console_utils.py). Used to render the "open sub-session" button on
 // the run_subagent tool-call block while/after the background task runs.
@@ -1961,43 +1989,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return prev;
       }
       const next = [...existing];
-      const turn = next[next.length - 1];
-      if (!turn) {
-        return prev;
-      }
-      const rounds = [...turn.rounds];
-      const round = rounds[rounds.length - 1];
-      if (!round) {
-        return prev;
-      }
-      const segments = [...round.segments];
+      // A Steer can open a newer (jumped) turn while the interrupted turn
+      // still owns the tool prompt being repainted; walk every turn from the
+      // end so the repaint lands on the turn that actually holds the prompt
+      // instead of unconditionally hitting the trailing (jumped) turn.
       let replaced = false;
-      for (let i = segments.length - 1; i >= 0; i -= 1) {
-        const seg = segments[i];
-        if (!seg || seg.kind !== "step") {
+      for (let t = next.length - 1; t >= 0 && !replaced; t -= 1) {
+        const turn = next[t];
+        if (!turn) {
           continue;
         }
-        const end = seg.text.lastIndexOf(CMD_PROMPT_END);
-        if (end < 0) {
-          continue;
+        const rounds = [...turn.rounds];
+        for (let ri = rounds.length - 1; ri >= 0; ri -= 1) {
+          const round = rounds[ri];
+          const segments = [...round.segments];
+          let roundReplaced = false;
+          for (let i = segments.length - 1; i >= 0; i -= 1) {
+            const seg = segments[i];
+            if (!seg || seg.kind !== "step") {
+              continue;
+            }
+            const end = seg.text.lastIndexOf(CMD_PROMPT_END);
+            if (end < 0) {
+              continue;
+            }
+            const begin = seg.text.lastIndexOf(CMD_PROMPT_BEGIN, end);
+            if (begin < 0) {
+              continue;
+            }
+            segments[i] = {
+              ...seg,
+              text: `${seg.text.slice(0, begin)}${text}${seg.text.slice(end + CMD_PROMPT_END.length)}`,
+            };
+            roundReplaced = true;
+            break;
+          }
+          if (roundReplaced) {
+            rounds[ri] = { ...round, segments };
+            next[t] = { ...turn, rounds };
+            replaced = true;
+            break;
+          }
         }
-        const begin = seg.text.lastIndexOf(CMD_PROMPT_BEGIN, end);
-        if (begin < 0) {
-          continue;
-        }
-        segments[i] = {
-          ...seg,
-          text: `${seg.text.slice(0, begin)}${text}${seg.text.slice(end + CMD_PROMPT_END.length)}`,
-        };
-        replaced = true;
-        break;
       }
-      if (!replaced) {
-        return prev;
-      }
-      rounds[rounds.length - 1] = { ...round, segments };
-      next[next.length - 1] = { ...turn, rounds };
-      return { ...prev, [chatId]: next };
+      return replaced ? { ...prev, [chatId]: next } : prev;
     });
   }, []);
 
@@ -2274,10 +2309,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         }
         if (!changed) {
-          const turnIdx = next.length - 1;
-          const rIdx = next[turnIdx] ? next[turnIdx].rounds.length - 1 : -1;
-          if (rIdx >= 0) {
-            applyToRound(turnIdx, rIdx);
+          // The task-to-round mapping can be stale when a Steer opened a newer
+          // (jumped) turn: prefer the round that still holds an open command
+          // block (the interrupted turn's), falling back to the trailing turn's
+          // last round as before.
+          let applied = false;
+          for (let t = next.length - 1; t >= 0 && !applied; t -= 1) {
+            const turn = next[t];
+            if (!turn) {
+              continue;
+            }
+            for (let ri = turn.rounds.length - 1; ri >= 0; ri -= 1) {
+              if (roundHasOpenCmdBlock(turn.rounds[ri])) {
+                applyToRound(t, ri);
+                applied = true;
+                break;
+              }
+            }
+          }
+          if (!applied) {
+            const turnIdx = next.length - 1;
+            const rIdx = next[turnIdx] ? next[turnIdx].rounds.length - 1 : -1;
+            if (rIdx >= 0) {
+              applyToRound(turnIdx, rIdx);
+            }
           }
         }
         return changed ? { ...prev, [chatId]: next } : prev;
@@ -2369,38 +2424,112 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const endActiveTurn = useCallback((chatId: string) => {
-    if (!chatId) {
-      return;
-    }
-    setTurnsByChat((prev) => {
-      const list = prev[chatId];
-      if (!list || list.length === 0) {
-        return prev;
+  // Settle the running turn(s) an ``idle`` event closes. The backend emits an
+  // idle whenever a turn ends; a chat runs turns strictly one at a time, so the
+  // frontend can still hold SEVERAL open turns when a Steer paused the running
+  // turn and the jumped message already opened its optimistic turn before the
+  // interrupt idle arrived. The idle belongs to the EARLIEST still-running turn
+  // in that window, so with ``keepTrailing`` only the trailing (jumped) turn
+  // stays open for its own idle. A terminal idle (the snapshot no longer shows
+  // the chat running) closes every open turn — including a jumped turn whose
+  // interrupt idle was lost entirely.
+  const endActiveTurn = useCallback(
+    (chatId: string, keepTrailing = false) => {
+      if (!chatId) {
+        return;
       }
-      const last = list[list.length - 1];
-      if (last.endedAt !== null) {
-        return prev;
-      }
-      // An optimistic turn with no rounds yet is the first message of a
-      // just-created chat still waiting for its authoritative ``turn_start``.
-      // The ``new_chat`` path emits an ``idle`` snapshot before that input is
-      // processed; settling the turn here would split it (the reply would open a
-      // SECOND turn, duplicating the user message). Leave it open.
-      if (last.optimistic && last.rounds.length === 0) {
-        return prev;
-      }
-      // Freeze any still-open round so its timer stops with the turn.
-      const rounds = last.rounds.map((r, i) =>
-        i === last.rounds.length - 1 && r.waitEndedAt === null && !isBgRoundActive(r)
-          ? { ...r, waitEndedAt: Date.now() }
-          : r,
-      );
-      const copy = [...list];
-      copy[copy.length - 1] = { ...last, rounds, endedAt: Date.now() };
-      return { ...prev, [chatId]: copy };
-    });
-  }, []);
+      setTurnsByChat((prev) => {
+        const list = prev[chatId];
+        if (!list || list.length === 0) {
+          return prev;
+        }
+        const runningIdx: number[] = [];
+        list.forEach((turn, i) => {
+          if (turn.endedAt === null) {
+            runningIdx.push(i);
+          }
+        });
+        if (runningIdx.length === 0) {
+          return prev;
+        }
+        const keepIdx =
+          keepTrailing && runningIdx.length > 1
+            ? runningIdx[runningIdx.length - 1]
+            : -1;
+        let changed = false;
+        const copy = [...list];
+        for (let i = 0; i < copy.length; i += 1) {
+          const turn = copy[i];
+          if (turn.endedAt !== null || i === keepIdx) {
+            continue;
+          }
+          // An optimistic turn with no rounds yet is the first message of a
+          // just-created chat still waiting for its authoritative ``turn_start``.
+          // The ``new_chat`` path emits an ``idle`` snapshot before that input
+          // is processed; settling the turn here would split it (the reply
+          // would open a SECOND turn, duplicating the user message). Leave it
+          // open.
+          if (turn.optimistic && turn.rounds.length === 0) {
+            continue;
+          }
+          // ``keepTrailing`` marks this idle as the interrupt idle of a
+          // Steer-paused turn. The backend skips the failure repaint for
+          // aborted calls, so the live transcript would otherwise keep the
+          // green running bullet until a history reload. Locate the LAST
+          // tool call that was still IN FLIGHT when the Steer landed (its
+          // round timer not frozen yet AND it is a background task or its
+          // command output block is still open) and repaint only that bullet
+          // red. Completed calls — non-shell tools, finished shell commands —
+          // stay green; a just-started shell whose output block hasn't opened
+          // yet is covered by the backend's failure repaint for aborted calls.
+          let targetRoundIdx = -1;
+          let targetSegIdx = -1;
+          for (let ri = turn.rounds.length - 1; ri >= 0; ri -= 1) {
+            const r = turn.rounds[ri];
+            const inFlight =
+              r.waitEndedAt === null &&
+              (isBgRoundActive(r) || roundHasOpenCmdBlock(r));
+            if (!inFlight) {
+              continue;
+            }
+            for (let si = r.segments.length - 1; si >= 0; si -= 1) {
+              const seg = r.segments[si];
+              if (seg.kind === "step" && seg.text.includes(CMD_PROMPT_BEGIN)) {
+                targetRoundIdx = ri;
+                targetSegIdx = si;
+                break;
+              }
+            }
+            if (targetRoundIdx >= 0) {
+              break;
+            }
+          }
+          // Freeze any still-open round so its timer stops with the turn.
+          const rounds = turn.rounds.map((r, j) => {
+            const frozen =
+              j === turn.rounds.length - 1 &&
+              r.waitEndedAt === null &&
+              !isBgRoundActive(r)
+                ? { ...r, waitEndedAt: Date.now() }
+                : r;
+            if (!keepTrailing) {
+              return frozen;
+            }
+            const segments = frozen.segments.map((s, si) =>
+              targetRoundIdx >= 0 && si === targetSegIdx && j === targetRoundIdx
+                ? { ...s, text: repaintLastInterruptedBullet(s.text) }
+                : s,
+            );
+            return { ...frozen, segments };
+          });
+          copy[i] = { ...turn, rounds, endedAt: Date.now() };
+          changed = true;
+        }
+        return changed ? { ...prev, [chatId]: copy } : prev;
+      });
+    },
+    [isBgRoundActive],
+  );
 
   const setBusyForChat = useCallback((chatId: string, value: boolean) => {
     if (!chatId) {
@@ -2610,8 +2739,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
               };
             });
           }
+          // A Steer paused the running turn; its interrupt idle can arrive
+          // AFTER the jumped task already started streaming, so the idle
+          // snapshot still shows this chat running and the normal settlement
+          // path above is skipped. Settle the interrupted turn(s) here and
+          // consume the suppression marker: otherwise the paused turn stays
+          // "running" forever — its tool call keeps spinning and the next
+          // history reload drops every message after it. The trailing
+          // (jumped) turn is still streaming and stays open for its own idle.
+          if (isStreamingChat && stillRunning) {
+            endActiveTurn(eventKey, true);
+            delete suppressAutoSendOnceRef.current[eventKey];
+          }
           if (!stillRunning) {
-            endActiveTurn(eventKey);
+            // The suppression marker identifies this idle as the interrupt
+            // idle of a Steer-paused turn: settle that turn but keep the
+            // trailing (jumped) turn open for its own idle. Without the
+            // marker this is a terminal idle and every open turn closes.
+            endActiveTurn(
+              eventKey,
+              Boolean(suppressAutoSendOnceRef.current[eventKey]),
+            );
             setBusyForChat(eventKey, false);
             // The unread blue-dot flag is decided by the BACKEND when the turn
             // finishes: a chat that completed while the user was elsewhere gets
@@ -2767,13 +2915,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           startTurn(String(data.text ?? ""), eventKey);
           setBusyForChat(eventKey, true);
           streamingKeyRef.current = eventKey;
-          // A Steer paused the previous turn; if that turn interrupt idle was
-          // skipped (e.g. the idle snapshot still showed the chat running
-          // because the jumped task had already started), the suppression
-          // marker must NOT leak into the jumped task completion idle and
-          // swallow the pending queue — the queue resumes from the jumped
-          // task own idle instead.
-          delete suppressAutoSendOnceRef.current[eventKey];
           // A new turn supersedes any stale retry countdown for this chat.
           setRetryCountdownByChat((prev) => {
             if (!prev[eventKey]) return prev;
@@ -3794,8 +3935,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       //     the chat is no longer busy). Removing the message now makes that
       //     timer a no-op, and the suppression marker below stops it from
       //     sending the next queued message ahead of the jumped one.
+      // Hold the interrupted turn BEFORE the optimistic echo (see
+      // ``sendInputSteer``): ``markSteerHold`` picks the trailing running
+      // turn, which must be the interrupted one, not the echoed jump.
       markSteerHold(key);
       suppressAutoSendOnceRef.current[key] = true;
+      // Echo the jumped message on screen immediately (same as
+      // ``sendInputSteer``), even while the pause and send round-trips are
+      // still in flight. The backend ``turn_start`` reconciles this
+      // optimistic turn in place, so the message is never displayed twice.
+      startOptimisticTurn(text, key);
       const remaining = inputs.filter((_, i) => i !== index);
       setPendingInputsByChat((prev) => {
         const next = { ...prev, [key]: remaining };
@@ -3839,7 +3988,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
     },
-    [client, persistPendingInputs],
+    [client, persistPendingInputs, startOptimisticTurn],
   );
 
   const sendInputSteer = useCallback(
@@ -3853,13 +4002,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!chatId) {
         return;
       }
-      // Echo the steered message on screen immediately, even while the pause
-      // and send round-trips are still in flight. The backend ``turn_start``
-      // reconciles this optimistic turn in place (see ``startTurn``), so the
-      // message is never displayed twice.
-      startOptimisticTurn(trimmed, key);
       const isBusy = busyByChatRef.current[key] ?? false;
       if (!isBusy) {
+        // Echo the steered message on screen immediately, even while the send
+        // round-trip is still in flight. The backend ``turn_start``
+        // reconciles this optimistic turn in place (see ``startTurn``), so
+        // the message is never displayed twice.
+        startOptimisticTurn(trimmed, key);
         await pendingModelConfigRef.current;
         await client.sendInput(trimmed, true, chatId, wsId);
         return;
@@ -3867,8 +4016,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Busy: cooperative Steer — pause the running turn first (same mechanism
       // as the pending-list jump) so the typed message lands immediately
       // instead of queueing behind the current task.
+      // Hold the interrupted turn BEFORE the optimistic echo: the jumped
+      // message opens a new turn on screen, and ``markSteerHold`` picks the
+      // trailing running turn — which must be the interrupted one, not the
+      // echoed jump.
       markSteerHold(key);
       suppressAutoSendOnceRef.current[key] = true;
+      startOptimisticTurn(trimmed, key);
       try {
         await client.pause(chatId, wsId);
         await client.sendInput(trimmed, true, chatId, wsId);
@@ -4053,7 +4207,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!list || list.length === 0) {
         return prev;
       }
-      const active = list.filter((tt) => tt.endedAt === null);
+      // A Steer-interrupted turn stays in the live bucket (rendered by
+      // ``TurnView`` with ``holdOpen``) so its execution steps remain expanded
+      // until the whole task chain finishes; dropping it here would re-render
+      // it from history in the collapsed state.
+      const heldIds = steerHoldTurnsByChatRef.current[chatId] ?? [];
+      const active = list.filter(
+        (tt) => tt.endedAt === null || heldIds.includes(String(tt.id)),
+      );
       if (active.length === list.length) {
         return prev;
       }
@@ -4095,8 +4256,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!list || list.length === 0) {
           return prev;
         }
+        // Keep Steer-held turns in the live bucket: their ``holdOpen``
+        // rendering must stay expanded until the task chain finishes, so a
+        // history reload must not swap them out for the collapsed archived
+        // copy.
+        const heldIds = steerHoldTurnsByChatRef.current[chatId] ?? [];
         const filtered = list.filter((tt) => {
           if (tt.endedAt === null) {
+            return true;
+          }
+          if (heldIds.includes(String(tt.id))) {
             return true;
           }
           // Placeholder turns created by early tool output have no user text
@@ -4218,7 +4387,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // the completed task's user message and steps from the transcript
           // until the next chat switch. Only turns matching an ACTIVE live
           // turn are subsumed, so the completed previous turn is never touched.
-          const activeTurns = live.filter((tt) => tt.endedAt === null);
+          // Treat Steer-held turns as active for subsumption too: their
+          // archived copy must be hidden from the page (the live copy renders
+          // them expanded) or the transcript would show them twice.
+          const heldIds = steerHoldTurnsByChatRef.current[key] ?? [];
+          const activeTurns = live.filter(
+            (tt) => tt.endedAt === null || heldIds.includes(String(tt.id)),
+          );
           // Normally the archived copy of the active turn IS the page tail,
           // but a mid-turn context compaction splits the running turn into
           // [user turn, compaction-summary turn, assistant continuation turn]
