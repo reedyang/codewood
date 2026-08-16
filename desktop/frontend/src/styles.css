@@ -4203,7 +4203,7 @@ html[data-has-bg] .select {
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text, #ddd);
-  font-family: "Cascadia Code", "Consolas", monospace;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   font-size: 12px;
   cursor: pointer;
   text-align: left;
@@ -5088,6 +5088,7 @@ html[data-has-bg] .select {
 .activity-steps .cmd-prompt {
   display: flex;
   align-items: flex-start;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
 .activity-steps .cmd-prompt + .cmd-prompt,
@@ -7028,7 +7029,7 @@ body.resizing-y .console-term {
   display: flex;
   gap: 8px;
   font-size: 13px;
-  font-family: monospace;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   user-select: text;
 }
 
@@ -7084,7 +7085,7 @@ body.resizing-y .console-term {
 .file-change-item-name {
   flex: 1;
   font-size: 13px;
-  font-family: monospace;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7095,7 +7096,7 @@ body.resizing-y .console-term {
   flex-shrink: 0;
   margin-left: 8px;
   font-size: 12px;
-  font-family: monospace;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -7104,7 +7105,7 @@ body.resizing-y .console-term {
   display: flex;
   gap: 8px;
   font-size: 12px;
-  font-family: monospace;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
 .file-change-item .chevron {
@@ -7187,7 +7188,7 @@ body.resizing-y .console-term {
 
 .file-change-fail-path {
   font-size: 13px;
-  font-family: monospace;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   color: var(--text);
   word-break: break-all;
   user-select: text;
