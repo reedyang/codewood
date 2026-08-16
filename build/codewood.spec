@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('../skills', 'skills'), ('../additional-subagents', 'additional-subagents'), ('../cli', 'cli'), ('../desktop/frontend/dist', 'frontend'), ('../desktop/host', 'host'), ('../models', 'models'), ('../build/app_icon.ico', 'codewood_assets')]
+datas = [('../skills', 'skills'), ('../additional-subagents', 'additional-subagents'), ('../cli', 'cli'), ('../desktop/frontend/dist', 'frontend'), ('../desktop/host', 'host'), ('../models', 'models'), ('../build/app_icon.ico', 'codewood_assets'), ('../bin/rg.exe', 'bin'), ('../bin/rg-version.txt', 'bin')]
 binaries = []
 hiddenimports = ['clr', 'winpty', 'winpty.ptyprocess', 'winpty.enums', 'tiktoken_ext', 'tiktoken_ext.openai_public']
 # The Windows sandbox backend is imported inside a try/except in

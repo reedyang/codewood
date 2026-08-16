@@ -99,6 +99,60 @@ class RgDownloaderLoggingTests(unittest.TestCase):
             if prev_path is not None:
                 setup_app_logging(prev_path.parent.parent)
 
+
+class EnsureRgSyncTests(unittest.TestCase):
+    """ensure_rg_sync (used by the packaging scripts) downloads rg only when
+    the binary or the version file is missing."""
+
+    def setUp(self):
+        rg_downloader._rg_status = rg_downloader.RG_STATUS_IDLE
+        rg_downloader._rg_status_message = ""
+        self.bin_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        rg_downloader._rg_status = rg_downloader.RG_STATUS_IDLE
+        rg_downloader._rg_status_message = ""
+
+    def test_returns_true_without_download_when_both_files_present(self):
+        (self.bin_dir / rg_downloader._RG_BINARY_NAME).write_bytes(b"MZ")
+        (self.bin_dir / rg_downloader._VERSION_FILENAME).write_text(
+            "14.1.0\n", encoding="utf-8"
+        )
+        with mock.patch.object(
+            rg_downloader, "_download_and_extract_rg"
+        ) as download:
+            ok = rg_downloader.ensure_rg_sync(self.bin_dir)
+        self.assertTrue(ok)
+        download.assert_not_called()
+
+    def test_downloads_when_binary_missing(self):
+        (self.bin_dir / rg_downloader._VERSION_FILENAME).write_text(
+            "14.1.0\n", encoding="utf-8"
+        )
+        with mock.patch.object(
+            rg_downloader, "_download_and_extract_rg", return_value=True
+        ) as download:
+            ok = rg_downloader.ensure_rg_sync(self.bin_dir)
+        self.assertTrue(ok)
+        download.assert_called_once_with(self.bin_dir, is_update=False)
+
+    def test_downloads_when_version_file_missing(self):
+        (self.bin_dir / rg_downloader._RG_BINARY_NAME).write_bytes(b"MZ")
+        with mock.patch.object(
+            rg_downloader, "_download_and_extract_rg", return_value=True
+        ) as download:
+            ok = rg_downloader.ensure_rg_sync(self.bin_dir)
+        self.assertTrue(ok)
+        download.assert_called_once_with(self.bin_dir, is_update=False)
+
+    def test_returns_false_when_download_fails(self):
+        with mock.patch.object(
+            rg_downloader, "_download_and_extract_rg", return_value=False
+        ) as download:
+            ok = rg_downloader.ensure_rg_sync(self.bin_dir)
+        self.assertFalse(ok)
+        download.assert_called_once_with(self.bin_dir, is_update=False)
+
     def test_last_resort_disabled_blocks_fall_through_logs(self):
         # Mirrors the serve-process guard: with ``logging.lastResort`` disabled,
         # a logger with no handler cannot write to the bridged stderr.

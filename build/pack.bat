@@ -48,10 +48,23 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem ---- Ensure ripgrep (rg.exe) and rg-version.txt exist so they can be
+rem ---- bundled into the package. If either is missing, download the latest
+rem ---- ripgrep release into bin\ (which also writes bin\rg-version.txt).
+if exist "bin\rg.exe" if exist "bin\rg-version.txt" goto rg_ready
+echo rg or rg-version.txt not found in bin\. Downloading ripgrep...
+"%VENV_PYTHON%" -c "import sys; sys.path.insert(0, '.'); from pathlib import Path; from cli.config.rg_downloader import ensure_rg_sync; sys.exit(0 if ensure_rg_sync(Path('bin')) else 1)"
+if errorlevel 1 (
+  echo Failed to download rg. Aborting packaging.
+  exit /b 1
+)
+:rg_ready
+echo rg and rg-version.txt ready for bundling.
+
 rem Include required resources: skills, cli resources, and the
 rem desktop GUI (frontend bundle + pywebview host modules).
-rem Note: ripgrep (rg) is downloaded at runtime on first launch if not
-rem already present in bin/; it is no longer bundled at build time.
+rem Note: ripgrep (bin\rg.exe + bin\rg-version.txt) is downloaded above if
+rem missing and is bundled at build time via build\codewood.spec.
 rem Using multiple --add-data flags (Windows uses ';' as separator)
 rem Include virtual environment packages from .venv-windows
 rem PyInstaller will search this path for modules

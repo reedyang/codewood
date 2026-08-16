@@ -39,6 +39,19 @@ fi
 echo "Installing/updating dependencies from \"$REQ_FILE\"..."
 "$VENV_PYTHON" -m pip install -r "$REQ_FILE" || { echo "Failed to install dependencies." >&2; exit 1; }
 
+# ---- Ensure ripgrep (rg) and rg-version.txt exist so they can be bundled.
+# ---- If either is missing, download the latest ripgrep release into bin/
+# ---- (which also writes bin/rg-version.txt).
+echo "Checking rg and rg-version.txt for bundling..."
+if [ ! -f "bin/rg" ] || [ ! -f "bin/rg-version.txt" ]; then
+  echo "rg or rg-version.txt not found in bin/. Downloading ripgrep..."
+  if ! "$VENV_PYTHON" -c "import sys; sys.path.insert(0, '.'); from pathlib import Path; from cli.config.rg_downloader import ensure_rg_sync; sys.exit(0 if ensure_rg_sync(Path('bin')) else 1)"; then
+    echo "Failed to download rg. Aborting packaging." >&2
+    exit 1
+  fi
+fi
+echo "rg and rg-version.txt ready for bundling."
+
 # Locate the virtualenv site-packages (.venv/lib/pythonX.Y/site-packages).
 VENV_PATH="$(ls -d "$VENV_DIR"/lib/python*/site-packages 2>/dev/null | head -n 1 || true)"
 if [ -z "$VENV_PATH" ]; then
@@ -55,8 +68,8 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 
 # Source paths are relative to --specpath (build/codewood), matching pack.bat.
 # Unix uses ':' as the --add-data separator instead of ';'.
-# Note: ripgrep (rg) is NOT bundled; it is downloaded at runtime on first
-# launch from GitHub releases if not already present in bin/.
+# Note: ripgrep (bin/rg + bin/rg-version.txt) is downloaded above if missing
+# and bundled into the package via the --add-data flags below.
 #
 # One-dir is used (instead of one-file) so each process runs directly without
 # an extra self-extracting bootloader process: the GUI then uses two processes
@@ -86,6 +99,8 @@ ARGS=(
   --add-data "../../desktop/frontend/dist:frontend"
   --add-data "../../desktop/host:host"
   --add-data "../../models:models"
+  --add-data "../../bin/rg:bin"
+  --add-data "../../bin/rg-version.txt:bin"
   # pathex is resolved relative to the working dir (project root), unlike
   # --add-data sources which are relative to --specpath; so no "../../".
   --paths "$VENV_PATH"

@@ -300,6 +300,19 @@ def is_rg_available(bin_dir: Path) -> bool:
     return rg_path.is_file()
 
 
+def ensure_rg_sync(bin_dir: Path) -> bool:
+    """Blocking download of the ripgrep binary when it is missing.
+
+    Used by the packaging scripts: guarantees that both ``rg`` and
+    ``rg-version.txt`` exist in *bin_dir* before bundling, downloading the
+    latest release (and writing the version file) when either file is
+    absent. Returns ``True`` when both files are present afterwards.
+    """
+    if is_rg_available(bin_dir) and _read_local_version(bin_dir):
+        return True
+    return _download_and_extract_rg(bin_dir, is_update=False)
+
+
 def ensure_rg_async(bin_dir: Path) -> None:
     global _download_in_progress, _download_complete, _rg_status, _rg_status_message
 
