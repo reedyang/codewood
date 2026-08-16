@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from .base import BaseTool
 from .shell import _workspace_rg_executable_path
+from ..core.console_utils import _decode_subprocess_output
 from ..core.workspace_scope import effective_workspace_root
 
 
@@ -81,14 +82,18 @@ def action_grep(
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
                 timeout=30,
                 cwd=str(search_dir),
             )
         except subprocess.TimeoutExpired:
             return {"success": False, "error": f"grep timed out searching '{path}'"}
 
-        stdout = (result.stdout or "").strip()
+        # Decode as bytes: ripgrep always emits UTF-8, but text=True would
+        # decode with the locale encoding (GBK on Chinese Windows) in the
+        # subprocess reader thread and raise UnicodeDecodeError on non-GBK
+        # UTF-8 sequences.
+        stdout = _decode_subprocess_output(result.stdout).strip()
+        stderr = _decode_subprocess_output(result.stderr).strip()
         exit_code = result.returncode
 
         # rg exit code 1 = no matches
@@ -100,7 +105,7 @@ def action_grep(
             }
 
         if exit_code != 0 and not stdout:
-            return {"success": False, "error": f"rg exited with code {exit_code}: {result.stderr}"}
+            return {"success": False, "error": f"rg exited with code {exit_code}: {stderr}"}
 
         lines = stdout.splitlines()
         match_count = len(lines)
