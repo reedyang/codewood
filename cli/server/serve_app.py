@@ -8917,6 +8917,16 @@ class ServeApp:
         prev_stdout, prev_stderr = sys.stdout, sys.stderr
         sys.stdout = bridge
         sys.stderr = bridge
+        # The bridge has replaced sys.stderr, and logging's ``lastResort``
+        # handler writes to sys.stderr. Any log record that falls through
+        # with no real handler (e.g. the ripgrep downloader's error logs)
+        # would otherwise be forwarded to the GUI as an ``output`` event and
+        # rendered inside the chat transcript. Disable ``lastResort`` while
+        # the bridge is installed so internal log lines never reach the
+        # frontend (they still reach the application log file when logging
+        # is configured).
+        prev_last_resort = logging.lastResort
+        logging.lastResort = None
 
         # Spawn the loop for the startup-focused chat. Other chats get their own
         # loop thread lazily, the first time input is routed to them.
@@ -8930,6 +8940,7 @@ class ServeApp:
             self.request_shutdown()
             sys.stdout = prev_stdout
             sys.stderr = prev_stderr
+            logging.lastResort = prev_last_resort
             try:
                 self._httpd.server_close()
             except Exception:

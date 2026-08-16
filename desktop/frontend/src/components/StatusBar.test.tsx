@@ -228,4 +228,27 @@ describe("StatusBar", () => {
     const { getByText } = render(<StatusBar />);
     await waitFor(() => expect(getByText("Indexing 71%")).toBeInTheDocument());
   });
+
+  it("does not surface a failed rg download/update message in the message area", async () => {
+    mockApp({
+      hidden: false,
+      files_total: 0,
+      workspace_name: "Workspace",
+      is_default_workspace: false,
+      refresh_phase: "",
+      refresh_progress_total: 0,
+      refresh_progress_done: 0,
+      refresh_progress_percent: 0,
+      workspaces: [],
+      rg_status: "failed",
+      rg_message: "rg download failed: cannot reach GitHub to resolve the latest release",
+    });
+
+    const { queryByText } = render(<StatusBar />);
+    await waitFor(() => {
+      expect(
+        queryByText("rg download failed: cannot reach GitHub to resolve the latest release"),
+      ).toBeNull();
+    });
+  });
 });

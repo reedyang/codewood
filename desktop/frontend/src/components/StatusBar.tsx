@@ -30,9 +30,10 @@ export function StatusBar() {
   );
   const shownFiles = totalFiles || (status?.files_total ?? 0);
 
+  // The message area only shows transient setup progress; a failed rg
+  // download/update is deliberately NOT surfaced as an error message here
+  // (details are logged server-side).
   const centerContent = isRgActive
-    ? rgMessage
-    : isRgFailed
     ? rgMessage
     : "";
 

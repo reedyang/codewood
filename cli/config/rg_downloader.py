@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import platform
 import re
@@ -11,8 +10,13 @@ import zipfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-_logger = logging.getLogger(__name__)
-_logger.propagate = False
+from ..core.logging.app_logging import get_logger, get_app_logger_root
+
+# Use the application logger tree (not `logging.getLogger(__name__)`): the
+# serve process installs an SSE bridge as `sys.stderr`, and a logger without
+# a real handler falls through to `logging.lastResort`, which writes to that
+# bridged stderr and would surface internal log lines inside the GUI chat.
+_logger = get_logger(f"{get_app_logger_root()}.config.rg_downloader")
 
 _GITHUB_API_RELEASES_URL = "https://api.github.com/repos/BurntSushi/ripgrep/releases/latest"
 _GITHUB_LATEST_REDIRECT_URL = "https://github.com/BurntSushi/ripgrep/releases/latest"
@@ -201,14 +205,25 @@ def _extract_rg_from_tar(archive_path: Path, bin_dir: Path) -> bool:
 def _download_and_extract_rg(bin_dir: Path, *, is_update: bool = False) -> bool:
     global _rg_status, _rg_status_message
 
+    action = "update" if is_update else "download"
     try:
         _logger.info("Resolving ripgrep download for %s/%s", platform.system(), platform.machine())
+
+        if _detect_platform_target() is None:
+            _rg_status = RG_STATUS_FAILED
+            _rg_status_message = f"ripgrep: unsupported platform {platform.system()}/{platform.machine()}"
+            _logger.error(_rg_status_message)
+            return False
 
         version, download_url = _resolve_download_info()
         if not download_url:
             _rg_status = RG_STATUS_FAILED
-            _rg_status_message = f"ripgrep: unsupported platform {platform.system()}/{platform.machine()}"
-            _logger.error(_rg_status_message)
+            _rg_status_message = (
+                f"rg {action} failed: cannot reach GitHub to resolve the latest release"
+            )
+            _logger.error(
+                "Failed to resolve ripgrep release info: %s", _rg_status_message
+            )
             return False
 
         _rg_status = RG_STATUS_DOWNLOADING
@@ -254,8 +269,8 @@ def _download_and_extract_rg(bin_dir: Path, *, is_update: bool = False) -> bool:
                 return True
             else:
                 _rg_status = RG_STATUS_FAILED
-                _rg_status_message = "rg update failed" if is_update else "rg download failed"
-                _logger.error("Failed to extract rg from archive")
+                _rg_status_message = f"rg {action} failed: invalid archive"
+                _logger.error("Failed to extract rg from archive: %s", _rg_status_message)
                 return False
         finally:
             try:
@@ -264,8 +279,8 @@ def _download_and_extract_rg(bin_dir: Path, *, is_update: bool = False) -> bool:
                 pass
     except Exception as e:
         _rg_status = RG_STATUS_FAILED
-        _rg_status_message = "rg update failed" if is_update else "rg download failed"
-        _logger.error("Failed to download rg: %s", e)
+        _rg_status_message = f"rg {action} failed: {e}"
+        _logger.error("Failed to %s rg: %s", action, e)
         return False
 
 

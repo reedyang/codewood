@@ -289,6 +289,16 @@ class Agent:
             default_workspace_id=DEFAULT_WORKSPACE_ID,
         )
 
+        # Ensure ripgrep (rg) binary is present; if not, start a background
+        # download from GitHub releases for the current platform. Runs after
+        # ``setup_workspace_and_history`` configured the application log file,
+        # so the downloader's own diagnostics land in codewood.log instead of
+        # the console.
+        from cli.config.rg_downloader import ensure_rg_async
+        from cli.config.app_info import get_app_bundled_bin_dir
+
+        ensure_rg_async(get_app_bundled_bin_dir())
+
         bootstrap.setup_runtime_preferences(self)
         bootstrap.setup_policy_caches(self)
 
