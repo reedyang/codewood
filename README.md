@@ -434,10 +434,6 @@ Example `mcp.jsonc`:
 - Check your API keys and base URLs
 - For Ollama models, confirm that the model has been downloaded and is available locally
 
-## Demo
-
-![Git command](demo/git_command.png)
-
 ## Contributing
 
 Issues and pull requests are welcome.
