@@ -7537,6 +7537,26 @@ class Agent:
             if str(chat.get("name_source") or "") == "auto":
                 return
 
+        # Capture the calling thread's session + workspace bindings BEFORE
+        # spawning the worker, so the background title call resolves THIS
+        # chat's model/workspace instead of the focused chat's globals
+        # (mirrors the network-thread rebinding in ``_call_orchestrator``).
+        _wsid = ""
+        _cid = ""
+        try:
+            session_key = str(self._current_session_chat_key() or "")
+            _wsid, _, _cid = session_key.rpartition("::") if session_key else ("", "", "")
+        except Exception:
+            pass
+        try:
+            _persist_ctx = self._persist_workspace_ctx()
+        except Exception:
+            _persist_ctx = None
+        try:
+            _ws_ctx = self._workspace_ctx()
+        except Exception:
+            _ws_ctx = None
+
         def _fallback_title(text: str) -> str:
             t = re.sub(r"\s+", " ", str(text or "").strip())
             t = t.strip(" \"'`[](){}")
@@ -7556,63 +7576,79 @@ class Agent:
                     return t[:32 + space]
             return t[:32]
 
+        def _persist_auto_chat_name(t: str) -> None:
+            with self._chat_state_lock:
+                chat = self._find_chat_by_id(chat_id)
+                if not chat:
+                    return
+                if str(chat.get("name_source") or "") in ("manual", "auto"):
+                    return
+                chat["name"] = t
+                chat["name_source"] = "auto"
+                chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if chat_id == self.active_chat_id:
+                    self.active_chat_name = t
+                self._save_chat_state()
+            try:
+                gui_plan_changed = getattr(self, "_gui_plan_changed", None)
+                if callable(gui_plan_changed):
+                    gui_plan_changed()
+            except Exception:
+                pass
+
+        def _run_auto_chat_name() -> None:
+            # The chat-title call is independent of the main reply, so it runs
+            # on its own daemon thread instead of blocking the chat loop's
+            # first model call.
+            if _cid:
+                try:
+                    self._bind_session(_cid, _wsid)
+                except Exception:
+                    pass
+            if _persist_ctx is not None:
+                try:
+                    self._set_persist_workspace_ctx(_persist_ctx)
+                except Exception:
+                    pass
+            if _ws_ctx is not None:
+                try:
+                    self._set_workspace_ctx(_ws_ctx)
+                except Exception:
+                    pass
+            try:
+                from .ai.ai_provider_clients import AICallContext
+
+                _call_ctx = AICallContext(
+                    user_input=(
+                        f"<user_first_message>\n{first_user}\n</user_first_message>"
+                    ),
+                    internal_mode=InternalCallMode.CHAT_TITLE,
+                )
+                result = self._call_orchestrator(_call_ctx)
+                t = result.text.strip().replace("\n", " ")
+                if result.error_code:
+                    t = ""
+                t = re.sub(r"\s+", " ", t).strip(" \"'`[](){}")
+                if any(bad in t for bad in ("first message", "title", "session", "Chat", "chat")):
+                    t = ""
+                if len(t) > 64:
+                    t = t[:64]
+                if len(t) < 2:
+                    t = _fallback_title(first_user)
+                _persist_auto_chat_name(t)
+            except Exception:
+                _persist_auto_chat_name(_fallback_title(first_user))
+
         try:
-            from .ai.ai_provider_clients import AICallContext
-            _call_ctx = AICallContext(
-                user_input=(
-                    f"<user_first_message>\n{first_user}\n</user_first_message>"
-                ),
-                internal_mode=InternalCallMode.CHAT_TITLE,
-            )
-            result = self._call_orchestrator(_call_ctx)
-            t = result.text.strip().replace("\n", " ")
-            if result.error_code:
-                t = ""
-            t = re.sub(r"\s+", " ", t).strip(" \"'`[](){}")
-            if any(bad in t for bad in ("first message", "title", "session", "Chat", "chat")):
-                t = ""
-            if len(t) > 64:
-                t = t[:64]
-            if len(t) < 2:
-                t = _fallback_title(first_user)
-            with self._chat_state_lock:
-                chat = self._find_chat_by_id(chat_id)
-                if not chat:
-                    return
-                if str(chat.get("name_source") or "") == "manual":
-                    return
-                chat["name"] = t
-                chat["name_source"] = "auto"
-                chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if chat_id == self.active_chat_id:
-                    self.active_chat_name = t
-                self._save_chat_state()
-            try:
-                gui_plan_changed = getattr(self, "_gui_plan_changed", None)
-                if callable(gui_plan_changed):
-                    gui_plan_changed()
-            except Exception:
-                pass
+            threading.Thread(
+                target=_run_auto_chat_name,
+                daemon=True,
+                name=f"{get_app_logger_root()}-chat-title",
+            ).start()
         except Exception:
-            with self._chat_state_lock:
-                chat = self._find_chat_by_id(chat_id)
-                if not chat:
-                    return
-                if str(chat.get("name_source") or "") == "manual":
-                    return
-                t = _fallback_title(first_user)
-                chat["name"] = t
-                chat["name_source"] = "auto"
-                chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if chat_id == self.active_chat_id:
-                    self.active_chat_name = t
-                self._save_chat_state()
-            try:
-                gui_plan_changed = getattr(self, "_gui_plan_changed", None)
-                if callable(gui_plan_changed):
-                    gui_plan_changed()
-            except Exception:
-                pass
+            # Thread spawn failed (e.g. interpreter shutdown); fall back to
+            # running the title call inline as before.
+            _run_auto_chat_name()
 
     def _handle_chat_builtin_command(self, builtin_line: str) -> bool:
         return handle_chat_builtin_command(self, builtin_line)
