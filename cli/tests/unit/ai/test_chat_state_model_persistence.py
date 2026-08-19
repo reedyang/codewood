@@ -1841,6 +1841,162 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             self.assertTrue((workspace / "chats" / peer_record).exists())
 
 
+    def test_workspace_switch_to_missing_index_does_not_sweep_previous_workspace_records(self):
+        # Regression: an agent that loaded workspace A's chats then switched
+        # to workspace B, whose index does not exist, used to treat A's
+        # record files as stale ("not in current_index, known=True") and
+        # delete them all. Every workspace shares ONE global chats root, so
+        # the switch's save must never sweep records that belonged to the
+        # previously focused workspace. Reproduces the "GUI switch wiped
+        # every chat record" data-loss bug.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {
+                    "active": "chat-a",
+                    "chats": [
+                        self._make_chat("chat-a", "A", "2026-06-18 09:10:00", []),
+                        self._make_chat("chat-bb", "B", "2026-06-18 09:05:00", []),
+                    ],
+                },
+                workspace_id="ws-A",
+            )
+            index = _read_chat_index(workspace, workspace_id="ws-A")
+            rfs = {c["id"]: c["record_file"] for c in index["chats"]}
+
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            manager.load_chat_state()
+            self.assertEqual(
+                set(getattr(agent, "_known_record_files_seen", set())),
+                set(rfs.values()),
+            )
+
+            # GUI workspace-switch fast path: target workspace has no index,
+            # no default chat is created, and the caller saves right after.
+            agent.workspace_id = "ws-B"
+            manager.load_chat_state(create_default_chat=False)
+            self.assertEqual(getattr(agent, "_known_record_files_seen", None), set())
+            manager.save_chat_state()
+
+            for rf in rfs.values():
+                self.assertTrue(
+                    (workspace / "chats" / rf).exists(),
+                    f"record {rf} of the previously focused workspace was swept",
+                )
+
+    def test_workspace_switch_to_empty_index_does_not_sweep_previous_workspace_records(self):
+        # Same regression as above, but workspace B's index EXISTS and lists
+        # zero chats (the on-disk empty-index branch of ``load_chat_state``).
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {
+                    "active": "chat-a",
+                    "chats": [
+                        self._make_chat("chat-a", "A", "2026-06-18 09:10:00", [])
+                    ],
+                },
+                workspace_id="ws-A",
+            )
+            rf = _read_chat_index(workspace, workspace_id="ws-A")["chats"][0][
+                "record_file"
+            ]
+            _write_chat_store(
+                workspace, {"active": "", "chats": []}, workspace_id="ws-B"
+            )
+
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            manager.load_chat_state()
+            agent.workspace_id = "ws-B"
+            manager.load_chat_state(create_default_chat=False)
+            self.assertEqual(getattr(agent, "_known_record_files_seen", None), set())
+            manager.save_chat_state()
+
+            self.assertTrue((workspace / "chats" / rf).exists())
+
+    def test_sweep_skips_record_still_referenced_by_another_workspace_index(self):
+        # Defense-in-depth: even if the seen-set still carries a record that
+        # is missing from the current in-memory index, the sweep must not
+        # delete it when ANY on-disk index (a peer process's workspace,
+        # sharing the same global chats root) still references it.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {
+                    "active": "chat-x",
+                    "chats": [
+                        self._make_chat("chat-x", "X", "2026-06-18 09:10:00", [])
+                    ],
+                },
+                workspace_id="ws-C",
+            )
+            rf = _read_chat_index(workspace, workspace_id="ws-C")["chats"][0][
+                "record_file"
+            ]
+            record_path = workspace / "chats" / rf
+            self.assertTrue(record_path.exists())
+
+            # This process has an empty in-memory index but (as after a
+            # workspace switch) still remembers the record file.
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-D"
+            agent._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "",
+                "chats": [],
+            }
+            agent._known_record_files_seen = {rf}
+            manager = ChatStateManager(agent, "chats.json")
+            manager.save_chat_state()
+
+            self.assertTrue(
+                record_path.exists(), "peer-referenced record was swept"
+            )
+
+    def test_sweep_still_deletes_chat_removed_in_this_process(self):
+        # The sweep keeps working for its intended case: a chat the user
+        # deleted HERE (removed from the in-memory index, no on-disk index
+        # references it anymore) has its record file cleaned up.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _write_chat_store(
+                workspace,
+                {
+                    "active": "chat-a",
+                    "chats": [
+                        self._make_chat("chat-a", "A", "2026-06-18 09:10:00", []),
+                        self._make_chat("chat-bb", "B", "2026-06-18 09:05:00", []),
+                    ],
+                },
+                workspace_id="ws-A",
+            )
+            index = _read_chat_index(workspace, workspace_id="ws-A")
+            rfs = {c["id"]: c["record_file"] for c in index["chats"]}
+
+            agent = _FakeAgent(workspace)
+            agent.workspace_id = "ws-A"
+            manager = ChatStateManager(agent, "chats.json")
+            manager.load_chat_state()
+            # The user deletes chat-bb in this process.
+            agent._chat_state["chats"] = [
+                c for c in agent._chat_state["chats"] if c["id"] != "chat-bb"
+            ]
+            manager.save_chat_state()
+
+            self.assertFalse(
+                (workspace / "chats" / rfs["chat-bb"]).exists(),
+                "locally-deleted chat record should be swept",
+            )
+            self.assertTrue((workspace / "chats" / rfs["chat-a"]).exists())
+
+
     def test_history_context_usage_not_persisted_on_record(self):
         import tempfile
         from pathlib import Path

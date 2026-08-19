@@ -1562,8 +1562,21 @@ class ChatStateManager:
                 # the bounded set of relative paths this process has actually
                 # seen rather than globbing the whole (potentially large)
                 # global tree.
+                # Defense-in-depth: a record still referenced by ANY on-disk
+                # chat index (this or another workspace's — possibly written
+                # by a peer codewood process sharing the same global chats
+                # root) is not stale from the root's point of view; deleting
+                # it would destroy a chat the peer still owns. Only sweep
+                # records no index references anymore. This also protects
+                # against the workspace-switch hazard where the seen set
+                # still carries the PREVIOUS workspace's records.
+                referenced_by_indexes = (
+                    self._all_index_record_files() if known_record_files else set()
+                )
                 for stale in sorted(known_record_files):
                     try:
+                        if stale in referenced_by_indexes:
+                            continue
                         stale_path = self._resolve_chat_record_path(stale)
                         if stale_path.resolve() in current_record_paths:
                             continue
@@ -1652,6 +1665,62 @@ class ChatStateManager:
                 return cid
             i += 1
 
+    def _set_known_record_files(self, record_files) -> None:
+        """Replace the record files this agent is aware of (stale-sweep input).
+
+        The save-time stale sweep uses this set to detect chats the user
+        deleted IN THIS process and deletes their record files. Every
+        workspace shares the single global chats root, so the set must only
+        ever hold the CURRENT workspace's records: a record seen while a
+        different workspace was focused would be misread as "stale" the
+        moment the current in-memory index is smaller, and the sweep would
+        permanently delete a peer workspace's chat records — the exact
+        "workspace switch wiped all chat records" data-loss bug (switching
+        to a workspace whose index is empty/absent made the save treat the
+        previous workspace's 147 records as stale and unlink them all).
+        Loads REPLACE the set instead of accumulating; empty loads clear it.
+        """
+        try:
+            seen = set()
+            for rf in record_files:
+                rf = str(rf or "").strip()
+                if rf:
+                    seen.add(rf)
+            self._agent._known_record_files_seen = seen
+        except Exception:
+            pass
+
+    def _all_index_record_files(self) -> set:
+        """Record files currently listed by ANY on-disk chat index.
+
+        All workspaces' indexes live at the top level of the shared global
+        chats root, and multiple codewood processes (e.g. a packaged GUI and
+        a source-run GUI) may concurrently own different workspaces. A
+        record this process considers stale may still be referenced by a
+        peer's index (or by this process's own previous-workspace index);
+        deleting it would destroy the peer's chat. The sweep therefore only
+        deletes records no index references anymore.
+        """
+        refs = set()
+        try:
+            root = self._chats_root()
+            for idx_path in root.glob("*.json"):
+                try:
+                    with open(idx_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                for entry in data.get("chats") or []:
+                    if isinstance(entry, dict):
+                        rf = str(entry.get("record_file") or "").strip()
+                        if rf:
+                            refs.add(rf)
+        except Exception:
+            pass
+        return refs
+
     def load_chat_state(
         self, create_default_chat: bool = True, lazy_records: bool = False
     ) -> None:
@@ -1680,6 +1749,11 @@ class ChatStateManager:
                     self._agent._chat_state = self.default_chat_state()
                     self._agent._last_saved_index_count = len(self._agent._chat_state.get("chats", []))
                     self._agent._last_saved_active = self._agent._chat_state.get("active", "")
+                    # No index exists for this workspace: no record files are
+                    # known here, so the persist below must not stale-sweep
+                    # records this agent saw while a different workspace was
+                    # focused (they live in the same shared global chats root).
+                    self._set_known_record_files([])
                     self.activate_chat(
                         self._agent._chat_state["active"],
                         announce=False,
@@ -1697,6 +1771,7 @@ class ChatStateManager:
                     self._agent._last_saved_index_count = 0
                     self._agent._last_saved_active = ""
                     self._agent.active_chat_name = "New Chat"
+                    self._set_known_record_files([])
                 return
             with open(p, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -1794,22 +1869,25 @@ class ChatStateManager:
                     "chats": [],
                 }
                 self._agent.active_chat_name = "New Chat"
+                # The on-disk index listed no loadable chats: treat nothing
+                # as known so the next save never stale-sweeps records that
+                # were seen under a previously focused workspace.
+                self._set_known_record_files([])
                 return
             # Seed the set of record files this process is aware of, so the
             # save-time stale sweep only ever deletes records that were
             # loaded here (and later removed locally) — never a record a
             # peer process created that this process simply hasn't seen.
-            try:
-                seen = getattr(self._agent, "_known_record_files_seen", None)
-                if not isinstance(seen, set):
-                    seen = set()
-                    self._agent._known_record_files_seen = seen
-                for c in chats:
-                    rf = str(c.get("_record_file") or "").strip()
-                    if rf:
-                        seen.add(rf)
-            except Exception:
-                pass
+            # The set is REPLACED with this workspace's records (not
+            # accumulated): every workspace shares the single global chats
+            # root, so records seen while a different workspace was focused
+            # must never be treated as stale (and deleted) once the current
+            # workspace's index is smaller. That mismatch is what wiped an
+            # entire workspace's chat records when a GUI switch landed on a
+            # workspace with an empty/absent index.
+            self._set_known_record_files(
+                str(c.get("_record_file") or "").strip() for c in chats
+            )
             active = str(loaded.get("active") or "").strip()
             if not active or not any(str(c.get("id") or "") == active for c in chats):
                 # The active chat from the index could not be loaded (its record
@@ -1876,6 +1954,10 @@ class ChatStateManager:
             )
             self.reset_chat_dirty()
             self._agent._chat_state = self.default_chat_state()
+            # The in-memory state was reset to a fresh workspace; records
+            # this agent saw earlier belong to another state/index and must
+            # not be swept by the persist below.
+            self._set_known_record_files([])
             self.activate_chat(
                 self._agent._chat_state["active"],
                 announce=False,
