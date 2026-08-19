@@ -11,6 +11,9 @@ Follows the Codex Windows sandbox design:
   otherwise fail with EPERM before a single write is attempted);
 - a Windows Firewall outbound BLOCK rule keyed on the offline user provides
   network isolation without runtime elevation;
+- the sandbox accounts are hidden from the Windows sign-in screen (Winlogon
+  ``SpecialAccounts\\UserList`` REG_DWORD 0), so they never appear as
+  selectable login tiles;
 - ``CreateProcessWithLogonW`` starts commands as the sandbox user (standard
   interactive users hold ``SeImpersonatePrivilege``);
 - a Job Object with ``KILL_ON_JOB_CLOSE`` manages the process-tree lifecycle;
@@ -59,6 +62,12 @@ SANDBOX_USERS_READY_FLAG = "sandbox_users_ready.flag"
 SANDBOX_PENDING_CLEANUP = "sandbox_pending_cleanup.json"
 SANDBOX_USERS_REBUILT_FLAG = "sandbox_users_rebuilt.flag"
 SANDBOX_FIREWALL_RULE_OFFLINE = "Codewood Sandbox Offline Block Outbound"
+#: Winlogon omits accounts listed under SpecialAccounts\UserList with a
+#: REG_DWORD value of 0 from the sign-in screen's user enumeration, so the
+#: sandbox users never show up as selectable login tiles.
+SANDBOX_WINLOGON_USERLIST_KEY = (
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
+)
 SANDBOX_RUNTIME_DIRNAME = "sandbox"
 SANDBOX_USERS_GROUP = "CodewoodSandUsers"
 SANDBOX_CAP_SID_FILENAME = "sandbox_cap_sid.json"
@@ -582,6 +591,39 @@ def _run_set_password(user: str, password: str) -> Any:
             "-ErrorAction Stop".format(user, password),
         ]
     )
+
+
+def _hide_sandbox_users_from_signin() -> list:
+    """Hide both sandbox accounts from the Windows sign-in screen.
+
+    Winlogon enumerates ``SpecialAccounts\\UserList`` and omits accounts
+    whose REG_DWORD value is 0, so the sandbox users never appear as
+    selectable sign-in tiles.  ``reg add`` is idempotent, and this only
+    runs inside the elevated provisioning window (HKLM write).  Returns a
+    list of error messages (empty on success).
+    """
+    errors = []
+    for user in (SANDBOX_USER_OFFLINE, SANDBOX_USER_ONLINE):
+        result = _run_process(
+            [
+                "reg.exe",
+                "add",
+                SANDBOX_WINLOGON_USERLIST_KEY,
+                "/v",
+                user,
+                "/t",
+                "REG_DWORD",
+                "/d",
+                "0",
+                "/f",
+            ]
+        )
+        if result.returncode != 0:
+            errors.append(
+                f"hide user {user} from sign-in screen: "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+    return errors
 
 
 def _ensure_sandbox_user_memberships(user: str) -> Optional[str]:
@@ -2685,6 +2727,19 @@ class WindowsSandboxBackend(SandboxBackend):
                 )
         # If the offline user failed to create, its error is already reported
         # above and the cascading firewall failure is skipped.
+
+        # Hide the sandbox accounts from the sign-in screen (Winlogon
+        # SpecialAccounts\UserList, REG_DWORD 0) so they never appear as
+        # selectable login tiles.  Runs inside this elevated window; the
+        # sandbox keeps working even if the registry write is refused.
+        if _user_exists(SANDBOX_USER_OFFLINE) and _user_exists(
+            SANDBOX_USER_ONLINE
+        ):
+            announce("hiding sandbox users from the sign-in screen")
+            signin_errors = _hide_sandbox_users_from_signin()
+            errors.extend(signin_errors)
+            if not signin_errors:
+                emit("sandbox users: hidden from sign-in screen")
 
         # Capability SIDs are part of the sandbox identity: create them now so
         # the status check passes as soon as the users are ready (the ACL

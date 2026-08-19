@@ -418,6 +418,47 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
         self.assertTrue(data["users_ready"])
         self.assertTrue(data["firewall_ok"])
 
+    def test_provision_users_hides_users_from_signin_screen(self):
+        _save_secret(
+            self.config_dir,
+            {"offline": _random_password(), "online": _random_password()},
+        )
+        calls = []
+
+        def fake_run(argv, timeout=180, stdin_data=None):
+            calls.append(" ".join(argv))
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with patch(
+            "cli.core.sandbox.windows._user_exists", return_value=True
+        ), patch(
+            "cli.core.sandbox.windows._run_process", side_effect=fake_run
+        ), patch(
+            "cli.core.sandbox.windows._load_or_create_cap_sids",
+            return_value={"workspace": "S-1-1", "readonly": "S-1-2"},
+        ), patch(
+            "cli.core.sandbox.windows._ps_grant_modify_sid"
+        ), patch(
+            "cli.core.sandbox.windows._grant_profile_read", return_value=True
+        ):
+            result = self.backend.provision_users(
+                self.config_dir, None, "workspace_write"
+            )
+
+        self.assertTrue(result["ok"], result["errors"])
+        reg_calls = [c for c in calls if c.startswith("reg.exe add")]
+        self.assertEqual(len(reg_calls), 2)
+        joined = " ".join(reg_calls)
+        self.assertIn(SANDBOX_USER_OFFLINE, joined)
+        self.assertIn(SANDBOX_USER_ONLINE, joined)
+        self.assertIn(
+            "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"
+            "\\Winlogon\\SpecialAccounts\\UserList",
+            joined,
+        )
+        self.assertIn("REG_DWORD", joined)
+        self.assertIn(" /d 0 /f", joined)
+
     def test_provision_users_writes_rebuilt_flag_when_recreating(self):
         _save_secret(
             self.config_dir,
