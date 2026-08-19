@@ -2051,15 +2051,16 @@ def _post_openai_request(
 ) -> Any:
     import requests
 
-    # ``timeout`` is a (connect, read) tuple. The read timeout bounds each
-    # ``iter_lines()`` read so a network thread parked on a silent server
-    # periodically unblocks and can observe a user interrupt.
+    # No timeout on model calls: a slow model (long thinking before the first
+    # token, slow streaming) must never be cut off. User interrupts are still
+    # observed promptly by ``_ThreadedInterruptibleStream``, which polls the
+    # cancel flag while waiting for the next chunk.
     resp = requests.post(
         url,
         headers=headers,
         json=payload,
         verify=False,
-        timeout=(15, 60),
+        timeout=None,
         stream=stream,
     )
     try:
@@ -2732,7 +2733,7 @@ def _call_with_ollama(
             response_obj = requests.post(
                 url,
                 json=request_payload,
-                timeout=120,
+                timeout=None,
                 stream=bool(stream),
             )
             response_obj.raise_for_status()
