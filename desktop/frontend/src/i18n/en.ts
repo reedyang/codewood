@@ -298,7 +298,7 @@ export const en: Dict = {
   "subagents.errDelete": "Failed to delete the sub-agent.",
   "subagents.errSavePrefix": "Save failed: ",
   "mcp.enabled": "Enabled",
-  "mcp.emptyHint": "No MCP servers configured. Edit mcp.jsonc to add servers.",
+  "mcp.emptyHint": "No MCP servers configured.",
   "mcp.toolsCount": "{n} tools",
   "mcp.promptsCount": "{n} prompts",
   "mcp.toolsLabel": "Tools",

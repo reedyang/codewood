@@ -295,7 +295,7 @@ export const zhCN: Dict = {
   "subagents.errDelete": "删除子智能体失败。",
   "subagents.errSavePrefix": "保存失败：",
   "mcp.enabled": "启用",
-  "mcp.emptyHint": "尚未配置任何 MCP 服务器。请编辑 mcp.jsonc 添加。",
+  "mcp.emptyHint": "尚未配置任何 MCP 服务器。",
   "mcp.toolsCount": "{n} 个工具",
   "mcp.promptsCount": "{n} 个提示",
   "mcp.toolsLabel": "工具",
