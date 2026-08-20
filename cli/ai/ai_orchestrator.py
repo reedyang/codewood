@@ -577,6 +577,8 @@ def _extract_clean_api_error(error: ModelCallError) -> str:
     to the exception string when no structured message is available.
     """
     for attempt in (error.attempt_errors or []):
+        if attempt.get("fallback"):
+            continue
         err_text = str(attempt.get("error") or "").strip()
         if "response_body=" in err_text:
             idx = err_text.find("response_body=")
@@ -593,6 +595,8 @@ def _extract_clean_api_error(error: ModelCallError) -> str:
                 except (json.JSONDecodeError, TypeError, ValueError):
                     pass
     for attempt in (error.attempt_errors or []):
+        if attempt.get("fallback"):
+            continue
         err_text = str(attempt.get("error") or "").strip()
         if "response_body=" not in err_text and err_text:
             return err_text

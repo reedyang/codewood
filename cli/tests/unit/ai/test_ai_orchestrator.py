@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from cli.ai.ai_provider_clients import AIResult
-from cli.ai.ai_orchestrator import AgentAIContext, AIOrchestrator
+from cli.ai.ai_orchestrator import AgentAIContext, AIOrchestrator, _extract_clean_api_error
 from cli.ai.ai_provider_clients import AICallContext, ModelCallError
 
 
@@ -116,6 +116,32 @@ class AIOrchestratorTests(unittest.TestCase):
         self.assertEqual(history, [], "model-call errors must not be persisted to chat history")
         self.assertEqual(len(notices), 1, "ephemeral notice must be emitted exactly once")
         self.assertIn("Not Found", notices[0])
+
+    def test_clean_api_error_skips_fallback_attempt(self):
+        attempts = [
+            {
+                "label": "responses with-suffix",
+                "url": "https://x/v1/responses",
+                "error": (
+                    "Unsupported OpenAI response format: expected 'choices' or "
+                    "Responses API 'output'. Top-level keys: [output, status, usage]"
+                ),
+            },
+            {
+                "label": "responses no-suffix",
+                "url": "https://x/v1",
+                "error": (
+                    "404 Client Error: Not Found for url: https://x/v1; "
+                    'response_body={"error":{"message":"File Not Found",'
+                    '"type":"not_found_error","code":404}}'
+                ),
+                "fallback": "1",
+            },
+        ]
+        error = ModelCallError(str(attempts[0]["error"]), attempt_errors=attempts)
+        clean = _extract_clean_api_error(error)
+        self.assertIn("Unsupported OpenAI response format", clean)
+        self.assertNotIn("File Not Found", clean)
 
 
 if __name__ == "__main__":

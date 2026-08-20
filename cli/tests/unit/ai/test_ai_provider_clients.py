@@ -278,6 +278,99 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
         # skipped, leaving a single attempted endpoint.
         self.assertEqual(calls, ["https://token.sensenova.cn/v1/chat/completions"])
 
+    def test_explicit_mode_does_not_probe_alternate_url(self):
+        calls = []
+
+        def _fake_call_once(**kwargs):
+            calls.append(str(kwargs.get("url") or ""))
+            raise ValueError(
+                "Unsupported OpenAI response format: expected 'choices' or Responses API 'output'. "
+                "Top-level keys: [completed_at, created_at, id, model, object, output, status, usage]"
+            )
+
+        with patch("cli.ai.ai_provider_clients._openai_get_prefer_no_suffix", return_value=False):
+            with patch("cli.ai.ai_provider_clients._call_openai_once", _fake_call_once):
+                with self.assertRaises(ModelCallError) as ctx:
+                    _call_openai_with_suffix_strategy(
+                        model_name="m",
+                        api_kind="responses",
+                        base_url="http://127.0.0.1:8080/v1",
+                        headers={},
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=False,
+                        return_message=False,
+                        image_data=None,
+                        image_user_idx=None,
+                        image_user_text="",
+                        internal_mode=InternalCallMode.REGULAR,
+                        tool_schemas=None,
+                        tool_choice=None,
+                        allow_probe=False,
+                        append_history=lambda *_args, **_kwargs: None,
+                    )
+
+        self.assertEqual(calls, ["http://127.0.0.1:8080/v1/responses"])
+        self.assertEqual(len(ctx.exception.attempt_errors), 1)
+        self.assertIn("Unsupported OpenAI response format", str(ctx.exception))
+
+    def test_auto_mode_probes_alternate_url_and_marks_it_as_fallback(self):
+        calls = []
+
+        def _fake_call_once(**kwargs):
+            url = str(kwargs.get("url") or "")
+            calls.append(url)
+            if len(calls) == 1:
+                raise ValueError(
+                    "Unsupported OpenAI response format: expected 'choices' or Responses API 'output'. "
+                    "Top-level keys: [completed_at, created_at, id, model, object, output, status, usage]"
+                )
+            raise OpenAIRequestError(
+                "404 Client Error: Not Found for url: http://127.0.0.1:8080/v1; "
+                "response_body={\"error\":{\"message\":\"File Not Found\","
+                "\"type\":\"not_found_error\",\"code\":404}}",
+                status_code=404,
+                response_body='{"error":{"message":"File Not Found",'
+                '"type":"not_found_error","code":404}}',
+                url=url,
+            )
+
+        with patch("cli.ai.ai_provider_clients._openai_get_prefer_no_suffix", return_value=False):
+            with patch("cli.ai.ai_provider_clients._call_openai_once", _fake_call_once):
+                with self.assertRaises(ModelCallError) as ctx:
+                    _call_openai_with_suffix_strategy(
+                        model_name="m",
+                        api_kind="responses",
+                        base_url="http://127.0.0.1:8080/v1",
+                        headers={},
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=False,
+                        return_message=False,
+                        image_data=None,
+                        image_user_idx=None,
+                        image_user_text="",
+                        internal_mode=InternalCallMode.REGULAR,
+                        tool_schemas=None,
+                        tool_choice=None,
+                        append_history=lambda *_args, **_kwargs: None,
+                    )
+
+        self.assertEqual(
+            calls,
+            [
+                "http://127.0.0.1:8080/v1/responses",
+                "http://127.0.0.1:8080/v1",
+            ],
+        )
+        # The user-facing message is the primary error; the fallback's 404
+        # "File Not Found" stays in the attempt trail (logs) only.
+        self.assertIn("Unsupported OpenAI response format", str(ctx.exception))
+        self.assertNotIn("File Not Found", str(ctx.exception))
+        attempts = ctx.exception.attempt_errors
+        self.assertEqual(len(attempts), 2)
+        self.assertNotIn("fallback", attempts[0])
+        self.assertEqual(attempts[1].get("fallback"), "1")
+        self.assertIn("File Not Found", attempts[1]["error"])
+
 
 _RAW_CHANNEL_CONTENT = "<|channel>thought\ntest message<channel|>visible"
 

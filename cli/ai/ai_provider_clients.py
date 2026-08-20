@@ -2239,6 +2239,7 @@ def _call_openai_with_suffix_strategy(
     tool_choice: Any,
     reasoning_effort: str = "",
     thinking: bool = True,
+    allow_probe: bool = True,
     append_history: Callable[..., None],
 ):
     force_disable_thinking = _should_disable_thinking_for_openai_compatible(
@@ -2294,6 +2295,17 @@ def _call_openai_with_suffix_strategy(
             primary_url,
             str(e),
         )
+
+    if not allow_probe:
+        attempts: List[Dict[str, str]] = [
+            {
+                "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
+                "url": primary_url,
+                "error": str(first_error),
+                "response_body": str(getattr(first_error, "response_body", "") or ""),
+            }
+        ]
+        raise ModelCallError(str(first_error), attempt_errors=attempts) from first_error
 
     # Throttle responses (HTTP 429 / 503) skip alternate-URL probing and raise
     # ModelCallError right away: the infinite backoff retry (3s, then 2^n
@@ -2399,9 +2411,10 @@ def _call_openai_with_suffix_strategy(
             "label": f"{api_kind} {'with-suffix' if secondary_append else 'no-suffix'}",
             "url": secondary_url,
             "error": str(second_error),
+            "fallback": "1",
         })
         if first_error is not None:
-            raise ModelCallError(str(second_error), attempt_errors=attempts) from first_error
+            raise ModelCallError(str(first_error), attempt_errors=attempts) from first_error
         raise ModelCallError(str(second_error), attempt_errors=attempts) from second_error
 
 
@@ -2595,6 +2608,7 @@ def _call_with_openai_compatible(
                     tool_choice=tool_choice,
                     reasoning_effort=reasoning_effort,
                     thinking=thinking,
+                    allow_probe=(api_mode == "auto"),
                     append_history=append_history,
                 )
             except ModelCallError as e:
