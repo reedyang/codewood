@@ -37,6 +37,7 @@ import string
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from ctypes import wintypes
@@ -936,10 +937,11 @@ def _missing_profile_read_dirs(children: Sequence[Path]) -> list:
 
 
 #: One PowerShell process applies every workspace ACL edit (root + protected
-#: subdirectories) instead of the previous per-ACE helpers that each spawned a
-#: fresh ``powershell.exe`` (~0.5-1.5s startup each, ~25 processes per call).
-#: It also skips ``Set-Acl`` when the managed ACE set is already correct, so
-#: repeated refreshes do not re-propagate inheritance over the whole tree.
+#: subdirectories + the real user's %TEMP% dir) instead of the previous
+#: per-ACE helpers that each spawned a fresh ``powershell.exe`` (~0.5-1.5s
+#: startup each, ~25 processes per call).  It also skips ``Set-Acl`` when the
+#: managed ACE set is already correct, so repeated refreshes do not
+#: re-propagate inheritance over the whole tree.
 _WORKSPACE_ACL_PS = r"""
 $ErrorActionPreference = 'Stop'
 $group = '@@GROUP@@'
@@ -994,6 +996,8 @@ function Apply-ACL([string]$path, [string]$mode) {
     } elseif ($mode -eq 'write') {
         $desired += New-Rule $groupId 'Modify' 'Allow'
         if ($capWId) { $desired += New-Rule $capWId 'Modify' 'Allow' }
+    } elseif ($mode -eq 'revoke') {
+        # No desired ACEs: every sandbox-managed ACE is removed below.
     } else {
         $desired += New-Rule $groupId $deny 'Deny'
         if ($capWId) { $desired += New-Rule $capWId $deny 'Deny' }
@@ -1018,6 +1022,7 @@ function Apply-ACL([string]$path, [string]$mode) {
 }
 
 try { Apply-ACL '@@ROOT@@' '@@ROOTMODE@@' } catch { [Console]::Error.WriteLine(("ACL apply failed on root: {0}" -f $_)) }
+@@TEMP_CALLS@@
 @@PROTECTED_CALLS@@
 """
 
@@ -1029,6 +1034,8 @@ def _build_workspace_acl_script(
     users: Sequence[str],
     cap_sids: Optional[Dict[str, str]],
     protected: Sequence[str],
+    temp_dir: Optional[str] = None,
+    temp_mode: Optional[str] = None,
 ) -> str:
     """Build the single PowerShell script for :meth:`WindowsSandboxBackend.apply_workspace_acls`."""
 
@@ -1045,6 +1052,13 @@ def _build_workspace_acl_script(
                 % q(p)
             )
         protected_calls = "\n".join(lines) + "\n"
+    temp_calls = ""
+    if temp_dir and temp_mode:
+        temp_calls = (
+            "try { Apply-ACL '%s' '%s' } catch { "
+            "[Console]::Error.WriteLine(('ACL apply failed on temp dir: ' + $_)) }\n"
+            % (q(temp_dir), q(temp_mode))
+        )
     return (
         _WORKSPACE_ACL_PS.replace("@@GROUP@@", group)
         .replace("@@USERS@@", ",".join("'" + q(u) + "'" for u in users))
@@ -1053,6 +1067,7 @@ def _build_workspace_acl_script(
         .replace("@@DENY@@", _DENY_WRITE_RIGHTS)
         .replace("@@ROOT@@", q(ws))
         .replace("@@ROOTMODE@@", root_mode)
+        .replace("@@TEMP_CALLS@@", temp_calls)
         .replace("@@PROTECTED_CALLS@@", protected_calls)
     )
 
@@ -3041,6 +3056,12 @@ class WindowsSandboxBackend(SandboxBackend):
         other level grants it modify. Protected subdirectories (``.git``, the
         workspace config dir) always get an explicit write-deny.
 
+        ``workspace_write`` additionally grants the sandbox users write
+        (Modify) on the current user's real ``%TEMP%`` dir: sandboxed commands
+        keep the real temp path (not redirected), and tools like npm / pip /
+        compilers scratch there.  ``read_only`` revokes the grant again, so
+        the temp dir returns to its natural ACLs.
+
         The current user's profile root is always granted ReadAndExecute for
         the sandbox users group (out-of-workspace reads such as npm's
         ``%APPDATA%``).  The grant is idempotent, so this self-heals installs
@@ -3055,8 +3076,9 @@ class WindowsSandboxBackend(SandboxBackend):
         if not workspace_root:
             return
         ws = str(Path(workspace_root).resolve())
+        temp_dir = str(Path(tempfile.gettempdir()).resolve())
         # Remember the directories so a future user rebuild strips their ACLs.
-        _record_acl_dirs([ws, str(Path.home() / "*")])
+        _record_acl_dirs([ws, str(Path.home() / "*"), temp_dir])
         cap_sids = _load_or_create_cap_sids(config_dir) if config_dir else None
         protected = []
         for sub in (".git", ".codewood", ".agents"):
@@ -3070,6 +3092,8 @@ class WindowsSandboxBackend(SandboxBackend):
             (SANDBOX_USER_OFFLINE, SANDBOX_USER_ONLINE),
             cap_sids,
             protected,
+            temp_dir,
+            "revoke" if level == "read_only" else "write",
         )
         result = _run_process(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]

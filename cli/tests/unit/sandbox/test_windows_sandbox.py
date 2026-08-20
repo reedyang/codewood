@@ -1218,6 +1218,8 @@ class WindowsSandboxBackendAclTests(unittest.TestCase):
             self.assertIn("'readonly'", script)
             self.assertIn(".git", script)
             self.assertIn(SANDBOX_USERS_GROUP, script)
+            self.assertIn("'revoke'", script)
+            self.assertIn(str(Path(tempfile.gettempdir()).resolve()), script)
 
     def test_apply_workspace_acls_workspace_write_single_process(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1227,11 +1229,15 @@ class WindowsSandboxBackendAclTests(unittest.TestCase):
             self.assertIn("'write'", script)
             self.assertIn("'Modify'", script)
             self.assertIn("S-1-5-21-1-2-3-4", script)
+            self.assertIn(str(Path(tempfile.gettempdir()).resolve()), script)
 
     def test_apply_workspace_acls_records_profile_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._apply(tmp, "workspace_write")
             self.assertIn(str(Path.home() / "*"), _load_acl_record())
+            self.assertIn(
+                str(Path(tempfile.gettempdir()).resolve()), _load_acl_record()
+            )
 
     def test_apply_workspace_acls_grants_profile_read_when_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

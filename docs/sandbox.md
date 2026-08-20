@@ -9,7 +9,7 @@ Code Wood 可以为 AI 执行的 `shell` 命令提供一个基于操作系统的
 | 级别 | 文件写 | 文件读 | 网络 |
 | --- | --- | --- | --- |
 | `read_only` | 禁止(包括工作区) | 取决于沙箱用户被授予的读取权限 | 禁止 |
-| `workspace_write` | 仅当前工作区;`.git`/`.codewood` 等受保护目录除外 | 取决于沙箱用户被授予的读取权限 | 可开关 |
+| `workspace_write` | 当前工作区与真实 `%TEMP%` 目录;`.git`/`.codewood` 等受保护目录除外 | 取决于沙箱用户被授予的读取权限 | 可开关 |
 | `full_access` | 与当前用户一致 | 与当前用户一致 | 允许 |
 
 默认级别为 `full_access`,即保持现有行为不变。
@@ -50,6 +50,9 @@ runner 本身用**普通登录令牌**运行(故沙箱用户组对其可读即�
    依然无法写入工作区之外。工作区只把 `workspace` capability SID
    授 `Modify`(受保护子目录显式 `DENY`),`read_only` 级别对两个
    capability SID 都授写 `DENY`。
+   `workspace_write` 级别下,真实 `%TEMP%` 目录(沙箱命令保留的真实
+   路径,见「进程环境」)同样通过 `workspace` capability SID 授 `Modify`,
+   故临时文件读写不会因沙箱失败;切回 `read_only` 时该授权会被撤销。
 3. **工作区 ACL**:切换/打开/启动工作区时自动应用(见下);旧版本遗留的
    按用户授的 ACE 会被清除,避免失效权限堆积。应用过 ACL 的工作区根目录
    会记入共享状态目录的 `sandbox_acl_dirs.json`;重设沙箱时按清单逐个
@@ -80,10 +83,16 @@ runner 本身用**普通登录令牌**运行(故沙箱用户组对其可读即�
 
 ### 进程环境
 
-沙箱命令的 `HOME` / `USERPROFILE` / `TEMP` / `APPDATA` 被重定向到
-`%LOCALAPPDATA%/<应用名>/sandbox/home`、`sandbox/tmp`,由预置步骤创建
-并授予两个沙箱用户写权限——沙箱工具(缓存、临时文件)不会尝试写真实
-用户配置文件。
+沙箱命令**继承真实用户的环境**:`HOME` / `USERPROFILE` / `TEMP` /
+`APPDATA` 保持真实路径,并不重定向(预置步骤创建 `sandbox/home`、
+`sandbox/tmp` 作为沙箱自身的运行时目录,如 runner 脚本与退出码文件)。
+工作区之外的路径默认只能读(依赖预置授予的用户目录读取权限),不能写。
+
+`workspace_write` 级别下,真实 `%TEMP%` 目录(即沙箱命令看到的
+`%TEMP%`)额外获得写权限:通过 `workspace` capability SID 对临时目录根
+授予继承式 `Modify`,`read_only` 级别会自动撤销该授权,恢复原状。因此
+npm / pip / 编译器等在临时目录的读写不会因沙箱而失败,而工作区之外其余
+路径仍然只读。
 
 ## 预置(一次性,需管理员)
 
