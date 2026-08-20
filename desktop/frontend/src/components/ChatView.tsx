@@ -3174,6 +3174,10 @@ function ThinkingPanel({
   const [expanded, setExpanded] = useState(false);
   const { t } = useApp();
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Only follow streaming output while the user is pinned to the bottom of the
+  // thinking box. If they scrolled up to read earlier reasoning, new tokens
+  // must not yank the viewport back down.
+  const stickToBottomRef = useRef(true);
 
   useEffect(() => {
     if (!onStreamingCollapsedChange) {
@@ -3191,7 +3195,7 @@ function ThinkingPanel({
   }, [running, expanded, onStreamingCollapsedChange]);
 
   useEffect(() => {
-    if (expanded && running && scrollRef.current) {
+    if (expanded && running && stickToBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [thinkingText, expanded, running]);
@@ -3223,9 +3227,21 @@ function ThinkingPanel({
             if (expanded && running && scrollRef.current) {
               scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
             }
+            stickToBottomRef.current = true;
           }}
         >
-          <div className="thinking-scroll" ref={scrollRef}>
+          <div
+            className="thinking-scroll"
+            ref={scrollRef}
+            onScroll={() => {
+              const el = scrollRef.current;
+              if (!el) {
+                return;
+              }
+              stickToBottomRef.current =
+                el.scrollHeight - el.scrollTop - el.clientHeight <= 40;
+            }}
+          >
             <div className="thinking-content">
               <MarkdownText text={thinkingText} />
             </div>
