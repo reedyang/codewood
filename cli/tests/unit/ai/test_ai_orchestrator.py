@@ -3,7 +3,11 @@ from unittest.mock import patch
 
 from cli.ai.ai_provider_clients import AIResult
 from cli.ai.ai_orchestrator import AgentAIContext, AIOrchestrator, _extract_clean_api_error
-from cli.ai.ai_provider_clients import AICallContext, ModelCallError
+from cli.ai.ai_provider_clients import (
+    AICallContext,
+    ModelCallError,
+    _is_internal_response_format_error,
+)
 
 
 class AIOrchestratorTests(unittest.TestCase):
@@ -140,8 +144,49 @@ class AIOrchestratorTests(unittest.TestCase):
         ]
         error = ModelCallError(str(attempts[0]["error"]), attempt_errors=attempts)
         clean = _extract_clean_api_error(error)
-        self.assertIn("Unsupported OpenAI response format", clean)
-        self.assertNotIn("File Not Found", clean)
+        self.assertEqual(clean, "")
+        self.assertTrue(_is_internal_response_format_error(str(error)))
+
+    def test_response_format_error_is_not_shown_on_ui(self):
+        history = []
+        notices = []
+        recorded = []
+
+        def _regular_builder(user_input, _context):
+            return [{"role": "user", "content": user_input}], True
+
+        ctx = AgentAIContext(
+            provider="openai",
+            model_name="test-model",
+            model_params={},
+            openai_conf={"api_key": "x"},
+            history_writer=lambda role, content: history.append((role, content)),
+            regular_message_builder=_regular_builder,
+            ollama_importer=lambda: None,
+            ephemeral_notice_writer=notices.append,
+            model_error_history_writer=recorded.append,
+        )
+        orchestrator = AIOrchestrator(ctx)
+        format_error = (
+            "Unsupported OpenAI response format: expected 'choices' or "
+            "Responses API 'output'. Top-level keys: [completed_at, created_at, "
+            "id, model, object, output, status, usage]"
+        )
+
+        def _raise_format_error(*, context, append_history, ollama_importer):
+            _ = context, append_history, ollama_importer
+            raise ModelCallError(
+                format_error,
+                attempt_errors=[{"label": "responses", "url": "http://x/v1/responses", "error": format_error}],
+            )
+
+        with patch("cli.ai.ai_orchestrator.call_ai_with_provider", _raise_format_error):
+            result = orchestrator.call(call_ctx=AICallContext(user_input="hello", stream=False))
+
+        self.assertEqual(result.error_code, "API_ERROR")
+        self.assertEqual(notices, [])
+        self.assertEqual(recorded, [])
+        self.assertEqual(history, [])
 
 
 if __name__ == "__main__":

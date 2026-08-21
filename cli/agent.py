@@ -1,4 +1,4 @@
-from .ai.ai_provider_clients import AIResult
+from .ai.ai_provider_clients import AIResult, _is_internal_response_format_error
 import os
 import sys
 import io
@@ -2360,6 +2360,8 @@ class Agent:
         model_error_payload = self._parse_model_call_error_history_content(content)
         if model_error_payload is not None:
             error_message = str(model_error_payload.get("error_message") or "").strip()
+            if error_message and _is_internal_response_format_error(error_message):
+                return
             if error_message:
                 self._print_model_call_error_banner(error_message)
             else:
@@ -2846,8 +2848,10 @@ class Agent:
         return 3
 
     def _print_model_call_error_banner(self, error_message: str = "") -> int:
-        print("")
         msg = str(error_message or "").strip()
+        if msg and _is_internal_response_format_error(msg):
+            return 0
+        print("")
         if not msg:
             from .core.localization import get_display_language, translate
             msg = translate("runtime.model_call_error", get_display_language(self))
@@ -5016,6 +5020,8 @@ class Agent:
         self,
         error_message: str = "",
     ) -> None:
+        if _is_internal_response_format_error(error_message):
+            return
         assistant_content = self._build_model_call_error_history_content(
             error_message=error_message,
         )

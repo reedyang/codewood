@@ -9,6 +9,7 @@ from cli.ai.ai_provider_clients import (
     _build_openai_payload,
     _call_openai_once,
     _call_openai_with_suffix_strategy,
+    _is_internal_response_format_error,
     _stream_openai_like_response,
 )
 from cli.ai.ai_special_mode_prompts import InternalCallMode
@@ -361,8 +362,8 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
                 "http://127.0.0.1:8080/v1",
             ],
         )
-        # The user-facing message is the primary error; the fallback's 404
-        # "File Not Found" stays in the attempt trail (logs) only.
+        # The primary exception string stays the format error; the fallback's
+        # 404 "File Not Found" stays in the attempt trail (logs) only.
         self.assertIn("Unsupported OpenAI response format", str(ctx.exception))
         self.assertNotIn("File Not Found", str(ctx.exception))
         attempts = ctx.exception.attempt_errors
@@ -370,6 +371,19 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
         self.assertNotIn("fallback", attempts[0])
         self.assertEqual(attempts[1].get("fallback"), "1")
         self.assertIn("File Not Found", attempts[1]["error"])
+
+    def test_internal_response_format_error_markers(self):
+        self.assertTrue(
+            _is_internal_response_format_error(
+                "Unsupported OpenAI response format: expected 'choices' or Responses API 'output'. "
+                "Top-level keys: [completed_at, created_at, id, model, object, output, status, usage]"
+            )
+        )
+        self.assertTrue(_is_internal_response_format_error("OpenAI response JSON root must be an object."))
+        self.assertTrue(_is_internal_response_format_error("Ollama response JSON root must be an object."))
+        self.assertFalse(_is_internal_response_format_error("405 Method Not Allowed"))
+        self.assertFalse(_is_internal_response_format_error("You exceeded your current quota"))
+        self.assertFalse(_is_internal_response_format_error(""))
 
 
 _RAW_CHANNEL_CONTENT = "<|channel>thought\ntest message<channel|>visible"

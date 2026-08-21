@@ -497,6 +497,21 @@ class OpenAIRequestError(RuntimeError):
         self.url = url
 
 
+_RESPONSE_FORMAT_ERROR_MARKERS = (
+    "Unsupported OpenAI response format",
+    "OpenAI response JSON root must be an object",
+    "Ollama response JSON root must be an object",
+)
+
+
+def _is_internal_response_format_error(message: str) -> bool:
+    """True for parser/shape diagnostics that belong in logs, not the UI."""
+    text = str(message or "")
+    if not text:
+        return False
+    return any(marker in text for marker in _RESPONSE_FORMAT_ERROR_MARKERS)
+
+
 class ModelCallError(RuntimeError):
     """Raised when every retry strategy for a model call has been exhausted.
 

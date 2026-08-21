@@ -11,6 +11,7 @@ from .ai_provider_clients import (
     AIResult,
     ProviderCallContext,
     _extract_api_error_message,
+    _is_internal_response_format_error,
     _sanitize_assistant_text,
     call_ai_with_provider,
     prepare_image_input,
@@ -546,7 +547,10 @@ class AIOrchestrator:
                 return AIResult(text=raw)
             return raw
         except ModelCallError as e:
-            clean_msg = _extract_clean_api_error(e) or str(e)
+            clean_msg = _extract_clean_api_error(e)
+            # Parser/shape diagnostics stay in the provider logs only.
+            if not clean_msg or _is_internal_response_format_error(clean_msg):
+                return AIResult(text="", error_code="API_ERROR")
             sink = self.context.ephemeral_notice_writer
             if callable(sink):
                 try:
@@ -557,8 +561,7 @@ class AIOrchestrator:
             write_hist = self.context.model_error_history_writer
             if callable(write_hist):
                 try:
-                    display_msg = clean_msg if clean_msg else str(e)
-                    write_hist(display_msg)
+                    write_hist(clean_msg)
                 except Exception:
                     pass
             return AIResult(text="", error_code="API_ERROR")
@@ -599,5 +602,10 @@ def _extract_clean_api_error(error: ModelCallError) -> str:
             continue
         err_text = str(attempt.get("error") or "").strip()
         if "response_body=" not in err_text and err_text:
+            if _is_internal_response_format_error(err_text):
+                continue
             return err_text
-    return str(error)
+    raw = str(error)
+    if _is_internal_response_format_error(raw):
+        return ""
+    return raw

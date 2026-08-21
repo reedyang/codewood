@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
+from ..ai.ai_provider_clients import _is_internal_response_format_error
 from ..core.console_utils import (
     GUI_CMD_OUTPUT_BEGIN,
     GUI_CMD_PROMPT_BEGIN,
@@ -693,6 +694,16 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     continue
             except Exception:
                 pass
+            # Parser/shape diagnostics belong in logs only; drop them from
+            # the GUI turn payload so they never render as a red banner.
+            try:
+                model_error_payload = agent._parse_model_call_error_history_content(content)
+                if model_error_payload is not None:
+                    error_message = str(model_error_payload.get("error_message") or "").strip()
+                    if _is_internal_response_format_error(error_message):
+                        continue
+            except Exception:
+                pass
 
         # New-format role:tool messages.
         if role == "tool":
@@ -851,6 +862,10 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 error_message = str((model_error_payload or {}).get("error_message") or "").strip()
                 if not error_message:
                     error_message = rendered.strip()
+                if _is_internal_response_format_error(error_message):
+                    if ts is not None:
+                        prev_ts = ts
+                    continue
                 if current_round is None or current_round.get("text") or current_round.get("modelError"):
                     current_round = _new_round(turn, wait)
                 current_round["modelError"] = error_message
