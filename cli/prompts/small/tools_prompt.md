@@ -8,7 +8,7 @@ After each tool result, briefly update progress. If more work remains, call the 
 
 ## `read` Tool
 
-Use `read` to inspect file contents. Use `offset` and `limit` to page through large files. Never use shell commands (`cat`, `type`, etc.) to read files.
+Use `read` to inspect file contents. Use `offset` and `limit` to page through large files. Never use shell commands (`cat`, `type`, etc.) to read files. For image files, your multimodal model analyzes the image on a separate model call.
 
 ## `shell` Tool
 

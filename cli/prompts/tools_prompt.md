@@ -42,7 +42,7 @@ If a shell result says `sandbox_related: true`, the failure was likely caused by
 `read` is the primary tool for inspecting file contents:
 
 - **Text files**: Returns content with line numbers (`<line>: <content>`). Use `offset` (1-indexed, default 0) and `limit` (default 100) to page through large files. Negative `offset` values read from the end (e.g. -10 starts from the 10th last line)
-- **Image files**: Returns an AI-generated description of the image content.
+- **Image files**: Analyzing an image requires a multimodal model; the image is analyzed on a separate model call that returns the description.
 - **Directories**: Returns a listing of entries (directories suffixed with `/`).
 
 ## `grep` Tool

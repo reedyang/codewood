@@ -120,14 +120,24 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
 
 class ReadTool(BaseTool):
     name = "read"
-    description = "Read a file, directory, or image from the local filesystem."
+    description = (
+        "Read a file, directory, or image from the local filesystem. Reading an image requires a "
+        "multimodal model and is carried out by the AI model analyzing it, so pass a specific "
+        "`prompt` to say what to extract or describe."
+    )
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "The absolute path to the file or directory to read"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default 0). Negative values read from the end (e.g. -10 starts from the 10th last line)"},
             "limit": {"type": "integer", "description": "Maximum number of lines to read (default 100)"},
-            "prompt": {"type": "string", "description": "When reading an image, what aspect or detail to focus on (optional)"},
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "For image files: the instruction given to the AI model that analyzes the "
+                    "image. Specify exactly what to extract, transcribe, or describe."
+                ),
+            },
         },
         "required": ["path"],
     }
