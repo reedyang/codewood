@@ -75,7 +75,10 @@ def _find_git_bash() -> Optional[str]:
     # 2. ``where.exe bash`` – full PATH search, exclude WSL ---------------------
     try:
         out = subprocess.check_output(
-            ["where", "bash"], text=True, timeout=5
+            ["where", "bash"], text=True, timeout=5,
+            # ``where`` output is paths, but a localized Windows may still
+            # emit non-UTF-8 bytes; never let the reader thread crash.
+            errors="replace",
         )
         for line in out.splitlines():
             line = line.strip()

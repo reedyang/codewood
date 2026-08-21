@@ -797,6 +797,29 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     onFork: () => {},
     onEdit: () => {},
   };
+  // The image attached to the sub-agent (backend-resolved absolute path),
+  // shown ABOVE the user prompt in both live and history modes, sharing the
+  // user message's left edge (image + prompt render inside one right-aligned
+  // shrink-to-fit block so the chip sits flush with the bubble's left side).
+  const userImageNode = session.image ? (
+    <div className="subagent-session-attached-image">
+      <SentImageThumb path={session.image} />
+    </div>
+  ) : null;
+  const userBlock =
+    userImageNode || userPrompt ? (
+      <div className="subagent-user-block">
+        {userImageNode}
+        {userPrompt && (
+          <UserEntry
+            text={userPrompt.content}
+            timeMs={startedAt}
+            index={0}
+            handlers={messageHandlers}
+          />
+        )}
+      </div>
+    ) : null;
   const copyCtx = useCopyContextMenu();
 
   // ── History mode (session has finished) ──────────────────────────
@@ -822,14 +845,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
         {copyCtx.menuNode}
         <div className="transcript-inner">
           <div className="turn">
-            {userPrompt && (
-              <UserEntry
-                text={userPrompt.content}
-                timeMs={startedAt}
-                index={0}
-                handlers={messageHandlers}
-              />
-            )}
+            {userBlock}
             {hasDetails && (
               <RoundShell
                 timerText={timerText}
@@ -904,14 +920,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
       {copyCtx.menuNode}
       <div className="transcript-inner">
         <div className="turn">
-          {userPrompt && (
-            <UserEntry
-              text={userPrompt.content}
-              timeMs={startedAt}
-              index={0}
-              handlers={messageHandlers}
-            />
-          )}
+          {userBlock}
           {liveGroups.map((group, index) => {
             if (group.kind === "tool") {
               return (

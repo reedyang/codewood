@@ -4374,6 +4374,10 @@ def _rg_stderr_retry(
                 env=run_env,
                 capture_output=True,
                 text=True,
+                # PowerShell on a Chinese-locale Windows emits GBK messages;
+                # never let a strict UTF-8 decode crash the reader thread.
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         else:
@@ -4384,6 +4388,7 @@ def _rg_stderr_retry(
                 env=run_env,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=30,
             )
         err = str(proc.stderr or "").strip()
@@ -5542,15 +5547,21 @@ def _run_git_capture(
         # timeout=...)) so existing tests that patch ``_subprocess_mod.run``
         # keep working.  Production always executes the Popen path below,
         # which is immune to the Windows ``run()`` re-communicate hang.
+        # Decode with ``errors="replace"``: git on a non-UTF-8 Windows locale
+        # emits localized (GBK) messages that must never crash the reader.
+        text_kwargs = {"text": text}
+        if text:
+            text_kwargs["encoding"] = "utf-8"
+            text_kwargs["errors"] = "replace"
         return run_fn(
-            args, capture_output=True, text=text, timeout=timeout,
+            args, capture_output=True, timeout=timeout, **text_kwargs,
         )
     try:
         proc = _subprocess_mod.Popen(
             args,
             stdout=_subprocess_mod.PIPE,
             stderr=_subprocess_mod.PIPE,
-            text=text,
+            **({"text": text} if not text else {"text": True, "encoding": "utf-8", "errors": "replace"}),
         )
     except Exception as e:
         _log.info("git subprocess spawn failed: args=%s err=%s", args, e)

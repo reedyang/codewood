@@ -551,6 +551,11 @@ def _run_process(argv: list, timeout: float = 180, stdin_data: Optional[str] = N
             argv,
             capture_output=True,
             text=True,
+            # Windows system helpers emit localized (often GBK) messages on a
+            # non-UTF-8 system locale; strict UTF-8 decoding would crash the
+            # subprocess reader thread and surface as a noisy stderr traceback.
+            encoding="utf-8",
+            errors="replace",
             input=stdin_data,
             timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

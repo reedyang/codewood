@@ -57,6 +57,9 @@ def detect_git_remote_origin(path: Path) -> str:
             ["git", "-C", str(path), "config", "--get", "remote.origin.url"],
             capture_output=True,
             text=True,
+            # git on a non-UTF-8 Windows locale may emit localized (GBK)
+            # messages; decode tolerantly so the reader thread never crashes.
+            errors="replace",
             timeout=2.5,
         )
         if proc.returncode == 0:
@@ -77,6 +80,7 @@ def is_git_repo_dir(path: Path) -> bool:
             ["git", "-C", str(p), "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=2.5,
         )
         return proc.returncode == 0 and "true" in (proc.stdout or "").strip().lower()

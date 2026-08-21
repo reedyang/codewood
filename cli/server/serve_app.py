@@ -9932,6 +9932,23 @@ def _make_handler(app: ServeApp):
                 # session dict (and the on-disk file) stay structured.
                 try:
                     _session_out = json.loads(json.dumps(session))
+                    # The persisted ``image`` value is RELATIVE to the session
+                    # record file's directory. Resolve it to an absolute on-disk
+                    # path so the GUI can serve it via ``/chat-image`` (which
+                    # validates the path lives under the chat data dir). Drop
+                    # the field when the file is gone or unresolvable.
+                    _rel_img = _session_out.get("image")
+                    if _rel_img:
+                        try:
+                            _sdir = store._session_dir(app.agent, chat_id)
+                            if _sdir is not None:
+                                _abs_img = (_sdir / str(_rel_img)).resolve()
+                                if _abs_img.is_file():
+                                    _session_out["image"] = str(_abs_img)
+                                else:
+                                    _session_out.pop("image", None)
+                        except Exception:
+                            _session_out.pop("image", None)
                     _session_messages_out: List[Dict[str, Any]] = []
                     for _m in _session_out.get("messages", []) or []:
                         if not isinstance(_m, dict):

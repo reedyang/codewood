@@ -74,6 +74,10 @@ def action_glob(
                     cmd,
                     capture_output=True,
                     text=True,
+                    # ripgrep emits UTF-8, but a non-UTF-8 Windows locale can
+                    # still yield GBK bytes for localized messages; decode
+                    # tolerantly so the reader thread never crashes.
+                    errors="replace",
                     timeout=30,
                     cwd=str(search_dir),
                 )

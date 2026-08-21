@@ -6858,6 +6858,34 @@ body.resizing-y .console-term {
   word-break: break-word;
 }
 
+/* Image attached to the sub-agent, shown ABOVE the user prompt in the
+   session viewer (rendered through the shared SentImageThumb chip). The
+   image + user message render inside one right-aligned shrink-to-fit block
+   (same alignment as the main-chat user bubble), so the chip's left edge
+   lines up with the user message's left edge. */
+.subagent-user-block {
+  width: fit-content;
+  max-width: 80%;
+  margin-left: auto;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* The user message inside the block is already right-aligned via its own
+   ``margin-left: auto``; with the block sized to the bubble that margin is a
+   no-op, but the bubble's ``max-width: 80%`` cap must refer to the transcript
+   column (the block caps it) rather than the shrink-to-fit block itself. */
+.subagent-user-block .user-message {
+  max-width: 100%;
+  margin-bottom: 0;
+}
+
+.subagent-session-attached-image {
+  margin-bottom: 4px;
+}
+
 .subagent-session-messages {
   flex: 1;
   overflow-y: auto;

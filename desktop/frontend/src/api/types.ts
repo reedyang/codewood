@@ -582,6 +582,9 @@ export interface SubAgentSession {
   topic: string;
   description: string;
   prompt: string;
+  /** Absolute on-disk path of the image attached to this sub-agent (resolved
+   *  by the backend from the record's relative path), empty when none. */
+  image?: string;
   startedAt: string;
   endedAt: string | null;
   messages: SubAgentMessage[];

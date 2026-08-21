@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -63,6 +64,10 @@ class SubAgentSessionStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._cache: Dict[str, Dict[str, Any]] = {}
+        # Resolved per-chat session directory cache (chat_id -> Path). Lets
+        # later mutations persist without re-passing the ``agent`` reference
+        # (e.g. the ``set_assistant_tool_rounds_raw`` path).
+        self._dirs: Dict[str, Path] = {}
 
     def _session_dir(self, agent: Any, chat_id: str) -> Optional[Path]:
         """Resolve the subagent-sessions directory for a chat."""
@@ -77,6 +82,8 @@ class SubAgentSessionStore:
                 return None
             session_dir = data_dir / self._SUBAGENT_SESSIONS_DIRNAME
             session_dir.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                self._dirs[chat_id] = session_dir
             logger.debug("_session_dir: resolved %s (exists=%s)", session_dir, session_dir.exists())
             return session_dir
         except Exception as exc:
@@ -112,16 +119,50 @@ class SubAgentSessionStore:
             "_chat_id": chat_id,
         }
         logger.info("create_session: id=%s, chat_id=%r, name=%s", session_id, chat_id, name)
-        # Cache the resolved session directory on the session so later mutations
-        # (e.g. attaching ``_tool_rounds_raw``) can re-persist without needing the
-        # ``agent`` reference that may be unavailable at that call site.
-        session_dir = self._session_dir(agent, chat_id)
-        if session_dir is not None:
-            session["_session_dir"] = str(session_dir)
         with self._lock:
             self._cache[session_id] = session
         self._persist(agent, chat_id, session)
         return session
+
+    def attach_image(
+        self,
+        agent: Any,
+        chat_id: str,
+        session_id: str,
+        src_path: str,
+    ) -> Optional[str]:
+        """Copy an image passed to a sub-agent into the session directory and
+        record it on the session as ``image``.
+
+        The recorded value is the path RELATIVE to the session record file's
+        directory (the image lives next to ``<session-id>.json``), so the
+        record stays portable and the GUI resolves it against the session dir.
+        Returns the absolute path of the copied file (for live SSE events), or
+        ``None`` when the copy/record failed.
+        """
+        try:
+            session_dir = self._session_dir(agent, chat_id)
+            if session_dir is None:
+                return None
+            src = Path(str(src_path or ""))
+            if not src.is_file():
+                return None
+            ext = src.suffix.lower() or ".png"
+            dest = session_dir / f"{session_id}{ext}"
+            if dest.exists():
+                dest = session_dir / f"{session_id}_{uuid.uuid4().hex[:6]}{ext}"
+            shutil.copy2(str(src), str(dest))
+            abs_path = str(dest.resolve())
+            with self._lock:
+                session = self._cache.get(session_id)
+                if session is not None:
+                    session["image"] = dest.name
+            if session is not None:
+                self._persist(agent, chat_id, session)
+            return abs_path
+        except Exception as exc:
+            logger.warning("attach_image: failed for session=%s: %s", session_id, exc)
+            return None
 
     def append_message(
         self,
@@ -260,13 +301,12 @@ class SubAgentSessionStore:
     def _persist(self, agent: Any, chat_id: str, session: Dict[str, Any]) -> None:
         """Write a session to disk."""
         session_dir = self._session_dir(agent, chat_id)
-        # Fall back to the cached directory when no agent is supplied (e.g. the
-        # ``set_assistant_tool_rounds_raw`` path), so tool_rounds can persist
-        # without the agent reference.
-        if session_dir is None:
-            cached = session.get("_session_dir")
-            if cached:
-                session_dir = Path(cached)
+        # Fall back to the per-chat cached directory when no agent is supplied
+        # (e.g. the ``set_assistant_tool_rounds_raw`` path), so tool_rounds can
+        # persist without the agent reference.
+        if session_dir is None and chat_id:
+            with self._lock:
+                session_dir = self._dirs.get(chat_id)
         if session_dir is None:
             logger.warning("_persist: session_dir is None for chat_id=%r, skipping disk write", chat_id)
             return
@@ -721,6 +761,13 @@ def run_subagent(
         topic=topic,
     )
     session_id = session["id"]
+    # Persist a copy of the attached image next to the session record and
+    # record it as ``session["image"]`` (relative to the record file). The
+    # absolute path is returned for the live SSE event; the history endpoint
+    # re-resolves the relative value when the session is reopened later.
+    image_abs: Optional[str] = None
+    if image_path:
+        image_abs = store.attach_image(agent, chat_id, session_id, image_path)
     if on_session_created is not None:
         try:
             on_session_created(session_id)
@@ -734,6 +781,7 @@ def run_subagent(
         "topic": topic,
         "description": str(record.description or ""),
         "prompt": prompt_text,
+        "image": image_abs or "",
     })
 
     # Print the session marker early so the GUI can show the ">" button
