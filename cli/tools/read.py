@@ -92,7 +92,15 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
                 api_content=image_user_prompt,
                 exclude_from_model_context=True,
             )
-            return {"success": True, "content": str(analysis or ""), "file": str(abs_path), "call": _call_desc}
+            content = str(analysis or "")
+            _COMMON_VISION_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+            if abs_path.suffix.lower() not in _COMMON_VISION_EXTS:
+                content += (
+                    f"\n\n[note] Image format '{abs_path.suffix.lower()}' is not supported by most "
+                    "vision models; the description above may be unavailable or inaccurate. Consider "
+                    "converting the image to PNG/JPEG before re-reading."
+                )
+            return {"success": True, "content": content, "file": str(abs_path), "call": _call_desc}
 
         # ---------- text files ----------
         try:

@@ -677,6 +677,39 @@ def prepare_image_input(
     return image_data, image_user_idx, image_user_text, None
 
 
+def _image_data_url(image_data: str) -> str:
+    """Build an inline ``data:`` URL for a base64-encoded image, sniffing the
+    actual MIME type from the leading magic bytes.
+
+    Vision providers (OpenAI-compatible chat/responses, DeepSeek) can reject or
+    mis-handle a data URL whose declared MIME contradicts the file content, so
+    derive ``image/jpeg`` / ``image/png`` / ``image/gif`` / ``image/webp`` (plus
+    a few less-common types) instead of hardcoding ``image/png``.
+    """
+    mime = "image/png"
+    try:
+        import base64 as _b64
+
+        raw = _b64.b64decode(image_data, validate=False)[:12]
+    except Exception:
+        return f"data:image/png;base64,{image_data}"
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif raw[:2] == b"\xff\xd8":
+        mime = "image/jpeg"
+    elif raw[:6] in (b"GIF87a", b"GIF89a"):
+        mime = "image/gif"
+    elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        mime = "image/webp"
+    elif raw[:2] == b"BM":
+        mime = "image/bmp"
+    elif raw[:4] in (b"II*\x00", b"MM\x00*"):
+        mime = "image/tiff"
+    elif raw[:5] == b"<?xml" or raw[:4] == b"<svg":
+        mime = "image/svg+xml"
+    return f"data:{mime};base64,{image_data}"
+
+
 def _stringify_tool_arguments(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -1610,7 +1643,7 @@ def _build_openai_responses_input_messages(
                 {"type": "input_text", "text": str(image_user_text or "")},
                 {
                     "type": "input_image",
-                    "image_url": f"data:image/png;base64,{image_data}",
+                    "image_url": _image_data_url(image_data),
                 },
             ]
             out.append({"type": "message", "role": role, "content": parts})
@@ -2545,7 +2578,7 @@ def _call_with_openai_compatible(
             **provider_messages[image_user_idx],
             "content": [
                 {"type": "text", "text": image_user_text},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}},
+                {"type": "image_url", "image_url": {"url": _image_data_url(image_data)}},
             ],
         }
 
