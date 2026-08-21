@@ -3122,7 +3122,7 @@ class Agent:
             label = translate("tool.label.read", self._ui_language())
             _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".ico"}
             if Path(p).suffix.lower() in _IMAGE_EXTS:
-                detail = f"{rel}"
+                detail = f"{Path(rel).name}"
             else:
                 off = a.get("offset")
                 lim = a.get("limit")

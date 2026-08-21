@@ -388,6 +388,22 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Read "))
         self.assertIn("<H>a.txt</H>", line)
 
+    def test_format_tool_call_feedback_line_read_image_shows_only_filename(self):
+        # Reading an image shows the workspace-relative directory in the label
+        # but only the filename in the highlighted detail, so the GUI tool-call
+        # description does not leak the full image path.
+        root = Path(tempfile.gettempdir()) / "cw_ws_read_img"
+        self.agent.workspace_root = root
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ), patch("cli.agent._ansi_bold", side_effect=lambda text: text):
+            line = self.agent._format_tool_call_feedback_line(
+                "read", {"path": "assets/icons/robot.png"}, failed=False
+            )
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Read "))
+        self.assertIn("<H>robot.png</H>", line)
+        self.assertNotIn("assets", line)
+
     def test_format_tool_call_feedback_line_shell_uses_language_specific_prefix(self):
         # Shell keeps the localized "Ran <command>" phrasing.
         self.agent.display_language = "zh-CN"
