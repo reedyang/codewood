@@ -1086,64 +1086,50 @@ def _launch_gui_app() -> int | None:
         return 1
 
 
-def _is_macos_bundle_main() -> bool:
-    """True when this frozen process is the main executable of a macOS .app.
+def _is_gui_executable() -> bool:
+    """True when the running frozen binary is the windowed ``codewood-gui`` app.
 
-    A double-click of ``Code Wood.app`` launches ``Contents/MacOS/codewood``
-    with no arguments, which would normally fall through to the terminal UI. We
-    want it to open the desktop GUI instead, while a *terminal* launch of the
-    same binary (e.g. ``/Applications/Code Wood.app/Contents/MacOS/codewood``)
-    should stay on the TUI.
-
-    The distinguishing signal is the controlling terminal: a Finder aka
-    LaunchServices double-click gets a non-TTY stdin, whereas typing the binary
-    in a shell leaves stdin on the TTY. So require both a ``*.app/Contents/MacOS``
-    executable path *and* a non-TTY stdin before auto-launching the GUI.
+    The GUI is now a separate windowed executable (``codewood-gui``) that is the
+    bundle's main process, so it always opens the window. The console
+    ``codewood`` (basename ``codewood``) is the TUI / ``serve`` CLI and must not
+    auto-open the GUI.
     """
-    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
-        return False
-    # A real terminal session should get the TUI; only a detached/launcher
-    # launch (stdin not a TTY) is a candidate for auto-GUI.
     try:
-        if sys.stdin.isatty():
-            return False
+        name = os.path.basename(sys.executable).lower()
     except Exception:
-        pass
-    exe = Path(sys.executable).resolve()
-    # Walk up to the nearest *.app bundle.
-    for parent in exe.parents:
-        if parent.name.endswith(".app") and (parent / "Contents" / "Info.plist").is_file():
-            return True
-    return False
+        return False
+    return name in ("codewood-gui", "codewood-gui.exe")
 
 
 def _resolve_gui_launch(cli_args: dict) -> int | None:
-    """Decide whether to launch the GUI, and how.
+    """Decide whether the GUI entry point should run, and how.
 
-    Returns an exit code when the GUI path handles the run, or ``None`` to
-    fall through to the terminal UI. The GUI is launched when ``app`` is
-    requested explicitly, or when the frozen binary is double-clicked as the
-    main executable of a macOS .app bundle (no subcommand). It must NOT hijack
-    a subcommand: the GUI's own ``serve`` backend also runs from the bundle's
-    Contents/MacOS and would otherwise be pulled into the GUI (importing
-    webview and hanging on the WebKit IPC) instead of handshaking.
+    Returns an exit code when the GUI path handles the run, or ``None`` to fall
+    through to the normal handling (terminal TUI / subcommands).
+
+    - ``codewood-gui`` (the frozen windowed app) opens the GUI always, unless it
+      was started as ``serve`` (the backend it spawns for itself).
+    - ``codewood app`` (explicit) opens the GUI from either binary.
+    - Anything else falls through.
+
+    It must NEVER hijack ``serve``: the GUI's own backend runs from the same
+    Contents/MacOS executable and would otherwise be pulled into the GUI
+    (importing webview and hanging on the WebKit IPC) instead of handshaking.
     """
     detached_child = os.environ.get(_GUI_DETACHED_ENV) == "1"
-    bundle_main = _is_macos_bundle_main()
-    # Only a bare launch (double-click) auto-opens the GUI. ``serve`` (and any
-    # other explicit subcommand) must fall through to its own handler.
     serve_requested = bool(cli_args.get("serve_mode", False))
-    app_requested = bool(cli_args.get("app_mode", False)) or (
-        bundle_main and not serve_requested
-    )
+    gui_app_entry = getattr(sys, "frozen", False) and _is_gui_executable()
 
+    app_requested = bool(cli_args.get("app_mode", False)) or (
+        gui_app_entry and not serve_requested
+    )
     if not app_requested:
         return None
 
-    # The detached child, a macOS bundle main process, and a dev run all run the
-    # GUI inline; a frozen, still-attached launch re-spawns itself detached so
-    # the caller's prompt returns immediately and no console window lingers.
-    if detached_child or (bundle_main and not serve_requested) or not getattr(sys, "frozen", False):
+    # The detached child, the GUI app entry point, and a dev run all run the GUI
+    # inline; a frozen, still-attached launch re-spawns itself detached so the
+    # caller's prompt returns immediately and no console window lingers.
+    if detached_child or gui_app_entry or not getattr(sys, "frozen", False):
         return _launch_gui_app()
     return _spawn_detached_gui()
 
