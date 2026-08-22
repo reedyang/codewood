@@ -91,8 +91,7 @@ else
     echo "Embedding model already cached in models/$MODEL_NAME."
 fi
 
-ARGS=(
-  --onedir --noconfirm --name codewood
+DATA_ARGS=(
   --add-data "../../skills:skills"
   --add-data "../../additional-subagents:additional-subagents"
   --add-data "../../cli:cli"
@@ -112,7 +111,6 @@ ARGS=(
   --collect-all tiktoken
   --hidden-import tiktoken_ext
   --hidden-import tiktoken_ext.openai_public
-  --specpath "build/codewood"
 )
 
 # App icon: macOS uses .icns; Linux ignores it, so only pass when present.
@@ -121,22 +119,23 @@ if [ "$(uname -s)" = "Darwin" ] && [ -f "build/app_icon.icns" ]; then
   ICON_ARGS=(--icon "../../build/app_icon.icns")
 fi
 
-"$PYINSTALLER" "${ICON_ARGS[@]}" "${ARGS[@]}" "$ENTRY_SCRIPT"
+# 1) codewood (console, one-dir): carries ALL terminal-UI + serve + `app`
+#    logic. dist/codewood/codewood is the CLI the user runs in the terminal.
+"$PYINSTALLER" "${ICON_ARGS[@]}" --onedir --noconfirm --name codewood \
+  --specpath "build/codewood" "${DATA_ARGS[@]}" "$ENTRY_SCRIPT"
 
-# 2) codewood-gui is a tiny launcher that bundles only the standard library
-#    (no pywebview / prompt_toolkit / etc.) and simply starts "codewood app"
-#    in a detached, window-free process. Mirrors codewood-gui.exe on Windows.
-#    It is emitted INTO the codewood one-dir folder so it sits next to the
-#    codewood executable (single shippable folder).
-"$PYINSTALLER" "${ICON_ARGS[@]}" \
-  --onefile --noconfirm --windowed --name codewood-gui \
-  --distpath "dist/codewood" \
-  --specpath "build/codewood-gui" \
-  "desktop/host/launcher.py"
+# 2) codewood-gui (windowed BUNDLE): the desktop GUI. Built from the same entry
+#    with --windowed so PyInstaller produces a proper macOS .app bundle
+#    (Contents/MacOS + Contents/Frameworks/Python + Contents/Resources +
+#    Info.plist). The window is created by this bundle's own main process, so
+#    the Dock icon merges with "Code Wood"; it spawns itself in serve mode for
+#    the backend. On Linux this windowed build also opens the GUI.
+"$PYINSTALLER" "${ICON_ARGS[@]}" --windowed --noconfirm --name codewood-gui \
+  --specpath "build/codewood-gui" "${DATA_ARGS[@]}" "$ENTRY_SCRIPT"
 
-echo "PyInstaller build completed. The shippable folder is \"dist/codewood\"."
-echo "  codewood/codewood      - terminal UI (default) and \"codewood app\" for the GUI"
-echo "  codewood/codewood-gui  - launch the GUI without a console window"
+echo "PyInstaller build completed."
+echo "  dist/codewood/codewood     - terminal UI (TUI) + serve backend (CLI)"
+echo "  dist/codewood-gui.app      - the desktop GUI (.app bundle)"
 
 # ---- Resolve the application version + platform tag so the portable archive
 # ---- filename carries version + platform info (e.g.
@@ -174,66 +173,52 @@ INSTALLER_NOTES=()
 # macOS native installers (.dmg + .pkg)
 # ---------------------------------------------------------------------------
 # These rely on macOS-only tooling (hdiutil / pkgbuild / productbuild) and a
-# .app bundle, so they are produced only when running on macOS. A double-
-# clickable Code Wood.app is assembled around the GUI launcher, with the
-# codewood one-dir executable (and its _internal runtime) under Contents/MacOS
-# so the GUI process resolves to this .app bundle and shows its Dock icon.
+# .app bundle, so they are produced only when running on macOS. The GUI now
+# lives in the windowed PyInstaller bundle dist/codewood-gui.app (which carries
+# a proper Contents/Frameworks/Python and Info.plist), renamed to Code Wood.app,
+# with the console `codewood` (TUI/serve CLI) shipped inside Resources so the
+# .pkg can link /usr/local/bin/codewood to it.
 build_macos_installers() {
   local app_name="Code Wood"
-  local app_dir="dist/${app_name}.app"
-  local macos_dir="${app_dir}/Contents/MacOS"
-  local res_dir="${app_dir}/Contents/Resources"
+  # Stage the bundle in a temp dir so a stale, non-writable dist/Code Wood.app
+  # (e.g. left root-owned by an earlier run) can't block assembly.
+  local app_dir; app_dir="$(mktemp -d)/${app_name}.app"
+  local gui_bundle="dist/codewood-gui.app"
 
-  echo "Assembling ${app_dir}..."
-  rm -rf "$app_dir"
-  mkdir -p "$macos_dir" "$res_dir" "$app_dir/Contents/Frameworks"
-
-  # macOS resolves a process's bundle (and thus its Dock icon / running-dot)
-  # from the executable's location: a binary under Contents/MacOS is matched to
-  # this .app, while the same binary buried in Contents/Resources gets
-  # mainBundle=nil and shows up as a separate Dock icon. So keep codewood under
-  # Contents/MacOS as the app's main executable. When it runs as the bundle's
-  # main process (a double-click), cli/main.py auto-launches the GUI.
-  #
-  # PyInstaller's bootloader detects a bundle from a "<app>.app/Contents/MacOS"
-  # executable and then uses Contents/Frameworks as the runtime home (PYTHONHOME
-  # / sys._MEIPASS): it looks there for the Python shared library, base_library.zip,
-  # python3.13/ (stdlib) and the bundled data (host, frontend). So the ENTIRE
-  # onedir _internal contents go into Contents/Frameworks, NOT into a sibling
-  # _internal folder.
-  #
-  # No launcher wrapper named "CodeWood" is used: the macOS filesystem is
-  # case-insensitive, so "CodeWood" would alias "codewood" and clobber it. The
-  # one-file codewood-gui launcher also can't work inside Contents/MacOS without
-  # the Frameworks runtime.
-  cp "dist/codewood/codewood" "$macos_dir/codewood"
-  cp -R "dist/codewood/_internal/." "$app_dir/Contents/Frameworks/"
-  chmod +x "$macos_dir/codewood"
-
-  # Minimal Info.plist. Icon is included when build/app_icon.icns exists.
-  local icon_line=""
-  if [ -f "build/app_icon.icns" ]; then
-    cp "build/app_icon.icns" "$res_dir/app_icon.icns"
-    icon_line="  <key>CFBundleIconFile</key><string>app_icon.icns</string>"
+  echo "Assembling ${app_dir} from ${gui_bundle}..."
+  if [ ! -d "$gui_bundle" ]; then
+    echo "WARNING: ${gui_bundle} not found; run the PyInstaller build first." >&2
+    return
   fi
+  cp -R "$gui_bundle" "$app_dir"
+
+  # PyInstaller's BUNDLE writes CFBundleIdentifier "codewood-gui"; the Dock
+  # merges the running app with the pinned icon keyed on this bundle id, so
+  # overwrite it with the product identity and display name.
   cat > "$app_dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
+<plist version="1.0"><dict>
   <key>CFBundleName</key><string>${app_name}</string>
   <key>CFBundleDisplayName</key><string>${app_name}</string>
   <key>CFBundleIdentifier</key><string>us.zoom.codewood</string>
   <key>CFBundleVersion</key><string>${APP_VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
-  <key>CFBundleExecutable</key><string>codewood</string>
+  <key>CFBundleExecutable</key><string>codewood-gui</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-${icon_line}
-</dict>
-</plist>
+  <key>CFBundleIconFile</key><string>app_icon.icns</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
 PLIST
 
-  # .dmg (drag-to-Applications). hdiutil is part of macOS.
+  # Ship the console `codewood` (TUI/serve CLI) inside the bundle's Resources so
+  # the .pkg can link /usr/local/bin/codewood to it, and so `codewood app` works
+  # from the bundle path.
+  if [ -d "dist/codewood" ]; then
+    cp -R "dist/codewood" "$app_dir/Contents/Resources/codewood"
+  fi
+
+  # .dmg (drag-to-Applications of the GUI app). hdiutil is part of macOS.
   if command -v hdiutil >/dev/null 2>&1; then
     local dmg="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.dmg"
     rm -f "$dmg"
@@ -242,7 +227,7 @@ PLIST
     ln -s /Applications "$stage/Applications"
     echo "Creating .dmg \"$dmg\"..."
     if hdiutil create -volname "$app_name" -srcfolder "$stage" -ov -format UDZO "$dmg" >/dev/null; then
-      INSTALLER_NOTES+=("  $(basename "$dmg")  - macOS drag-to-install disk image")
+      INSTALLER_NOTES+=("  $(basename "$dmg")  - macOS drag-to-install (GUI app)")
     else
       echo "WARNING: hdiutil failed; skipping .dmg." >&2
     fi
@@ -251,17 +236,20 @@ PLIST
     echo "WARNING: hdiutil not found; skipping .dmg." >&2
   fi
 
-  # .pkg (guided installer that drops Code Wood.app into /Applications).
+  # .pkg (guided installer): installs the GUI app to /Applications and links the
+  # `codewood` TUI CLI to /usr/local/bin.
   if command -v pkgbuild >/dev/null 2>&1; then
     local pkg="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.pkg"
     rm -f "$pkg"
     local pkgroot; pkgroot="$(mktemp -d)"
-    mkdir -p "$pkgroot/Applications"
+    mkdir -p "$pkgroot/Applications" "$pkgroot/usr/local/bin"
     cp -R "$app_dir" "$pkgroot/Applications/"
+    ln -s "../../../Applications/${app_name}.app/Contents/Resources/codewood/codewood" \
+      "$pkgroot/usr/local/bin/codewood"
     echo "Creating .pkg \"$pkg\"..."
     if pkgbuild --root "$pkgroot" --identifier "us.zoom.codewood" \
         --version "$APP_VERSION" --install-location "/" "$pkg" >/dev/null; then
-      INSTALLER_NOTES+=("  $(basename "$pkg")  - macOS guided installer (installs to /Applications)")
+      INSTALLER_NOTES+=("  $(basename "$pkg")  - macOS installer (GUI app + codewood CLI)")
     else
       echo "WARNING: pkgbuild failed; skipping .pkg." >&2
     fi
@@ -269,6 +257,12 @@ PLIST
   else
     echo "WARNING: pkgbuild not found; skipping .pkg." >&2
   fi
+
+  # Best-effort convenience copy of the assembled .app into dist/. Skips quietly
+  # if dist/Code Wood.app is not removable/writable (e.g. root-owned leftover) —
+  # the installable artifacts above are built from the staged copy regardless.
+  rm -rf "dist/${app_name}.app" 2>/dev/null || true
+  cp -R "$app_dir" "dist/${app_name}.app" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
