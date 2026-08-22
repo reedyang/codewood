@@ -3044,7 +3044,12 @@ def action_shell_command(
                                 freedom_remove_user_script_review_cache_entry(agent, _p)
                             except Exception:
                                 pass
-                            _del_rows = _build_all_del_diff_rows(_content)
+                            # Non-text files (e.g. .pkg/.dmg/.exe) produce
+                            # meaningless "all deleted" diffs — skip them.
+                            _del_rows = (
+                                _build_all_del_diff_rows(_content)
+                                if not _is_binary_file(_path_str) else []
+                            )
                             _del_entry: Dict[str, Any] = {
                                 "file": _path_str,
                                 "changeType": "delete",
@@ -3126,6 +3131,24 @@ def action_shell_command(
                               ", ".join(Path(p).name for p in _ws_deleted))
                 _tracker2 = getattr(agent, "file_change_tracker", None)
                 for _old_path, _new_path in _rename_pairs:
+                    if _is_binary_file(_new_path):
+                        if _tracker2 is not None:
+                            _tracker2.record_change(
+                                file_path=_new_path,
+                                change_type="rename",
+                                source="shell",
+                                content_before=None,
+                                content_after=None,
+                                patch=None,
+                                old_path=_old_path,
+                            )
+                        _shell_diff_entries.append({
+                            "file": _new_path,
+                            "changeType": "rename",
+                            "oldPath": _old_path,
+                            "diffRows": [],
+                        })
+                        continue
                     try:
                         _rcontent = Path(_new_path).read_text(
                             encoding="utf-8", errors="replace",
@@ -3150,6 +3173,25 @@ def action_shell_command(
                         "diffRows": _rrows,
                     })
                 for _path_str in _new:
+                    # Skip binary / non-text files (e.g. .pkg/.dmg/.exe): a
+                    # line diff on them is meaningless and enormous, so never
+                    # read the content nor record / load a diff.
+                    if _is_binary_file(_path_str):
+                        if _tracker2 is not None:
+                            _tracker2.record_change(
+                                file_path=_path_str,
+                                change_type="create",
+                                source="shell",
+                                content_before=None,
+                                content_after=None,
+                                patch=None,
+                            )
+                        _shell_diff_entries.append({
+                            "file": _path_str,
+                            "changeType": "create",
+                            "diffRows": [],
+                        })
+                        continue
                     try:
                         _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
                     except Exception:
@@ -3188,13 +3230,9 @@ def action_shell_command(
                         "diffRows": _diff_rows_new,
                     })
                 for _path_str in _modified:
-                    try:
-                        _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
-                    except Exception:
-                        continue
-                    _log.info("checking modified: %s (len=%d)", _path_str, len(_content))
-                    # Detect binary files — diff rows are meaningless and
-                    # we should back up the old content for recovery.
+                    # Detect binary / non-text files up-front (e.g. .pkg,
+                    # .dmg, .exe) so we never read the whole file into memory:
+                    # a line diff on them is meaningless and enormous.
                     _is_binary = _is_binary_file(_path_str)
                     _backup_name: Optional[str] = None
                     if _is_binary:
@@ -3203,10 +3241,6 @@ def action_shell_command(
                         _before_binary = _before_content_snapshot.get(_path_str)
                         if _before_binary is None and _repo_root is not None:
                             _before_binary = _git_content_before(_repo_root, _path_str)
-                        # Normalize line endings for comparison — git may
-                        # convert CRLF↔LF during stash/apply.
-                        if _before_binary is not None and _before_binary.replace("\r\n", "\n").replace("\r", "\n") == _content.replace("\r\n", "\n").replace("\r", "\n"):
-                            continue
                         if _before_binary is not None:
                             try:
                                 __chat_mgr = getattr(agent, "_chat_state_manager", None)
@@ -3215,7 +3249,7 @@ def action_shell_command(
                                     _backups_dir_mod = __chat_mgr.chat_backups_dir_for_chat(__chat_id)
                             except Exception:
                                 pass
-                        if _backups_dir_mod is not None:
+                        if _backups_dir_mod is not None and _before_binary is not None:
                             _backup_name = _backup_deleted_file(
                                 _before_binary, Path(_path_str), _backups_dir_mod,
                             )
@@ -3231,6 +3265,11 @@ def action_shell_command(
                                 backup_path=_backup_name,
                             )
                     else:
+                        try:
+                            _content = Path(_path_str).read_text(encoding="utf-8", errors="replace")
+                        except Exception:
+                            continue
+                        _log.info("checking modified: %s (len=%d)", _path_str, len(_content))
                         # Get pre-execution content from the before-content
                         # snapshot, falling back to git (index → HEAD).
                         _before_for_diff: Optional[str] = None
@@ -3295,7 +3334,12 @@ def action_shell_command(
                                 )
                         except Exception:
                             pass
-                    _ws_del_diff = _build_all_del_diff_rows(_ws_del_before)
+                    # Non-text files (e.g. .pkg/.dmg/.exe) produce meaningless
+                    # "all deleted" diffs — skip them.
+                    _ws_del_diff = (
+                        _build_all_del_diff_rows(_ws_del_before)
+                        if not _is_binary_file(_path_str) else []
+                    )
                     if _tracker2 is not None:
                         _tracker2.record_delete(
                             file_path=_path_str,
@@ -4963,6 +5007,14 @@ def _snapshot_files_content(paths: List[Path]) -> Dict[str, str]:
     for p in paths:
         try:
             if p.is_file():
+                # Skip binary / non-text files (e.g. .pkg/.dmg/.exe): reading
+                # them as text only produces garbage and is never useful.
+                if _has_non_text_extension(str(p)):
+                    continue
+                with open(p, "rb") as _fh:
+                    head = _fh.read(8192)
+                if _is_binary_bytes(head):
+                    continue
                 snapshots[str(p)] = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             pass
@@ -5055,9 +5107,15 @@ def _snapshot_workspace_before_content(
                     return
                 if _snapshot_bytes + size > _SNAPSHOT_MAX_BYTES:
                     return
-                snapshot[key] = abs_path.read_text(
-                    encoding="utf-8", errors="replace",
-                )
+                # Skip binary / non-text files (e.g. .pkg/.dmg/.exe): no
+                # usable diff can be built from them and loading them into the
+                # snapshot only wastes memory and produces garbled diffs.
+                if _has_non_text_extension(str(abs_path)):
+                    return
+                raw = abs_path.read_bytes()
+                if _is_binary_bytes(raw[:8192]):
+                    return
+                snapshot[key] = raw.decode("utf-8", errors="replace")
                 _snapshot_bytes += size
         except Exception:
             pass
@@ -5445,14 +5503,62 @@ def _build_all_del_diff_rows(content_before: str) -> List[Dict[str, Any]]:
 
 
 def _is_binary_file(file_path: str) -> bool:
-    """Return True if *file_path* looks like binary data by checking the
-    first 8 KB of raw bytes for null characters."""
+    """Return True if *file_path* is a binary / non-text file.
+
+    Detects by filename extension (known binary formats such as ``.pkg``,
+    ``.dmg``, ``.exe``, archives, images, media, fonts and compiled
+    artifacts) or by scanning the first 8 KB of raw bytes for NUL
+    characters.  Such files yield meaningless, enormous line diffs and are
+    skipped during diff recording / loading.
+    """
+    if _has_non_text_extension(file_path):
+        return True
     try:
         with open(file_path, "rb") as fh:
             chunk = fh.read(8192)
-        return b"\0" in chunk
+        return _is_binary_bytes(chunk)
     except Exception:
         return False
+
+
+_NON_TEXT_FILE_EXTENSIONS = frozenset({
+    # Installers / disk images / executables
+    ".pkg", ".dmg", ".exe", ".msi", ".apk", ".ipa", ".bin", ".img", ".iso",
+    # Archives / compressed
+    ".zip", ".gz", ".bz2", ".xz", ".tar", ".tgz", ".tbz2", ".7z",
+    ".rar", ".zst", ".jar", ".war", ".ear", ".nupkg",
+    # Images
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp",
+    ".ico", ".heic", ".avif", ".svgz",
+    # Documents (binary / opaque formats)
+    ".pdf", ".epub", ".mobi",
+    # Office (zip-based, opaque to a line diff)
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
+    # Audio / video
+    ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma", ".opus",
+    ".mp4", ".m4v", ".mov", ".avi", ".mkv", ".mpg", ".mpeg", ".wmv",
+    ".flv", ".webm", ".3gp",
+    # Fonts / binaries / artifacts
+    ".eot", ".woff", ".woff2", ".ttf", ".otf",
+    ".pyc", ".pyo", ".so", ".dll", ".dylib", ".o", ".obj", ".a", ".lib",
+    ".class", ".pyd", ".node",
+    # Databases / models
+    ".sqlite", ".sqlite3", ".db", ".pkl", ".pickle", ".onnx", ".pt", ".pth",
+    ".npy", ".npz", ".wasm",
+})
+
+
+def _has_non_text_extension(path: str) -> bool:
+    """Return True when *path*'s extension is a known binary / non-text type."""
+    try:
+        return Path(path).suffix.lower() in _NON_TEXT_FILE_EXTENSIONS
+    except Exception:
+        return False
+
+
+def _is_binary_bytes(data: bytes) -> bool:
+    """Return True if *data* looks like binary bytes (contains a NUL)."""
+    return b"\0" in data
 
 
 def cleanup_codewood_shell_pre_stashes(cwd: Path) -> Dict[str, Any]:
