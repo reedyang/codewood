@@ -1091,12 +1091,24 @@ def _is_macos_bundle_main() -> bool:
 
     A double-click of ``Code Wood.app`` launches ``Contents/MacOS/codewood``
     with no arguments, which would normally fall through to the terminal UI. We
-    want it to open the desktop GUI instead, so detect that we were launched as
-    the bundle's main executable (via a ``*.app/Contents/MacOS/`` path) and
-    treat that the same as an explicit ``app`` request.
+    want it to open the desktop GUI instead, while a *terminal* launch of the
+    same binary (e.g. ``/Applications/Code Wood.app/Contents/MacOS/codewood``)
+    should stay on the TUI.
+
+    The distinguishing signal is the controlling terminal: a Finder aka
+    LaunchServices double-click gets a non-TTY stdin, whereas typing the binary
+    in a shell leaves stdin on the TTY. So require both a ``*.app/Contents/MacOS``
+    executable path *and* a non-TTY stdin before auto-launching the GUI.
     """
     if sys.platform != "darwin" or not getattr(sys, "frozen", False):
         return False
+    # A real terminal session should get the TUI; only a detached/launcher
+    # launch (stdin not a TTY) is a candidate for auto-GUI.
+    try:
+        if sys.stdin.isatty():
+            return False
+    except Exception:
+        pass
     exe = Path(sys.executable).resolve()
     # Walk up to the nearest *.app bundle.
     for parent in exe.parents:
