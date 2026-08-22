@@ -60,6 +60,8 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
   const [maximized, setMaximized] = useState(false);
   // Defaults to "win32" so the pywebview-drag-region is present on the very
   // first paint (matching prior behavior) until the host reports otherwise.
+  // Windows and macOS both use pywebview's native drag region; GTK/Linux/WSL
+  // instead hand moves off to the window manager below.
   const [hostOs, setHostOs] = useState<string>("win32");
   const barRef = useRef<HTMLDivElement | null>(null);
 
@@ -230,7 +232,9 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
       <GlobalChatSearch />
 
       <div
-        className={`titlebar-drag ${hostOs === "win32" ? "pywebview-drag-region" : ""}`}
+        className={`titlebar-drag ${
+          hostOs === "win32" || hostOs === "darwin" ? "pywebview-drag-region" : ""
+        }`}
         onMouseDown={(e) => {
           // Left button only; let double-clicks fall through to maximize.
           if (e.button !== 0 || e.detail > 1) {
@@ -238,8 +242,9 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
           }
           // GTK/WSL: hand the drag to the window manager so the window
           // follows the cursor across mixed-DPI monitors. The host returns
-          // false on Windows, where the native pywebview-drag-region handles
-          // it instead — so we only suppress that default when GTK took over.
+          // false on Windows/macOS, where the native pywebview-drag-region
+          // handles it instead — so we only suppress that default when GTK
+          // took over.
           const api = hostApi();
           if (!api?.start_window_drag) {
             return;

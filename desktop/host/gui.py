@@ -499,14 +499,19 @@ class HostApi:
     def host_platform(self) -> str:
         """Report the host OS family so the frontend can pick drag strategies.
 
-        Returns ``"win32"`` on Windows (where pywebview's native
-        ``pywebview-drag-region`` is used) and ``"gtk"`` elsewhere (Linux/WSL,
-        where the frontend must drive moves/resizes through the WM-native
-        ``start_window_drag`` / ``start_window_resize`` helpers and must NOT
-        also attach the pywebview drag region, which would fight the WM drag
-        with its own unreliable ``window.move`` loop).
+        Returns ``"win32"`` on Windows and ``"darwin"`` on macOS — the
+        platforms where pywebview's native ``pywebview-drag-region`` moves the
+        frameless window reliably (EdgeChromium and Cocoa/WebKit). Returns
+        ``"gtk"`` on Linux/WSL, where the frontend must drive moves/resizes
+        through the WM-native ``start_window_drag`` / ``start_window_resize``
+        helpers and must NOT also attach the pywebview drag region, which would
+        fight the WM drag with its own unreliable ``window.move`` loop.
         """
-        return "win32" if sys.platform == "win32" else "gtk"
+        if sys.platform == "win32":
+            return "win32"
+        if sys.platform == "darwin":
+            return "darwin"
+        return "gtk"
 
     def open_external(self, url: str) -> bool:
         """Open an http/https URL in the user's default system browser.
@@ -822,9 +827,10 @@ class HostApi:
         the window manager via ``begin_move_drag`` makes the frameless
         window behave like any other native GTK app. Returns ``False`` when
         the GTK path is unavailable (e.g. Windows), so the frontend can keep
-        using the ``pywebview-drag-region`` fallback there.
+        using the ``pywebview-drag-region`` fallback there (and on macOS,
+        where Cocoa uses that same native drag region).
         """
-        if sys.platform == "win32":
+        if sys.platform in ("win32", "darwin"):
             return False
         gtk_window = self._gtk_native_window(webview.active_window())
         if gtk_window is None:
@@ -836,9 +842,10 @@ class HostApi:
 
         Mirrors :meth:`start_window_drag` for the resize grips so resizing
         across mixed-DPI monitors is handled by the compositor rather than
-        by JS-computed geometry pushed through ``set_window_geometry``.
+        by JS-computed geometry pushed through ``set_window_geometry``. On
+        Windows and macOS the frontend falls back to the JS geometry path.
         """
-        if sys.platform == "win32":
+        if sys.platform in ("win32", "darwin"):
             return False
         edge = self._GDK_EDGE_NAMES.get(str(direction or "").strip().lower())
         if edge is None:
