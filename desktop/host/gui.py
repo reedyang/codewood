@@ -967,7 +967,65 @@ class HostApi:
             pass
         return self._always_on_top
 
+
+def _find_macos_app_icon() -> Path | None:
+    """Locate an ``app_icon.icns`` file to use as the macOS Dock icon."""
+    if sys.platform != "darwin":
+        return None
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        # In the installed .app the GUI process lives at
+        # Code Wood.app/Contents/Resources/codewood/codewood, while the
+        # canonical icon sits at Code Wood.app/Contents/Resources/app_icon.icns.
+        candidates.append(exe.parent.parent / "app_icon.icns")
+        candidates.append(
+            exe.parent / "codewood-gui.app" / "Contents" / "Resources" / "app_icon.icns"
+        )
+        # Walk up to the nearest enclosing .app bundle and use its icon.
+        for parent in exe.parents:
+            if (parent / "Contents" / "Info.plist").is_file():
+                candidates.append(parent / "Contents" / "Resources" / "app_icon.icns")
+                break
+    else:
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "codewood_assets" / "app_icon.icns")
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _apply_macos_dock_icon() -> None:
+    """Make the GUI window present as a proper macOS app with the Code Wood
+    Dock icon.
+
+    The window is created by a launcher-spawned process that macOS does not
+    automatically bind to the .app bundle, so without this it shows up in the
+    Dock as a generic "exec" icon, separated from the Code Wood app icon.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit  # type: ignore
+    except Exception:
+        return
+    try:
+        app = AppKit.NSApplication.sharedApplication()
+        # Foreground app: keeps a Dock icon, menu bar and Cmd-Tab presence.
+        app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
+        icon = _find_macos_app_icon()
+        if icon is not None:
+            image = AppKit.NSImage.alloc().initWithContentsOfFile_(str(icon))
+            if image is not None:
+                app.setApplicationIconImage_(image)
+    except Exception:
+        pass
+
+
 def main() -> int:
+    _apply_macos_dock_icon()
     backend = BackendProcess()
     try:
         port, token = backend.start()

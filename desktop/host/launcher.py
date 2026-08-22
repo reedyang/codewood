@@ -69,9 +69,23 @@ def main() -> int:
     else:
         start_new_session = True
 
+    cmd = _backend_command()
+
+    # macOS: the .app's main process must stay the process that owns the GUI
+    # window. Spawning a detached child makes macOS show the window in the Dock
+    # with a generic "exec" icon, separated from the Code Wood app icon. Replacing
+    # our own image keeps the same PID, so LaunchServices still associates this
+    # process with the (still-running) .app bundle. Windows/Linux keep spawning
+    # a detached child so the launcher can return control immediately.
+    if sys.platform == "darwin":
+        try:
+            os.execvpe(cmd[0], cmd, env)
+        except Exception:
+            return 1
+
     try:
         subprocess.Popen(  # noqa: S603 - launching our trusted sibling executable
-            _backend_command(),
+            cmd,
             env=env,
             close_fds=True,
             creationflags=creationflags,

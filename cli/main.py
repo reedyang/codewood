@@ -1086,24 +1086,52 @@ def _launch_gui_app() -> int | None:
         return 1
 
 
+def _is_macos_bundle_main() -> bool:
+    """True when this frozen process is the main executable of a macOS .app.
+
+    A double-click of ``Code Wood.app`` launches ``Contents/MacOS/codewood``
+    with no arguments, which would normally fall through to the terminal UI. We
+    want it to open the desktop GUI instead, so detect that we were launched as
+    the bundle's main executable (via a ``*.app/Contents/MacOS/`` path) and
+    treat that the same as an explicit ``app`` request.
+    """
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return False
+    exe = Path(sys.executable).resolve()
+    # Walk up to the nearest *.app bundle.
+    for parent in exe.parents:
+        if parent.name.endswith(".app") and (parent / "Contents" / "Info.plist").is_file():
+            return True
+    return False
+
+
 def _resolve_gui_launch(cli_args: dict) -> int | None:
     """Decide whether to launch the GUI, and how.
 
     Returns an exit code when the GUI path handles the run, or ``None`` to
-    fall through to the terminal UI. The GUI is launched only when ``app`` is
-    requested explicitly; a double-click of the executable now falls through
-    to the terminal UI (TUI) instead of auto-launching the GUI.
+    fall through to the terminal UI. The GUI is launched when ``app`` is
+    requested explicitly, or when the frozen binary is double-clicked as the
+    main executable of a macOS .app bundle (no subcommand). It must NOT hijack
+    a subcommand: the GUI's own ``serve`` backend also runs from the bundle's
+    Contents/MacOS and would otherwise be pulled into the GUI (importing
+    webview and hanging on the WebKit IPC) instead of handshaking.
     """
     detached_child = os.environ.get(_GUI_DETACHED_ENV) == "1"
-    app_requested = bool(cli_args.get("app_mode", False))
+    bundle_main = _is_macos_bundle_main()
+    # Only a bare launch (double-click) auto-opens the GUI. ``serve`` (and any
+    # other explicit subcommand) must fall through to its own handler.
+    serve_requested = bool(cli_args.get("serve_mode", False))
+    app_requested = bool(cli_args.get("app_mode", False)) or (
+        bundle_main and not serve_requested
+    )
 
     if not app_requested:
         return None
 
-    # The detached child (or a dev run) runs the GUI inline; a frozen,
-    # still-attached launch re-spawns itself detached so the caller's prompt
-    # returns immediately and no console window lingers.
-    if detached_child or not getattr(sys, "frozen", False):
+    # The detached child, a macOS bundle main process, and a dev run all run the
+    # GUI inline; a frozen, still-attached launch re-spawns itself detached so
+    # the caller's prompt returns immediately and no console window lingers.
+    if detached_child or (bundle_main and not serve_requested) or not getattr(sys, "frozen", False):
         return _launch_gui_app()
     return _spawn_detached_gui()
 

@@ -150,6 +150,12 @@ case "$(uname -s)" in
   *)      OS_TAG="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
 esac
 ARCH_TAG="$(uname -m)"
+# On Apple Silicon the shell may be running under Rosetta, where ``uname -m``
+# reports x86_64 even though the build is truly arm64. Use the hardware arch so
+# the artifact tag (and the PyInstaller target) is correct.
+if [ "$(uname -s)" = "Darwin" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+  ARCH_TAG="arm64"
+fi
 PLATFORM_TAG="${OS_TAG}-${ARCH_TAG}"
 echo "Packaging artifacts for version $APP_VERSION ($PLATFORM_TAG)."
 
@@ -170,8 +176,8 @@ INSTALLER_NOTES=()
 # These rely on macOS-only tooling (hdiutil / pkgbuild / productbuild) and a
 # .app bundle, so they are produced only when running on macOS. A double-
 # clickable Code Wood.app is assembled around the GUI launcher, with the
-# one-dir bundle living inside Contents/Resources so codewood-gui can find its
-# sibling codewood executable at runtime.
+# codewood one-dir executable (and its _internal runtime) under Contents/MacOS
+# so the GUI process resolves to this .app bundle and shows its Dock icon.
 build_macos_installers() {
   local app_name="Code Wood"
   local app_dir="dist/${app_name}.app"
@@ -180,18 +186,29 @@ build_macos_installers() {
 
   echo "Assembling ${app_dir}..."
   rm -rf "$app_dir"
-  mkdir -p "$macos_dir" "$res_dir"
+  mkdir -p "$macos_dir" "$res_dir" "$app_dir/Contents/Frameworks"
 
-  # Place the whole one-dir bundle under Resources/codewood and expose the GUI
-  # launcher as the app's main executable via a thin wrapper.
-  cp -R "dist/codewood" "$res_dir/codewood"
-  cat > "$macos_dir/CodeWood" <<'WRAPPER'
-#!/bin/sh
-# Resolve the bundle's Resources/codewood and launch the GUI executable.
-DIR="$(cd "$(dirname "$0")/../Resources/codewood" && pwd)"
-exec "$DIR/codewood-gui" "$@"
-WRAPPER
-  chmod +x "$macos_dir/CodeWood"
+  # macOS resolves a process's bundle (and thus its Dock icon / running-dot)
+  # from the executable's location: a binary under Contents/MacOS is matched to
+  # this .app, while the same binary buried in Contents/Resources gets
+  # mainBundle=nil and shows up as a separate Dock icon. So keep codewood under
+  # Contents/MacOS as the app's main executable. When it runs as the bundle's
+  # main process (a double-click), cli/main.py auto-launches the GUI.
+  #
+  # PyInstaller's bootloader detects a bundle from a "<app>.app/Contents/MacOS"
+  # executable and then uses Contents/Frameworks as the runtime home (PYTHONHOME
+  # / sys._MEIPASS): it looks there for the Python shared library, base_library.zip,
+  # python3.13/ (stdlib) and the bundled data (host, frontend). So the ENTIRE
+  # onedir _internal contents go into Contents/Frameworks, NOT into a sibling
+  # _internal folder.
+  #
+  # No launcher wrapper named "CodeWood" is used: the macOS filesystem is
+  # case-insensitive, so "CodeWood" would alias "codewood" and clobber it. The
+  # one-file codewood-gui launcher also can't work inside Contents/MacOS without
+  # the Frameworks runtime.
+  cp "dist/codewood/codewood" "$macos_dir/codewood"
+  cp -R "dist/codewood/_internal/." "$app_dir/Contents/Frameworks/"
+  chmod +x "$macos_dir/codewood"
 
   # Minimal Info.plist. Icon is included when build/app_icon.icns exists.
   local icon_line=""
@@ -209,7 +226,7 @@ WRAPPER
   <key>CFBundleIdentifier</key><string>us.zoom.codewood</string>
   <key>CFBundleVersion</key><string>${APP_VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
-  <key>CFBundleExecutable</key><string>CodeWood</string>
+  <key>CFBundleExecutable</key><string>codewood</string>
   <key>CFBundlePackageType</key><string>APPL</string>
 ${icon_line}
 </dict>
