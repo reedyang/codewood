@@ -211,12 +211,10 @@ build_macos_installers() {
 </dict></plist>
 PLIST
 
-  # Ship the console `codewood` (TUI/serve CLI) inside the bundle's Resources so
-  # the .pkg can link /usr/local/bin/codewood to it, and so `codewood app` works
-  # from the bundle path.
-  if [ -d "dist/codewood" ]; then
-    cp -R "dist/codewood" "$app_dir/Contents/Resources/codewood"
-  fi
+  # The console `codewood` CLI is NOT duplicated inside the bundle. It is exposed
+  # as a thin launcher on /usr/local/bin (see the .pkg block below) that reuses
+  # this same Contents/MacOS binary, so the .dmg/.pkg stay a single ~640MB payload
+  # instead of carrying a second (600MB+) copy of the console build.
 
   # .dmg (drag-to-Applications of the GUI app). hdiutil is part of macOS.
   if command -v hdiutil >/dev/null 2>&1; then
@@ -236,24 +234,72 @@ PLIST
     echo "WARNING: hdiutil not found; skipping .dmg." >&2
   fi
 
-  # .pkg (guided installer): installs the GUI app to /Applications and links the
-  # `codewood` TUI CLI to /usr/local/bin.
+  # .pkg (guided installer): installs the GUI app to /Applications and exposes the
+  # `codewood` TUI/serve CLI on /usr/local/bin via a thin launcher that re-execs
+  # the bundle's same Contents/MacOS binary in console mode (CODEWOOD_CONSOLE_LAUNCH
+  # opts out of the auto-open-GUI default). This avoids shipping a duplicate copy of
+  # the ~640MB console payload.
+  #
+  # The .app is shipped as a compressed archive and unpacked by a postinstall
+  # script (the same copy the working .dmg drag performs). Driving the copy with a
+  # postinstall avoids pkgbuild auto-detecting the .app bundle AND its embedded
+  # Python.framework as relocatable/strict-identifier bundles (the Installer then
+  # mishandles them and leaves the app out of /Applications). A plain tarball in
+  # the payload triggers no bundle detection, so the app lands deterministically.
   if command -v pkgbuild >/dev/null 2>&1; then
     local pkg="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.pkg"
     rm -f "$pkg"
+
+    # Ship the assembled app as a compressed archive under a non-bundle path.
+    local app_parent; app_parent="$(dirname "$app_dir")"
+    local staging; staging="$(mktemp -d)"
+    local app_tar="$staging/CodeWood.app.tar.gz"
+    ( cd "$app_parent" && /usr/bin/tar -czf "$app_tar" "Code Wood.app" )
+
+    # Payload root (install-location "/"): the launcher + the app archive. The
+    # archive is extracted to /Applications by the postinstall script below.
     local pkgroot; pkgroot="$(mktemp -d)"
-    mkdir -p "$pkgroot/Applications" "$pkgroot/usr/local/bin"
-    cp -R "$app_dir" "$pkgroot/Applications/"
-    ln -s "../../../Applications/${app_name}.app/Contents/Resources/codewood/codewood" \
-      "$pkgroot/usr/local/bin/codewood"
+    mkdir -p "$pkgroot/usr/local/bin" "$pkgroot/usr/local/share/codewood"
+    cat > "$pkgroot/usr/local/bin/codewood" <<'LAUNCH'
+#!/bin/sh
+# Code Wood console CLI - thin launcher reusing the GUI bundle's binary, so the
+# .pkg need not ship a second copy of the console payload. The bundle's
+# Contents/MacOS executable contains the TUI, serve and GUI entry points.
+CODEWOOD_CONSOLE_LAUNCH=1
+export CODEWOOD_CONSOLE_LAUNCH
+exec "/Applications/Code Wood.app/Contents/MacOS/codewood-gui" "$@"
+LAUNCH
+    chmod +x "$pkgroot/usr/local/bin/codewood"
+    cp "$app_tar" "$pkgroot/usr/local/share/codewood/CodeWood.app.tar.gz"
+
+    # postinstall: unpack the app into /Applications (exactly like dragging the
+    # .dmg), then drop the archive copy. $2 = target volume mount point.
+    local scripts; scripts="$(mktemp -d)"
+    cat > "$scripts/postinstall" <<'POST'
+#!/bin/sh
+TARGET="${2:-/}"
+APP_TAR="$TARGET/usr/local/share/codewood/CodeWood.app.tar.gz"
+APP_DEST="$TARGET/Applications/Code Wood.app"
+if [ -f "$APP_TAR" ]; then
+  echo "Installing Code Wood.app to $TARGET/Applications..."
+  rm -rf "$APP_DEST"
+  mkdir -p "$TARGET/Applications"
+  /usr/bin/tar -xzf "$APP_TAR" -C "$TARGET/Applications"
+  rm -rf "$TARGET/usr/local/share/codewood"
+fi
+exit 0
+POST
+    chmod +x "$scripts/postinstall"
+
     echo "Creating .pkg \"$pkg\"..."
-    if pkgbuild --root "$pkgroot" --identifier "us.zoom.codewood" \
-        --version "$APP_VERSION" --install-location "/" "$pkg" >/dev/null; then
-      INSTALLER_NOTES+=("  $(basename "$pkg")  - macOS installer (GUI app + codewood CLI)")
+    if pkgbuild --root "$pkgroot" --scripts "$scripts" \
+        --identifier "us.zoom.codewood" --version "$APP_VERSION" \
+        --install-location "/" --ownership recommended "$pkg" >/dev/null; then
+      INSTALLER_NOTES+=("  $(basename "$pkg")  - macOS installer (GUI app -> /Applications, codewood CLI -> /usr/local/bin)")
     else
       echo "WARNING: pkgbuild failed; skipping .pkg." >&2
     fi
-    rm -rf "$pkgroot"
+    rm -rf "$staging" "$pkgroot" "$scripts"
   else
     echo "WARNING: pkgbuild not found; skipping .pkg." >&2
   fi

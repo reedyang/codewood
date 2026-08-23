@@ -585,6 +585,11 @@ def _apply_startup_model_override(
 
 
 _GUI_DETACHED_ENV = "CODEWOOD_GUI_DETACHED"
+# When the console ``codewood`` CLI is a thin launcher that re-execs the GUI
+# bundle's binary (the macOS .pkg installs /usr/local/bin/codewood this way to
+# avoid shipping a 600MB+ duplicate console payload), this env var opts that
+# launch out of the auto-open-GUI default so it behaves as the TUI/serve CLI.
+_GUI_CONSOLE_LAUNCH_ENV = "CODEWOOD_CONSOLE_LAUNCH"
 
 # Single-instance GUI guard (see _acquire_gui_single_instance_lock).
 # Windows uses a per-session named mutex, which Windows releases automatically
@@ -1119,6 +1124,11 @@ def _resolve_gui_launch(cli_args: dict) -> int | None:
     detached_child = os.environ.get(_GUI_DETACHED_ENV) == "1"
     serve_requested = bool(cli_args.get("serve_mode", False))
     gui_app_entry = getattr(sys, "frozen", False) and _is_gui_executable()
+    # A console launcher re-uses this same windowed binary (see
+    # _GUI_CONSOLE_LAUNCH_ENV); it must not auto-open the GUI, otherwise running
+    # ``codewood`` from the terminal would launch the window instead of the TUI.
+    if os.environ.get(_GUI_CONSOLE_LAUNCH_ENV) == "1":
+        gui_app_entry = False
 
     app_requested = bool(cli_args.get("app_mode", False)) or (
         gui_app_entry and not serve_requested
