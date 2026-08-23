@@ -1614,6 +1614,16 @@ export function RichComposer({
 
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      // While an IME composition is in flight (e.g. Chinese Pinyin holding
+      // pending Latin text, or half-width English awaiting confirmation), the
+      // IME owns the keyboard: the Enter that commits/confirms the composition
+      // must NOT be treated as "send". Let the IME consume every key here —
+      // including that committing Enter (detected via ``isComposing`` or the
+      // legacy 229 keyCode) — instead of routing it to our shortcuts, popup
+      // selection or submit handlers.
+      if (e.nativeEvent.isComposing || (e.nativeEvent as KeyboardEvent).keyCode === 229) {
+        return;
+      }
       // Undo / redo. We own the history because manual DOM rewrites defeat the
       // browser's native contentEditable undo (Ctrl+Z would otherwise do
       // nothing, most visibly after pasting pill-bearing content).
