@@ -5507,6 +5507,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Bridge native-menu actions (gui.py -> window.__codewoodMenu) to app state.
   useEffect(() => {
+    const GITHUB_URL = "https://github.com/reedyang/codewood";
+    const ZOOM_LEVELS = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+    const hostApi = (window as unknown as {
+      pywebview?: {
+        api?: {
+          toggle_always_on_top?: () => boolean | Promise<boolean>;
+          close_window?: () => void;
+          open_external?: (url: string) => boolean | Promise<boolean>;
+        };
+      };
+    }).pywebview?.api;
     const handler = (action: string, payload?: string) => {
       switch (action) {
         case "new-chat": {
@@ -5544,6 +5555,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 }
               }
             });
+          } else {
+            // Native menu sends no path: open the native folder picker.
+            void pickAndOpenFolder();
           }
           break;
         }
@@ -5552,6 +5566,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         case "about":
           setAboutOpen(true);
+          break;
+        case "always-on-top":
+          void hostApi?.toggle_always_on_top?.();
+          break;
+        case "browser":
+          if (browserOpen) {
+            hideBrowserTab();
+          } else {
+            showBrowserTab();
+          }
+          break;
+        case "console":
+          if (consoleOpen) {
+            hideConsole();
+          } else {
+            showConsole();
+          }
+          break;
+        case "zoom-in": {
+          const next = ZOOM_LEVELS.findIndex((z) => z > zoomLevel);
+          if (next >= 0) persistZoomLevel(ZOOM_LEVELS[next]);
+          break;
+        }
+        case "zoom-out": {
+          for (let i = ZOOM_LEVELS.length - 1; i >= 0; i--) {
+            if (ZOOM_LEVELS[i] < zoomLevel) {
+              persistZoomLevel(ZOOM_LEVELS[i]);
+              break;
+            }
+          }
+          break;
+        }
+        case "zoom-reset":
+          persistZoomLevel(1);
+          break;
+        case "github":
+          if (hostApi?.open_external) {
+            void hostApi.open_external(GITHUB_URL);
+          } else {
+            window.open(GITHUB_URL, "_blank", "noopener,noreferrer");
+          }
+          break;
+        case "exit":
+          // Mirror the in-window Close action: flush settings before closing.
+          if (settingsOpen) {
+            closeSettings();
+          }
+          hostApi?.close_window?.();
           break;
         default:
           break;
@@ -5563,7 +5625,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       delete (window as unknown as { __codewoodMenu?: typeof handler })
         .__codewoodMenu;
     };
-  }, [clearTurns, client, refreshWorkspaceChats]);
+  }, [
+    clearTurns,
+    client,
+    refreshWorkspaceChats,
+    pickAndOpenFolder,
+    showBrowserTab,
+    hideBrowserTab,
+    browserOpen,
+    showConsole,
+    hideConsole,
+    consoleOpen,
+    closeSettings,
+    settingsOpen,
+    persistZoomLevel,
+    zoomLevel,
+  ]);
 
   const value: AppContextValue = {
     client,

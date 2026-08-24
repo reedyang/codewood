@@ -135,8 +135,11 @@ function Shell() {
   // JS-accessible shortcuts (the native menu shows the same accelerators).
   useEffect(() => {
     const ZOOM_LEVELS = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+    // On macOS the shortcuts use Command only (no Ctrl); elsewhere Ctrl only.
+    const isMac = /mac/i.test(navigator.platform || "") || /mac/i.test(navigator.userAgent);
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) {
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) {
         return;
       }
       const key = e.key.toLowerCase();

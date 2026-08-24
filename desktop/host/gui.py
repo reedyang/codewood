@@ -32,6 +32,10 @@ from notifier import TaskNotifier
 
 WINDOW_TITLE = "Code Wood"
 
+# NSMenuItem does not retain its target, so the menu dispatch object must be
+# kept alive for the lifetime of the process or AppKit will nil it out.
+_MACSOS_MENU_TARGETS: list[object] = []
+
 
 MIN_WIDTH = 960
 MIN_HEIGHT = 640
@@ -1064,6 +1068,143 @@ def _apply_macos_dock_icon() -> None:
         pass
 
 
+def _install_macos_native_menu(window) -> None:
+    """Replace the Cocoa main menu with a clean Code Wood menu bar.
+
+    pywebview's built-in ``menu=[...]`` support cannot strip its hardcoded
+    ``Services`` item or assign keyboard shortcuts, so on macOS we build the
+    menu with AppKit and install it once the app is running. Items that drive
+    app state dispatch through the frontend's ``window.__codewoodMenu`` bridge
+    (see AppContext); standard items (Hide, Quit, and the Edit menu) target the
+    responder chain so text editing and the standard shortcuts keep working.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+        from objc import nil
+    except Exception:
+        return
+    try:
+        app = AppKit.NSApplication.sharedApplication()
+
+        class _Target(AppKit.NSObject):
+            def initWithWindow_(self, win):
+                self._window = win
+                return self
+
+            def codewoodAction_(self, sender):
+                action = sender.representedObject()
+                if not action:
+                    return
+
+                def fire() -> None:
+                    try:
+                        self._window.evaluate_js(
+                            "window.__codewoodMenu && window.__codewoodMenu(%s, '')"
+                            % json.dumps(action)
+                        )
+                    except Exception:
+                        pass
+
+                # Menu actions run on the main thread, but pywebview's
+                # ``evaluate_js`` blocks the main run loop on a semaphore, so
+                # calling it synchronously deadlocks. Dispatch in a background
+                # thread (the same trick pywebview's own MenuHandler uses).
+                threading.Thread(target=fire, daemon=True).start()
+
+        target = _Target.alloc().initWithWindow_(window)
+        _MACSOS_MENU_TARGETS.append(target)
+
+        def app_item(title, selector, key="", mask=None):
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, selector, key
+            )
+            if selector:
+                item.setTarget_(nil)
+            if key:
+                item.setKeyEquivalentModifierMask_(mask or AppKit.NSCommandKeyMask)
+            return item
+
+        def js_item(title, action, key=""):
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, "codewoodAction:", key
+            )
+            item.setTarget_(target)
+            item.setRepresentedObject_(action)
+            if key:
+                item.setKeyEquivalentModifierMask_(AppKit.NSCommandKeyMask)
+            return item
+
+        def top_menu(title):
+            menu = AppKit.NSMenu.alloc().init()
+            menu.setTitle_(title)
+            item = AppKit.NSMenuItem.alloc().init()
+            item.setTitle_(title)
+            item.setSubmenu_(menu)
+            main_menu.addItem_(item)
+            return menu
+
+        main_menu = AppKit.NSMenu.alloc().init()
+
+        # Application menu (bold, shows the app name). No Services item.
+        app_menu_item = AppKit.NSMenuItem.alloc().init()
+        app_menu_item.setTitle_("Code Wood")
+        app_menu = AppKit.NSMenu.alloc().init()
+        app_menu_item.setSubmenu_(app_menu)
+        main_menu.addItem_(app_menu_item)
+        app_menu.addItem_(js_item("About Code Wood", "about"))
+        app_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        app_menu.addItem_(js_item("Settings…", "settings", ","))
+        app_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        app_menu.addItem_(app_item("Hide Code Wood", "hide:", "h"))
+        app_menu.addItem_(
+            app_item(
+                "Hide Others",
+                "hideOtherApplications:",
+                "h",
+                AppKit.NSCommandKeyMask | AppKit.NSAlternateKeyMask,
+            )
+        )
+        app_menu.addItem_(app_item("Show All", "unhideAllApplications:"))
+        app_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        app_menu.addItem_(app_item("Quit Code Wood", "terminate:", "q"))
+
+        # File: New Chat (Cmd+N), Open Folder… (Cmd+O). No Close Window.
+        file_menu = top_menu("File")
+        file_menu.addItem_(js_item("New Chat", "new-chat", "n"))
+        file_menu.addItem_(js_item("Open Folder…", "open-folder", "o"))
+
+        # View: Always on Top, Browser, Console, then a separate Zoom group and
+        # a separate fullscreen group (so the fullscreen item doesn't pull the
+        # zoom items into the same alignment bucket).
+        view_menu = top_menu("View")
+        view_menu.addItem_(js_item("Always on Top", "always-on-top"))
+        view_menu.addItem_(js_item("Browser", "browser"))
+        view_menu.addItem_(js_item("Console", "console"))
+        view_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        view_menu.addItem_(js_item("Zoom In", "zoom-in", "+"))
+        view_menu.addItem_(js_item("Zoom Out", "zoom-out", "-"))
+        view_menu.addItem_(js_item("Actual Size", "zoom-reset", "0"))
+        view_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        view_menu.addItem_(
+            app_item(
+                "Enter Full Screen",
+                "toggleFullScreen:",
+                "f",
+                AppKit.NSControlKeyMask | AppKit.NSCommandKeyMask,
+            )
+        )
+
+        # Help: GitHub only (no About).
+        help_menu = top_menu("Help")
+        help_menu.addItem_(js_item("Code Wood on GitHub", "github"))
+
+        app.setMainMenu_(main_menu)
+    except Exception:
+        pass
+
+
 def main() -> int:
     _apply_macos_dock_icon()
     backend = BackendProcess()
@@ -1086,6 +1227,10 @@ def main() -> int:
     url = resolve_frontend_url(port, token)
     host_api = HostApi()
     host_api.set_backend(port, token)
+    # On macOS the menu lives in the system menu bar (native) and is replaced
+    # with the AppKit menu in _install_macos_native_menu on first show.
+    if sys.platform == "darwin":
+        webview.settings["SHOW_DEFAULT_MENUS"] = False
     window = webview.create_window(
         WINDOW_TITLE,
         url=url,
@@ -1114,6 +1259,20 @@ def main() -> int:
             window.events.shown += _on_shown
         except Exception:
             pass
+    elif sys.platform == "darwin":
+
+        def _on_shown(*_args: object) -> None:
+            try:
+                from PyObjCTools import AppHelper
+
+                AppHelper.callAfter(lambda: _install_macos_native_menu(window))
+            except Exception:
+                _install_macos_native_menu(window)
+
+        try:
+            window.events.shown += _on_shown
+        except Exception:
+            _install_macos_native_menu(window)
 
     def _on_closing() -> None:
         try:

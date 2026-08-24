@@ -58,12 +58,20 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
   const [maximized, setMaximized] = useState(false);
-  // Defaults to "win32" so the pywebview-drag-region is present on the very
-  // first paint (matching prior behavior) until the host reports otherwise.
-  // Windows and macOS both use pywebview's native drag region; GTK/Linux/WSL
-  // instead hand moves off to the window manager below.
-  const [hostOs, setHostOs] = useState<string>("win32");
+  // Default to the era-agnostic guess so the pywebview-drag-region is present
+  // on the very first paint (matching prior behavior) until the host reports
+  // the real platform. Windows and macOS both use pywebview's native drag
+  // region; GTK/Linux/WSL instead hand moves off to the window manager below.
+  // On macOS we detect the OS eagerly so the traffic-light title bar (and the
+  // absent in-window menubar) render correctly without a Windows-style flash.
+  const [hostOs, setHostOs] = useState<string>(() => {
+    const plat = (navigator.platform || "").toLowerCase();
+    if (plat.includes("mac")) return "darwin";
+    if (plat.includes("win")) return "win32";
+    return "win32";
+  });
   const barRef = useRef<HTMLDivElement | null>(null);
+  const isMac = hostOs === "darwin";
 
   useEffect(() => {
     const api = hostApi();
@@ -171,7 +179,26 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
   ];
 
   return (
-    <div className="titlebar" ref={barRef}>
+    <div className={`titlebar${isMac ? " mac" : ""}`} ref={barRef}>
+      {isMac && (
+        <div className="win-controls mac">
+          <button className="mac-btn close" aria-label={t("win.close")} title={t("win.close")} onClick={closeWindow}>
+            <span className="mac-symbol">×</span>
+          </button>
+          <button className="mac-btn minimize" aria-label={t("win.minimize")} title={t("win.minimize")} onClick={() => hostApi()?.minimize?.()}>
+            <span className="mac-symbol">−</span>
+          </button>
+          <button
+            className="mac-btn maximize"
+            aria-label={maximized ? t("win.restore") : t("win.maximize")}
+            title={maximized ? t("win.restore") : t("win.maximize")}
+            onClick={() => void toggleMaximize()}
+          >
+            <span className="mac-symbol">{maximized ? "−" : "+"}</span>
+          </button>
+        </div>
+      )}
+
       <button
         className={`icon-btn titlebar-toggle ${collapsed ? "" : "active"}`}
         aria-label={t("panel.toggle")}
@@ -181,53 +208,55 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
         <Icon name="panel" size={18} />
       </button>
 
-      <div className="menubar">
-        {menus.map((menu) => (
-          <div className="menubar-item" key={menu.id}>
-            <button
-              className={`menubar-button ${openMenu === menu.id ? "open" : ""}`}
-              onClick={() => setOpenMenu((cur) => (cur === menu.id ? null : menu.id))}
-              onMouseEnter={() => setOpenMenu((cur) => (cur ? menu.id : cur))}
-            >
-              {menu.label}
-            </button>
-            {openMenu === menu.id && (
-              <div className="menubar-menu" role="menu">
-                {(() => {
-                  const hasCheckColumn = (menu.entries as MenuEntry[]).some(
-                    (e): e is Exclude<MenuEntry, "separator"> => e !== "separator" && "checked" in e,
-                  );
-                  return menu.entries.map((entry, idx) =>
-                    entry === "separator" ? (
-                      <div className="menubar-separator" key={`sep-${idx}`} />
-                    ) : (
-                      <button
-                        key={entry.label}
-                        className="menubar-menu-item"
-                        role="menuitem"
-                        onClick={() => {
-                          setOpenMenu(null);
-                          entry.onSelect();
-                        }}
-                      >
-                        <span className="menubar-item-label">
-                          {hasCheckColumn && (
-                            <span className="dropdown-check">
-                              {entry.checked && <Icon name="check" size={13} />}
-                            </span>
-                          )}
-                          <span>{entry.label}</span>
-                        </span>
-                        {entry.shortcut && <span className="menubar-shortcut">{entry.shortcut}</span>}
-                      </button>
-                    ),
-                  );
-                })()}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+      {!isMac && (
+        <div className="menubar">
+          {menus.map((menu) => (
+            <div className="menubar-item" key={menu.id}>
+              <button
+                className={`menubar-button ${openMenu === menu.id ? "open" : ""}`}
+                onClick={() => setOpenMenu((cur) => (cur === menu.id ? null : menu.id))}
+                onMouseEnter={() => setOpenMenu((cur) => (cur ? menu.id : cur))}
+              >
+                {menu.label}
+              </button>
+              {openMenu === menu.id && (
+                <div className="menubar-menu" role="menu">
+                  {(() => {
+                    const hasCheckColumn = (menu.entries as MenuEntry[]).some(
+                      (e): e is Exclude<MenuEntry, "separator"> => e !== "separator" && "checked" in e,
+                    );
+                    return menu.entries.map((entry, idx) =>
+                      entry === "separator" ? (
+                        <div className="menubar-separator" key={`sep-${idx}`} />
+                      ) : (
+                        <button
+                          key={entry.label}
+                          className="menubar-menu-item"
+                          role="menuitem"
+                          onClick={() => {
+                            setOpenMenu(null);
+                            entry.onSelect();
+                          }}
+                        >
+                          <span className="menubar-item-label">
+                            {hasCheckColumn && (
+                              <span className="dropdown-check">
+                                {entry.checked && <Icon name="check" size={13} />}
+                              </span>
+                            )}
+                            <span>{entry.label}</span>
+                          </span>
+                          {entry.shortcut && <span className="menubar-shortcut">{entry.shortcut}</span>}
+                        </button>
+                      ),
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <GlobalChatSearch />
 
@@ -256,7 +285,7 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
         onDoubleClick={() => void toggleMaximize()}
       />
 
-      {native && (
+      {native && !isMac && (
         <div className="win-controls">
           <button className="win-btn" aria-label={t("win.minimize")} title={t("win.minimize")} onClick={() => hostApi()?.minimize?.()}>
             <Icon name="win-min" size={14} />
