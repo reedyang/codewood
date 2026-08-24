@@ -183,10 +183,10 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
       {isMac && (
         <div className="win-controls mac">
           <button className="mac-btn close" aria-label={t("win.close")} title={t("win.close")} onClick={closeWindow}>
-            <span className="mac-symbol">×</span>
+            <Icon name="mac-close" size={12} className="mac-symbol" />
           </button>
           <button className="mac-btn minimize" aria-label={t("win.minimize")} title={t("win.minimize")} onClick={() => hostApi()?.minimize?.()}>
-            <span className="mac-symbol">−</span>
+            <Icon name="mac-min" size={12} className="mac-symbol" />
           </button>
           <button
             className="mac-btn maximize"
@@ -194,7 +194,7 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
             title={maximized ? t("win.restore") : t("win.maximize")}
             onClick={() => void toggleMaximize()}
           >
-            <span className="mac-symbol">{maximized ? "−" : "+"}</span>
+            <Icon name={maximized ? "mac-zoom-restore" : "mac-zoom"} size={12} className="mac-symbol" />
           </button>
         </div>
       )}

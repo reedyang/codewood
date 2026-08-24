@@ -25,6 +25,10 @@ import winMin from "../assets/icons/win-min.svg";
 import winMax from "../assets/icons/win-max.svg";
 import winRestore from "../assets/icons/win-restore.svg";
 import winClose from "../assets/icons/win-close.svg";
+import macClose from "../assets/icons/mac-close.svg";
+import macMin from "../assets/icons/mac-min.svg";
+import macZoom from "../assets/icons/mac-zoom.svg";
+import macZoomRestore from "../assets/icons/mac-zoom-restore.svg";
 import arrowLeft from "../assets/icons/arrow-left.svg";
 import arrowRight from "../assets/icons/arrow-right.svg";
 import listCheck from "../assets/icons/list-check.svg";
@@ -73,6 +77,10 @@ const SOURCES = {
   "win-max": winMax,
   "win-restore": winRestore,
   "win-close": winClose,
+  "mac-close": macClose,
+  "mac-min": macMin,
+  "mac-zoom": macZoom,
+  "mac-zoom-restore": macZoomRestore,
   "arrow-left": arrowLeft,
   "arrow-right": arrowRight,
   "list-check": listCheck,
