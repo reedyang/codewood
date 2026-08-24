@@ -384,6 +384,10 @@ class HostApi:
         self._vertically_maximized = False
         self._always_on_top = False
         self._pre_vertical_max_geometry: tuple[int, int, int, int] | None = None
+        # Frame captured before a macOS maximize so restore() can bring the
+        # window back to its pre-maximize size and position (pywebview's
+        # Cocoa backend does not remember it). None on other platforms.
+        self._pre_maximize_geometry: tuple[int, int, int, int] | None = None
         # Set by ``main()`` once the overlay browser window exists. ``None``
         # until then (and stays a disabled instance when overlay mode is off),
         # so every overlay method is safe to call regardless.
@@ -635,6 +639,12 @@ class HostApi:
             if self._maximized:
                 self._restore_window(window)
             else:
+                # On macOS pywebview's Cocoa maximize() only grows the window
+                # to fill the screen; it does not remember the previous frame,
+                # and restore() only un-minimizes. Capture the geometry now so
+                # restore can bring the window back to its pre-maximize state.
+                if sys.platform == "darwin":
+                    self._pre_maximize_geometry = _get_window_geometry(window)
                 window.maximize()
             self._maximized = not self._maximized
         except Exception:
@@ -734,15 +744,19 @@ class HostApi:
         self._maximized = want_max
         return True
 
-    @staticmethod
-    def _restore_window(window) -> None:
+    def _restore_window(self, window) -> None:
         """Un-maximize a window across pywebview backends.
 
         On Windows/EdgeChromium ``window.restore()`` works. On the GTK backend
         ``restore()`` does not always un-maximize the underlying GtkWindow, so
         fall back to calling ``unmaximize()`` on the native GTK handle directly
         (run on the GTK main thread via ``GLib.idle_add`` to stay thread-safe).
+        On macOS/Cocoa ``restore()`` only un-minimizes and leaves the window
+        at full screen, so restore the frame captured before maximize instead.
         """
+        if sys.platform == "darwin":
+            self._restore_macos_geometry(window)
+            return
         restored = False
         try:
             window.restore()
@@ -772,6 +786,32 @@ class HostApi:
                     gtk_window.unmaximize()
                 except Exception:
                     pass
+
+    def _restore_macos_geometry(self, window) -> None:
+        """Restore the macOS window to its pre-maximize frame.
+
+        pywebview's Cocoa ``restore()`` only un-minimizes and never puts the
+        window back to its pre-maximize size/position, so keep our own copy of
+        the frame captured in :meth:`toggle_maximize` and re-apply it.
+        """
+        prev = self._pre_maximize_geometry
+        if prev is None:
+            return
+        prev_x, prev_y, prev_w, prev_h = prev
+        try:
+            window.resize(prev_w, prev_h)
+        except Exception:
+            pass
+        try:
+            window.move(prev_x, prev_y)
+        except Exception:
+            pass
+        if self._overlay is not None:
+            try:
+                self._overlay.resync()
+            except Exception:
+                pass
+        self._pre_maximize_geometry = None
 
     def close_window(self) -> None:
         # Destroy the window, then make sure the whole app actually quits. On
