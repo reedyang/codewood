@@ -1,6 +1,7 @@
 ﻿import unittest
 import io
 import os
+import sys
 import tempfile
 import subprocess
 from pathlib import Path
@@ -254,6 +255,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         finally:
             script_path.unlink(missing_ok=True)
 
+    @unittest.skipUnless(os.name == "nt", "allowlist key is lowercased only on Windows")
     def test_shell_script_allowlist_key_uses_inner_script_when_powershell_wrapped(self):
         agent = _DummyAgent()
         tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
@@ -387,6 +389,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         finally:
             script_path.unlink(missing_ok=True)
 
+    @unittest.skipUnless(os.name == "nt", "cscript is a Windows-only scripting host")
     def test_parse_shell_invoked_script_path_unwraps_cmd_cscript_nologo(self):
         agent = _DummyAgent()
         tf = tempfile.NamedTemporaryFile(suffix=".vbs", delete=False)
@@ -400,6 +403,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         finally:
             script_path.unlink(missing_ok=True)
 
+    @unittest.skipUnless(os.name == "nt", "wscript is a Windows-only scripting host")
     def test_parse_shell_invoked_script_path_unwraps_wscript_with_options(self):
         agent = _DummyAgent()
         tf = tempfile.NamedTemporaryFile(suffix=".vbs", delete=False)
@@ -741,7 +745,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         ), patch(
             "cli.tools.shell._snapshot_workspace_file_list", return_value={},
         ):
-            result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
+            result = action_shell_command(agent, f'{sys.executable} -c "print(1)"', confirmed=False, interactive=True, input_data=None)
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(len(agent.prompt_calls), 0)
@@ -952,6 +956,7 @@ class SafeReadOnlyCommandBypassTests(unittest.TestCase):
         agent = self._make_agent()
         self.assertTrue(agent._shell_command_in_allowlist("rg -n TODO src"))
 
+    @unittest.skipUnless(os.name == "nt", "Windows backslash path to rg.exe")
     def test_shell_allowlist_true_for_rg_full_path(self):
         agent = self._make_agent()
         self.assertTrue(agent._shell_command_in_allowlist("D:\\repo\\bin\\rg.exe -n TODO src"))
@@ -1189,6 +1194,7 @@ class RgStderrRetryTests(unittest.TestCase):
         from cli.tools.shell import _is_rg_command
         self.assertTrue(_is_rg_command("rg.exe -n pattern file.txt"))
 
+    @unittest.skipUnless(os.name == "nt", "Windows backslash path to rg.exe")
     def test_is_rg_command_true_for_full_path(self):
         from cli.tools.shell import _is_rg_command
         self.assertTrue(_is_rg_command('"D:\\bin\\rg.exe" -n pattern file.txt'))

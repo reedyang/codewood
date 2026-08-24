@@ -1,6 +1,7 @@
 """Integration tests: bypass_sandbox wiring inside action_shell_command."""
 
 import tempfile
+import sys
 import types
 import unittest
 from pathlib import Path
@@ -94,7 +95,7 @@ class SandboxEscalationFlowTests(unittest.TestCase):
         with spec_patch, module_patch:
             result = action_shell_command(
                 agent,
-                "python -c \"print(1)\"",
+                f'{sys.executable} -c "print(1)"',
                 confirmed=False,
                 interactive=False,
                 input_data=None,
@@ -114,7 +115,7 @@ class SandboxEscalationFlowTests(unittest.TestCase):
         with spec_patch, module_patch:
             result = action_shell_command(
                 agent,
-                "python -c \"print(1)\"",
+                f'{sys.executable} -c "print(1)"',
                 confirmed=False,
                 interactive=False,
                 input_data=None,
@@ -176,7 +177,7 @@ class SandboxEscalationFlowTests(unittest.TestCase):
         with spec_patch, module_patch:
             result = action_shell_command(
                 agent,
-                "python -c \"print(1)\"",
+                f'{sys.executable} -c "print(1)"',
                 confirmed=True,
                 interactive=False,
                 input_data=None,

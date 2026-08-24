@@ -1,5 +1,6 @@
 import json
 import tempfile
+import os
 import unittest
 from pathlib import Path
 
@@ -51,6 +52,7 @@ def _app(cfg_dir: Path) -> ServeApp:
 
 
 class FileChangesCompatTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows backslash file-path normalization")
     def test_lookup_file_change_reads_new_ref_keyed_disk_format(self):
         with tempfile.TemporaryDirectory() as td:
             app = _app(Path(td))

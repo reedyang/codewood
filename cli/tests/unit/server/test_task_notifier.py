@@ -223,6 +223,7 @@ class ActivationTests(unittest.TestCase):
 
 
 class ShowNativeNotificationTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows native notification dispatch")
     def test_windows_dispatch(self):
         with patch.object(notifier_mod, "_windows_notify") as notify:
             notifier_mod._show_native_notification("My Chat", 5)
@@ -232,6 +233,7 @@ class ShowNativeNotificationTests(unittest.TestCase):
         self.assertIn("Task finished", body)
         self.assertIn("5s", body)
 
+    @unittest.skipUnless(os.name == "nt", "Windows native notification dispatch")
     def test_windows_dispatch_no_elapsed(self):
         with patch.object(notifier_mod, "_windows_notify") as notify:
             notifier_mod._show_native_notification("My Chat", 0)

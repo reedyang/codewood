@@ -1,4 +1,5 @@
 import sys
+import os
 import tempfile
 import types
 import unittest
@@ -1067,6 +1068,7 @@ class AiOutputDisplayTests(unittest.TestCase):
                     _startup_text_display_width(box_rows[0]),
                 )
 
+    @unittest.skipUnless(os.name == "nt", "startup overview layout uses a Windows drive-letter path")
     def test_startup_overview_label_values_share_left_column_in_chinese(self):
         """The values for ``模型``/``工作区``/``目录`` (and their English
         counterparts) must all begin at the same visual column inside the

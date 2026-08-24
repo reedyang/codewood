@@ -82,6 +82,7 @@ class RandomPasswordTests(unittest.TestCase):
             self.assertEqual(len(_random_password(length)), length)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows sandbox backend requires ctypes.WinDLL")
 class WindowsSandboxBackendProvisionTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -695,6 +696,7 @@ class WindowsSandboxBackendProvisionTests(unittest.TestCase):
         self.assertFalse(status["degraded"])
 
 
+@unittest.skipUnless(os.name == "nt", "Windows sandbox backend requires ctypes.WinDLL")
 class WindowsSandboxBackendCredentialTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -983,6 +985,7 @@ class LaunchElevatedSetupTests(unittest.TestCase):
         self.assertIn("--level read_only", params)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows sandbox backend requires ctypes.WinDLL")
 class BuildEnvBlockTests(unittest.TestCase):
     def test_double_null_terminated_and_skips_equals_keys(self):
         block = _build_env_block({"PATH": "/bin", "=C:": "C:\\", "X": "1"})
@@ -1415,6 +1418,7 @@ class WindowsSandboxBackendCleanupTests(unittest.TestCase):
         self.assertNotIn("-Enabled", calls[1])
 
 
+@unittest.skipUnless(os.name == "nt", "Windows sandbox backend requires ctypes.WinDLL")
 class SandboxStateSharedRootTests(unittest.TestCase):
     """All data directories share one machine-local sandbox installation."""
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import os
 from pathlib import Path
 
 from cli.core.workspace_scope import (
@@ -86,6 +87,7 @@ class WorkspaceScopeHelperTests(unittest.TestCase):
         self.assertEqual(effective_workspace_name(agent), "A")
         self.assertEqual(effective_work_directory(agent), Path(r"D:\ws_a"))
 
+    @unittest.skipUnless(os.name == "nt", "Windows drive-letter work directory")
     def test_falls_back_to_work_directory_when_root_missing(self):
         agent = type("Bare", (), {"work_directory": Path(r"D:\wd")})()
         self.assertEqual(effective_workspace_root(agent), Path(r"D:\wd").resolve())

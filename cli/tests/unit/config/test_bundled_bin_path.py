@@ -30,6 +30,7 @@ class PrependBundledBinToPathTests(unittest.TestCase):
     def tearDown(self) -> None:
         os.environ["PATH"] = self._saved_path
 
+    @unittest.skipUnless(os.name == "nt", "Windows drive-letter PATH layout")
     def test_prepend_inserts_resolved_bin_at_head_when_missing(self):
         fake_bin = Path("D:/fake/project/bin")
         os.environ["PATH"] = os.pathsep.join(["C:\\foo", "C:\\bar"])
@@ -43,6 +44,7 @@ class PrependBundledBinToPathTests(unittest.TestCase):
         self.assertIn("C:\\foo", entries)
         self.assertIn("C:\\bar", entries)
 
+    @unittest.skipUnless(os.name == "nt", "Windows drive-letter PATH layout")
     def test_prepend_is_idempotent(self):
         fake_bin = Path("D:/fake/project/bin")
         os.environ["PATH"] = "C:\\foo"
@@ -136,6 +138,7 @@ class AppendWindowsGitToolsToPathTests(unittest.TestCase):
         self.assertEqual(result, [])
         self.assertEqual(os.environ["PATH"], r"C:\Windows\System32")
 
+    @unittest.skipUnless(os.name == "nt", "Windows Git tools PATH manipulation")
     def test_appends_candidates_at_tail_when_present(self):
         os.environ["PATH"] = r"C:\Windows\System32"
         with patch.object(app_info.os, "name", "nt"), \
@@ -150,6 +153,7 @@ class AppendWindowsGitToolsToPathTests(unittest.TestCase):
             [r"C:\Program Files\Git", r"C:\Program Files\Git\usr\bin"],
         )
 
+    @unittest.skipUnless(os.name == "nt", "Windows Git tools PATH manipulation")
     def test_idempotent_across_repeated_calls(self):
         os.environ["PATH"] = r"C:\Windows\System32"
         with patch.object(app_info.os, "name", "nt"), \
@@ -168,6 +172,7 @@ class AppendWindowsGitToolsToPathTests(unittest.TestCase):
             1,
         )
 
+    @unittest.skipUnless(os.name == "nt", "Windows Git tools PATH manipulation")
     def test_does_not_duplicate_when_already_present_with_different_casing(self):
         # Pre-seed PATH with the Git directories in different casing
         # to mimic a shell that already exported them; the helper must
@@ -185,6 +190,7 @@ class AppendWindowsGitToolsToPathTests(unittest.TestCase):
         # and existing entries keep their original casing.
         self.assertEqual(os.environ["PATH"], seeded)
 
+    @unittest.skipUnless(os.name == "nt", "Windows Git tools PATH manipulation")
     def test_only_appends_existing_subset_of_candidates(self):
         os.environ["PATH"] = r"C:\Windows\System32"
 

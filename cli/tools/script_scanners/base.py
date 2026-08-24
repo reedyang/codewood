@@ -215,7 +215,7 @@ def parse_script_execution(
                         interpreter=exe,
                     )
                 return None
-            if t.startswith("-") or t.startswith("/"):
+            if t.startswith("-") or (os.name == "nt" and t.startswith("/")):
                 i += 1
                 continue
             break

@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -74,6 +75,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             st = index.status()
             self.assertEqual(st["files_total"], 2)
 
+    @unittest.skipUnless(os.name == "nt", "Windows absolute drive path rebasing")
     def test_normalize_watch_rel_rebases_absolute_paths(self):
         root = "D:/SourceCode/opensource/codewood"
         self.assertEqual(

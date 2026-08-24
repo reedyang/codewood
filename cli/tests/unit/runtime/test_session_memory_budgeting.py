@@ -1,6 +1,7 @@
 import unittest
 import io
 import json
+import os
 import unicodedata
 from pathlib import Path
 import threading
@@ -2164,6 +2165,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages_renamed, _ = svc.build_regular_task_messages("hi", context="ctx")
         self.assertEqual(system_content, str(messages_renamed[0].get("content") or ""))
 
+    @unittest.skipUnless(os.name == "nt", "Windows drive-letter workspace root")
     def test_system_prompt_core_not_clipped_under_aggressive_compress(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}

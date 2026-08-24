@@ -1,4 +1,5 @@
 import tempfile
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,7 @@ class _CompletedText:
 
 
 class GitContentBeforeTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows drive-letter repo path")
     def test_index_version_wins_over_head(self):
         calls = [
             _CompletedText(0, b"index content\n"),
@@ -29,6 +31,7 @@ class GitContentBeforeTests(unittest.TestCase):
         self.assertEqual(run_mock.call_args_list[0].args[0][-1], ":src/a.py")
         self.assertEqual(len(run_mock.call_args_list), 1)
 
+    @unittest.skipUnless(os.name == "nt", "Windows drive-letter repo path")
     def test_head_fallback_when_index_misses(self):
         calls = [
             _CompletedText(1, b"", b"fatal: path does not exist"),

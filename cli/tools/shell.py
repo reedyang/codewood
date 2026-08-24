@@ -4056,7 +4056,7 @@ def parse_shell_invoked_script_path(agent: Any, command: str) -> Optional[Path]:
                     return _resolve_script_token(parts[i + 1])
                 i += 2
                 continue
-            if t.startswith("-") or t.startswith("/"):
+            if t.startswith("-") or (os.name == "nt" and t.startswith("/")):
                 i += 1
                 continue
             break
@@ -4956,7 +4956,7 @@ def _extract_delete_file_paths(
                 ]
             for token in tokens:
                 # Skip flags/options
-                if token.startswith("-") or token.startswith("/"):
+                if token.startswith("-") or (os.name == "nt" and token.startswith("/")):
                     continue
                 # Strip surrounding quotes
                 token = token.strip().strip("'\"")
