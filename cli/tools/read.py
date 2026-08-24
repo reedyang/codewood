@@ -50,7 +50,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
             return {"success": False, "error": f"'{path}' is not a file"}
 
         # ---------- images ----------
-        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".ico"}
+        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".ico"}
         if abs_path.suffix.lower() in _IMAGE_EXTS:
             _call_desc = f"Read {_rel}"
             _multimodal_checker = getattr(agent, "_multimodal_enabled_for_current_model", None)
