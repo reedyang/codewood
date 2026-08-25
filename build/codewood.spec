@@ -19,6 +19,13 @@ tmp_ret = collect_all('winpty')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('tiktoken')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# setuptools>=70 loads jaraco through pkg_resources.extern; PyInstaller's
+# pyi_rth_pkgres hook needs it at process start.
+tmp_ret = collect_all('jaraco')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('setuptools')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports += ['pkg_resources', 'jaraco', 'jaraco.text', 'jaraco.functools', 'jaraco.context', 'jaraco.collections']
 
 
 a = Analysis(

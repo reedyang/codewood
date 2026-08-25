@@ -45,8 +45,78 @@ if [ ! -f "$REQ_FILE" ]; then
   echo "Requirements file not found: \"$REQ_FILE\"" >&2
   exit 1
 fi
-echo "Installing/updating dependencies from \"$REQ_FILE\"..."
-"$VENV_PYTHON" -m pip install -r "$REQ_FILE" || { echo "Failed to install dependencies." >&2; exit 1; }
+
+# Linux PyPI torch wheels pull CUDA + nvidia-* runtimes (several GB). The
+# app only runs embeddings on CPU (cli/tools/embedding.py), so packaging
+# must ship the CPU wheel or the Linux artifact dwarfs Windows/macOS.
+#
+# The CPU index publishes local versions (2.8.0+cpu), not bare 2.8.0.
+# `pip install torch==2.8.0 --index-url .../whl/cpu` fails with
+# "from versions: none" because ==2.8.0 does not match 2.8.0+cpu.
+TORCH_SPEC="$(grep -E '^[[:space:]]*torch([=<>!~]|$)' "$REQ_FILE" | head -n 1 | sed 's/[[:space:]]*#.*//' | tr -d '[:space:]')"
+[ -n "$TORCH_SPEC" ] || TORCH_SPEC="torch==2.8.0"
+case "$TORCH_SPEC" in
+  *"+cpu") TORCH_CPU_SPEC="$TORCH_SPEC" ;;
+  torch==*) TORCH_CPU_SPEC="${TORCH_SPEC}+cpu" ;;
+  *) TORCH_CPU_SPEC="torch==2.8.0+cpu" ;;
+esac
+
+install_linux_cpu_torch() {
+  # Corporate HTTPS inspection (self-signed cert in the chain) breaks pip's
+  # default SSL verify against download.pytorch.org. --trusted-host is scoped
+  # to the PyTorch CPU CDN only; PyPI stays verified. Prefer PIP_CERT /
+  # SSL_CERT_FILE pointing at the corporate CA when available.
+  echo "Installing CPU-only $TORCH_CPU_SPEC (Linux CUDA wheels are several GB)..."
+  "$VENV_PYTHON" -m pip install --force-reinstall "$TORCH_CPU_SPEC" \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple \
+    --trusted-host download.pytorch.org \
+    --trusted-host download-r2.pytorch.org \
+    || { echo "Failed to install CPU-only PyTorch. Aborting packaging." >&2
+         echo "download.pytorch.org failed SSL verify (self-signed cert in chain)." >&2
+         echo "Set PIP_CERT or SSL_CERT_FILE to your corporate CA bundle and retry." >&2
+         exit 1; }
+}
+
+uninstall_linux_cuda_leftovers() {
+  local leftover
+  leftover="$("$VENV_PYTHON" -m pip freeze | sed -n 's/==.*//p' | grep -iE '^(nvidia-|cuda-|triton$)' || true)"
+  if [ -n "$leftover" ]; then
+    echo "Uninstalling leftover CUDA/NVIDIA packages so PyInstaller cannot bundle them:"
+    echo "$leftover"
+    # shellcheck disable=SC2086
+    "$VENV_PYTHON" -m pip uninstall -y $leftover || true
+  fi
+}
+
+if [ "$PACK_PLATFORM" = "linux" ]; then
+  # CPU torch first, then the rest of requirements.txt without the torch pin
+  # so pip does not replace 2.8.0+cpu with the PyPI CUDA wheel (torch==2.8.0).
+  install_linux_cpu_torch
+  REQ_NO_TORCH="$(mktemp)"
+  grep -v -E '^[[:space:]]*torch([=<>!~]|$)' "$REQ_FILE" > "$REQ_NO_TORCH"
+  echo "Installing/updating dependencies from \"$REQ_FILE\" (torch excluded; using $TORCH_CPU_SPEC)..."
+  if ! "$VENV_PYTHON" -m pip install -r "$REQ_NO_TORCH"; then
+    rm -f "$REQ_NO_TORCH"
+    echo "Failed to install dependencies." >&2
+    exit 1
+  fi
+  rm -f "$REQ_NO_TORCH"
+  uninstall_linux_cuda_leftovers
+  "$VENV_PYTHON" -c "import torch; cuda=getattr(torch.version,'cuda',None); v=torch.__version__; raise SystemExit('CUDA torch still installed: %s (cuda=%s). CPU wheel required for Linux packaging.' % (v, cuda) if cuda else 0)" \
+    || { echo "CPU-only PyTorch check failed. Aborting packaging." >&2; exit 1; }
+  echo "Using CPU-only PyTorch: $("$VENV_PYTHON" -c 'import torch; print(torch.__version__)')"
+else
+  echo "Installing/updating dependencies from \"$REQ_FILE\"..."
+  "$VENV_PYTHON" -m pip install -r "$REQ_FILE" || { echo "Failed to install dependencies." >&2; exit 1; }
+fi
+
+# pkg_resources (pulled in by setuptools) imports jaraco at frozen startup.
+# Ensure the standalone package is present so PyInstaller can collect it.
+echo "Ensuring jaraco.text is available for the PyInstaller bundle..."
+if ! "$VENV_PYTHON" -c "import jaraco.text" >/dev/null 2>&1; then
+  "$VENV_PYTHON" -m pip install "jaraco.text>=3.7" || { echo "Failed to install jaraco.text." >&2; exit 1; }
+fi
 
 # ---- Ensure ripgrep (rg) and rg-version.txt exist so they can be bundled.
 # ---- If either is missing, download the latest ripgrep release into bin/
@@ -83,7 +153,8 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 # One-dir is used (instead of one-file) so each process runs directly without
 # an extra self-extracting bootloader process: the GUI then uses two processes
 # (app + serve backend) and the terminal UI uses one. Output is a single
-# shippable folder dist/codewood/ (codewood, codewood-gui, _internal/).
+# shippable folder dist/codewood/ (codewood, thin codewood-gui launcher,
+# _internal/). macOS additionally emits dist/codewood-gui.app for .dmg/.pkg.
 #
 # 1) codewood carries ALL terminal-UI and GUI logic (frontend bundle +
 #    pywebview host included). Default = terminal UI; "codewood app" = GUI.
@@ -120,6 +191,17 @@ DATA_ARGS=(
   --collect-all tiktoken
   --hidden-import tiktoken_ext
   --hidden-import tiktoken_ext.openai_public
+  # setuptools>=70 loads jaraco through pkg_resources.extern. PyInstaller's
+  # pyi_rth_pkgres hook imports it at process start; without these the
+  # frozen binary dies with "The 'jaraco' package is required".
+  --collect-all jaraco
+  --collect-all setuptools
+  --hidden-import pkg_resources
+  --hidden-import jaraco
+  --hidden-import jaraco.text
+  --hidden-import jaraco.functools
+  --hidden-import jaraco.context
+  --hidden-import jaraco.collections
 )
 
 # App icon: macOS uses .icns; Linux ignores it, so only pass when present.
@@ -130,21 +212,64 @@ fi
 
 # 1) codewood (console, one-dir): carries ALL terminal-UI + serve + `app`
 #    logic. dist/codewood/codewood is the CLI the user runs in the terminal.
-"$PYINSTALLER" "${ICON_ARGS[@]}" --onedir --noconfirm --name codewood \
-  --specpath "build/codewood" "${DATA_ARGS[@]}" "$ENTRY_SCRIPT"
+#    Linux: exclude nvidia/triton so CUDA leftovers cannot enter the Analysis.
+if [ "$PACK_PLATFORM" = "linux" ]; then
+  "$PYINSTALLER" --onedir --noconfirm --name codewood \
+    --specpath "build/codewood" "${DATA_ARGS[@]}" \
+    --exclude-module nvidia --exclude-module triton \
+    "$ENTRY_SCRIPT"
+else
+  "$PYINSTALLER" "${ICON_ARGS[@]}" --onedir --noconfirm --name codewood \
+    --specpath "build/codewood" "${DATA_ARGS[@]}" "$ENTRY_SCRIPT"
+fi
 
-# 2) codewood-gui (windowed): the desktop GUI. On macOS --windowed produces a
-#    .app bundle (Contents/MacOS + Frameworks/Python + Info.plist). On Linux it
-#    produces a windowed onedir that also opens the GUI.
-"$PYINSTALLER" "${ICON_ARGS[@]}" --windowed --noconfirm --name codewood-gui \
-  --specpath "build/codewood-gui" "${DATA_ARGS[@]}" "$ENTRY_SCRIPT"
+# 2) codewood-gui. macOS needs a full windowed .app (Dock / LaunchServices).
+#    Linux matches Windows: a tiny stdlib-only launcher next to `codewood`
+#    that runs `codewood app`. A second full onedir would duplicate the
+#    payload and still omit the launcher from dist/codewood/.
+if [ "$PACK_PLATFORM" = "macos" ]; then
+  "$PYINSTALLER" "${ICON_ARGS[@]}" --windowed --noconfirm --name codewood-gui \
+    --specpath "build/codewood-gui" "${DATA_ARGS[@]}" "$ENTRY_SCRIPT"
+else
+  # Drop a leftover full onedir from older pack.sh runs (several GB).
+  rm -rf dist/codewood-gui
+  "$PYINSTALLER" --onefile --windowed --noconfirm --name codewood-gui \
+    --distpath "dist/codewood" --specpath "build/codewood-gui" \
+    desktop/host/launcher.py
+  chmod +x "dist/codewood/codewood-gui" 2>/dev/null || true
+fi
+
+# Drop CUDA/NVIDIA natives that still leaked into the Linux onedir.
+prune_linux_gpu_runtime() {
+  local root="$1"
+  [ -d "$root" ] || return 0
+  echo "Pruning CUDA/NVIDIA runtime files from $root..."
+  find "$root" -type d \( -iname 'nvidia' -o -iname 'triton' \) -prune -exec rm -rf {} + 2>/dev/null || true
+  find "$root" -type f \( \
+      -iname '*libtorch_cuda*' -o \
+      -iname '*libcudart*' -o \
+      -iname '*libcublas*' -o \
+      -iname '*libcudnn*' -o \
+      -iname '*libcufft*' -o \
+      -iname '*libcurand*' -o \
+      -iname '*libcusolver*' -o \
+      -iname '*libcusparse*' -o \
+      -iname '*libnvrtc*' -o \
+      -iname '*libnccl*' -o \
+      -iname '*libnvJitLink*' -o \
+      -iname '*libnvToolsExt*' \
+    \) -delete 2>/dev/null || true
+}
+if [ "$PACK_PLATFORM" = "linux" ]; then
+  prune_linux_gpu_runtime "dist/codewood"
+fi
 
 echo "PyInstaller build completed."
 echo "  dist/codewood/codewood     - terminal UI (TUI) + serve backend (CLI)"
 if [ "$PACK_PLATFORM" = "macos" ]; then
   echo "  dist/codewood-gui.app      - the desktop GUI (.app bundle)"
 else
-  echo "  dist/codewood-gui/codewood-gui - desktop GUI (windowed onedir)"
+  echo "  dist/codewood/codewood-gui - thin windowed launcher (runs codewood app)"
 fi
 
 # ---- Resolve the application version + platform tag so the portable archive
