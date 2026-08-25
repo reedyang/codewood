@@ -147,8 +147,9 @@ both `codewood` and `codewood-gui`:
 # Windows
 build\pack.bat
 
-# Linux/macOS
+# macOS / Linux (auto-detect)
 bash build/pack.sh
+
 ```
 
 `codewood` runs the terminal UI by default and the desktop GUI when invoked
