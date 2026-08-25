@@ -69,11 +69,11 @@ class SnapshotBeforeContentTests(unittest.TestCase):
 
     def test_snapshots_untracked_unstaged_and_command_paths(self):
         untracked = self.work / "new.py"
-        untracked.write_text("print('new')\n", encoding="utf-8")
+        untracked.write_text("print('new')\n", encoding="utf-8", newline="\n")
         modified = self.work / "mod.py"
-        modified.write_text("print('mod')\n", encoding="utf-8")
+        modified.write_text("print('mod')\n", encoding="utf-8", newline="\n")
         clean = self.work / "clean.py"
-        clean.write_text("print('clean')\n", encoding="utf-8")
+        clean.write_text("print('clean')\n", encoding="utf-8", newline="\n")
 
         calls = [
             _CompletedText(0, "work/new.py\0"),
@@ -90,7 +90,7 @@ class SnapshotBeforeContentTests(unittest.TestCase):
 
     def test_git_failures_still_snapshot_command_paths(self):
         target = self.work / "target.txt"
-        target.write_text("hello\n", encoding="utf-8")
+        target.write_text("hello\n", encoding="utf-8", newline="\n")
 
         calls = [
             _CompletedText(128, "fatal: not a git repository"),
@@ -111,11 +111,11 @@ class SnapshotBeforeContentTests(unittest.TestCase):
         venv = self.work / ".venv"
         venv.mkdir()
         venv_file = venv / "site.py"
-        venv_file.write_text("import os\n", encoding="utf-8")
+        venv_file.write_text("import os\n", encoding="utf-8", newline="\n")
         normal = self.work / "src"
         normal.mkdir()
         normal_file = normal / "a.py"
-        normal_file.write_text("print('a')\n", encoding="utf-8")
+        normal_file.write_text("print('a')\n", encoding="utf-8", newline="\n")
 
         calls = [_CompletedText(0, ""), _CompletedText(0, "")]
         with patch("cli.tools.shell._subprocess_mod.run", side_effect=calls):
@@ -144,7 +144,7 @@ class SnapshotBeforeContentTests(unittest.TestCase):
     def test_file_count_budget_stops_reading(self):
         for i in range(5):
             f = self.work / f"f{i}.txt"
-            f.write_text(f"content {i}\n", encoding="utf-8")
+            f.write_text(f"content {i}\n", encoding="utf-8", newline="\n")
 
         calls = [_CompletedText(0, ""), _CompletedText(0, "")]
         with patch("cli.tools.shell._subprocess_mod.run", side_effect=calls):
@@ -171,9 +171,9 @@ class SnapshotBeforeContentTests(unittest.TestCase):
 
     def test_non_git_workspace_snapshots_command_paths_only(self):
         target = self.work / "target.txt"
-        target.write_text("hello\n", encoding="utf-8")
+        target.write_text("hello\n", encoding="utf-8", newline="\n")
         other = self.work / "other.txt"
-        other.write_text("bye\n", encoding="utf-8")
+        other.write_text("bye\n", encoding="utf-8", newline="\n")
 
         snapshot = _snapshot_workspace_before_content(
             "cat target.txt", self.work, None,
@@ -184,7 +184,7 @@ class SnapshotBeforeContentTests(unittest.TestCase):
 
     def test_git_output_without_trailing_nul_is_handled(self):
         untracked = self.work / "new.py"
-        untracked.write_text("print('new')\n", encoding="utf-8")
+        untracked.write_text("print('new')\n", encoding="utf-8", newline="\n")
 
         calls = [
             _CompletedText(0, "work/new.py\0"),
