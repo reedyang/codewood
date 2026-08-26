@@ -239,6 +239,123 @@ def _round_bottom_right_corner_win32(overlay_hwnd: int, width: int, height: int)
         pass
 
 
+def _style_overlay_window_macos(overlay_window: Any, main_window: Any) -> None:
+    """Make the overlay a child of the main window on macOS.
+
+    On macOS, ``NSWindow.addChildWindow:ordered:`` ties the overlay's lifecycle
+    to the main window — it stays above the main window, moves with it, and is
+    hidden when the main window is minimized.  This avoids ``on_top=True``
+    (``NSStatusWindowLevel``) which would keep the overlay visible above
+    other apps, and avoids the iframe fallback's cross-origin restrictions.
+
+    On macOS 11+ the system renders rounded corners on every window that has
+    ``NSWindowStyleMaskTitled``.  We strip the titled mask (and the associated
+    ``NSFullSizeContentViewWindowMask``) so the overlay is a sharp-cornered
+    borderless window that aligns flush with the main window.
+
+    Safe to call repeatedly; it guards against re-adding the child relationship.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+    except Exception:
+        return
+    try:
+        # pywebview's cocoa backend sets ``window.native`` to the
+        # ``WindowHost`` (NSWindow subclass) directly — it is *not* a
+        # WKWebView, so there is no need to dereference ``.window``.
+        main_win = getattr(main_window, "native", None)
+        overlay_win = getattr(overlay_window, "native", None)
+        if main_win is None or overlay_win is None:
+            return
+
+        # All AppKit work must run on the main (GUI) thread.  This function
+        # is often invoked from the pywebview JS-bridge thread, so dispatch
+        # via ``callAfter``.
+        def _apply() -> None:
+            # --- child window relationship ---
+            if overlay_win.parentWindow() is None:
+                main_win.addChildWindow_ordered_(
+                    overlay_win, AppKit.NSWindowAbove
+                )
+
+            # --- remove system rounded corners & prevent user resize ---
+            # Strip NSWindowStyleMaskTitled so the window server stops
+            # rendering the rounded-chrome corners.  The overlay is already
+            # frameless with hidden buttons; this just removes the source of
+            # the rounding.  Also drop NSFullSizeContentViewWindowMask
+            # (requires titled) and NSTexturedBackgroundWindowMask to keep
+            # the mask minimal.
+            #
+            # Strip NSResizableWindowMask so the user cannot independently
+            # resize the overlay by dragging its edges — the overlay must
+            # only be sized by the frontend pushing new bounds, otherwise
+            # it drifts out of sync with the right panel's placeholder.
+            #
+            # Strip NSClosableWindowMask and NSMiniaturizableWindowMask
+            # too — the overlay doesn't need close/miniaturize buttons and
+            # removing them makes the mask fully borderless (0) so the
+            # window's hit-test area exactly matches its frame.
+            #
+            # NSWindowStyleMaskTitled        = 1 << 0  = 0x01
+            # NSWindowStyleMaskClosable      = 1 << 1  = 0x02
+            # NSWindowStyleMaskMiniaturizable = 1 << 2 = 0x04
+            # NSWindowStyleMaskResizable     = 1 << 3  = 0x08
+            # NSTexturedBackgroundWindowMask = 1 << 8  = 0x100
+            # NSFullSizeContentViewWindowMask = 1 << 15 = 0x8000
+            _TITLED = 1
+            _CLOSABLE = 1 << 1
+            _MINIATURIZABLE = 1 << 2
+            _RESIZABLE = 1 << 3
+            _FULL_SIZE_CV = 1 << 15
+            _TEXTURED_BG = 1 << 8
+            try:
+                mask = overlay_win.styleMask()
+                new_mask = (
+                    mask
+                    & ~_TITLED
+                    & ~_CLOSABLE
+                    & ~_MINIATURIZABLE
+                    & ~_RESIZABLE
+                    & ~_FULL_SIZE_CV
+                    & ~_TEXTURED_BG
+                )
+                if new_mask != mask:
+                    overlay_win.setStyleMask_(new_mask)
+            except Exception:
+                pass
+
+            # Remove the window shadow.  A shadow extends the window's
+            # hit-test area beyond its frame, which intercepts mouse events
+            # meant for the panel divider (resizer) sitting just outside the
+            # overlay's left edge.  The overlay is a borderless child window
+            # that doesn't need a shadow.
+            try:
+                overlay_win.setHasShadow_(False)
+            except Exception:
+                pass
+
+        try:
+            from PyObjCTools.AppHelper import callAfter
+
+            callAfter(_apply)
+        except Exception:
+            _apply()
+    except Exception:
+        pass
+
+
+def _macos_window_visible(window: Any) -> bool:
+    """Return True if the macOS window's native NSWindow is visible."""
+    if sys.platform != "darwin":
+        return True
+    ns_win = getattr(window, "native", None)
+    if ns_win is None:
+        return False
+    return bool(ns_win.isVisible())
+
+
 def _read_console_js() -> str:
     """JS expression returning the captured console buffer as a JSON string."""
     return (
@@ -343,14 +460,18 @@ class BrowserOverlay:
             return self._overlay
 
     def _apply_native_styling(self) -> None:
-        if sys.platform != "win32":
-            return
         ov = self._overlay
         if ov is None:
             return
+        if sys.platform == "darwin":
+            _style_overlay_window_macos(ov, self._main)
+            self._styled = True
+            return
+        if sys.platform != "win32":
+            return
         overlay_hwnd = _native_hwnd(ov)
         parent_hwnd = _native_hwnd(self._main)
-        if overlay_hwnd:
+        if overlay_hwnd is not None:
             _style_overlay_window_win32(overlay_hwnd, parent_hwnd)
             self._styled = True
             if parent_hwnd:
@@ -489,6 +610,15 @@ class BrowserOverlay:
             # (notably the Win11 DwmSetWindowAttribute corner preference and
             # the WS_EX_TOPMOST extended style) are re-applied immediately.
             self._apply_native_styling()
+            # On macOS, lower the window level from NSStatusWindowLevel
+            # (set during create_window) to NSNormalWindowLevel.  The child
+            # window relationship established by _apply_native_styling keeps
+            # the overlay above the main window even at normal level.
+            if sys.platform == "darwin":
+                try:
+                    ov.on_top = False
+                except Exception:
+                    pass
             # Re-move using parent-relative coordinates.  If the styling was
             # applied for the first time here (i.e. ``ensure_window()`` could
             # not obtain the parent HWND earlier) the coordinate system just

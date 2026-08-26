@@ -156,19 +156,10 @@ function OverlayBrowser({ active }: { active: boolean }) {
         void api.browser_overlay_hide?.();
         return;
       }
-      // Leave a 2px sliver of the main window visible along the right and
-      // bottom edges so the frameless window's resize grips remain hittable
-      // (a separate overlay window covering the corner would otherwise trap
-      // the user, unable to resize the main window). The overlay window is
-      // rectangular and cannot follow the main window's rounded corners, so
-      // this inset also keeps it clear of the rounded bottom-right corner.
-      const EDGE_GAP = 2;
-      const winRight = window.innerWidth - EDGE_GAP;
-      const winBottom = window.innerHeight - EDGE_GAP;
       const left = r.left;
       const top = r.top;
-      const width = Math.max(1, Math.min(r.right, winRight) - left);
-      const height = Math.max(1, Math.min(r.bottom, winBottom) - top);
+      const width = Math.max(1, r.right - left);
+      const height = Math.max(1, r.bottom - top);
       void api.browser_overlay_set_bounds?.(left, top, width, height);
     });
   }, []);

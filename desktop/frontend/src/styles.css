@@ -6559,15 +6559,15 @@ h6.md-h {
 
 .resize-s {
   bottom: 0;
-  left: 6px;
-  right: 6px;
+  left: 0;
+  right: 0;
   height: 4px;
   cursor: ns-resize;
 }
 
 .resize-e {
-  top: 6px;
-  bottom: 6px;
+  top: 0;
+  bottom: 0;
   right: 0;
   width: 4px;
   cursor: ew-resize;

@@ -70,7 +70,8 @@ def _overlay_browser_enabled() -> bool:
     that cannot open the page at all. So default the overlay ON wherever a
     desktop webview is available (Windows and Linux/WSLg).
 
-    Overrides (all platforms):
+    On macOS the overlay is reparented as a native NSWindow child, so it
+    follows the main window and stays above it.  Overrides (all platforms):
     - ``CODEWOOD_BROWSER_OVERLAY=0`` force OFF (use the iframe fallback)
     - ``CODEWOOD_BROWSER_OVERLAY=1`` force ON
     """
@@ -79,9 +80,8 @@ def _overlay_browser_enabled() -> bool:
         return False
     if raw in ("1", "true", "yes", "on"):
         return True
-    # macOS (Cocoa/WKWebView) child-window tracking is not validated here, so
-    # keep it on the iframe fallback by default; opt in via the env override.
-    return sys.platform in ("win32", "linux")
+    # macOS: overlay is reparented as an NSWindow child via addChildWindow:ordered:
+    return sys.platform in ("win32", "linux", "darwin")
 
 
 def _folder_dialog():
