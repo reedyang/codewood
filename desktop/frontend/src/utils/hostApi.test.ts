@@ -17,12 +17,10 @@ describe("hostApi", () => {
 
   it("returns the api object when the bridge is present", () => {
     const api = {
-      browser_overlay_supported: () => true,
       browser_overlay_set_bounds: () => true,
     };
     (window as unknown as { pywebview?: { api?: unknown } }).pywebview = { api };
     expect(hostApi()).toBe(api);
-    expect(hostApi()?.browser_overlay_supported?.()).toBe(true);
   });
 
   it("tolerates a bridge object without an api member", () => {

@@ -13,7 +13,6 @@ export interface HostBridgeApi {
   start_window_drag?: () => boolean | Promise<boolean>;
   host_platform?: () => string | Promise<string>;
   // Embedded browser overlay window controls.
-  browser_overlay_supported?: () => boolean | Promise<boolean>;
   browser_overlay_set_bounds?: (
     x: number,
     y: number,

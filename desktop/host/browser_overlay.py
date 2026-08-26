@@ -14,7 +14,7 @@ parent, never shows a taskbar button, and is positioned in parent-client
 coordinates. Its bottom-right corner is rounded with a custom GDI window region
 to tuck into the panel.
 
-Because the overlay is a *real* webview (not an ``<iframe>``), it can
+Because the overlay is a *real* webview, it can
 load external sites that send ``X-Frame-Options``/CSP frame-ancestors, and the
 host can read its DOM / run scripts via ``window.evaluate_js`` for the model's
 ``browser_read_dom`` / ``browser_eval`` tools. Console output is captured by a
@@ -246,7 +246,7 @@ def _style_overlay_window_macos(overlay_window: Any, main_window: Any) -> None:
     to the main window — it stays above the main window, moves with it, and is
     hidden when the main window is minimized.  This avoids ``on_top=True``
     (``NSStatusWindowLevel``) which would keep the overlay visible above
-    other apps, and avoids the iframe fallback's cross-origin restrictions.
+    other apps, and avoids cross-origin restrictions.
 
     On macOS 11+ the system renders rounded corners on every window that has
     ``NSWindowStyleMaskTitled``.  We strip the titled mask (and the associated
@@ -376,10 +376,7 @@ def _read_dom_js() -> str:
 class BrowserOverlay:
     """Owns the overlay browser window and its geometry/visibility state.
 
-    The overlay window object is created lazily on first use so the host can
-    decide at runtime (platform / feature flag) whether to enable overlay mode
-    at all. When disabled, every method is a no-op returning a structured
-    failure so callers can fall back to the iframe renderer.
+    The overlay window object is created lazily on first use.
     """
 
     def __init__(self, webview_module: Any, main_window: Any, *, enabled: bool) -> None:
@@ -802,14 +799,13 @@ class BrowserOverlay:
         self.hide()
         return {"success": True}
 
-    # -- command dispatch (mirrors the frontend iframe runCommand) ---------
+    # -- command dispatch --------------------------------------------------
 
     def run_command(self, action: str, url: str = "", script: str = "") -> Dict[str, Any]:
         """Execute a model-issued browser command and return its result.
 
-        Mirrors the action vocabulary used by the iframe ``BrowserPanel`` so
-        the backend tool protocol is unchanged whether overlay or iframe mode
-        is active.
+        Mirrors the action vocabulary used by the frontend ``BrowserPanel``
+        so the backend tool protocol is unchanged.
         """
         act = str(action or "")
         if act == "open":

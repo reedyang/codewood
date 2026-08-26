@@ -58,30 +58,7 @@ def _task_notify_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def _overlay_browser_enabled() -> bool:
-    """Whether the in-window overlay browser should be used.
 
-    The overlay is a second window tracked over the right panel. It is a real
-    webview, so it can load sites that forbid framing (X-Frame-Options / CSP
-    frame-ancestors) — unlike the sandboxed-iframe fallback, which silently
-    fails on such sites (e.g. baidu.com). Geometry tracking via ``window.move``
-    is rock-solid on Windows/EdgeChromium and merely a little less precise on
-    WSLg/X11, but an imperfectly-positioned working browser beats an iframe
-    that cannot open the page at all. So default the overlay ON wherever a
-    desktop webview is available (Windows and Linux/WSLg).
-
-    On macOS the overlay is reparented as a native NSWindow child, so it
-    follows the main window and stays above it.  Overrides (all platforms):
-    - ``CODEWOOD_BROWSER_OVERLAY=0`` force OFF (use the iframe fallback)
-    - ``CODEWOOD_BROWSER_OVERLAY=1`` force ON
-    """
-    raw = str(os.environ.get("CODEWOOD_BROWSER_OVERLAY", "")).strip().lower()
-    if raw in ("0", "false", "no", "off"):
-        return False
-    if raw in ("1", "true", "yes", "on"):
-        return True
-    # macOS: overlay is reparented as an NSWindow child via addChildWindow:ordered:
-    return sys.platform in ("win32", "linux", "darwin")
 
 
 def _folder_dialog():
@@ -392,9 +369,7 @@ class HostApi:
         # window back to its pre-maximize size and position (pywebview's
         # Cocoa backend does not remember it). None on other platforms.
         self._pre_maximize_geometry: tuple[int, int, int, int] | None = None
-        # Set by ``main()`` once the overlay browser window exists. ``None``
-        # until then (and stays a disabled instance when overlay mode is off),
-        # so every overlay method is safe to call regardless.
+        # Set by ``main()`` once the overlay browser window exists.
         self._overlay: BrowserOverlay | None = None
         self._backend_port: int = 0
         self._backend_url: str = ""
@@ -422,11 +397,6 @@ class HostApi:
     # The frontend reports the on-screen rectangle of the right-panel browser
     # viewport (logical px, relative to the main window's client area) and
     # toggles visibility; the host positions/sizes the overlay window to match.
-    # ``browser_overlay_supported`` lets the renderer decide between overlay
-    # mode and the iframe fallback.
-
-    def browser_overlay_supported(self) -> bool:
-        return bool(self._overlay is not None and self._overlay.enabled)
 
     def browser_overlay_set_bounds(
         self, x: float, y: float, width: float, height: float
@@ -1243,7 +1213,7 @@ def main() -> int:
         js_api=host_api,
     )
 
-    overlay = BrowserOverlay(webview, window, enabled=_overlay_browser_enabled())
+    overlay = BrowserOverlay(webview, window, enabled=True)
     host_api.attach_overlay(overlay)
 
     notifier = TaskNotifier(port, token, window) if _task_notify_enabled() else None
@@ -1294,27 +1264,26 @@ def main() -> int:
     window.events.closing += _on_closing
     window.events.closed += _on_closed
 
-    if overlay.enabled:
-        def _resync(*_args: object) -> None:
-            try:
-                overlay.resync()
-            except Exception:
-                pass
-
-        def _on_minimized(*_args: object) -> None:
-            try:
-                overlay.suspend_for_main_minimized()
-            except Exception:
-                pass
-
+    def _resync(*_args: object) -> None:
         try:
-            window.events.moved += _resync
-            window.events.resized += _resync
-            window.events.maximized += _resync
-            window.events.restored += _resync
-            window.events.minimized += _on_minimized
+            overlay.resync()
         except Exception:
             pass
+
+    def _on_minimized(*_args: object) -> None:
+        try:
+            overlay.suspend_for_main_minimized()
+        except Exception:
+            pass
+
+    try:
+        window.events.moved += _resync
+        window.events.resized += _resync
+        window.events.maximized += _resync
+        window.events.restored += _resync
+        window.events.minimized += _on_minimized
+    except Exception:
+        pass
 
     backend_stop = threading.Event()
 
