@@ -336,6 +336,15 @@ def _style_overlay_window_macos(overlay_window: Any, main_window: Any) -> None:
             except Exception:
                 pass
 
+            # Pass through mouse events by default so the user can interact
+            # with UI elements behind the overlay (e.g. the panel resizer).
+            # The frontend toggles this off when the user clicks the browser
+            # area to interact with page content.
+            try:
+                overlay_win.setIgnoresMouseEvents_(True)
+            except Exception:
+                pass
+
         try:
             from PyObjCTools.AppHelper import callAfter
 
@@ -682,6 +691,36 @@ class BrowserOverlay:
                 pass
             with self._lock:
                 self._shown = False
+
+    def set_passthrough(self, enabled: bool) -> bool:
+        """Toggle mouse-event passthrough on macOS.
+
+        When *enabled* is True the overlay window is transparent to mouse
+        events so the user can interact with UI elements behind it (e.g. the
+        panel resizer).  When False the overlay captures events again so the
+        browser content is interactive.
+        """
+        if not self._enabled or sys.platform != "darwin":
+            return False
+        ov = self._overlay
+        if ov is None:
+            return False
+        native = getattr(ov, "native", None)
+        if native is None:
+            return False
+
+        def _apply() -> None:
+            try:
+                native.setIgnoresMouseEvents_(enabled)
+            except Exception:
+                pass
+
+        try:
+            from PyObjCTools.AppHelper import callAfter
+            callAfter(_apply)
+        except Exception:
+            _apply()
+        return True
 
     # -- navigation / reads ------------------------------------------------
 

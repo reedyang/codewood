@@ -474,6 +474,18 @@ class HostApi:
             pass
         return False
 
+    def browser_overlay_set_passthrough(self, enabled: bool = True) -> bool:
+        """Toggle mouse-event passthrough on the overlay window (macOS).
+
+        When *enabled* is True the overlay is transparent to mouse events so
+        the user can interact with UI elements behind it (e.g. the panel
+        resizer).  When False the overlay captures events again so the browser
+        content is interactive.
+        """
+        if self._overlay is None:
+            return False
+        return self._overlay.set_passthrough(enabled)
+
     def host_platform(self) -> str:
         """Report the host OS family so the frontend can pick drag strategies.
 

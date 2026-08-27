@@ -31,6 +31,12 @@ export interface HostBridgeApi {
   browser_overlay_preview_path?: (
     path: string,
   ) => boolean | Promise<boolean>;
+  /** Toggle mouse-event passthrough on the overlay window (macOS).
+   *  When enabled, mouse events pass through to the main window so the user
+   *  can interact with UI elements behind the overlay (e.g. panel resizer). */
+  browser_overlay_set_passthrough?: (
+    enabled: boolean,
+  ) => boolean | Promise<boolean>;
   /** Open a native Save As dialog; returns the chosen file path or "". */
   save_file_dialog?: () => string | Promise<string>;
   /** Read the system clipboard as text (host-native, no browser permission
