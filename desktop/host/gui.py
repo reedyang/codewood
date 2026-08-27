@@ -475,12 +475,10 @@ class HostApi:
         return False
 
     def browser_overlay_set_passthrough(self, enabled: bool = True) -> bool:
-        """Toggle mouse-event passthrough on the overlay window (macOS).
+        """Toggle the overlay's key-window status on macOS.
 
-        When *enabled* is True the overlay is transparent to mouse events so
-        the user can interact with UI elements behind it (e.g. the panel
-        resizer).  When False the overlay captures events again so the browser
-        content is interactive.
+        When *enabled* is True the overlay cannot become the key window, so
+        the main window keeps focus and the panel resizer works.
         """
         if self._overlay is None:
             return False

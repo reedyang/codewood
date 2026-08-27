@@ -132,6 +132,27 @@ function Shell() {
     window.addEventListener("mouseup", onUp);
   };
 
+  // Expose a hook the native host can call to begin a right-panel resize when
+  // the user grabs the browser overlay's left edge (the browser is a separate
+  // OS window, so its edge isn't a DOM resize handle).  Uses a ref so the
+  // latest closure (with current rightPanelWidth) is always invoked.
+  const startResizeRightRef = useRef(startResizeRight);
+  startResizeRightRef.current = startResizeRight;
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__codewoodBeginResizeRight = (
+      clientX: number,
+    ) => {
+      startResizeRightRef.current({
+        clientX,
+        preventDefault: () => {},
+      } as unknown as ReactMouseEvent);
+    };
+    return () => {
+      delete (window as unknown as Record<string, unknown>)
+        .__codewoodBeginResizeRight;
+    };
+  }, []);
+
   // JS-accessible shortcuts (the native menu shows the same accelerators).
   useEffect(() => {
     const ZOOM_LEVELS = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];

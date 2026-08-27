@@ -98,11 +98,6 @@ function OverlayBrowser({ active }: { active: boolean }) {
   const [currentUrl, setCurrentUrl] = useState("");
   // rAF token so a burst of resize/scroll events collapses to one bounds push.
   const rafRef = useRef<number | null>(null);
-  // On macOS the overlay window is transparent to mouse events by default so
-  // the user can drag the panel resizer.  When the user clicks the browser
-  // area we toggle passthrough off so the browser content becomes
-  // interactive; clicking outside toggles it back on.
-  const [interactive, setInteractive] = useState(false);
 
   const pushBounds = useCallback(() => {
     const api = hostApi();
@@ -173,39 +168,6 @@ function OverlayBrowser({ active }: { active: boolean }) {
       void hostApi()?.browser_overlay_hide?.();
     };
   }, [pushBounds, visible]);
-
-  // On macOS, toggle the overlay's mouse-event passthrough.  By default the
-  // overlay passes events through so the panel resizer works.  When the user
-  // clicks the browser area we stop passing events through so the browser
-  // content becomes interactive; clicking outside re-enables passthrough.
-  useEffect(() => {
-    const api = hostApi();
-    if (!api?.browser_overlay_set_passthrough) return;
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (!interactive) return;
-      const target = e.target as HTMLElement;
-      if (!target.closest(".browser-viewport")) {
-        setInteractive(false);
-        void api.browser_overlay_set_passthrough!(true);
-      }
-    };
-    document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [interactive]);
-
-  // Restore passthrough on unmount so the resizer works even if the panel is
-  // torn down while the browser is interactive.
-  useEffect(() => {
-    return () => {
-      void hostApi()?.browser_overlay_set_passthrough?.(true);
-    };
-  }, []);
-
-  const handlePlaceholderMouseDown = useCallback(() => {
-    if (interactive) return;
-    setInteractive(true);
-    void hostApi()?.browser_overlay_set_passthrough?.(false);
-  }, [interactive]);
 
   // Follow the panel live while a vertical divider is being dragged (the
   // ``body.resizing-x`` state). Unlike an iframe, a real overlay window has no
@@ -337,11 +299,7 @@ function OverlayBrowser({ active }: { active: boolean }) {
         {currentUrl ? (
           // The overlay OS window is positioned over this placeholder; it only
           // occupies layout space while a page is loaded.
-          <div
-            ref={placeholderRef}
-            className="browser-overlay-placeholder"
-            onMouseDown={handlePlaceholderMouseDown}
-          />
+          <div ref={placeholderRef} className="browser-overlay-placeholder" />
         ) : (
           <div className="browser-empty">{t("browser.empty")}</div>
         )}

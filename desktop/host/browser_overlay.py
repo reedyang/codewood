@@ -43,6 +43,13 @@ import sys
 import threading
 from typing import Any, Dict, Optional
 
+try:  # macOS-only dependencies; absent on other platforms.
+    import AppKit  # type: ignore
+    import Foundation  # type: ignore
+except Exception:  # pragma: no cover - non-macOS
+    AppKit = None
+    Foundation = None
+
 # Capture console output into a bounded ring buffer on ``window`` so the host
 # can read it back with evaluate_js. Injected after every navigation (the page
 # replaces the global on load, so re-injection per load is required). Kept tiny
@@ -240,20 +247,21 @@ def _round_bottom_right_corner_win32(overlay_hwnd: int, width: int, height: int)
 
 
 def _style_overlay_window_macos(overlay_window: Any, main_window: Any) -> None:
-    """Make the overlay a child of the main window on macOS.
+    """Configure the overlay for correct mouse-event routing on macOS.
 
-    On macOS, ``NSWindow.addChildWindow:ordered:`` ties the overlay's lifecycle
-    to the main window — it stays above the main window, moves with it, and is
-    hidden when the main window is minimized.  This avoids ``on_top=True``
-    (``NSStatusWindowLevel``) which would keep the overlay visible above
-    other apps, and avoids cross-origin restrictions.
+    The overlay is an independent floating window at ``NSFloatingWindowLevel``.
+    We install a global ``NSEvent`` monitor for mouse-moved and left-mouse-down
+    events that **toggles ``ignoresMouseEvents``** based on the cursor position:
 
-    On macOS 11+ the system renders rounded corners on every window that has
-    ``NSWindowStyleMaskTitled``.  We strip the titled mask (and the associated
-    ``NSFullSizeContentViewWindowMask``) so the overlay is a sharp-cornered
-    borderless window that aligns flush with the main window.
+    * Cursor **over the overlay** → ``ignoresMouseEvents = NO`` → browser is
+      interactive (clicks, typing, scrolling).
+    * Cursor **outside the overlay** → ``ignoresMouseEvents = YES`` → events
+      pass through to the main window (resizer works).
 
-    Safe to call repeatedly; it guards against re-adding the child relationship.
+    On macOS 11+ we also strip the titled style mask so the overlay has sharp
+    corners, and remove the window shadow.
+
+    Safe to call repeatedly.
     """
     if sys.platform != "darwin":
         return
@@ -262,48 +270,19 @@ def _style_overlay_window_macos(overlay_window: Any, main_window: Any) -> None:
     except Exception:
         return
     try:
-        # pywebview's cocoa backend sets ``window.native`` to the
-        # ``WindowHost`` (NSWindow subclass) directly — it is *not* a
-        # WKWebView, so there is no need to dereference ``.window``.
-        main_win = getattr(main_window, "native", None)
         overlay_win = getattr(overlay_window, "native", None)
-        if main_win is None or overlay_win is None:
+        if overlay_win is None:
             return
 
-        # All AppKit work must run on the main (GUI) thread.  This function
-        # is often invoked from the pywebview JS-bridge thread, so dispatch
-        # via ``callAfter``.
-        def _apply() -> None:
-            # --- child window relationship ---
-            if overlay_win.parentWindow() is None:
-                main_win.addChildWindow_ordered_(
-                    overlay_win, AppKit.NSWindowAbove
-                )
+        # Apply critical settings + focus-follows-mouse monitor (re-assert
+        # after show/hide).  The monitor keeps the correct window key so the
+        # browser can receive keyboard input while the resizer (in the main
+        # window's web content) still works.
+        _apply_critical_macos_styling(overlay_win, main)
 
-            # --- remove system rounded corners & prevent user resize ---
-            # Strip NSWindowStyleMaskTitled so the window server stops
-            # rendering the rounded-chrome corners.  The overlay is already
-            # frameless with hidden buttons; this just removes the source of
-            # the rounding.  Also drop NSFullSizeContentViewWindowMask
-            # (requires titled) and NSTexturedBackgroundWindowMask to keep
-            # the mask minimal.
-            #
-            # Strip NSResizableWindowMask so the user cannot independently
-            # resize the overlay by dragging its edges — the overlay must
-            # only be sized by the frontend pushing new bounds, otherwise
-            # it drifts out of sync with the right panel's placeholder.
-            #
-            # Strip NSClosableWindowMask and NSMiniaturizableWindowMask
-            # too — the overlay doesn't need close/miniaturize buttons and
-            # removing them makes the mask fully borderless (0) so the
-            # window's hit-test area exactly matches its frame.
-            #
-            # NSWindowStyleMaskTitled        = 1 << 0  = 0x01
-            # NSWindowStyleMaskClosable      = 1 << 1  = 0x02
-            # NSWindowStyleMaskMiniaturizable = 1 << 2 = 0x04
-            # NSWindowStyleMaskResizable     = 1 << 3  = 0x08
-            # NSTexturedBackgroundWindowMask = 1 << 8  = 0x100
-            # NSFullSizeContentViewWindowMask = 1 << 15 = 0x8000
+        # --- NON-CRITICAL: can run async ---
+        def _apply_async() -> None:
+            # Remove system rounded corners & prevent user resize.
             _TITLED = 1
             _CLOSABLE = 1 << 1
             _MINIATURIZABLE = 1 << 2
@@ -326,33 +305,361 @@ def _style_overlay_window_macos(overlay_window: Any, main_window: Any) -> None:
             except Exception:
                 pass
 
-            # Remove the window shadow.  A shadow extends the window's
-            # hit-test area beyond its frame, which intercepts mouse events
-            # meant for the panel divider (resizer) sitting just outside the
-            # overlay's left edge.  The overlay is a borderless child window
-            # that doesn't need a shadow.
+            # Remove the window shadow.
             try:
                 overlay_win.setHasShadow_(False)
             except Exception:
                 pass
 
-            # Pass through mouse events by default so the user can interact
-            # with UI elements behind the overlay (e.g. the panel resizer).
-            # The frontend toggles this off when the user clicks the browser
-            # area to interact with page content.
+            # Force the content view square: pywebview keeps NSTitledWindowMask
+            # (rounded) even for "frameless" windows, and the WebView's layer
+            # can also round.  Explicitly zero the layer corner radius so the
+            # overlay is a clean square rectangle.
             try:
-                overlay_win.setIgnoresMouseEvents_(True)
+                overlay_win.setStyleMask_(0)
+            except Exception:
+                pass
+            try:
+                content = overlay_win.contentView()
+                if content is not None:
+                    content.setWantsLayer_(True)
+                    layer = content.layer()
+                    if layer is not None:
+                        layer.setCornerRadius_(0.0)
+                        layer.setMasksToBounds_(False)
             except Exception:
                 pass
 
+        # Non-critical settings can run async.
         try:
             from PyObjCTools.AppHelper import callAfter
-
-            callAfter(_apply)
+            callAfter(_apply_async)
         except Exception:
-            _apply()
+            _apply_async()
     except Exception:
         pass
+
+
+# Track which overlay windows already have a focus-follows-mouse monitor so we
+# install it only once (the styling function is called repeatedly).
+_MONITORED_WINDOW_IDS: "set" = set()
+
+# When the cursor is within this many logical px of the overlay's LEFT edge and
+# a left mouse button is pressed, treat it as a right-panel resize gesture (the
+# browser's left edge acts as the resize handle).  Kept thin so only the very
+# edge grabs; browser content just inside remains clickable.
+_RESIZE_EDGE_PX = 16
+
+# Overlay windows already scheduled for a delayed re-style (the WKWebView only
+# replaces the placeholder content view after the first page navigation, so the
+# chrome strip must run again once the real web view exists).
+_RESCHEDULED_IDS: "set" = set()
+
+
+def _strip_view_chrome(view: Any) -> None:
+    """Recursively clear border / corner-radius on a view and all subviews.
+
+    The 1px hairline around the overlay can live on an inner WKWebView layer
+    rather than the content view itself, so we walk the whole hierarchy.
+    """
+    if view is None:
+        return
+    try:
+        view.setWantsLayer_(True)
+    except Exception:
+        pass
+    try:
+        layer = view.layer()
+        if layer is not None:
+            layer.setBorderWidth_(0.0)
+            layer.setCornerRadius_(0.0)
+            layer.setMasksToBounds_(False)
+    except Exception:
+        pass
+    try:
+        subs = view.subviews()
+        if subs is not None:
+            for sub in subs:
+                _strip_view_chrome(sub)
+    except Exception:
+        pass
+
+
+def _apply_critical_macos_styling(overlay_win: Any, main: Any = None) -> None:
+    """Apply CRITICAL macOS styling + focus-follows-mouse monitor.
+
+    Runs synchronously on the main thread.  Allows the overlay to become key
+    (so the browser can receive keyboard input) but prevents it from becoming
+    the *main* window and from participating in window cycling.  A local event
+    monitor routes key status by cursor position (see _install_focus_follows_mouse).
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+    except Exception:
+        return
+    if overlay_win is None:
+        return
+
+    def _apply_critical() -> None:
+        # Allow the overlay to become key so the embedded browser can receive
+        # keyboard input.  (Key status is actively managed by the focus-
+        # follows-mouse monitor installed below.)
+        try:
+            overlay_win.setCanBecomeKey_(True)
+        except Exception:
+            pass
+        # The overlay must never become the *main* window (that would steal the
+        # app's menu bar / main-window semantics from the real main window).
+        try:
+            overlay_win.setCanBecomeMainWindow_(False)
+        except Exception:
+            pass
+
+        # Prevent the overlay from participating in window cycling (Cmd+`).
+        try:
+            _NSWindowCollectionBehaviorIgnoresCycle = 1 << 7
+            _NSWindowCollectionBehaviorManaged = 1 << 1
+            current = overlay_win.collectionBehavior()
+            new = current | _NSWindowCollectionBehaviorIgnoresCycle | _NSWindowCollectionBehaviorManaged
+            if new != current:
+                overlay_win.setCollectionBehavior_(new)
+        except Exception:
+            pass
+
+        # Always interactive: mouse events go to window under cursor.
+        try:
+            overlay_win.setIgnoresMouseEvents_(False)
+        except Exception:
+            pass
+
+        # Keep the overlay attached to and above the MAIN window, but NOT above
+        # other apps.  A previous "status-level + 1" approach made it a global
+        # always-on-top window, so clicking another app's window landed *between*
+        # the main and browser windows.  Making it a child window of the main
+        # window (at the normal level) keeps it above the main window, tracks
+        # the main window's movement, and lets other apps rise above both when
+        # they're activated.
+        try:
+            overlay_win.setLevel_(AppKit.NSNormalWindowLevel)
+        except Exception:
+            pass
+        try:
+            main_native = getattr(main, "native", None)
+            if main_native is not None and hasattr(main_native, "addChildWindow_ordered_"):
+                # NSWindowAbove places the child above the parent: the browser
+                # stays above the main window, tracks its movement, and yields
+                # to other apps.  macOS DETACHES child windows when the parent is
+                # miniaturized, so after a minimize/restore cycle the browser is
+                # no longer a child and drops behind the main window.  Re-attach
+                # whenever it isn't currently a child (detected by windowNumber,
+                # which is stable across the PyObjC wrapper boundary).
+                try:
+                    overlay_num = overlay_win.windowNumber()
+                    child_nums = []
+                    try:
+                        for c in (main_native.childWindows() or []):
+                            child_nums.append(c.windowNumber())
+                    except Exception:
+                        child_nums = []
+                    is_child = overlay_num in child_nums
+                except Exception:
+                    is_child = False
+                if not is_child:
+                    main_native.addChildWindow_ordered_(overlay_win, AppKit.NSWindowAbove)
+        except Exception:
+            pass
+
+        # Transparent window background so the overlay blends with the main
+        # window behind it (no white corner artifact) and reads as part of the
+        # main window rather than a separate floating widget.
+        try:
+            overlay_win.setBackgroundColor_(AppKit.NSColor.clearColor())
+        except Exception:
+            pass
+
+        # CRITICAL: drop ALL default window chrome.  pywebview keeps
+        # NSTitledWindowMask on "frameless" windows, which (a) rounds the
+        # corners and (b) makes the window draggable by macOS.  The latter is
+        # what caused "auto-bounce": grabbing the browser edge let macOS drag
+        # the window while the resize logic (frontend) repositioned it via
+        # _sync, so the two fought and the window snapped back.  A pure
+        # borderless mask (0) is non-draggable and square.  Must run BEFORE
+        # show so the change takes visual effect.
+        try:
+            overlay_win.setStyleMask_(0)
+        except Exception:
+            pass
+        # No shadow / non-opaque so there is no 1px hairline around the window.
+        try:
+            overlay_win.setHasShadow_(False)
+        except Exception:
+            pass
+        try:
+            overlay_win.setOpaque_(False)
+        except Exception:
+            pass
+        try:
+            content = overlay_win.contentView()
+            if content is not None:
+                # Fill the window exactly so no 1px theme-frame inset (which
+                # reads as a thin border around the overlay) remains.
+                try:
+                    superview = content.superview()
+                    if superview is not None:
+                        # Fill the parent exactly (setFrame_ is in the
+                        # superview's coordinate space, NOT window space).
+                        content.setFrame_(superview.bounds())
+                    else:
+                        content.setFrame_(overlay_win.contentLayoutRect())
+                except Exception:
+                    pass
+                try:
+                    content.setAutoresizingMask_(
+                        AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable
+                    )
+                except Exception:
+                    pass
+                # Strip any border/corner radius on the WKWebView and every
+                # layer beneath it (the hairline can live on an inner
+                # WKWebView subview, not the content view itself).
+                _strip_view_chrome(content)
+        except Exception:
+            pass
+
+        # Install the focus-follows-mouse monitor (runs on main thread here).
+        if main is not None:
+            try:
+                _install_focus_follows_mouse(overlay_win, main)
+            except Exception:
+                pass
+
+        # The WKWebView only replaces the placeholder content view AFTER the
+        # first page navigation, so re-apply the chrome strip a few times (on
+        # the main thread) to catch the real web view once it exists.
+        wid = id(overlay_win)
+        if wid not in _RESCHEDULED_IDS:
+            _RESCHEDULED_IDS.add(wid)
+            try:
+                from PyObjCTools.AppHelper import callAfter
+
+                for delay in (0.4, 1.2, 2.5):
+                    threading.Timer(
+                        delay,
+                        lambda: callAfter(
+                            lambda: _apply_critical_macos_styling(overlay_win, main)
+                        ),
+                    ).start()
+            except Exception:
+                pass
+
+
+    # Run synchronously on main thread.
+    try:
+        if AppKit.NSThread.isMainThread():
+            _apply_critical()
+        else:
+            import threading
+            done = threading.Event()
+            def _block():
+                try:
+                    _apply_critical()
+                finally:
+                    done.set()
+            AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(_block)
+            done.wait()
+    except Exception:
+        # Fallback: best-effort direct call (may crash if off main thread)
+        _apply_critical()
+
+
+def _install_focus_follows_mouse(overlay_win: Any, main: Any) -> None:
+    wid = id(overlay_win)
+    if wid in _MONITORED_WINDOW_IDS:
+        return
+    import AppKit
+
+    def _handler(event: Any) -> Any:
+        try:
+            mouse = AppKit.NSEvent.mouseLocation()
+            frame = overlay_win.frame()
+            inside = (
+                frame.origin.x <= mouse.x <= frame.origin.x + frame.size.width
+                and frame.origin.y <= mouse.y <= frame.origin.y + frame.size.height
+            )
+            buttons = AppKit.NSEvent.pressedMouseButtons()
+            # A left mouse-down within the resize zone on the overlay's left
+            # edge starts a right-panel resize (the browser's left edge is the
+            # resize handle).  We forward the gesture to the frontend, which owns
+            # the actual resize logic.
+            if (
+                event is not None
+                and event.type() == AppKit.NSLeftMouseDown
+                and 0 <= (mouse.x - frame.origin.x) <= _RESIZE_EDGE_PX
+            ):
+                main_native = getattr(main, "native", None)
+                if main_native is not None:
+                    client_x = int(mouse.x - main_native.frame().origin.x)
+
+                    def _begin_resize(cx: int) -> None:
+                        try:
+                            # Run on a background thread: pywebview's
+                            # evaluate_js schedules the JS on the main run loop
+                            # and then blocks a semaphore for the result.  If we
+                            # called it from the monitor (main) thread, the
+                            # run loop can't service the inner eval while we're
+                            # blocked -> deadlock.  A background thread lets the
+                            # main run loop process the eval and release us.
+                            main.evaluate_js(
+                                "window.__codewoodBeginResizeRight && "
+                                "window.__codewoodBeginResizeRight(%d)" % cx
+                            )
+                        except Exception:
+                            pass
+
+                    threading.Thread(
+                        target=_begin_resize, args=(client_x,), daemon=True
+                    ).start()
+            if buttons & (1 << 0):
+                # Mid-drag (e.g. dragging the resizer).  Pass mouse events
+                # through to the main window so the drag keeps working even
+                # when the cursor crosses over the overlay, and never change
+                # key status mid-drag.
+                if not overlay_win.ignoresMouseEvents():
+                    overlay_win.setIgnoresMouseEvents_(True)
+                return event
+            if inside:
+                # Cursor over the overlay: make the browser interactive and key
+                # so it receives mouse + keyboard input.
+                if overlay_win.ignoresMouseEvents():
+                    overlay_win.setIgnoresMouseEvents_(False)
+                if not overlay_win.isKeyWindow():
+                    overlay_win.makeKeyWindow()
+            else:
+                # Cursor over the main window: pass events through and keep the
+                # main window key so its resizer / inputs work.
+                if not overlay_win.ignoresMouseEvents():
+                    overlay_win.setIgnoresMouseEvents_(True)
+                main_native = getattr(main, "native", None)
+                if main_native is not None and not main_native.isKeyWindow():
+                    main_native.makeKeyWindow()
+        except Exception:
+            pass
+        return event
+
+    _mask = (
+        AppKit.NSMouseMovedMask
+        | AppKit.NSLeftMouseDownMask
+        | AppKit.NSLeftMouseUpMask
+        | AppKit.NSLeftMouseDraggedMask
+        | AppKit.NSRightMouseDownMask
+        | AppKit.NSRightMouseUpMask
+        | AppKit.NSRightMouseDraggedMask
+        | AppKit.NSScrollWheelMask
+    )
+    AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(_mask, _handler)
+    _MONITORED_WINDOW_IDS.add(wid)
 
 
 def _macos_window_visible(window: Any) -> bool:
@@ -605,10 +912,37 @@ class BrowserOverlay:
             pass
         self._apply_corner_region(rect["w"], rect["h"])
         if not shown:
+            # Apply CRITICAL macOS styling + focus-follows-mouse monitor BEFORE
+            # showing the window.  This allows the overlay to become key (so the
+            # browser can receive keyboard) while the monitor routes key status
+            # by cursor position so the resizer keeps working.
+            if sys.platform == "darwin":
+                native = getattr(ov, "native", None)
+                if native is not None:
+                    _apply_critical_macos_styling(native, self._main)
             try:
                 ov.show()
             except Exception:
                 pass
+            # pywebview's show() calls makeKeyAndOrderFront_ (via callAfter),
+            # which forcibly makes the overlay the key window.  Restore key
+            # status to the main window so its resizer works initially; the
+            # focus-follows-mouse monitor then keeps it correct as the cursor
+            # moves.  We use callAfter (same FIFO queue pywebview uses) so this
+            # runs AFTER pywebview's makeKeyAndOrderFront.
+            if sys.platform == "darwin":
+                main_native = getattr(self._main, "native", None)
+                if main_native is not None:
+                    def _make_main_key() -> None:
+                        try:
+                            main_native.makeKeyWindow()
+                        except Exception:
+                            pass
+                    try:
+                        from PyObjCTools.AppHelper import callAfter
+                        callAfter(_make_main_key)
+                    except Exception:
+                        _make_main_key()
             with self._lock:
                 self._shown = True
             # Re-assert native styling after the window becomes visible so
@@ -616,28 +950,6 @@ class BrowserOverlay:
             # (notably the Win11 DwmSetWindowAttribute corner preference and
             # the WS_EX_TOPMOST extended style) are re-applied immediately.
             self._apply_native_styling()
-            # On macOS, lower the window level from NSStatusWindowLevel
-            # (set during create_window) to NSNormalWindowLevel.  The child
-            # window relationship established by _apply_native_styling keeps
-            # the overlay above the main window even at normal level.
-            if sys.platform == "darwin":
-                try:
-                    ov.on_top = False
-                except Exception:
-                    pass
-            # Re-move using parent-relative coordinates.  If the styling was
-            # applied for the first time here (i.e. ``ensure_window()`` could
-            # not obtain the parent HWND earlier) the coordinate system just
-            # switched from screen-relative to parent-client-relative; the
-            # ``ov.move()`` above used screen coordinates and is now wrong.
-            # This re-move corrects it.  On steady-state show cycles (styling
-            # already active) the coordinates haven't changed, so this is a
-            # harmless no-op.
-            if self._is_child:
-                try:
-                    ov.move(rect["x"], rect["y"])
-                except Exception:
-                    pass
 
     def _apply_corner_region(self, logical_w: int, logical_h: int) -> None:
         """Round only the overlay's bottom-right corner, in device pixels.
@@ -693,34 +1005,13 @@ class BrowserOverlay:
                 self._shown = False
 
     def set_passthrough(self, enabled: bool) -> bool:
-        """Toggle mouse-event passthrough on macOS.
+        """No-op kept for API compatibility.
 
-        When *enabled* is True the overlay window is transparent to mouse
-        events so the user can interact with UI elements behind it (e.g. the
-        panel resizer).  When False the overlay captures events again so the
-        browser content is interactive.
+        Mouse-event routing is now handled by a global NSEvent monitor
+        installed in ``_style_overlay_window_macos`` that toggles
+        ``ignoresMouseEvents`` based on cursor position.
         """
-        if not self._enabled or sys.platform != "darwin":
-            return False
-        ov = self._overlay
-        if ov is None:
-            return False
-        native = getattr(ov, "native", None)
-        if native is None:
-            return False
-
-        def _apply() -> None:
-            try:
-                native.setIgnoresMouseEvents_(enabled)
-            except Exception:
-                pass
-
-        try:
-            from PyObjCTools.AppHelper import callAfter
-            callAfter(_apply)
-        except Exception:
-            _apply()
-        return True
+        return self._enabled and sys.platform == "darwin"
 
     # -- navigation / reads ------------------------------------------------
 
