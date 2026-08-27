@@ -5990,6 +5990,9 @@ h6.md-h {
 
 .model-flyout {
   position: fixed;
+  width: max-content;
+  min-width: 220px;
+  max-width: 60vw;
   max-height: 60vh;
   overflow-y: auto;
   padding: 6px;
@@ -5999,6 +6002,12 @@ h6.md-h {
   box-shadow: var(--shadow);
   z-index: 70;
   animation: model-flyout-in 0.12s ease;
+}
+
+.model-flyout .dropdown-item > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-flyout.right {

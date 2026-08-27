@@ -3628,7 +3628,8 @@ function ContextUsageRing({
 /** Two-level model menu: the first level always lists the three reasoning
  *  effort levels (greying out ones the active model doesn't support) plus a
  *  "current model" entry. Hovering that entry flies the model list out to the
- *  side (right by default, flipping left when there isn't room). */
+ *  side (left by default so it stays next to the right-aligned menu inside the
+ *  browser window, falling back to the right when there isn't room). */
 function ModelMenu({
   models,
   currentModel,
@@ -3679,20 +3680,45 @@ function ModelMenu({
 
   // After the flyout renders, clamp it within the viewport: if it would
   // overflow the bottom, shift it up so the whole menu stays visible.
+  // The panel width follows the longest model name, so re-measure it here and
+  // re-hug the anchor on the chosen side before clamping both axes.
   useLayoutEffect(() => {
     if (!flyoutOpen || !flyoutPos) return;
     const el = flyoutRef.current;
-    if (!el) return;
+    const entry = entryRef.current;
+    if (!el || !entry) return;
     const margin = 8;
-    // offsetHeight is in the unscaled local frame; viewport clamps are scaled.
+    // The status bar is app chrome sitting over the bottom of the window:
+    // keep the panel above it no matter how tall the model list is.
+    const statusBarTop =
+      document.querySelector<HTMLElement>(".status-bar")?.getBoundingClientRect()
+        .top ?? window.innerHeight;
+    const bottomLimit = statusBarTop - margin;
+    const availHeight = bottomLimit - margin;
+    // offsetWidth/offsetHeight are in the unscaled local frame; viewport
+    // clamps are scaled.
+    if (el.offsetHeight * zoomLevel > availHeight) {
+      // Shrink the scrollable area instead of letting the tail vanish
+      // underneath the status bar.
+      el.style.maxHeight = `${availHeight / zoomLevel}px`;
+    }
+    const width = el.offsetWidth * zoomLevel;
     const height = el.offsetHeight * zoomLevel;
-    const maxTop = window.innerHeight - height - margin;
-    const clampedTop = Math.max(margin, Math.min(flyoutPos.top, maxTop));
-    if (clampedTop !== flyoutPos.top) {
-      setFlyoutPos((prev) => (prev ? { ...prev, top: clampedTop } : prev));
+    const gap = FLYOUT_GAP * zoomLevel;
+    const rect = entry.getBoundingClientRect();
+    let left =
+      flyoutPos.side === "right" ? rect.right + gap : rect.left - gap - width;
+    left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+    const maxTop = Math.max(margin, bottomLimit - height);
+    const top = Math.max(margin, Math.min(flyoutPos.top, maxTop));
+    if (
+      Math.abs(left - flyoutPos.left) > 0.5 ||
+      Math.abs(top - flyoutPos.top) > 0.5
+    ) {
+      setFlyoutPos((prev) => (prev ? { ...prev, left, top } : prev));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flyoutOpen, flyoutPos?.top, flyoutPos?.left, zoomLevel]);
+  }, [flyoutOpen, flyoutPos, zoomLevel]);
 
   const supported = new Set(reasoningEfforts.map((l) => l.toLowerCase()));
   const selectedLower = reasoningEffort.toLowerCase();
@@ -3705,9 +3731,12 @@ function ModelMenu({
     : "";
   const currentLabel = currentName || t("model.label");
 
+  // Base/min flyout width; the panel grows past this to fit long model names.
   const FLYOUT_WIDTH = 220;
   const FLYOUT_GAP = 4;
-  // Decide which side the flyout opens on based on available viewport space.
+  // Decide which side the flyout opens on based on available viewport space,
+  // estimating with the base width; the post-render effect re-measures the
+  // real panel and corrects the placement.
   // Same zoom-frame conversion as ContextMenu: rects and viewport clamps are
   // in scaled viewport pixels while the fixed flyout lives in the unscaled
   // local frame of .window-root, so only the final placement is divided by
@@ -3723,7 +3752,13 @@ function ModelMenu({
     const flyoutW = FLYOUT_WIDTH * zoomLevel;
     const gap = FLYOUT_GAP * zoomLevel;
     const side: "right" | "left" =
-      spaceRight < flyoutW + gap && rect.left > spaceRight ? "left" : "right";
+      rect.left >= flyoutW + gap
+        ? "left"
+        : spaceRight >= flyoutW + gap
+          ? "right"
+          : rect.left > spaceRight
+            ? "left"
+            : "right";
     const left =
       side === "right"
         ? rect.right + gap
@@ -3815,7 +3850,6 @@ function ModelMenu({
                   style={{
                     left: flyoutPos.left / zoomLevel,
                     top: flyoutPos.top / zoomLevel,
-                    width: FLYOUT_WIDTH,
                   }}
                   onMouseEnter={cancelClose}
                   onMouseLeave={scheduleClose}
