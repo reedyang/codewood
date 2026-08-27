@@ -3807,6 +3807,11 @@ class ServeApp:
                 for entry in raw.values():
                     if not isinstance(entry, dict):
                         continue
+                    # Archived workspaces keep their chats but must not be
+                    # indexed or counted: their roots are often stale parent
+                    # dirs whose indexes inflate the aggregated file count.
+                    if bool(entry.get("archived", False)):
+                        continue
                     ws_id = str(entry.get("id") or "")
                     try:
                         root = str(agent._workspace_root_path(entry))
@@ -3834,7 +3839,9 @@ class ServeApp:
                     )
             result = {
                 "hidden": False,
-                "files_total": int(st.get("files_total", 0)),
+                # Sum only the non-archived workspaces actually listed here,
+                # so archived roots don't inflate the file count.
+                "files_total": sum(int(w.get("files_total", 0) or 0) for w in per_workspace),
                 "workspace_name": str(getattr(agent, "workspace_name", "") or ""),
                 "is_default_workspace": str(getattr(agent, "workspace_id", "")) == "default",
                 "refresh_phase": str(st.get("refresh_phase", "") or ""),

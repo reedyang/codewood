@@ -70,6 +70,7 @@ class _FakeAgentManager(_FakeAgent):
                     "id": "ws-alpha",
                     "name": "Alpha",
                     "kind": "custom",
+                    "archived": True,
                     "root": "D:/alpha",
                 },
                 "ws-beta": {
@@ -112,10 +113,11 @@ class ServeAppIndexStatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             payload = _stub_for(_FakeAgentManager(Path(tmp))).index_status()
             self.assertFalse(payload["hidden"])
-            self.assertEqual(payload["files_total"], 321)
-            self.assertEqual(len(payload["workspaces"]), 2)
+            # The archived "ws-alpha" workspace is excluded from the
+            # aggregation and the per-workspace listing.
+            self.assertEqual(payload["files_total"], 198)
+            self.assertEqual(len(payload["workspaces"]), 1)
             by_id = {w["id"]: w for w in payload["workspaces"]}
-            self.assertEqual(by_id["ws-alpha"]["files_total"], 123)
             self.assertEqual(by_id["ws-beta"]["files_total"], 198)
             self.assertEqual(by_id["ws-beta"]["refresh_phase"], "indexing")
 

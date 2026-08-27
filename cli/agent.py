@@ -693,6 +693,8 @@ class Agent:
                 idx = mgr.bind_workspace(root, storage_dir=storage)
             except Exception:
                 continue
+            if bool(entry.get("archived", False)):
+                continue
             jobs.append((idx, root))
         if not jobs:
             return

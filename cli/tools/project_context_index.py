@@ -1370,6 +1370,25 @@ class ProjectContextIndex:
         # exists (alive or just-exited), so the count never drops to 0
         # during the brief window between proc.join() and _load().
         if self._subprocess is not None:
+            if not self._subprocess.is_alive():
+                self._subprocess = None
+                # Process exited before it could (or did) refresh; report the
+                # best-effort in-memory snapshot instead of any stale file.
+                phase = self._refresh_progress_phase
+                return {
+                    "success": True,
+                    "workspace_root": str(self.workspace_root) if self.workspace_root else "",
+                    "index_path": str(self.index_path) if self.index_path else "",
+                    "files_total": len(self.files),
+                    "last_index_at": self.last_index_at,
+                    "refresh_phase": phase,
+                    "refresh_progress_total": self._refresh_progress_total,
+                    "refresh_progress_done": self._refresh_progress_done,
+                    "refresh_progress_percent": self._compute_refresh_progress_percent(
+                        phase, self._refresh_progress_total, self._refresh_progress_done,
+                        expected_total=max(self._index_expected_total, self._index_checkpointed_done),
+                    ),
+                }
             st = self._read_status_file()
             if st is not None:
                 raw_phase = str(st.get("phase", "scanning") or "scanning")
