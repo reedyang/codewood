@@ -6000,7 +6000,7 @@ h6.md-h {
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: var(--shadow);
-  z-index: 70;
+  z-index: 500;
   animation: model-flyout-in 0.12s ease;
 }
 
