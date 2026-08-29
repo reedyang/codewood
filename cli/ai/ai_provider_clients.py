@@ -1359,9 +1359,19 @@ def _extract_message_from_ollama_response_data(data: Any) -> Dict[str, Any]:
     return out
 
 
+# Sentinel replayed in place of missing reasoning on assistant tool-call
+# messages: some OpenAI-compatible gateways (SenseNova DeepSeek thinking mode)
+# reject the whole request with 400 ``If thinking mode and tool_calls,
+# `reasoning_content` must be passed back`` even when the original response
+# carried none. Chosen non-empty so it survives both presence and non-empty
+# (stripped) validation styles.
+_TOOL_CALL_REASONING_PLACEHOLDER = "(no reasoning)"
+
+
 def _normalize_openai_message_for_request(
     message: Any,
     include_thinking: bool = False,
+    thinking_enabled: bool = True,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(message, dict):
         return None
@@ -1386,6 +1396,15 @@ def _normalize_openai_message_for_request(
                 normalized.pop("_thinking", None)
         else:
             normalized.pop("_thinking", None)
+    if (
+        thinking_enabled
+        and include_thinking
+        and role == "assistant"
+        and isinstance(normalized.get("tool_calls"), list)
+        and normalized.get("tool_calls")
+        and not str(normalized.get("reasoning_content") or "").strip()
+    ):
+        normalized["reasoning_content"] = _TOOL_CALL_REASONING_PLACEHOLDER
     content = normalized.get("content", "")
     if isinstance(content, list):
         has_media_parts = any(
@@ -1407,10 +1426,13 @@ def _normalize_openai_message_for_request(
 def _normalize_openai_messages_for_request(
     messages: List[Dict[str, Any]],
     include_thinking: bool = False,
+    thinking_enabled: bool = True,
 ) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for message in messages:
-        item = _normalize_openai_message_for_request(message, include_thinking=include_thinking)
+        item = _normalize_openai_message_for_request(
+            message, include_thinking=include_thinking, thinking_enabled=thinking_enabled
+        )
         if item is None:
             continue
         normalized.append(item)
@@ -2569,8 +2591,9 @@ def _call_with_openai_compatible(
         return api_key_error_msg
 
     include_thinking = True
+    thinking = parse_bool_flag(conf.get("thinking"), default_value=True)
     provider_messages = _normalize_openai_messages_for_request(
-        messages, include_thinking=include_thinking
+        messages, include_thinking=include_thinking, thinking_enabled=thinking
     )
     if image_data is not None and image_user_idx is not None:
         provider_messages = [dict(m) for m in provider_messages]
@@ -2595,7 +2618,6 @@ def _call_with_openai_compatible(
         reasoning_effort = ""
     else:
         reasoning_effort = str(_reasoning_raw or "").strip()
-    thinking = parse_bool_flag(conf.get("thinking"), default_value=True)
     api_kinds = _openai_api_order_for_mode(api_mode, str(base_url or ""))
     _OPENAI_ROUTE_LOG.info(
         "openai-route dispatch model=%s api_mode=%s api_order=%s base_url=%s",

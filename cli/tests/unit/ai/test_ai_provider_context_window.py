@@ -522,6 +522,92 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(sent[0]["reasoning_content"], "chain")
         self.assertNotIn("_thinking", sent[0])
 
+    def test_tool_call_history_without_reasoning_gets_placeholder_when_thinking_enabled(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="SenseNova",
+                    model_name="deepseek-v4-flash",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://token.sensenova.cn/v1",
+                        "api_mode": "chat",
+                    },
+                    messages=[
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "read", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                        {"role": "tool", "tool_call_id": "call_1", "name": "read", "content": "{}"},
+                        {"role": "user", "content": "continue"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    internal_mode=InternalCallMode.REGULAR,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertEqual(
+            sent[0]["reasoning_content"],
+            ai_provider_clients._TOOL_CALL_REASONING_PLACEHOLDER,
+        )
+
+    def test_tool_call_history_left_untouched_when_thinking_disabled(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="SenseNova",
+                    model_name="deepseek-v4-flash",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://token.sensenova.cn/v1",
+                        "api_mode": "chat",
+                        "thinking": False,
+                    },
+                    messages=[
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "read", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                        {"role": "tool", "tool_call_id": "call_1", "name": "read", "content": "{}"},
+                        {"role": "user", "content": "continue"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    internal_mode=InternalCallMode.REGULAR,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertNotIn("reasoning_content", sent[0])
+
     def test_openai_chat_mode_appends_chat_completions_suffix(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
             out = call_ai_with_provider(
