@@ -45,8 +45,6 @@ from .core.config.config_jsonc import (
 )
 from .core.config.model_providers import (
     DEFAULT_OLLAMA_PORT,
-    basic_chat_only_context_warning,
-    is_basic_chat_only_context_window,
     parse_bool_flag,
     parse_configured_models,
     parse_port,
@@ -1058,16 +1056,9 @@ class Agent:
         return ""
 
     def _use_standard_openai_tools_call(self) -> bool:
-        # Both supported backends (OpenAI-compatible HTTP and Ollama
-        # native HTTP) accept the standard ``tool_calls`` JSON shape;
-        # the runtime only falls back to pseudo-tool-call recovery
-        # for tiny-context "basic chat" models. ``provider`` no
-        # longer participates in dispatch decisions — it's a free-
-        # form label used for the model selector prefix.
-        params = getattr(self, "params", {}) or {}
-        raw_context_window = params.get("context_window") if isinstance(params, dict) else None
-        if is_basic_chat_only_context_window(raw_context_window):
-            return False
+        # All supported backends (OpenAI-compatible HTTP and Ollama native
+        # HTTP) accept the standard ``tool_calls`` JSON shape, so the runtime
+        # always uses the standard tools-call path.
         return True
 
     def _streaming_enabled_for_current_model(self) -> bool:
@@ -1085,14 +1076,6 @@ class Agent:
         params = getattr(self, "params", {}) or {}
         raw = params.get("multimodal", True) if isinstance(params, dict) else True
         return parse_bool_flag(raw, default_value=True)
-
-    def _basic_chat_only_context_warning_for_params(
-        self,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        model_params = params if isinstance(params, dict) else (getattr(self, "params", {}) or {})
-        raw = model_params.get("context_window") if isinstance(model_params, dict) else None
-        return basic_chat_only_context_warning(raw)
 
     def _set_pending_prompt_warning(self, text: str) -> None:
         warning = str(text or "").strip()
@@ -1272,14 +1255,6 @@ class Agent:
     def _refresh_model_dependent_caches(self) -> None:
         """Refresh caches that depend on model size (prompts, tool specs)."""
         try:
-            from .core.config.model_providers import is_small_model_context_window
-            _new_small = is_small_model_context_window(
-                (getattr(self, "params", None) or {}).get("context_window")
-            )
-            self._small_model = _new_small
-        except Exception:
-            pass
-        try:
             self._base_system_prompt = None
         except Exception:
             pass
@@ -1295,9 +1270,8 @@ class Agent:
         except Exception:
             pass
         try:
-            _small = bool(getattr(self, "_small_model", False))
-            self.tools_prompt_template = self._load_tools_prompt_template(small_model=_small)
-            self.tools_prompt_memory_template = self._load_tools_prompt_memory_template(small_model=_small)
+            self.tools_prompt_template = self._load_tools_prompt_template()
+            self.tools_prompt_memory_template = self._load_tools_prompt_memory_template()
         except Exception:
             pass
         try:
@@ -1384,8 +1358,7 @@ class Agent:
                 save_state=True,
             )
             self._refresh_status_context_usage_snapshot()
-            warning = self._basic_chat_only_context_warning_for_params(choice.get("params"))
-            return f"ℹ️ Current model already in use: {target}" + (f"\n\n{warning}\n" if warning else "")
+            return f"ℹ️ Current model already in use: {target}"
 
         self._apply_runtime_model_choice(choice, validate=True)
         self._set_active_chat_model(self.provider, self.model_name, save_state=True)
@@ -1395,8 +1368,7 @@ class Agent:
             self._persist_active_chat_usage_snapshot()
         except Exception:
             pass
-        warning = self._basic_chat_only_context_warning_for_params()
-        return f"✅ Switched model: {target}" + (f"\n\n{warning}\n" if warning else "")
+        return f"✅ Switched model: {target}"
 
     def _handle_model_builtin_command(self, builtin_line: str) -> bool:
         return handle_model_builtin_command(self, builtin_line)
@@ -8092,11 +8064,11 @@ class Agent:
     def _compose_system_prompt_snapshot(self, include_tools: bool) -> str:
         return prompt_composer.compose_system_prompt_snapshot(self, include_tools=include_tools)
 
-    def _load_tools_prompt_template(self, small_model: bool = False) -> str:
-        return prompt_composer.load_tools_prompt_template(small_model=small_model)
+    def _load_tools_prompt_template(self) -> str:
+        return prompt_composer.load_tools_prompt_template()
 
-    def _load_tools_prompt_memory_template(self, small_model: bool = False) -> str:
-        return prompt_composer.load_tools_prompt_memory_template(small_model=small_model)
+    def _load_tools_prompt_memory_template(self) -> str:
+        return prompt_composer.load_tools_prompt_memory_template()
 
     def _build_single_skill_prompt(
         self,

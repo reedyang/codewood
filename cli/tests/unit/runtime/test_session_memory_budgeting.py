@@ -873,42 +873,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertNotIn("----- BEGIN ACTIVE SKILL PROMPT -----", joined)
         self.assertNotIn("----- END ACTIVE SKILL PROMPT -----", joined)
 
-    def test_context_window_below_64k_uses_history_only_chat_context(self):
-        agent = _FakeAgent()
-        agent.params = {"context_window": 63999}
-        calls = {"reload": 0, "compose": 0}
-
-        def _reload_skills():
-            calls["reload"] += 1
-
-        def _compose(include_tools=True):
-            _ = include_tools
-            calls["compose"] += 1
-            return "SYSTEM SHOULD NOT BE SENT"
-
-        agent._reload_skills = _reload_skills
-        agent._compose_system_prompt_snapshot = _compose
-        agent.operation_results = [{"secret": "operation-context"}]
-        agent.conversation_history = [
-            {"role": "user", "content": "Previous round question"},
-            {"role": "assistant", "content": "Previous round answer"},
-        ]
-        svc = SessionMemoryService(agent)
-
-        messages, _ = svc.build_regular_task_messages("Hello", context="ctx-should-not-be-sent")
-        joined = "\n".join(str(m.get("content") or "") for m in messages)
-
-        self.assertTrue(any(str(m.get("role") or "") == "system" for m in messages))
-        self.assertIn("Software Development", joined)
-        self.assertEqual(messages[-1], {"role": "user", "content": "Hello"})
-        self.assertIn("Previous round question", joined)
-        self.assertIn("Previous round answer", joined)
-        self.assertNotIn("SYSTEM SHOULD NOT BE SENT", joined)
-        self.assertNotIn("Original user request:", joined)
-        self.assertNotIn("ctx-should-not-be-sent", joined)
-        self.assertNotIn("operation-context", joined)
-        self.assertEqual(calls, {"reload": 0, "compose": 0})
-
     def test_context_window_at_64k_keeps_full_system_context(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}
@@ -1387,12 +1351,11 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_refresh_model_dependent_caches_clears_domain_prompt_cache_for_model_switch(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 128000}
-        agent._small_model = False
         agent.tool_specs = []
         agent._base_system_prompt = "BASE"
         agent._load_tools_spec_from_jsonc = lambda: []
-        agent._load_tools_prompt_template = lambda small_model=False: f"TOOLS:{small_model}"
-        agent._load_tools_prompt_memory_template = lambda small_model=False: f"MEM:{small_model}"
+        agent._load_tools_prompt_template = lambda: "TOOLS"
+        agent._load_tools_prompt_memory_template = lambda: "MEM"
         compose_calls = []
 
         def _compose(include_tools=True):
@@ -1404,21 +1367,18 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         prompt_dir = Path(__file__).resolve().parents[3] / "prompts"
         large_expected = "\n\n" + (prompt_dir / "domain_software_development.md").read_text(encoding="utf-8").strip() + "\n"
-        small_expected = "\n\n" + (prompt_dir / "small" / "domain_software_development.md").read_text(encoding="utf-8").strip() + "\n"
 
         first = agent.session_memory_service.llm_context_manager._software_development_prompt_append()
         self.assertEqual(first, large_expected)
 
-        # Switch to a small model (context_window < 64k). The domain-prompt
-        # cache must be cleared and recomputed. When the normal and small
-        # domain prompts are identical this produces the same text, so we
-        # assert it matches the small variant rather than requiring it to
-        # differ from the large one.
+        # Switch to a model with a smaller context window (< 64k). The
+        # domain-prompt cache must be cleared and recomputed; with the unified
+        # logic there is a single domain prompt, so the text is unchanged.
         agent.params = {"context_window": 32000}
         Agent._refresh_model_dependent_caches(agent)
 
         second = agent.session_memory_service.llm_context_manager._software_development_prompt_append()
-        self.assertEqual(second, small_expected)
+        self.assertEqual(second, large_expected)
         self.assertEqual(agent.system_prompt, "PROMPT:32000")
         self.assertIn(False, compose_calls)
 
@@ -2017,7 +1977,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertEqual(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 16060 + 253)
 
-    def test_refresh_context_usage_snapshot_includes_system_prompt_for_small_models(self):
+    def test_refresh_context_usage_snapshot_uses_composed_prompt_for_small_context_models(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 32000}
         compose_calls = {"n": 0}
@@ -2032,10 +1992,10 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
 
-        # The composed prompt snapshot must NOT be used for small models; the
-        # snapshot is built from _build_small_model_system_prompt instead.
-        self.assertEqual(compose_calls["n"], 0)
-        # A usage snapshot is stored reflecting the small-model system prompt.
+        # With the unified logic the composed prompt snapshot is used for all
+        # models (including <64k), so a usage snapshot is stored reflecting the
+        # full system prompt.
+        self.assertGreaterEqual(compose_calls["n"], 1)
         self.assertGreaterEqual(int(getattr(agent, "_last_context_usage_percent", 0) or 0), 0)
         self.assertGreater(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 0)
 

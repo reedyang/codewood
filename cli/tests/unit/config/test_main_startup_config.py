@@ -232,7 +232,7 @@ class MainStartupConfigTests(unittest.TestCase):
                 ["openai/Gemma-4-31B"],
             )
 
-    def test_startup_warns_when_selected_model_context_window_is_below_64k(self):
+    def test_startup_handles_small_context_model_without_warning(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
             user_cfg_dir = self._global_config_dir(td_home)

@@ -4,7 +4,6 @@ from typing import Any, Dict, List
 
 DEFAULT_CONTEXT_WINDOW = 128_000
 DEFAULT_OLLAMA_PORT = 11_434
-SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW = 64_000
 _CTX_WINDOW_PATTERN = re.compile(r"^(\d+)([kKmM]?)$")
 
 
@@ -79,23 +78,6 @@ def parse_extra_headers(value: Any) -> Dict[str, str]:
             continue
         headers[name] = value_text
     return headers
-
-
-def is_basic_chat_only_context_window(value: Any) -> bool:
-    context_window = parse_context_window(value, default_value=DEFAULT_CONTEXT_WINDOW)
-    return context_window < SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW
-
-
-def is_small_model_context_window(value: Any) -> bool:
-    """True when context window qualifies as a small model (< 64k).
-
-    Uses the same threshold as ``is_basic_chat_only_context_window``.
-    """
-    return is_basic_chat_only_context_window(value)
-
-
-def basic_chat_only_context_warning(value: Any) -> str:
-    return ""
 
 
 def parse_reasoning_effort(value: Any) -> List[str]:

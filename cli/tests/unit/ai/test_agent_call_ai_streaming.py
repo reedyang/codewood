@@ -73,11 +73,6 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.agent.params = {"context_window": 64000}
         self.assertTrue(self.agent._use_standard_openai_tools_call())
 
-    def test_standard_tools_mode_is_disabled_below_64k(self):
-        self.agent.provider = "openai"
-        self.agent.params = {"context_window": 63999}
-        self.assertFalse(self.agent._use_standard_openai_tools_call())
-
     def test_standard_tools_mode_uses_default_context_window_when_missing(self):
         self.agent.provider = "ollama"
         self.agent.params = {}
@@ -110,7 +105,7 @@ class AgentCallAiStreamingTests(unittest.TestCase):
                 f"expected standard tools for provider label {label!r}",
             )
 
-    def test_model_switch_warns_when_context_window_is_below_64k(self):
+    def test_model_switch_returns_success_message(self):
         agent = Agent.__new__(Agent)
         agent.provider = "openai"
         agent.model_name = "large"

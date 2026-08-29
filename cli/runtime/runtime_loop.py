@@ -40,7 +40,6 @@ from ..commands import is_command, run_command
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
     MEMORY_TOOLS,
-    SMALL_MODEL_EXCLUDED_TOOLS,
 )
 from ..tools.plan import (
     PLAN_STATUS_COMPLETED,

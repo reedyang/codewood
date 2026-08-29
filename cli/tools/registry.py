@@ -14,7 +14,6 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple, Type, Set
 
-from ..core.config.model_providers import is_small_model_context_window
 from .base import BaseTool
 
 from .shell import ShellTool
@@ -115,10 +114,6 @@ PLAN_MODE_ONLY_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_plan_mo
 #: Tools hidden while Plan mode is active (e.g. update_plan / mutating helpers).
 PLAN_MODE_EXCLUDED_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.excluded_in_plan_mode)
 
-#: Tools excluded for small-context-window models (< 64k).
-SMALL_MODEL_EXCLUDED_TOOLS: FrozenSet[str] = frozenset()
-
-
 def _is_mcp_direct_tool(name: str) -> bool:
     return bool(_MCP_PREFIX_RE.match(str(name or "").strip()))
 
@@ -165,16 +160,12 @@ def _gating_flags(agent: Any) -> Dict[str, bool]:
             multimodal_enabled = True
     plan_mode = bool(getattr(agent, "_plan_mode_sticky", False))
     gui_enabled = callable(getattr(agent, "_browser_dispatch", None))
-    small_model = is_small_model_context_window(
-        (getattr(agent, "params", None) or {}).get("context_window")
-    )
     pcs_enabled = bool(getattr(agent, "project_context_search_enabled", True))
     return {
         "multimodal_enabled": multimodal_enabled,
         "has_subagents": has_subagents,
         "plan_mode": plan_mode,
         "gui_enabled": gui_enabled,
-        "small_model": small_model,
         "project_context_search_enabled": pcs_enabled,
     }
 
@@ -491,16 +482,12 @@ def iter_specs(agent: Any) -> List[Dict[str, Any]]:
     dynamically injected MCP tool specs from connected servers.
     """
     flags = _gating_flags(agent)
-    small_model = flags.pop("small_model", False)
     specs: List[Dict[str, Any]] = []
     for cls in ALL_TOOLS:
         if not cls.is_available(**flags):
             continue
-        if small_model and cls.name in SMALL_MODEL_EXCLUDED_TOOLS:
-            continue
         specs.append(cls.schema())
-    # Append dynamic MCP tool specs (always injected; small-model gating is
-    # skipped because MCP tools are essential for server interaction).
+    # Append dynamic MCP tool specs from connected servers.
     try:
         mcp_specs = iter_mcp_specs(agent)
         specs.extend(mcp_specs)

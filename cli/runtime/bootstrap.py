@@ -364,23 +364,10 @@ def setup_model_ai_stack(
     )
 
 
-def _is_small_model(agent: Any) -> bool:
-    from ..core.config.model_providers import is_small_model_context_window
-    return is_small_model_context_window(
-        (getattr(agent, "params", None) or {}).get("context_window")
-    )
-
-
 def setup_prompt_and_mcp(agent: Any) -> None:
     from .context.base_system_prompt import build_base_system_prompt
 
-    small_model = _is_small_model(agent)
-    try:
-        agent._small_model = small_model
-    except Exception:
-        pass
-
-    agent._base_system_prompt = build_base_system_prompt(small_model=small_model)
+    agent._base_system_prompt = build_base_system_prompt()
 
     agent.mcp_config = agent._load_mcp_config()
     agent.mcp_manager = McpManager(
@@ -403,8 +390,8 @@ def setup_prompt_and_mcp(agent: Any) -> None:
 
     agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
     agent.tool_specs = agent._load_tools_spec_from_jsonc()
-    agent.tools_prompt_template = agent._load_tools_prompt_template(small_model=small_model)
-    agent.tools_prompt_memory_template = agent._load_tools_prompt_memory_template(small_model=small_model)
+    agent.tools_prompt_template = agent._load_tools_prompt_template()
+    agent.tools_prompt_memory_template = agent._load_tools_prompt_memory_template()
 
 
 def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:

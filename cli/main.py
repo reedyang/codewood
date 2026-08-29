@@ -40,7 +40,6 @@ from cli.config.app_info import (
 )
 from cli.core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 from cli.core.config.model_providers import DEFAULT_OLLAMA_PORT
-from cli.core.config.model_providers import basic_chat_only_context_warning
 from cli.core.config.model_providers import parse_configured_models
 from cli.core.config.model_providers import parse_port
 from cli.core.console_utils import _ansi_red
@@ -261,19 +260,6 @@ def _create_user_config_template() -> Path:
 def _print_model_settings_update_notice(config_path: str | Path, language: str = DEFAULT_DISPLAY_LANGUAGE) -> None:
     normalized_path = str(Path(str(config_path)).expanduser())
     print(_ansi_red(text("main.update_model_settings", language, path=normalized_path)))
-
-
-def _set_basic_chat_only_context_prompt_warning_for_agent(agent: Any) -> None:
-    params = getattr(agent, "params", {}) or {}
-    raw_context_window = params.get("context_window") if isinstance(params, dict) else None
-    warning = basic_chat_only_context_warning(raw_context_window)
-    if not warning:
-        return
-    set_warning = getattr(agent, "_set_pending_prompt_warning", None)
-    if callable(set_warning):
-        set_warning(warning)
-    else:
-        setattr(agent, "_pending_prompt_warning_line", warning)
 
 
 def _print_startup_basic_overview(
@@ -1227,7 +1213,6 @@ def _serve_without_valid_model(
             _apply_startup_workspace(agent, None)
         except Exception:
             pass
-        _set_basic_chat_only_context_prompt_warning_for_agent(agent)
         return ServeApp(agent).run(host=serve_host, port=serve_port)
     finally:
         if agent is not None:
@@ -1524,7 +1509,6 @@ def main(argv: list[str] | None = None):
         if not ok:
             print(text("main.startup_model_override_failed", ui_language) if not model_error else str(model_error))
             return 1
-        _set_basic_chat_only_context_prompt_warning_for_agent(agent)
         if isinstance(cli_args, dict) and bool(cli_args.get("serve_mode", False)):
             from cli.server.serve_app import ServeApp
 

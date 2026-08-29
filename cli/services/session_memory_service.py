@@ -12,7 +12,6 @@ from ..config.app_info import get_app_global_config_dir, get_app_logger_root, ge
 from ..core.localization import get_display_language, text
 from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
-    SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW,
     parse_context_window,
 )
 from ..core.console_utils import _ansi_gray
@@ -48,8 +47,6 @@ SYSTEM_BUCKET_RATIO = 0.45
 HISTORY_BUCKET_RATIO = 0.35
 OP_CONTEXT_BUCKET_RATIO = 0.12
 
-SMALL_CTX_MAX = 16_000
-MEDIUM_CTX_MAX = 64_000
 AUTO_COMPACT_TRIGGER_PCT = 85
 AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
 CONTEXT_COMPACTION_SUMMARY_PREFIX = "[CONTEXT_COMPACTION_SUMMARY]"
@@ -1713,16 +1710,6 @@ class SessionMemoryService:
 
     def _context_token_budgets(self) -> Dict[str, int]:
         return self.llm_context_manager._context_token_budgets_impl()
-
-    def _should_use_simple_chat_context(self, budgets: Dict[str, Any]) -> bool:
-        return self.llm_context_manager._should_use_simple_chat_context(budgets)
-
-    def _build_simple_chat_messages(
-        self,
-        user_input: str,
-        budgets: Dict[str, Any],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
-        return self.llm_context_manager._build_simple_chat_messages(user_input, budgets)
 
     def _software_development_prompt_append(self) -> str:
         return self.llm_context_manager._software_development_prompt_append()

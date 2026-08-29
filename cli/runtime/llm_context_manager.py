@@ -1,8 +1,8 @@
 """Assembles the model-visible context (system + history + current turn).
 
-This manager owns the "context packing" logic: token budgeting, regular vs.
-simple-chat message assembly, aggressive compression, usage-snapshot
-accounting, and context compaction. Token counting is delegated to a shared
+This manager owns the "context packing" logic: token budgeting, regular message
+assembly, aggressive compression, usage-snapshot accounting, and context
+compaction. Token counting is delegated to a shared
 :class:`~cli.runtime.token_estimator.TokenEstimator` so usage accounting here
 and in the session-memory service stays consistent.
 
@@ -40,13 +40,10 @@ from ..core.workspace_scope import effective_workspace_config_dir
 from ..config.app_info import (
     get_app_global_config_dir,
     get_app_logger_root,
-    get_app_prompt_name,
-    get_app_prompt_slug_kebab,
     get_app_runtime_attr_name,
 )
 from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
-    SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW,
     parse_context_window,
 )
 from ..services import session_memory_service as _sms
@@ -210,13 +207,6 @@ class LLMContextManager:
             "assistant_clip_tokens": assistant_clip_tokens,
         }
 
-    def _should_use_simple_chat_context(self, budgets: Dict[str, Any]) -> bool:
-        try:
-            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
-        except Exception:
-            ctx_window = DEFAULT_CONTEXT_WINDOW
-        return ctx_window < SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW
-
     def _estimate_tool_schemas_tokens(self) -> int:
         """Estimate the token overhead of the tool schemas sent via API."""
         tool_specs = list(getattr(self.agent, "tool_specs", []) or [])
@@ -228,132 +218,11 @@ class LLMContextManager:
         except Exception:
             return 0
 
-    def _build_simple_chat_messages(
-        self,
-        user_input: str,
-        budgets: Dict[str, Any],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
-        user_text = str(user_input or "")
-        user_tokens = self._estimate_message_tokens("user", user_text)
-        tool_schemas_tokens = self._estimate_tool_schemas_tokens()
-        input_budget = int(budgets.get("input_budget") or 1024)
-        # Reserve tokens for the small-model system prompt.
-        system_budget = int(budgets.get("system_budget") or 0)
-        if system_budget > 0:
-            sys_prompt = self._build_small_model_system_prompt()
-            sys_tokens = self._estimate_message_tokens("system", sys_prompt)
-            if sys_tokens > system_budget:
-                sys_prompt = self._clip_text_to_token_budget(sys_prompt, system_budget)
-                sys_tokens = self._estimate_message_tokens("system", sys_prompt)
-            if sys_tokens > 0:
-                input_budget = max(120, input_budget - sys_tokens)
-        else:
-            sys_prompt = ""
-            sys_tokens = 0
-        history_budget = max(0, input_budget - user_tokens)
-        source_history = self.history_for_regular_context()
-        history_messages, history_stats = self._build_history_messages_by_budget(
-            history_budget,
-            int(budgets.get("history_summary_budget") or 80),
-            int(budgets.get("assistant_clip_tokens") or 180),
-            source_history=source_history,
-        )
-        messages: List[Dict[str, Any]] = list(history_messages)
-        if sys_prompt:
-            messages.insert(0, {"role": "system", "content": sys_prompt})
-        if bool(getattr(self.agent, "_plan_mode_sticky", False)):
-            user_text = (
-                "<system-reminder>You are in Plan mode. Do NOT modify files — only "
-                "explore and design. Treat user requests as planning requests, not "
-                "execution commands.</system-reminder>\n" + user_text
-            )
-        messages.append({"role": "user", "content": user_text})
-
-        try:
-            history_tokens = sum(
-                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
-                for m in history_messages
-            )
-            total_input_tokens = int(sys_tokens + history_tokens + user_tokens + tool_schemas_tokens)
-            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
-            usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
-            self.agent._last_context_usage_percent_precompression = usage_pct
-            self.agent._last_context_aggressive_compression_applied = False
-            # The dashboard snapshot must not count messages that have not been
-            # sent yet (the queued user input, auto-generated user messages,
-            # tool results waiting for the next model call) — the API usage of
-            # the next response will account for them with real numbers.
-            snapshot_history_tokens = self._history_tokens_cumulative(source_history, exclude_unsent=True)
-            snapshot_input_tokens = int(sys_tokens + snapshot_history_tokens + tool_schemas_tokens)
-            self._store_context_usage_snapshot(ctx_window, snapshot_input_tokens)
-            if bool(getattr(self.agent, "_force_current_input_as_requirement_once", False)):
-                self.agent._force_current_input_as_requirement_once = False
-            get_logger().info(
-                "context-pack profile=simple-chat ctx_window=%s input_budget=%s system=%s history=%s user=%s "
-                "history_trimmed_assistant=%s history_summary_messages=%s history_dropped=%s",
-                budgets.get("context_window"),
-                budgets.get("input_budget"),
-                sys_tokens,
-                history_tokens,
-                user_tokens,
-                history_stats.get("assistant_trimmed", 0),
-                history_stats.get("summary_messages", 0),
-                history_stats.get("dropped_messages", 0),
-            )
-        except Exception:
-            pass
-        return messages, True
-
-    def _build_small_model_system_prompt(self) -> str:
-        """Build a compact system prompt for small-context models (< 64k).
-
-        Combines the simplified base system prompt, simplified domain prompt,
-        simplified tools catalog, and basic runtime metadata.
-
-        Always loads the simplified prompt template directly rather than
-        relying on the cached ``_base_system_prompt`` (which may have been
-        set during bootstrap with a different model profile).
-        """
-        parts: List[str] = []
-        try:
-            from .context.base_system_prompt import _prompts_root
-            prompt_path = _prompts_root() / "small" / "system_prompt.md"
-            raw = prompt_path.read_text(encoding="utf-8").strip()
-            base = preprocess_prompt(raw, {"os": platform.system()})
-            base = (base
-                .replace("{{APP_NAME}}", get_app_prompt_name())
-                .replace("{{APP_SLUG_KEBAB}}", get_app_prompt_slug_kebab())
-            )
-        except Exception:
-            base = ""
-        if base:
-            parts.append(base)
-        domain = self._software_development_prompt_append().strip()
-        if domain:
-            parts.append(domain)
-        # Inject the simplified tools catalog so the model knows available
-        # tools even in simple-chat mode.
-        try:
-            from .prompt_composer import build_tools_prompt_append
-            tools_text = build_tools_prompt_append(self.agent).strip()
-            if tools_text:
-                parts.append(tools_text)
-        except Exception:
-            pass
-        workspace_root = self._model_visible_workspace_directory_text()
-        if workspace_root:
-            parts.append(f"Current workspace root: {workspace_root}")
-        return "\n\n".join(parts)
-
     def _software_development_prompt_append(self) -> str:
         cached = getattr(self, "_software_development_prompt_cache", None)
         if isinstance(cached, str):
             return cached
-        small_model = bool(getattr(self.agent, "_small_model", False))
-        if small_model:
-            prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "small" / "domain_software_development.md"
-        else:
-            prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "domain_software_development.md"
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "domain_software_development.md"
         try:
             raw = prompt_path.read_text(encoding="utf-8").strip()
             text = preprocess_prompt(raw, {"os": platform.system()})
@@ -1694,44 +1563,6 @@ class LLMContextManager:
             if expected_key and observed_key != expected_key:
                 return
             budgets = self._context_token_budgets()
-            if self._should_use_simple_chat_context(budgets):
-                source_history = self.history_for_regular_context()
-                history_tokens = self._context_usage_from_chat_record()
-                # When a cache anchor exists (_cache_stats on a prior assistant
-                # message), history_tokens already includes the system prompt
-                # and tool schemas from the previous API call.  Adding them
-                # again would double-count.
-                has_cache_anchor = any(
-                    isinstance(m.get("_cache_stats"), dict)
-                    for m in source_history
-                )
-                if not has_cache_anchor:
-                    sys_prompt = self._build_small_model_system_prompt()
-                    sys_tokens = self._estimate_message_tokens("system", sys_prompt)
-                    tool_schemas_tokens = self._estimate_tool_schemas_tokens()
-                    total_input_tokens = int(history_tokens + sys_tokens + tool_schemas_tokens)
-                    parts = [
-                        {"key": "system", "tokens": int(sys_tokens)},
-                        {"key": "tools", "tokens": int(tool_schemas_tokens)},
-                    ]
-                else:
-                    total_input_tokens = int(history_tokens)
-                    parts = []
-                parts.append({"key": "history", "tokens": int(history_tokens)})
-                parts = [p for p in parts if int(p.get("tokens") or 0) > 0]
-                if expected:
-                    current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
-                    if current != expected:
-                        return
-                if self._context_usage_state_key() != observed_key:
-                    return
-                self._store_context_usage_snapshot(
-                    int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
-                    total_input_tokens,
-                    parts,
-                )
-                self._persist_context_usage_snapshot()
-                return
 
             filtered_history = self.history_for_regular_context()
             history_tokens = self._context_usage_from_chat_record()
@@ -1856,8 +1687,6 @@ class LLMContextManager:
     # --- Regular task message assembly ---------------------------------------
     def build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
         budgets = self._context_token_budgets()
-        if self._should_use_simple_chat_context(budgets):
-            return self._build_simple_chat_messages(user_input, budgets)
 
         import os
 

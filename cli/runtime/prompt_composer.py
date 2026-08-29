@@ -13,7 +13,6 @@ from ..core.workspace_scope import effective_workspace_id, effective_workspace_r
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
     MEMORY_TOOLS,
-    SMALL_MODEL_EXCLUDED_TOOLS,
 )
 
 
@@ -557,7 +556,6 @@ def build_tools_prompt_append(agent: Any) -> str:
             template = (template + "\n\n" + memory_side).strip()
 
     multimodal_enabled = _model_supports_multimodal(agent)
-    small_model = _is_small_model_context(agent)
 
     lines: List[str] = [
         template,
@@ -588,8 +586,6 @@ def build_tools_prompt_append(agent: Any) -> str:
             continue
         if name == "project_context_search" and not agent._project_context_tool_allowed():
             continue
-        if small_model and name in SMALL_MODEL_EXCLUDED_TOOLS:
-            continue
         desc = str(fn.get("description") or "").strip()
         params = fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {}
         props = params.get("properties") if isinstance(params.get("properties"), dict) else {}
@@ -611,23 +607,10 @@ def _build_tool_call_mode_prompt() -> str:
     )
 
 
-def _is_small_model_context(agent: Any) -> bool:
-    from ..core.config.model_providers import is_small_model_context_window
-    return is_small_model_context_window(
-        (getattr(agent, "params", None) or {}).get("context_window")
-    )
-
-
-def load_tools_prompt_template(small_model: bool = False) -> str:
+def load_tools_prompt_template() -> str:
     """Load tools-related prompt template from external markdown file.
-
-    When *small_model* is True, loads ``prompts/small/tools_prompt.md``
-    instead of the default.
     """
-    if small_model:
-        path = _src_root() / "prompts" / "small" / "tools_prompt.md"
-    else:
-        path = _src_root() / "prompts" / "tools_prompt.md"
+    path = _src_root() / "prompts" / "tools_prompt.md"
     try:
         raw = path.read_text(encoding="utf-8")
         return preprocess_prompt(raw, {"os": platform.system()})
@@ -636,22 +619,15 @@ def load_tools_prompt_template(small_model: bool = False) -> str:
         return "## Tool Catalog (prompt-injected)"
 
 
-def load_tools_prompt_memory_template(small_model: bool = False) -> str:
+def load_tools_prompt_memory_template() -> str:
     """Load the optional experiential-memory prompt section.
 
     This block describes how to use the ``memory_*`` tools. It is appended to
     the tools prompt only when ``memory_enabled`` is true; otherwise the
     memory tools are filtered out of the catalog and this section must
     not be injected.
-
-    When *small_model* is True, loads ``prompts/small/tools_prompt_memory.md``
-    instead of the default (which documents only ``memory_add``,
-    ``memory_search``, and ``memory_delete``).
     """
-    if small_model:
-        path = _src_root() / "prompts" / "small" / "tools_prompt_memory.md"
-    else:
-        path = _src_root() / "prompts" / "tools_prompt_memory.md"
+    path = _src_root() / "prompts" / "tools_prompt_memory.md"
     try:
         raw = path.read_text(encoding="utf-8")
         return preprocess_prompt(raw, {"os": platform.system()})
