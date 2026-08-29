@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import types
 import unittest
 
@@ -62,6 +63,22 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.assertTrue(hasattr(out, "__iter__"))
         list(out)
         self.assertTrue(self.agent.ai_orchestrator.last_call_ctx.stream)
+
+    def test_internal_calls_get_zero_retry_budget(self):
+        # Best-effort internal calls (memory query expansion, chat title, ...)
+        # must never enter the endless 429/503 backoff: they run nested inside
+        # user-facing turns and would otherwise stall the whole turn forever.
+        from cli.ai.ai_special_mode_prompts import InternalCallMode
+
+        self.agent.params = {"streaming": False}
+        self.agent.call_ai("expand", internal_mode=InternalCallMode.MEMORY_QUERY_EXPANSION)
+        self.assertEqual(self.agent.ai_orchestrator.last_call_ctx.max_retries, 0)
+
+        self.agent.call_ai("title", internal_mode=InternalCallMode.CHAT_TITLE)
+        self.assertEqual(self.agent.ai_orchestrator.last_call_ctx.max_retries, 0)
+
+        self.agent.call_ai("regular user turn")
+        self.assertIsNone(self.agent.ai_orchestrator.last_call_ctx.max_retries)
 
     def test_standard_tools_mode_is_enabled_for_ollama(self):
         self.agent.provider = "ollama"
@@ -268,6 +285,86 @@ class ThreadedInterruptibleStreamTests(unittest.TestCase):
     def test_should_cancel_consumed_flag_does_not_raise_when_not_cancelled(self):
         bridge = _ThreadedInterruptibleStream(lambda: iter(["ok"]), should_cancel=lambda: False)
         self.assertEqual(list(bridge), ["ok"])
+
+    def test_producer_keyboard_interrupt_is_forwarded_without_crashing_thread(self):
+        # The infinite retry loop raises KeyboardInterrupt on a user stop; the
+        # daemon thread must not crash with an unhandled-exception traceback,
+        # and the consumer must receive the interrupt from ``__next__``.
+        def aborting_producer():
+            raise KeyboardInterrupt
+
+        bridge = _ThreadedInterruptibleStream(aborting_producer)
+        with self.assertRaises(KeyboardInterrupt):
+            list(bridge)
+
+    def test_is_cancelled_stays_set_after_cancel(self):
+        bridge = _ThreadedInterruptibleStream(lambda: iter(["a"]))
+        self.assertFalse(bridge.is_cancelled())
+        bridge.cancel()
+        self.assertTrue(bridge.is_cancelled())
+        # A consuming interrupt probe would go back to False after being read;
+        # the persistent cancel event must remain set so a background retry
+        # loop can observe the stop long after the consumer saw it.
+        self.assertTrue(bridge.is_cancelled())
+
+    def test_nested_call_on_producer_thread_inherits_cancel_event(self):
+        # Regression: the memory query-expansion call runs nested on the
+        # bridge's producer thread with no bridge of its own. When the user
+        # stops, the main loop consumes the interrupt flag and cancels the
+        # bridge — the nested call's only stop signal is the thread-local
+        # cancel event inherited from the owning bridge.
+        from cli.ai.ai_provider_clients import current_stream_cancel_event
+
+        self.assertIsNone(current_stream_cancel_event())
+
+        seen = {}
+
+        def nested_probe_producer():
+            seen["event"] = current_stream_cancel_event()
+            return iter(["ok"])
+
+        bridge = _ThreadedInterruptibleStream(nested_probe_producer)
+        self.assertEqual(list(bridge), ["ok"])
+        # The producer thread observed the owning bridge's cancel event.
+        self.assertIs(seen["event"], bridge._cancel)
+        self.assertIsNone(current_stream_cancel_event())
+
+        bridge.cancel()
+        self.assertTrue(seen["event"].is_set())
+
+    def test_nested_retry_loop_aborts_when_bridge_cancelled(self):
+        # End-to-end shape of the reported bug: a nested non-stream call with
+        # its own infinite retry loop runs on the producer thread; the probe
+        # (peek=False, no bridge of its own) must still observe the stop
+        # through the inherited cancel event.
+        from cli.ai.ai_provider_clients import current_stream_cancel_event
+
+        state = {"peek": False, "stopped": False}
+
+        def nested_should_cancel():
+            inherited = current_stream_cancel_event()
+            return state["peek"] or bool(inherited and inherited.is_set())
+
+        def stuck_in_nested_retry():
+            # The nested infinite retry loop: exits only via the probe.
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if nested_should_cancel():
+                    raise KeyboardInterrupt
+                time.sleep(0.01)
+            return iter(["never"])
+
+        bridge = _ThreadedInterruptibleStream(
+            stuck_in_nested_retry,
+            should_cancel=lambda: state["stopped"],
+        )
+        # Simulate the user stop: the main loop consumes the interrupt flag
+        # (state["peek"] stays False for the nested probe) and cancels the
+        # bridge; the consumer polls its own should_cancel and unwinds.
+        state["stopped"] = True
+        bridge.cancel()
+        with self.assertRaises(KeyboardInterrupt):
+            list(bridge)
 
 
 if __name__ == "__main__":

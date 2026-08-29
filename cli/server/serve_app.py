@@ -3628,6 +3628,21 @@ class ServeApp:
         """
         agent = self.agent
         cid = str(chat_id or "").strip()
+        try:
+            from ..core.logging.app_logging import (
+                get_app_logger_root,
+                get_logger,
+            )
+
+            get_logger(f"{get_app_logger_root()}.server").warning(
+                "stop requested: chat=%r ws=%r legacy=%s thread=%s",
+                cid,
+                str(workspace_id or ""),
+                not bool(cid),
+                threading.current_thread().name,
+            )
+        except Exception:
+            pass
         if cid:
             # Validate the pair so a same-id chat in the wrong workspace is never
             # interrupted; an unresolvable pair is a safe no-op (never falls
@@ -8793,18 +8808,32 @@ class ServeApp:
         from ..ai.ai_provider_clients import set_retry_countdown_callback
 
         def _publish_retry_countdown(**kw: Any) -> None:
-            self.broadcaster.publish(
-                "retry_countdown",
-                self._route(
-                    code=int(kw.get("code") or 0),
-                    retryNumber=int(kw.get("retry_number") or 0),
-                    waitSeconds=float(kw.get("wait_seconds") or 0),
-                    remainingSeconds=float(kw.get("remaining_seconds") or 0),
-                    modelName=str(kw.get("model_name") or ""),
-                    message=str(kw.get("message") or ""),
-                    done=bool(kw.get("done")),
-                ),
+            payload = self._route(
+                code=int(kw.get("code") or 0),
+                retryNumber=int(kw.get("retry_number") or 0),
+                waitSeconds=float(kw.get("wait_seconds") or 0),
+                remainingSeconds=float(kw.get("remaining_seconds") or 0),
+                modelName=str(kw.get("model_name") or ""),
+                message=str(kw.get("message") or ""),
+                done=bool(kw.get("done")),
             )
+            try:
+                from ..core.logging.app_logging import (
+                    get_app_logger_root,
+                    get_logger,
+                )
+
+                get_logger(f"{get_app_logger_root()}.server").info(
+                    "retry-countdown publish chat=%s ws=%s done=%s retry=%s remaining=%.1f",
+                    payload.get("chatId"),
+                    payload.get("workspaceId"),
+                    bool(kw.get("done")),
+                    int(kw.get("retry_number") or 0),
+                    float(kw.get("remaining_seconds") or 0),
+                )
+            except Exception:
+                pass
+            self.broadcaster.publish("retry_countdown", payload)
 
         set_retry_countdown_callback(_publish_retry_countdown)
         # Bridge for the GUI-only browser tools: lets a tool send a command to

@@ -340,6 +340,14 @@ class AICallContext:
     model_name: Optional[str] = None
     model_params: Optional[Dict[str, Any]] = None
     openai_conf: Optional[Dict[str, Any]] = None
+    # Optional hook checked by the infinite 429/503/connection retry loop so a
+    # user stop aborts the backoff wait instead of retrying forever.
+    should_cancel: Optional[Callable[[], bool]] = None
+    # Maximum throttle/connection retries for this call. ``None`` (default)
+    # keeps the endless backoff used by user-facing calls; best-effort internal
+    # calls (memory query expansion, chat title, ...) use 0 so a failure
+    # surfaces immediately instead of stalling the caller forever.
+    max_retries: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -358,6 +366,12 @@ class ProviderCallContext:
     tool_schemas: Optional[List[Dict[str, Any]]] = None
     tool_choice: Any = None
     display_language: str = "en"
+    # Forwarded from the caller so the infinite retry loop can observe a user
+    # stop and abort (see ``_call_with_openai_compatible``).
+    should_cancel: Optional[Callable[[], bool]] = None
+    # Bound on throttle/connection retries (``None`` = endless, ``0`` = never
+    # retry). Forwarded to ``_call_with_openai_compatible``.
+    max_retries: Optional[int] = None
 
 
 class _ThreadedInterruptibleStream:
@@ -377,6 +391,14 @@ class _ThreadedInterruptibleStream:
     """
 
     _END = object()
+
+    # Thread-local handle to the bridge owning the CURRENT network thread.
+    # Nested model calls made from inside a producer thread (e.g. the
+    # experiential-memory query-expansion call) inherit this cancel event, so
+    # a user stop cancels them too — their own probes would otherwise never
+    # observe the stop (the interrupt flag is consumed by the main loop and
+    # they hold no bridge of their own).
+    _cancel_tls = threading.local()
 
     def __init__(
         self,
@@ -398,10 +420,22 @@ class _ThreadedInterruptibleStream:
             daemon=True,
             name=f"{get_app_logger_root()}-llm-network",
         )
+        _OPENAI_ROUTE_LOG.info(
+            "stream bridge created id=%s producer_thread=%s",
+            id(self),
+            self._thread.name,
+        )
         self._thread.start()
 
     # ----- background thread ----------------------------------------------
     def _run(self) -> None:
+        type(self)._cancel_tls.cancel_event = self._cancel
+        try:
+            self._run_inner()
+        finally:
+            type(self)._cancel_tls.cancel_event = None
+
+    def _run_inner(self) -> None:
         if callable(self._bind_thread):
             try:
                 self._bind_thread()
@@ -427,6 +461,15 @@ class _ThreadedInterruptibleStream:
                 self._final_value = inner
         except Exception as exc:
             self._error = exc
+        except KeyboardInterrupt as exc:
+            # The producer (e.g. the infinite retry loop) aborted because the
+            # user stopped. Forward the interrupt to the consumer exactly like
+            # any other producer error: it is raised from ``__next__`` so the
+            # turn unwinds as interrupted, without crashing this daemon thread.
+            _OPENAI_ROUTE_LOG.info(
+                "stream bridge producer aborted with KeyboardInterrupt (user stop); forwarding to consumer"
+            )
+            self._error = exc
         finally:
             self._put(self._END)
 
@@ -448,6 +491,16 @@ class _ThreadedInterruptibleStream:
     def close(self) -> None:
         self.cancel()
 
+    def is_cancelled(self) -> bool:
+        """Whether a cancel was requested (set once, never cleared).
+
+        Unlike a consuming interrupt probe, this stays True after the consumer
+        has already observed the stop — the background network thread can poll
+        it to abort the infinite 429/503/connection retry even when the main
+        loop already consumed the interrupt flag.
+        """
+        return self._cancel.is_set()
+
     def __iter__(self):
         return self
 
@@ -462,6 +515,11 @@ class _ThreadedInterruptibleStream:
                 if callable(self._should_cancel):
                     try:
                         if bool(self._should_cancel()):
+                            _OPENAI_ROUTE_LOG.warning(
+                                "stream bridge consumer observed user stop; cancelling bridge id=%s thread=%s",
+                                id(self),
+                                threading.current_thread().name,
+                            )
                             self.cancel()
                             raise KeyboardInterrupt
                     except KeyboardInterrupt:
@@ -1981,11 +2039,19 @@ def set_retry_countdown_callback(callback: Optional[Callable[..., None]]) -> Non
 def _notify_retry_countdown(**kwargs: Any) -> None:
     with _RETRY_COUNTDOWN_LOCK:
         cb = _RETRY_COUNTDOWN_CALLBACK
+    if bool(kwargs.get("done")):
+        _OPENAI_ROUTE_LOG.info(
+            "retry-countdown done tick: code=%s retry_number=%s model=%s callback=%s",
+            kwargs.get("code"),
+            kwargs.get("retry_number"),
+            kwargs.get("model_name"),
+            "installed" if callable(cb) else "MISSING",
+        )
     if callable(cb):
         try:
             cb(**kwargs)
-        except Exception:
-            pass
+        except Exception as exc:
+            _OPENAI_ROUTE_LOG.warning("retry-countdown callback raised: %r", exc)
 
 
 def _sleep_with_retry_countdown(
@@ -1995,10 +2061,34 @@ def _sleep_with_retry_countdown(
     code: int,
     model_name: str = "",
     message: str = "",
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> None:
-    """Sleep *wait_seconds*, notifying the countdown hook every second."""
+    """Sleep *wait_seconds*, notifying the countdown hook every second.
+
+    If ``should_cancel`` is provided and reports a user stop, the wait is
+    aborted immediately with ``KeyboardInterrupt`` so the endless retry stops
+    instead of backing off again.
+    """
     remaining = float(wait_seconds)
     while remaining > 0:
+        if _should_cancel_requested(should_cancel):
+            _OPENAI_ROUTE_LOG.warning(
+                "retry-wait aborted by user stop (mid-wait): code=%s retry_number=%s wait=%.1fs remaining=%.1fs",
+                code,
+                retry_number,
+                float(wait_seconds),
+                remaining,
+            )
+            _notify_retry_countdown(
+                code=code,
+                retry_number=retry_number,
+                wait_seconds=float(wait_seconds),
+                remaining_seconds=0.0,
+                model_name=model_name,
+                message=message,
+                done=True,
+            )
+            raise KeyboardInterrupt
         step = min(1.0, remaining)
         _notify_retry_countdown(
             code=code,
@@ -2010,6 +2100,23 @@ def _sleep_with_retry_countdown(
         )
         time.sleep(step)
         remaining -= step
+    if _should_cancel_requested(should_cancel):
+        _OPENAI_ROUTE_LOG.warning(
+            "retry-wait aborted by user stop (wait finished): code=%s retry_number=%s wait=%.1fs",
+            code,
+            retry_number,
+            float(wait_seconds),
+        )
+        _notify_retry_countdown(
+            code=code,
+            retry_number=retry_number,
+            wait_seconds=float(wait_seconds),
+            remaining_seconds=0.0,
+            model_name=model_name,
+            message=message,
+            done=True,
+        )
+        raise KeyboardInterrupt
     _notify_retry_countdown(
         code=code,
         retry_number=retry_number,
@@ -2019,6 +2126,29 @@ def _sleep_with_retry_countdown(
         message=message,
         done=True,
     )
+
+
+def _should_cancel_requested(should_cancel: Optional[Callable[[], bool]]) -> bool:
+    """Safely invoke an optional cancellation probe, never raising."""
+    if callable(should_cancel):
+        try:
+            return bool(should_cancel())
+        except Exception:
+            return False
+    return False
+
+
+def current_stream_cancel_event() -> Optional[threading.Event]:
+    """The cancel event of the bridge running on the CALLING thread, if any.
+
+    Nested model calls execute on the bridge's producer thread (e.g. the
+    memory query-expansion call inside a streaming turn). They hold no bridge
+    of their own and the agent-global/per-chat interrupt flags are usually
+    already consumed by the time they check, so the only reliable stop signal
+    is the owning bridge's persistent cancel event — set once, never cleared.
+    """
+    ev = getattr(_ThreadedInterruptibleStream._cancel_tls, "cancel_event", None)
+    return ev if isinstance(ev, threading.Event) else None
 
 
 def fetch_openai_compatible_models(
@@ -2584,6 +2714,8 @@ def _call_with_openai_compatible(
     append_history: Callable[..., None],
     api_key_error_msg: str,
     default_base_url: str,
+    should_cancel: Optional[Callable[[], bool]] = None,
+    max_retries: Optional[int] = None,
 ):
     api_key = conf.get("api_key")
     base_url = conf.get("base_url", default_base_url)
@@ -2655,6 +2787,14 @@ def _call_with_openai_compatible(
         # call succeeds or the user interrupts.
         retry_number = 0
         while True:
+            if _should_cancel_requested(should_cancel):
+                _OPENAI_ROUTE_LOG.warning(
+                    "retry-loop aborted by user stop (before attempt): model=%s api_kind=%s retry_number=%s",
+                    model_name,
+                    api_kind,
+                    retry_number,
+                )
+                raise KeyboardInterrupt
             try:
                 _OPENAI_ROUTE_LOG.info(
                     "openai-route enter-kind model=%s api_kind=%s retry_number=%s",
@@ -2693,6 +2833,18 @@ def _call_with_openai_compatible(
                         str(e),
                     )
                     break
+                if max_retries is not None and retry_number >= max_retries:
+                    last_error = e
+                    aggregated_attempts.extend(e.attempt_errors)
+                    _OPENAI_ROUTE_LOG.warning(
+                        "openai-route retry budget exhausted model=%s api_kind=%s code=%s retries=%s max_retries=%s",
+                        model_name,
+                        api_kind,
+                        retry_code,
+                        retry_number,
+                        max_retries,
+                    )
+                    break
                 message = (
                     _CONNECTION_RETRY_MESSAGE
                     if retry_code == _RETRY_CODE_CONNECTION
@@ -2714,6 +2866,22 @@ def _call_with_openai_compatible(
                     )
                     break
                 retry_code = _RETRY_CODE_CONNECTION
+                if max_retries is not None and retry_number >= max_retries:
+                    last_error = e
+                    aggregated_attempts.append({
+                        "label": api_kind,
+                        "url": str(base_url or ""),
+                        "error": str(e),
+                    })
+                    _OPENAI_ROUTE_LOG.warning(
+                        "openai-route retry budget exhausted model=%s api_kind=%s code=%s retries=%s max_retries=%s",
+                        model_name,
+                        api_kind,
+                        retry_code,
+                        retry_number,
+                        max_retries,
+                    )
+                    break
                 message = _CONNECTION_RETRY_MESSAGE
             retry_number += 1
             wait = _retry_wait_seconds(retry_number)
@@ -2731,6 +2899,7 @@ def _call_with_openai_compatible(
                 code=retry_code,
                 model_name=model_name,
                 message=message,
+                should_cancel=should_cancel,
             )
             continue
 
@@ -3045,6 +3214,8 @@ def call_ai_with_provider(
                 context.display_language,
             ),
             default_base_url="https://api.openai.com/v1",
+            should_cancel=context.should_cancel,
+            max_retries=context.max_retries,
         )
     return translate(
         "error.cannot_dispatch_model_call",

@@ -6595,6 +6595,28 @@ class Agent:
         chat_wanted = self._consume_chat_task_interrupt_requested()
         return bool(wanted or chat_wanted)
 
+    def _task_interrupt_requested_peek(self) -> bool:
+        """Peek (without consuming) whether a task interrupt was requested.
+
+        Non-consuming counterpart of :meth:`_consume_task_interrupt_requested`
+        so the infinite model-call retry loop can observe a user stop without
+        stealing the flag from the main loop (which consumes it at the next
+        round boundary). Covers both the agent-global interrupt (TUI ESC /
+        legacy stop) and the bound chat's per-chat interrupt (serve-mode stop).
+        """
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            wanted = bool(getattr(self, "_task_interrupt_requested", False))
+        else:
+            with lock:
+                wanted = bool(getattr(self, "_task_interrupt_requested", False))
+        try:
+            if self._chat_task_interrupt_requested():
+                wanted = True
+        except Exception:
+            pass
+        return bool(wanted)
+
     def _restore_posix_interrupt_tty_locked(self) -> None:
         """Return the controlling tty to its saved (cooked) state. Lock held."""
         tty_info = getattr(self, "_posix_interrupt_tty", None)
@@ -8601,6 +8623,63 @@ class Agent:
         # ``ai_orchestrator.context`` is rewritten by a concurrent chat
         # activation (chat switch), which otherwise pairs this chat's model name
         # with another chat's server config (base_url crossed).
+        # The streaming wrapper runs the model call (including the infinite
+        # 429/503/connection retry) on a background network thread. The retry
+        # loop must stop on a user stop even after the main loop has already
+        # consumed the interrupt flag, so we also gate it on the stream's own
+        # persistent cancel event (set once, never cleared). ``_stream_ref`` is
+        # populated below once the wrapper exists.
+        _stream_ref = {"bridge": None}
+        _probe_log = get_logger(f"{get_app_logger_root()}.openai_route")
+        _probe_log.info(
+            "call_ai entry: stream=%s internal_mode=%s thread=%s",
+            bool(getattr(call_ctx, "stream", False)),
+            getattr(call_ctx, "internal_mode", None),
+            threading.current_thread().name,
+        )
+
+        def _retry_should_cancel() -> bool:
+            peek = False
+            bridge_cancelled = False
+            bridge_id = None
+            try:
+                peek = self._task_interrupt_requested_peek()
+            except Exception:
+                pass
+            bridge = _stream_ref.get("bridge")
+            if bridge is not None:
+                bridge_id = id(bridge)
+                try:
+                    bridge_cancelled = bool(bridge.is_cancelled())
+                except Exception:
+                    pass
+            # Nested calls (memory query-expansion, chat title, ...) run on the
+            # bridge's producer thread with no bridge of their own; they inherit
+            # the owning bridge's cancel event via thread-local storage.
+            inherited_cancelled = False
+            try:
+                from .ai.ai_provider_clients import current_stream_cancel_event
+
+                inherited = current_stream_cancel_event()
+                if inherited is not None and inherited.is_set():
+                    inherited_cancelled = True
+            except Exception:
+                pass
+            hit = bool(peek or bridge_cancelled or inherited_cancelled)
+            try:
+                if hit:
+                    _probe_log.warning(
+                        "retry cancel probe HIT: peek=%s bridge=%s cancelled=%s inherited_cancelled=%s thread=%s",
+                        peek,
+                        bridge_id,
+                        bridge_cancelled,
+                        inherited_cancelled,
+                        threading.current_thread().name,
+                    )
+            except Exception:
+                pass
+            return hit
+
         try:
             from dataclasses import replace
 
@@ -8610,6 +8689,16 @@ class Agent:
                 model_name=mname,
                 model_params=mparams,
                 openai_conf=mconf,
+                should_cancel=_retry_should_cancel,
+                # Best-effort internal calls (memory query expansion, chat
+                # title, ...) must never enter the endless 429/503 backoff: a
+                # failure surfaces to the caller immediately, which already
+                # handles it gracefully (e.g. memory expansion returns None).
+                max_retries=(
+                    0
+                    if call_ctx.internal_mode != InternalCallMode.REGULAR
+                    else None
+                ),
             )
         except Exception:
             pass
@@ -8663,11 +8752,18 @@ class Agent:
                         except Exception:
                             pass
 
-                return _ThreadedInterruptibleStream(
+                bridge = _ThreadedInterruptibleStream(
                     _do_call,
                     should_cancel=lambda: bool(self._consume_task_interrupt_requested()),
                     bind_thread=_bind_network_thread,
                 )
+                _stream_ref["bridge"] = bridge
+                _probe_log.info(
+                    "stream bridge registered in _stream_ref: id=%s thread=%s",
+                    id(bridge),
+                    threading.current_thread().name,
+                )
+                return bridge
             except Exception:
                 pass
         if lock is None:

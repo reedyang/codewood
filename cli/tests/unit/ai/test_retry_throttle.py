@@ -167,6 +167,60 @@ class CountdownSleepTests(unittest.TestCase):
         self.assertEqual(ticks[0]["message"], "rpm exhausted")
         self.assertEqual(ticks[-1]["message"], "rpm exhausted")
 
+    def test_sleep_aborts_with_keyboard_interrupt_when_cancelled(self):
+        state = {"cancelled": False}
+
+        def should_cancel():
+            return state["cancelled"]
+
+        with patch("cli.ai.ai_provider_clients.time.sleep"):
+            state["cancelled"] = True
+            with self.assertRaises(KeyboardInterrupt):
+                _sleep_with_retry_countdown(
+                    3.0,
+                    retry_number=1,
+                    code=429,
+                    model_name="m",
+                    should_cancel=should_cancel,
+                )
+
+    def test_sleep_abort_emits_done_tick_so_gui_clears_countdown(self):
+        # Regression: aborting the wait on a user stop must publish the final
+        # ``done`` countdown tick, otherwise the GUI keeps showing a frozen
+        # "retry #n in Xs" line after the user stopped.
+        ticks = []
+        set_retry_countdown_callback(lambda **kw: ticks.append(dict(kw)))
+        with patch("cli.ai.ai_provider_clients.time.sleep"):
+            with self.assertRaises(KeyboardInterrupt):
+                _sleep_with_retry_countdown(
+                    3.0,
+                    retry_number=2,
+                    code=429,
+                    model_name="m",
+                    message="rpm exhausted",
+                    should_cancel=lambda: True,
+                )
+        self.assertTrue(ticks, "expected at least one countdown tick")
+        self.assertTrue(ticks[-1].get("done"))
+        self.assertEqual(ticks[-1]["remaining_seconds"], 0.0)
+        self.assertEqual(ticks[-1]["code"], 429)
+        self.assertEqual(ticks[-1]["retry_number"], 2)
+
+    def test_sleep_aborts_immediately_even_when_not_yet_ticking(self):
+        def should_cancel():
+            return True
+
+        with patch("cli.ai.ai_provider_clients.time.sleep") as mock_sleep:
+            with self.assertRaises(KeyboardInterrupt):
+                _sleep_with_retry_countdown(
+                    3.0,
+                    retry_number=1,
+                    code=429,
+                    model_name="m",
+                    should_cancel=should_cancel,
+                )
+        mock_sleep.assert_not_called()
+
 
 class InfiniteRetryLoopTests(unittest.TestCase):
     def _call(self, conf: dict, **overrides):
@@ -188,6 +242,67 @@ class InfiniteRetryLoopTests(unittest.TestCase):
         )
         kwargs.update(overrides)
         return _call_with_openai_compatible(**kwargs)
+
+    def test_retry_stops_with_keyboard_interrupt_when_user_cancels(self):
+        state = {"cancelled": False}
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            raise ModelCallError(
+                "429 Client Error: Too Many Requests for url: http://x",
+                attempt_errors=[_throttle_attempt(429)],
+            )
+
+        waits = []
+
+        def fake_sleep(wait, **kw):
+            waits.append(wait)
+            state["cancelled"] = True
+            raise KeyboardInterrupt
+
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=fake_sleep,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self._call(
+                    {"api_key": "k", "base_url": "http://x", "api_mode": "chat"},
+                    should_cancel=lambda: state["cancelled"],
+                )
+        # The user stop (reported through the cancel probe during the backoff
+        # wait) aborts the loop before any further retry attempt.
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(waits, [3])
+
+    def test_retry_stops_when_cancelled_between_sleep_and_next_attempt(self):
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            raise ModelCallError(
+                "429 Client Error: Too Many Requests for url: http://x",
+                attempt_errors=[_throttle_attempt(429)],
+            )
+
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: None,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self._call(
+                    {"api_key": "k", "base_url": "http://x", "api_mode": "chat"},
+                    should_cancel=lambda: True,
+                )
+        # The cancel probe is checked before the very first attempt, so no
+        # network call is ever made when the user already stopped.
+        self.assertEqual(calls["n"], 0)
 
     def test_throttle_retries_with_backoff_then_succeeds(self):
         calls = {"n": 0}
@@ -243,6 +358,109 @@ class InfiniteRetryLoopTests(unittest.TestCase):
             result = self._call({"api_key": "k", "base_url": "http://x", "api_mode": "chat"})
         self.assertEqual(result, "ok")
         self.assertEqual(waits, [3, 4])
+
+    def test_internal_call_max_retries_zero_never_retries(self):
+        # Regression: best-effort internal calls (memory query expansion,
+        # chat title, ...) run nested inside user-facing turns — the endless
+        # 429 backoff kept them (and therefore the whole turn) stuck forever.
+        # With ``max_retries=0`` a throttle error fails immediately.
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            raise ModelCallError(
+                "429 Client Error: Too Many Requests for url: http://x",
+                attempt_errors=[_throttle_attempt(429)],
+            )
+
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: self.fail("internal call must not sleep for a retry"),
+        ) as fake_sleep:
+            with self.assertRaises(ModelCallError):
+                self._call(
+                    {"api_key": "k", "base_url": "http://x", "api_mode": "chat"},
+                    max_retries=0,
+                )
+        self.assertEqual(calls["n"], 1)
+        fake_sleep.assert_not_called()
+
+    def test_max_retries_bounds_retry_attempts(self):
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            raise ModelCallError(
+                "429 Client Error: Too Many Requests for url: http://x",
+                attempt_errors=[_throttle_attempt(429)],
+            )
+
+        waits = []
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: waits.append(wait),
+        ):
+            with self.assertRaises(ModelCallError):
+                self._call(
+                    {"api_key": "k", "base_url": "http://x", "api_mode": "chat"},
+                    max_retries=2,
+                )
+        # One initial attempt + exactly 2 retries, then the error propagates.
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(waits, [3, 4])
+
+    def test_max_retries_none_keeps_endless_retry(self):
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            raise ModelCallError(
+                "429 Client Error: Too Many Requests for url: http://x",
+                attempt_errors=[_throttle_attempt(429)],
+            )
+
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: None,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self._call(
+                    {"api_key": "k", "base_url": "http://x", "api_mode": "chat"},
+                    max_retries=None,
+                    should_cancel=lambda: calls["n"] >= 3,
+                )
+        # No budget → retries continue until the cancel probe fires.
+        self.assertGreaterEqual(calls["n"], 3)
+
+    def test_transient_connection_error_respects_max_retries(self):
+        calls = {"n": 0}
+
+        def fake_call(**kwargs):
+            calls["n"] += 1
+            raise ConnectionResetError("connection reset by peer")
+
+        with patch(
+            "cli.ai.ai_provider_clients._call_openai_with_suffix_strategy",
+            side_effect=fake_call,
+        ), patch(
+            "cli.ai.ai_provider_clients._sleep_with_retry_countdown",
+            side_effect=lambda wait, **kw: None,
+        ):
+            with self.assertRaises(ModelCallError):
+                self._call(
+                    {"api_key": "k", "base_url": "http://x", "api_mode": "chat"},
+                    max_retries=1,
+                )
+        self.assertEqual(calls["n"], 2)
 
     def test_non_throttle_error_is_not_retried(self):
         calls = {"n": 0}

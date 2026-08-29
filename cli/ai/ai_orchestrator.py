@@ -533,6 +533,8 @@ class AIOrchestrator:
                 tool_schemas=call_ctx.tool_schemas,
                 tool_choice=call_ctx.tool_choice,
                 display_language=self.context.display_language,
+                should_cancel=call_ctx.should_cancel,
+                max_retries=call_ctx.max_retries,
             )
             raw = call_ai_with_provider(
                 context=provider_ctx,
@@ -547,6 +549,12 @@ class AIOrchestrator:
                 return AIResult(text=raw)
             return raw
         except ModelCallError as e:
+            # Best-effort internal calls (memory query expansion, chat title,
+            # ...) fail silently: their callers already degrade gracefully, and
+            # a leaked error would surface as a user-visible API-error message
+            # (ephemeral notice / persisted model-call-error history marker).
+            if call_ctx.internal_mode != InternalCallMode.REGULAR:
+                return AIResult(text="", error_code="API_ERROR")
             clean_msg = _extract_clean_api_error(e)
             # Parser/shape diagnostics stay in the provider logs only.
             if not clean_msg or _is_internal_response_format_error(clean_msg):

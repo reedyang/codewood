@@ -864,6 +864,10 @@ def run_subagent(
                 # stored ``messages``, so it must be supplied each call to stay
                 # visible to the sub-agent's multimodal model.
                 image_path=image_path,
+                # Abort the infinite 429/503/connection retry when the parent
+                # task is interrupted / cancelled, so a user stop ends the
+                # sub-agent's retrying too.
+                should_cancel=lambda: _subagent_cancelled(agent, cancel_check),
             )
             # In stream mode ``orchestrator.call`` returns a generator-like
             # result object. Errors may still be returned as a plain string.

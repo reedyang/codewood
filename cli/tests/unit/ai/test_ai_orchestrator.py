@@ -121,6 +121,56 @@ class AIOrchestratorTests(unittest.TestCase):
         self.assertEqual(len(notices), 1, "ephemeral notice must be emitted exactly once")
         self.assertIn("Not Found", notices[0])
 
+    def test_internal_call_api_error_is_silent(self):
+        # Best-effort internal calls (memory query expansion, chat title, ...)
+        # must NOT surface their failures as user-visible API-error messages:
+        # no ephemeral notice and no persisted model-call-error history entry
+        # (which the GUI renders as the red API error after a stop).
+        from cli.ai.ai_special_mode_prompts import InternalCallMode
+
+        history = []
+        notices = []
+        recorded = []
+
+        def _regular_builder(user_input, _context):
+            return [{"role": "user", "content": user_input}], True
+
+        ctx = AgentAIContext(
+            provider="openai",
+            model_name="test-model",
+            model_params={},
+            openai_conf={"api_key": "x"},
+            history_writer=lambda role, content: history.append((role, content)),
+            regular_message_builder=_regular_builder,
+            ollama_importer=lambda: None,
+            ephemeral_notice_writer=notices.append,
+            model_error_history_writer=recorded.append,
+        )
+        orchestrator = AIOrchestrator(ctx)
+
+        def _raise_throttled(*, context, append_history, ollama_importer):
+            _ = context, append_history, ollama_importer
+            raise ModelCallError(
+                "429 Client Error: Too Many Requests for url: http://x; "
+                'response_body={"error":{"message":"余额不足","code":"1113"}}',
+                attempt_errors=[{"label": "chat", "url": "http://x", "error": "429"}],
+            )
+
+        with patch("cli.ai.ai_orchestrator.call_ai_with_provider", _raise_throttled):
+            result = orchestrator.call(
+                call_ctx=AICallContext(
+                    user_input="hello",
+                    stream=False,
+                    internal_mode=InternalCallMode.MEMORY_QUERY_EXPANSION,
+                )
+            )
+
+        self.assertIsInstance(result, AIResult)
+        self.assertEqual(result.error_code, "API_ERROR")
+        self.assertEqual(notices, [], "internal calls must not emit ephemeral notices")
+        self.assertEqual(recorded, [], "internal calls must not record error history")
+        self.assertEqual(history, [])
+
     def test_clean_api_error_skips_fallback_attempt(self):
         attempts = [
             {
