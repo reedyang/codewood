@@ -24,7 +24,9 @@ tree-sitter-ruby>=0.23
 tree-sitter-php>=0.24
 tree-sitter-swift>=0.7
 tree-sitter-lua>=0.5
-tree-sitter-perl>=1.1
+# No win_arm64 wheel; building from source needs a Rust toolchain, so skip it
+# on ARM64-native Windows (Perl files simply lose tree-sitter parsing).
+tree-sitter-perl>=1.1; sys_platform != "win32" or platform_machine != "ARM64"
 tree-sitter-bash>=0.25
 tree-sitter-html>=0.23
 tree-sitter-css>=0.25
