@@ -27,12 +27,19 @@ install_dependencies() {
     echo "Dependencies installed successfully."
 }
 
-if command -v python3 >/dev/null 2>&1; then
-    PY_BOOTSTRAP="python3"
-elif command -v python >/dev/null 2>&1; then
-    PY_BOOTSTRAP="python"
-else
-    echo "Python executable not found. Please install Python or add it to PATH."
+# torch 2.8.0 (requirements.txt) only ships wheels for Python 3.9-3.13, so
+# bootstrap with a compatible interpreter (3.14+ would fail on torch).
+PY_BOOTSTRAP=""
+for cand in python3.13 python3.12 python3.11 python3.10 python3 python; do
+    if command -v "$cand" >/dev/null 2>&1 \
+        && "$cand" -c 'import sys; sys.exit(0 if sys.version_info < (3,14) else 1)' >/dev/null 2>&1; then
+        PY_BOOTSTRAP="$cand"
+        break
+    fi
+done
+if [ -z "$PY_BOOTSTRAP" ]; then
+    echo "No compatible Python found. torch 2.8.0 requires Python 3.9-3.13;"
+    echo "Python 3.14+ is not supported yet. Please install Python 3.13 or earlier."
     exit 127
 fi
 
@@ -49,6 +56,12 @@ download_embedding_model() {
     "$VENV_PYTHON" "$DOWNLOAD_SCRIPT"
 }
 
+
+if [ -x "$VENV_PYTHON" ] \
+    && ! "$VENV_PYTHON" -c 'import sys; sys.exit(0 if sys.version_info < (3,14) else 1)' >/dev/null 2>&1; then
+    echo "Existing \"$VENV_DIR\" was created with an incompatible Python. Recreating..."
+    rm -rf "$VENV_DIR"
+fi
 
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "Virtual environment not found. Creating \"$VENV_DIR\"..."

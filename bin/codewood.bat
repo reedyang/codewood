@@ -9,8 +9,20 @@ set "VENV_DIR=%ROOT_DIR%\.venv-windows"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQ_FILE=%ROOT_DIR%\requirements.txt"
 :: ---- Check if environment or dependencies are missing ----
+:: The venv must use Python 3.9-3.13: torch 2.8.0 (requirements.txt, on
+:: non-ARM64 platforms) ships no wheels for 3.14+. ARM64-native Python is
+:: supported -- requirements.txt switches the embedding backend to
+:: onnxruntime there. An incompatible venv is recreated automatically.
 set "INSTALL_NEEDED="
+set "VENV_INCOMPATIBLE="
 if not exist "%VENV_DIR%\Scripts\activate.bat" set "INSTALL_NEEDED=1"
+if not defined INSTALL_NEEDED (
+    "%VENV_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+    if errorlevel 1 (
+        set "INSTALL_NEEDED=1"
+        set "VENV_INCOMPATIBLE=1"
+    )
+)
 
 if defined INSTALL_NEEDED (
     echo Environment or dependencies missing. Installing...
@@ -56,22 +68,45 @@ exit /b 0
 exit /b %ERRORLEVEL%
 
 :: ---- Inlined former install.bat: create venv, install deps ----
+:: Bootstrap with any Python 3.9-3.13 (native ARM64 Python works: the
+:: requirements markers swap torch/sentence-transformers for onnxruntime
+:: there). Prefer the "py" launcher with an explicit version, then "python",
+:: then the "py" default -- each is rejected if it is 3.14+.
 :install
 set "PY_BOOTSTRAP="
-where python >nul 2>nul
-if not errorlevel 1 (
-    set "PY_BOOTSTRAP=python"
-    goto :install_prepare_venv
-)
 where py >nul 2>nul
 if not errorlevel 1 (
-    set "PY_BOOTSTRAP=py"
-    goto :install_prepare_venv
+    for %%P in (3.13 3.12 3.11 3.10) do (
+        if not defined PY_BOOTSTRAP (
+            py -%%P -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+            if not errorlevel 1 set "PY_BOOTSTRAP=py -%%P"
+        )
+    )
 )
-echo Python executable not found. Please install Python or add it to PATH.
+if defined PY_BOOTSTRAP goto :install_prepare_venv
+where python >nul 2>nul
+if not errorlevel 1 (
+    python -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+    if not errorlevel 1 set "PY_BOOTSTRAP=python"
+)
+if defined PY_BOOTSTRAP goto :install_prepare_venv
+where py >nul 2>nul
+if not errorlevel 1 (
+    py -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+    if not errorlevel 1 set "PY_BOOTSTRAP=py"
+)
+if defined PY_BOOTSTRAP goto :install_prepare_venv
+echo No compatible Python found. CodeWood requires Python 3.9-3.13
+echo (Python 3.14+ is not supported yet). Please install Python 3.13
+echo and add it to PATH.
 exit /b 9009
 
 :install_prepare_venv
+if defined VENV_INCOMPATIBLE (
+    echo Existing "%VENV_DIR%" was created with an incompatible Python. Recreating...
+    rmdir /s /q "%VENV_DIR%"
+    set "VENV_INCOMPATIBLE="
+)
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
     echo Virtual environment not found. Creating "%VENV_DIR%"...
     %PY_BOOTSTRAP% -m venv "%VENV_DIR%"

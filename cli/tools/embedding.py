@@ -26,6 +26,80 @@ _INDEX_CREATED: Set[str] = set()
 _INDEX_LOCK = threading.Lock()
 _EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
+# Hugging Face repo hosting the model. The ONNX backend downloads raw files
+# from here (honoring the HF_ENDPOINT mirror env var) because
+# sentence-transformers may be unavailable (e.g. ARM64-native Windows has no
+# torch wheels at all).
+_HF_REPO = f"sentence-transformers/{_EMBEDDING_MODEL_NAME}"
+_MODEL_TOKENIZER_FILES = (
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.txt",
+)
+_ONNX_MAX_LENGTH = 256
+
+
+def _default_model_dir() -> str:
+    env_dir = os.environ.get("CODEWOOD_MODELS_DIR", "").strip()
+    if env_dir:
+        return os.path.join(env_dir, _EMBEDDING_MODEL_NAME)
+    try:
+        from ..config.app_info import get_app_global_config_dir
+        return os.path.join(get_app_global_config_dir(), "models", _EMBEDDING_MODEL_NAME)
+    except Exception:
+        pass
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "models", _EMBEDDING_MODEL_NAME)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(os.path.dirname(script_dir))
+    return os.path.join(root_dir, "models", _EMBEDDING_MODEL_NAME)
+
+
+def _hf_download(rel_src: str, dest_path: str) -> bool:
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+    url = f"{endpoint}/{_HF_REPO}/resolve/main/{rel_src}"
+    logger.info("Downloading %s", url)
+    try:
+        import requests
+
+        with requests.get(url, stream=True, timeout=(10, 60), allow_redirects=True) as resp:
+            resp.raise_for_status()
+            tmp_path = dest_path + ".part"
+            with open(tmp_path, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1 << 20):
+                    if chunk:
+                        fh.write(chunk)
+            os.replace(tmp_path, dest_path)
+        return True
+    except Exception as e:
+        logger.error("Failed to download %s: %s", url, e)
+        try:
+            if os.path.exists(dest_path + ".part"):
+                os.remove(dest_path + ".part")
+        except Exception:
+            pass
+        return False
+
+
+def ensure_onnx_model(model_dir: str) -> Optional[str]:
+    """Make sure ``model_dir`` contains the files needed by the ONNX embedding
+    backend (tokenizer/config files plus ``onnx/model.onnx``), downloading any
+    that are missing from Hugging Face. Returns the ONNX model path, or None
+    when a required download fails."""
+    os.makedirs(model_dir, exist_ok=True)
+    for rel in _MODEL_TOKENIZER_FILES:
+        dest = os.path.join(model_dir, rel)
+        if not os.path.isfile(dest) and not _hf_download(rel, dest):
+            return None
+    onnx_dir = os.path.join(model_dir, "onnx")
+    os.makedirs(onnx_dir, exist_ok=True)
+    onnx_path = os.path.join(onnx_dir, "model.onnx")
+    if not os.path.isfile(onnx_path) and not _hf_download("onnx/model.onnx", onnx_path):
+        return None
+    return onnx_path
+
 
 def _resolve_model_path(model_name: str) -> Optional[str]:
     candidates: List[str] = []
@@ -77,6 +151,13 @@ class EmbeddingProvider:
             self._provider = provider
             self._provider_name = "local:all-MiniLM-L6-v2"
             logger.info("Embedding provider initialized: local model all-MiniLM-L6-v2")
+            return
+
+        provider = self._try_init_onnx_provider()
+        if provider is not None:
+            self._provider = provider
+            self._provider_name = "onnx:all-MiniLM-L6-v2"
+            logger.info("Embedding provider initialized: onnxruntime model all-MiniLM-L6-v2")
             return
 
         self._provider_name = "none"
@@ -141,6 +222,72 @@ class EmbeddingProvider:
                 return [np.zeros(_EMBEDDING_DIM, dtype=np.float32) for _ in texts]
 
         return _local_embed
+
+    def _try_init_onnx_provider(self) -> Optional[Callable[[List[str]], List[np.ndarray]]]:
+        """ONNX Runtime fallback used where sentence-transformers/torch cannot
+        be installed (ARM64-native Windows publishes no torch wheels)."""
+        try:
+            import onnxruntime as ort
+            from tokenizers import Tokenizer
+        except ImportError:
+            return None
+
+        for name in ("onnxruntime", "tokenizers"):
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.ERROR)
+            lg.propagate = False
+
+        model_dir = _resolve_model_path(_EMBEDDING_MODEL_NAME)
+        if model_dir is None:
+            model_dir = _default_model_dir()
+        onnx_path = ensure_onnx_model(model_dir)
+        if not onnx_path:
+            logger.warning("ONNX embedding model not available under %s", model_dir)
+            return None
+
+        try:
+            tokenizer = Tokenizer.from_file(os.path.join(model_dir, "tokenizer.json"))
+            tokenizer.enable_truncation(max_length=_ONNX_MAX_LENGTH)
+            tokenizer.enable_padding()
+            session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+        except Exception as e:
+            logger.error("Failed to load ONNX embedding model: %s", e)
+            return None
+
+        output_names = [o.name for o in session.get_outputs()]
+        # Prefer the sentence_embedding output (already mean-pooled by the
+        # export); fall back to pooling token_embeddings ourselves.
+        output_index = output_names.index("sentence_embedding") if "sentence_embedding" in output_names else 0
+        if output_index == 0:
+            out_shape = session.get_outputs()[0].shape
+            if not out_shape or out_shape[-1] != _EMBEDDING_DIM:
+                logger.error("Unexpected ONNX model output shape: %s", out_shape)
+                return None
+        input_names = {i.name for i in session.get_inputs()}
+
+        self._local_model = (tokenizer, session)
+        logger.info("ONNX embedding model loaded: all-MiniLM-L6-v2 (dim=%d)", _EMBEDDING_DIM)
+
+        def _onnx_embed(texts: List[str]) -> List[np.ndarray]:
+            if not texts:
+                return []
+            encoded = tokenizer.encode_batch([str(t)[:4096] for t in texts])
+            input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+            attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+            feed: Dict[str, np.ndarray] = {"input_ids": input_ids, "attention_mask": attention_mask}
+            if "token_type_ids" in input_names:
+                feed["token_type_ids"] = np.zeros_like(input_ids)
+            output = session.run(None, feed)[output_index]
+            if output.ndim == 3:
+                mask = attention_mask[:, :, None].astype(np.float32)
+                summed = (output * mask).sum(axis=1)
+                counts = np.clip(mask.sum(axis=1), 1e-9, None)
+                output = summed / counts
+            norms = np.clip(np.linalg.norm(output, axis=1, keepdims=True), 1e-12, None)
+            normalized = output / norms
+            return [np.array(r, dtype=np.float32) for r in normalized]
+
+        return _onnx_embed
 
 
 class FileEmbeddingIndex:

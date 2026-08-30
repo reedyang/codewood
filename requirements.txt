@@ -1,7 +1,9 @@
 prompt_toolkit>=3.0.0
 pyyaml>=6.0
 requests>=2.25.0
-tiktoken>=0.7.0
+# tiktoken publishes no win_arm64 wheels; TokenEstimator falls back to a
+# CJK-aware heuristic when the import is unavailable (see cli/runtime/token_estimator.py).
+tiktoken>=0.7.0; sys_platform != "win32" or platform_machine != "ARM64"
 pywebview>=5.0
 pyinstaller>=6.0
 pylatexenc>=2.10
@@ -35,7 +37,12 @@ tree-sitter-sql>=0.3
 tree-sitter-hcl>=1.2
 numpy>=1.24
 jieba>=0.42.1
-torch==2.8.0
-sentence-transformers==5.1.0
+# torch ships Windows wheels for x64 (win_amd64) only -- no win_arm64 builds
+# exist at all. On ARM64-native Windows the embedding backend runs through
+# onnxruntime instead (see cli/tools/embedding.py).
+torch==2.8.0; sys_platform != "win32" or platform_machine != "ARM64"
+sentence-transformers==5.1.0; sys_platform != "win32" or platform_machine != "ARM64"
+onnxruntime>=1.20; sys_platform == "win32" and platform_machine == "ARM64"
+tokenizers>=0.20; sys_platform == "win32" and platform_machine == "ARM64"
 pathspec>=1.1
 watchdog>=4.0

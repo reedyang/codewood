@@ -20,16 +20,47 @@ set VENV_DIR=.venv-windows
 set VENV_PYTHON=%VENV_DIR%\Scripts\python.exe
 set REQ_FILE=requirements.txt
 
-if exist "%VENV_DIR%\Scripts\activate.bat" goto venv_ready
+rem The venv must use Python 3.9-3.13 (3.14+ ships no torch wheels on the
+rem platforms that need torch). Native ARM64 Python works: requirements.txt
+rem switches the embedding backend to onnxruntime there.
+if not exist "%VENV_DIR%\Scripts\activate.bat" goto venv_create
+"%VENV_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+if not errorlevel 1 goto venv_ready
+echo Existing "%VENV_DIR%" was created with an incompatible Python. Recreating...
+rmdir /s /q "%VENV_DIR%"
 
+:venv_create
 echo Virtual environment not found. Creating "%VENV_DIR%"...
+rem Prefer the "py" launcher with an explicit version, then "python", then the
+rem "py" default -- each is rejected if it is 3.14+.
 set PY_BOOTSTRAP=
-where python >nul 2>nul && set PY_BOOTSTRAP=python
-if not defined PY_BOOTSTRAP where py >nul 2>nul && set PY_BOOTSTRAP=py
-if not defined PY_BOOTSTRAP (
-  echo Python executable not found. Please install Python or add it to PATH.
-  exit /b 9009
+where py >nul 2>nul
+if not errorlevel 1 (
+  for %%P in (3.13 3.12 3.11 3.10) do (
+    if not defined PY_BOOTSTRAP (
+      py -%%P -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+      if not errorlevel 1 set "PY_BOOTSTRAP=py -%%P"
+    )
+  )
 )
+if defined PY_BOOTSTRAP goto bootstrap_ready
+where python >nul 2>nul
+if not errorlevel 1 (
+  python -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+  if not errorlevel 1 set "PY_BOOTSTRAP=python"
+)
+if defined PY_BOOTSTRAP goto bootstrap_ready
+where py >nul 2>nul
+if not errorlevel 1 (
+  py -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
+  if not errorlevel 1 set "PY_BOOTSTRAP=py"
+)
+if defined PY_BOOTSTRAP goto bootstrap_ready
+echo No compatible Python found. CodeWood requires Python 3.9-3.13
+echo (Python 3.14+ is not supported yet). Please install Python 3.13.
+exit /b 9009
+
+:bootstrap_ready
 %PY_BOOTSTRAP% -m venv "%VENV_DIR%"
 if errorlevel 1 (
   echo Failed to create virtual environment.
@@ -102,6 +133,17 @@ if not exist "models\%MODEL_NAME%\config.json" (
     )
 ) else (
     echo Embedding model already cached in models\%MODEL_NAME%.
+)
+rem ---- Also bundle the ONNX embedding model so ARM64-native Windows installs
+rem ---- (which have no torch wheels and use onnxruntime instead) can embed
+rem ---- offline. Harmless for x64 installs: the provider prefers
+rem ---- sentence-transformers and only uses ONNX as a fallback.
+if not exist "models\%MODEL_NAME%\onnx\model.onnx" (
+    echo Downloading ONNX embedding model for ARM64 support...
+    "%VENV_PYTHON%" -c "import sys; sys.path.insert(0, '.'); from cli.tools.embedding import ensure_onnx_model; sys.exit(0 if ensure_onnx_model(r'models\%MODEL_NAME%') else 1)"
+    if errorlevel 1 (
+        echo WARNING: Could not download ONNX model. ARM64-native installs will download it on first run.
+    )
 )
 
 rem NOTE: --paths (pathex) is resolved relative to the current working

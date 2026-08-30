@@ -9,21 +9,32 @@ hiddenimports = ['clr', 'winpty', 'winpty.ptyprocess', 'winpty.enums', 'tiktoken
 # optional import and skips. Bundle it explicitly so frozen builds report
 # "supported" on Windows instead of silently falling back to the stub.
 hiddenimports += ['cli.core.sandbox.windows']
-tmp_ret = collect_all('webview')
+# A build venv on ARM64-native Windows lacks pythonnet/winpty/tiktoken
+# (no win_arm64 wheels in older lines); collect_all would abort the build,
+# so skip packages that are not installed instead.
+def try_collect_all(name):
+    try:
+        return collect_all(name)
+    except Exception:
+        print(f"WARNING: collect_all({name!r}) skipped -- package not installed")
+        return ([], [], [])
+
+
+tmp_ret = try_collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('pythonnet')
+tmp_ret = try_collect_all('pythonnet')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('clr_loader')
+tmp_ret = try_collect_all('clr_loader')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('winpty')
+tmp_ret = try_collect_all('winpty')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('tiktoken')
+tmp_ret = try_collect_all('tiktoken')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # setuptools>=70 loads jaraco through pkg_resources.extern; PyInstaller's
 # pyi_rth_pkgres hook needs it at process start.
-tmp_ret = collect_all('jaraco')
+tmp_ret = try_collect_all('jaraco')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('setuptools')
+tmp_ret = try_collect_all('setuptools')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 hiddenimports += ['pkg_resources', 'jaraco', 'jaraco.text', 'jaraco.functools', 'jaraco.context', 'jaraco.collections']
 
