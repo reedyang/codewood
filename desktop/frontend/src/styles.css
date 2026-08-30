@@ -4002,6 +4002,45 @@ html[data-has-bg] .select {
   border-radius: 8px;
 }
 
+/* Tools settings page reuses the skills group layout, but its group headers
+   are static (no collapse), so drop the interactive affordances. */
+div.skills-group-header {
+  cursor: default;
+}
+div.skills-group-header:hover {
+  background: var(--bg-elevated);
+}
+
+.tools-locked-badge {
+  margin-left: 8px;
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+}
+
+/* Compact-mode switch row at the top of the Tools settings page. */
+.tools-compact-row {
+  margin-bottom: 12px;
+}
+.tools-compact-row .mcp-server-head {
+  align-items: center;
+}
+.tools-compact-hint {
+  flex: 1;
+  margin-left: 8px;
+  font-size: 12px;
+  overflow: hidden;
+  textOverflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 /* Composer plus-button menu. Sits inside the regular dropdown wrapper but
    anchors a button that switches its tint when Plan mode is engaged so the
    user always sees which mode the next message will use. */

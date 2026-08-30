@@ -104,6 +104,13 @@ ALL_TOOLS: List[Type[BaseTool]] = [
 _BY_NAME: Dict[str, Type[BaseTool]] = {t.name: t for t in ALL_TOOLS}
 _INSTANCES: Dict[str, BaseTool] = {}
 
+#: Tools that are fundamental to the agent loop (reading files, searching,
+#: editing) and therefore can never be disabled by the user. The settings UI
+#: lists them first, rendered as always-on.
+LOCKED_TOOL_NAMES: FrozenSet[str] = frozenset({
+    "shell", "read", "apply_patch", "grep", "glob",
+})
+
 # Tool-name groups derived from class gating flags, kept as module-level
 # frozensets for callers that gate tool *injection* at runtime (not just spec
 # generation), e.g. prompt_composer and the runtime loop.
@@ -475,15 +482,64 @@ def _validate_params_against_schema(
 # Public spec generation entry point (called by prompt_composer / agent)
 # ---------------------------------------------------------------------------
 
+def iter_tools_config(agent: Any) -> Tuple[bool, FrozenSet[str]]:
+    """Return ``(compact_mode, disabled_tools)`` for ``agent``.
+
+    Read from ``<config_dir>/tools.jsonc``: ``compactMode`` (bool, default
+    False) and ``disabledTools`` (the custom per-tool toggles, which are only
+    effective while compact mode is on). Locked tools
+    (:const:`LOCKED_TOOL_NAMES`) are always filtered out of the disabled set,
+    so they remain exposed even if a hand-edited config lists them.
+    """
+    try:
+        from pathlib import Path
+
+        from ..core.config.config_jsonc import load_config_jsonc
+
+        cfg_dir = getattr(agent, "config_dir", None)
+        if not cfg_dir:
+            return False, frozenset()
+        path = Path(cfg_dir) / "tools.jsonc"
+        if not path.is_file():
+            return False, frozenset()
+        data = load_config_jsonc(path) or {}
+        compact = bool(data.get("compactMode", False))
+        raw = data.get("disabledTools")
+        if not isinstance(raw, list):
+            return compact, frozenset()
+        names = {
+            str(s).strip() for s in raw
+            if isinstance(s, str) and str(s).strip()
+        }
+        return compact, frozenset(names - LOCKED_TOOL_NAMES)
+    except Exception:
+        return False, frozenset()
+
+
+def iter_disabled_tools(agent: Any) -> FrozenSet[str]:
+    """Return the *effective* set of disabled built-in tool names.
+
+    While compact mode is on, tools are hidden per the custom ``disabledTools``
+    list; while compact mode is off, every optional tool is exposed and the
+    stored list is ignored (the settings UI locks those toggles instead).
+    """
+    compact, disabled = iter_tools_config(agent)
+    return disabled if compact else frozenset()
+
+
 def iter_specs(agent: Any) -> List[Dict[str, Any]]:
     """Return the gated, ordered list of tool specs for the given agent.
 
-    Built-in tools are emitted first (subject to gating flags), followed by
-    dynamically injected MCP tool specs from connected servers.
+    Built-in tools are emitted first (subject to gating flags and the
+    user-configured disabled list), followed by dynamically injected MCP tool
+    specs from connected servers.
     """
     flags = _gating_flags(agent)
+    disabled = iter_disabled_tools(agent)
     specs: List[Dict[str, Any]] = []
     for cls in ALL_TOOLS:
+        if cls.name in disabled:
+            continue
         if not cls.is_available(**flags):
             continue
         specs.append(cls.schema())

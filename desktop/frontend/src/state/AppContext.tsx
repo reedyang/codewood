@@ -34,6 +34,7 @@ import type {
   SubAgentMessage,
   SubAgentSession,
   SubAgentsOverview,
+  ToolsOverview,
   Turn,
   TurnRound,
   WorkspaceChatSummary,
@@ -397,6 +398,9 @@ interface AppContextValue {
   deleteMcpServer: (name: string) => Promise<{ ok: boolean; error?: string }>;
   getSkillsOverview: () => Promise<SkillSummary[]>;
   setSkillEnabled: (skillId: string, enabled: boolean) => Promise<boolean>;
+  getToolsOverview: () => Promise<ToolsOverview>;
+  setToolEnabled: (name: string, enabled: boolean) => Promise<boolean>;
+  setCompactMode: (enabled: boolean) => Promise<boolean>;
   getSubAgentsOverview: () => Promise<SubAgentsOverview>;
   saveSubAgent: (
     payload: Partial<SubAgentConfig> & { originalName?: string },
@@ -5823,6 +5827,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     getSkillsOverview: () => client.getSkillsOverview(),
     setSkillEnabled: (skillId: string, enabled: boolean) =>
       client.setSkillEnabled(skillId, enabled),
+    getToolsOverview: () => client.getToolsOverview(),
+    setToolEnabled: (name: string, enabled: boolean) =>
+      client.setToolEnabled(name, enabled),
+    setCompactMode: (enabled: boolean) => client.setCompactMode(enabled),
     getSubAgentsOverview: () => client.getSubAgentsOverview(),
     saveSubAgent: (payload) => client.saveSubAgent(payload),
     deleteSubAgent: (name: string) => client.deleteSubAgent(name),

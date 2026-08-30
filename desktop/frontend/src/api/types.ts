@@ -214,6 +214,20 @@ export interface SkillSummary {
   enabled: boolean;
 }
 
+/** Per-tool summary on the Tools settings page. Locked tools are always on. */
+export interface ToolSummary {
+  name: string;
+  description: string;
+  locked: boolean;
+  enabled: boolean;
+}
+
+/** Tools settings page payload: per-tool summaries plus compact mode state. */
+export interface ToolsOverview {
+  tools: ToolSummary[];
+  compactMode: boolean;
+}
+
 /** Editable MCP server entry. Matches the JSONC shape in mcp.jsonc; only the
  *  subset of fields the GUI exposes is enumerated, but ``[unknown: string]``
  *  is allowed so the editor round-trips fields it doesn't render. */

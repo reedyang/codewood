@@ -7268,6 +7268,149 @@ class ServeApp:
             return False
         return True
 
+    # ----- Built-in tools config CRUD ------------------------------------
+    _TOOLS_CONFIG_PATH = "tools.jsonc"
+
+    def _tools_load_jsonc(self) -> Dict[str, Any]:
+        """Load the built-in tools config from the global config dir."""
+        defaults: Dict[str, Any] = {
+            "disabledTools": [],
+            "compactMode": False,
+            "compactInitialized": False,
+        }
+        try:
+            from ..core.config.config_jsonc import load_config_jsonc
+
+            path = Path(self.agent.config_dir) / self._TOOLS_CONFIG_PATH
+            if not path.is_file():
+                return defaults
+            data = load_config_jsonc(path) or {}
+            if not isinstance(data, dict):
+                return defaults
+            disabled = data.get("disabledTools")
+            if not isinstance(disabled, list):
+                data["disabledTools"] = []
+            else:
+                data["disabledTools"] = [
+                    str(s) for s in disabled
+                    if isinstance(s, str) and s.strip()
+                ]
+            data["compactMode"] = bool(data.get("compactMode", False))
+            data["compactInitialized"] = bool(
+                data.get("compactInitialized", False)
+            )
+            return data
+        except Exception:
+            return defaults
+
+    def _tools_save_jsonc(self, data: Dict[str, Any]) -> bool:
+        try:
+            from ..core.config.config_jsonc import save_config_jsonc
+
+            path = Path(self.agent.config_dir) / self._TOOLS_CONFIG_PATH
+            save_config_jsonc(path, data)
+            return True
+        except Exception:
+            return False
+
+    def get_tools_overview(self) -> Dict[str, Any]:
+        """Return all built-in tools with locked/enabled status.
+
+        Locked tools (shell / read / apply_patch / grep / glob) are listed
+        first and always reported as enabled — the UI renders them as
+        impossible to turn off. Optional tools follow compact mode: when
+        compact mode is off they are always enabled (their toggles are locked
+        in the UI); when it is on, they report their custom toggle state.
+        """
+        from ..tools.registry import LOCKED_TOOL_NAMES, ALL_TOOLS
+
+        compact = False
+        disabled: set = set()
+        try:
+            cfg = self._tools_load_jsonc()
+            compact = bool(cfg.get("compactMode"))
+            disabled = set(cfg.get("disabledTools") or [])
+        except Exception:
+            pass
+        ordered = [
+            cls for cls in ALL_TOOLS if cls.name in LOCKED_TOOL_NAMES
+        ] + [cls for cls in ALL_TOOLS if cls.name not in LOCKED_TOOL_NAMES]
+        tools_data: List[Dict[str, object]] = []
+        for cls in ordered:
+            locked = cls.name in LOCKED_TOOL_NAMES
+            if locked or not compact:
+                enabled = True
+            else:
+                enabled = cls.name not in disabled
+            tools_data.append({
+                "name": cls.name,
+                "description": str(cls.description or ""),
+                "locked": locked,
+                "enabled": enabled,
+            })
+        return {"ok": True, "tools": tools_data, "compactMode": compact}
+
+    def set_tool_enabled(self, name: str, enabled: bool) -> bool:
+        """Enable or disable a built-in tool (custom toggle).
+
+        Only effective while compact mode is on: with compact mode off every
+        optional tool is forced on, so individual toggles are refused. Locked
+        tools are always refused.
+        """
+        from ..tools.registry import LOCKED_TOOL_NAMES
+
+        tool_name = str(name or "").strip()
+        if not tool_name or tool_name in LOCKED_TOOL_NAMES:
+            return False
+        try:
+            cfg = self._tools_load_jsonc()
+            if not bool(cfg.get("compactMode")):
+                return False
+            disabled: list = list(cfg.get("disabledTools") or [])
+            if enabled:
+                disabled = [s for s in disabled if s != tool_name]
+            else:
+                if tool_name not in disabled:
+                    disabled.append(tool_name)
+            cfg["disabledTools"] = disabled
+            if not self._tools_save_jsonc(cfg):
+                return False
+            agent = self.agent
+            agent.tool_specs = agent._load_tools_spec_from_jsonc()
+            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
+        except Exception:
+            return False
+        return True
+
+    def set_compact_mode(self, enabled: bool) -> bool:
+        """Toggle compact mode.
+
+        First activation turns every optional tool off (seeding the custom
+        toggle list). Deactivation only flips the flag: the custom toggles
+        stay on disk, so the next activation restores them instead of
+        resetting everything to off. While compact mode is off the model
+        always sees every optional tool regardless of the stored list.
+        """
+        from ..tools.registry import ALL_TOOLS, LOCKED_TOOL_NAMES
+
+        try:
+            cfg = self._tools_load_jsonc()
+            cfg["compactMode"] = bool(enabled)
+            if enabled and not cfg.get("compactInitialized"):
+                cfg["disabledTools"] = [
+                    cls.name for cls in ALL_TOOLS
+                    if cls.name not in LOCKED_TOOL_NAMES
+                ]
+                cfg["compactInitialized"] = True
+            if not self._tools_save_jsonc(cfg):
+                return False
+            agent = self.agent
+            agent.tool_specs = agent._load_tools_spec_from_jsonc()
+            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
+        except Exception:
+            return False
+        return True
+
     def get_subagents_overview(self) -> Dict[str, Any]:
         """List configured sub-agents plus the model/tool option catalogs."""
         from ..core.config.subagents_loader import list_subagents_for_config
@@ -9903,6 +10046,20 @@ def _make_handler(app: ServeApp):
                 sid = str(body.get("skillId") or "")[:256]
                 enabled = bool(body.get("enabled", True))
                 ok = app.set_skill_enabled(sid, enabled)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/tools-overview":
+                self._send_json(200, app.get_tools_overview())
+                return
+            if path == "/set-tool-enabled":
+                tool = str(body.get("name") or "")[:256]
+                enabled = bool(body.get("enabled", True))
+                ok = app.set_tool_enabled(tool, enabled)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-compact-mode":
+                enabled = bool(body.get("enabled", False))
+                ok = app.set_compact_mode(enabled)
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/subagents-overview":

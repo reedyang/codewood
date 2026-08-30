@@ -17,6 +17,8 @@ import type {
   SubAgentConfig,
   SubAgentSession,
   SubAgentsOverview,
+  ToolSummary,
+  ToolsOverview,
   UndoReapplyResult,
   WorkspaceChatSummary,
 } from "./types";
@@ -1232,6 +1234,46 @@ export class ApiClient {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ skillId, enabled }),
+    });
+    return res.ok;
+  }
+
+  async getToolsOverview(): Promise<ToolsOverview> {
+    const res = await fetch(`${this.base}/tools-overview`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) return { tools: [], compactMode: false };
+    try {
+      const data = (await res.json()) as {
+        ok?: boolean;
+        tools?: ToolSummary[];
+        compactMode?: boolean;
+      };
+      return {
+        tools: Array.isArray(data.tools) ? data.tools : [],
+        compactMode: !!data.compactMode,
+      };
+    } catch {
+      return { tools: [], compactMode: false };
+    }
+  }
+
+  async setToolEnabled(name: string, enabled: boolean): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-tool-enabled`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ name, enabled }),
+    });
+    return res.ok;
+  }
+
+  async setCompactMode(enabled: boolean): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-compact-mode`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ enabled }),
     });
     return res.ok;
   }
