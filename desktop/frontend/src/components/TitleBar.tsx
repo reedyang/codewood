@@ -58,12 +58,11 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
   const [maximized, setMaximized] = useState(false);
-  // Default to the era-agnostic guess so the pywebview-drag-region is present
-  // on the very first paint (matching prior behavior) until the host reports
-  // the real platform. Windows and macOS both use pywebview's native drag
-  // region; GTK/Linux/WSL instead hand moves off to the window manager below.
-  // On macOS we detect the OS eagerly so the traffic-light title bar (and the
-  // absent in-window menubar) render correctly without a Windows-style flash.
+  // Default to the era-agnostic guess so the correct chrome (drag mode,
+  // traffic-light title bar, absent in-window menubar) renders on the very
+  // first paint until the host reports the real platform: only Windows uses
+  // the pywebview-drag-region; macOS drags via the host's native handoff and
+  // GTK/Linux/WSL via the window manager (see the drag strip below).
   const [hostOs, setHostOs] = useState<string>(() => {
     const plat = (navigator.platform || "").toLowerCase();
     if (plat.includes("mac")) return "darwin";
@@ -180,24 +179,8 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
 
   return (
     <div className={`titlebar${isMac ? " mac" : ""}`} ref={barRef}>
-      {isMac && (
-        <div className="win-controls mac">
-          <button className="mac-btn close" aria-label={t("win.close")} title={t("win.close")} onClick={closeWindow}>
-            <Icon name="mac-close" size={12} className="mac-symbol" />
-          </button>
-          <button className="mac-btn minimize" aria-label={t("win.minimize")} title={t("win.minimize")} onClick={() => hostApi()?.minimize?.()}>
-            <Icon name="mac-min" size={12} className="mac-symbol" />
-          </button>
-          <button
-            className="mac-btn maximize"
-            aria-label={maximized ? t("win.restore") : t("win.maximize")}
-            title={maximized ? t("win.restore") : t("win.maximize")}
-            onClick={() => void toggleMaximize()}
-          >
-            <Icon name={maximized ? "mac-zoom-restore" : "mac-zoom"} size={12} className="mac-symbol" />
-          </button>
-        </div>
-      )}
+      {/* macOS: the native traffic lights (host applies fullSizeContentView)
+          float over this strip's left side; CSS reserves padding for them. */}
 
       <button
         className={`icon-btn titlebar-toggle ${collapsed ? "" : "active"}`}
@@ -261,19 +244,24 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
       <GlobalChatSearch />
 
       <div
-        className={`titlebar-drag ${
-          hostOs === "win32" || hostOs === "darwin" ? "pywebview-drag-region" : ""
-        }`}
+        className={`titlebar-drag ${hostOs === "win32" ? "pywebview-drag-region" : ""}`}
         onMouseDown={(e) => {
           // Left button only; let double-clicks fall through to maximize.
           if (e.button !== 0 || e.detail > 1) {
             return;
           }
+          // Stop the browser from starting a text-selection session here:
+          // with the native drag loop consuming the event stream, any
+          // mousemove that leaks into the page would otherwise highlight
+          // text while the window is being dragged.
+          e.preventDefault();
           // GTK/WSL: hand the drag to the window manager so the window
-          // follows the cursor across mixed-DPI monitors. The host returns
-          // false on Windows/macOS, where the native pywebview-drag-region
-          // handles it instead — so we only suppress that default when GTK
-          // took over.
+          // follows the cursor across mixed-DPI monitors. macOS: the host
+          // hands the move to AppKit's native drag loop (standard Dock /
+          // menu-bar constraining for free); the pywebview-drag-region
+          // must NOT also be active there or the two movers fight and the
+          // window jitters. Windows returns false, leaving the drag
+          // region as the driver.
           const api = hostApi();
           if (!api?.start_window_drag) {
             return;

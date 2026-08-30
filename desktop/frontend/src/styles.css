@@ -729,9 +729,10 @@ mark.search-term {
   color: #ffffff;
 }
 
-/* macOS traffic-light window controls (left of the title bar) */
+/* macOS: native traffic lights float over the strip's left side (the host
+   extends the web view under the transparent title bar), so leave room. */
 .titlebar.mac {
-  padding: 0 6px 0 10px;
+  padding: 0 6px 0 78px;
   gap: 6px;
 }
 

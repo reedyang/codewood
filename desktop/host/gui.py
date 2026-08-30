@@ -876,23 +876,84 @@ class HostApi:
     }
 
     def start_window_drag(self) -> bool:
-        """Begin a window-manager-native move drag (GTK/WSL only).
+        """Begin a window-manager-native move drag.
 
         Programmatic ``window.move`` is unreliable on WSLg/X11 with
         mixed-DPI multi-monitor setups: the window fails to follow the
         cursor and can lose its decorations/controls. Handing the drag to
         the window manager via ``begin_move_drag`` makes the frameless
-        window behave like any other native GTK app. Returns ``False`` when
-        the GTK path is unavailable (e.g. Windows), so the frontend can keep
-        using the ``pywebview-drag-region`` fallback there (and on macOS,
-        where Cocoa uses that same native drag region).
+        window behave like any other native GTK app. On macOS the same
+        idea hands the move to AppKit's native drag loop (see
+        :meth:`_begin_macos_drag`). Returns ``False`` when no native path
+        exists (e.g. Windows), so the frontend can keep using the
+        ``pywebview-drag-region`` fallback there.
         """
-        if sys.platform in ("win32", "darwin"):
+        if sys.platform == "win32":
             return False
+        if sys.platform == "darwin":
+            return self._begin_macos_drag()
         gtk_window = self._gtk_native_window(webview.active_window())
         if gtk_window is None:
             return False
         return self._begin_gtk_drag(gtk_window, edge=None)
+
+    def _begin_macos_drag(self) -> bool:
+        """Hand the move to AppKit's native drag loop.
+
+        ``performWindowDragWithEvent:`` enters the same tracking loop a
+        native title-bar drag uses, which brings the standard macOS move
+        behavior for free: the window cannot cover the Dock or menu bar,
+        and moving between screens/Spaces is handled correctly. The JS
+        ``pywebview-drag-region`` path (``window.move`` per mousemove)
+        bypasses all of that, so it only remains as a fallback when the
+        native call is unavailable. Both paths can never fight: once the
+        native drag starts, AppKit consumes the mouse stream and the web
+        view sees no further mousemove events.
+
+        Runs on the main run loop (the bridge thread must not block);
+        returns ``True`` when the native handoff was scheduled.
+        """
+        if sys.platform != "darwin":
+            return False
+        try:
+            window = webview.active_window()
+            native = getattr(window, "native", None)
+            if native is None:
+                return False
+            import AppKit
+            from PyObjCTools import AppHelper
+
+            def _do_drag():
+                try:
+                    event = AppKit.NSApplication.sharedApplication().currentEvent()
+                    if event is None:
+                        # The bridge callback raced past the mousedown;
+                        # synthesize one at the current pointer location.
+                        event = (
+                            AppKit.NSEvent.mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure_(
+                                AppKit.NSEventTypeLeftMouseDown,
+                                AppKit.NSEvent.mouseLocation(),
+                                0,
+                                0.0,
+                                native.windowNumber(),
+                                None,
+                                0,
+                                1,
+                                1.0,
+                            )
+                        )
+                    drag = getattr(native, "performWindowDragWithEvent_", None)
+                    if drag is None:
+                        drag = getattr(native, "performWindowDrag_", None)
+                    if drag is not None:
+                        drag(event)
+                except Exception:
+                    pass
+
+            AppHelper.callAfter(_do_drag)
+            return True
+        except Exception:
+            return False
 
     def start_window_resize(self, direction: str) -> bool:
         """Begin a window-manager-native resize drag (GTK/WSL only).
@@ -1134,6 +1195,64 @@ def _apply_macos_dock_icon() -> None:
         pass
 
 
+def _install_macos_native_titlebar(window) -> None:
+    """Keep the native title bar + traffic lights while the web UI shares
+    the strip.
+
+    The window stays a regular titled ``NSWindow`` (native close/minimize/
+    zoom buttons, native double-click zoom, native dock-constrained
+    dragging), but gets the standard ``fullSizeContentView`` treatment used
+    by modern macOS apps: the title text is hidden, the title bar becomes
+    transparent, and the content view — the web view — extends underneath
+    it. CodeWood's web title bar (sidebar toggle, search, …) therefore
+    renders in the same strip as the traffic lights, which float above the
+    content at the top-left; the frontend reserves padding for them.
+
+    Two pywebview side effects are corrected here:
+
+    * Adding the full-size mask preserves the content size and shrinks the
+      window frame by the title-bar height, so the frame is grown back to
+      keep the requested window size.
+    * For non-frameless windows pywebview paints the title bar container
+      view with the opaque system ``windowBackgroundColor``, which would
+      draw a light strip *over* the web content (the controls underneath
+      stay clickable but invisible). It is reset to clear so the strip
+      shows the web UI.
+
+    The web view is the window's ``contentView``, so flipping the style
+    mask automatically resizes it to cover the full window. Idempotent.
+    """
+    if sys.platform != "darwin":
+        return
+    native = getattr(window, "native", None)
+    if native is None:
+        return
+    try:
+        import AppKit
+
+        full_size = getattr(AppKit, "NSWindowStyleMaskFullSizeContentView", 1 << 15)
+        style = int(native.styleMask())
+        if not style & full_size:
+            before = native.frame().size.height
+            native.setStyleMask_(style | full_size)
+            # The frame shrank by the title-bar height; grow it back.
+            delta = before - native.frame().size.height
+            if delta > 0.5:
+                frame = native.frame()
+                frame.size.height += delta
+                native.setFrame_display_(frame, True)
+        native.setTitlebarAppearsTransparent_(True)
+        native.setTitleVisibility_(getattr(AppKit, "NSWindowTitleHidden", 1))
+        # Undo pywebview's opaque title-bar background (see docstring).
+        try:
+            container = native.contentView().superview().subviews().lastObject()
+            container.setBackgroundColor_(AppKit.NSColor.clearColor())
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _install_macos_native_menu(window) -> None:
     """Replace the Cocoa main menu with a clean Code Wood menu bar.
 
@@ -1333,6 +1452,54 @@ def _install_macos_dock_reopen() -> None:
         pass
 
 
+def _install_macos_close_to_hide() -> None:
+    """Make the native red traffic-light button hide the main window.
+
+    Code Wood keeps running when its window closes on macOS (background
+    tasks stay alive; the Dock icon brings the window back), and with the
+    window no longer frameless the native red button goes through AppKit's
+    close flow and would destroy the window. ``windowShouldClose_`` on
+    pywebview's shared WindowDelegate is replaced with a variant that
+    mirrors ``HostApi.close_window`` for the main window (hide + overlay
+    suspend, then cancel the close) while keeping pywebview's original
+    close flow for every other window (e.g. the browser overlay). Same
+    ``objc.classAddMethod`` approach as ``_install_macos_dock_reopen``: a
+    class-level method survives pywebview reinstalling delegates.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import objc
+        from webview.platforms import cocoa
+
+        def _should_close(self, ns_window) -> bool:
+            try:
+                main = _MACOS_REOPEN_STATE.get("window")
+                native = getattr(main, "native", None) if main is not None else None
+                if native is not None and ns_window is native:
+                    host = _MACOS_REOPEN_STATE.get("host_api")
+                    if host is not None:
+                        host.close_window()
+                        return False
+            except Exception:
+                pass
+            try:
+                instance = cocoa.BrowserView.get_instance("window", ns_window)
+                if instance is not None:
+                    return bool(cocoa.BrowserView.should_close(instance.pywebview_window))
+            except Exception:
+                pass
+            return True
+
+        objc.classAddMethod(
+            cocoa.BrowserView.WindowDelegate,
+            b"windowShouldClose:",
+            objc.selector(_should_close, signature=b"B@:@"),
+        )
+    except Exception:
+        pass
+
+
 def main() -> int:
     _apply_macos_dock_icon()
     backend = BackendProcess()
@@ -1359,13 +1526,16 @@ def main() -> int:
     # with the AppKit menu in _install_macos_native_menu on first show.
     if sys.platform == "darwin":
         webview.settings["SHOW_DEFAULT_MENUS"] = False
+    # macOS keeps the native titled window (traffic lights, double-click
+    # zoom, native drag) and extends the web UI under the title bar instead
+    # of going frameless; see _install_macos_native_titlebar.
     window = webview.create_window(
         WINDOW_TITLE,
         url=url,
         width=1140,
         height=780,
         min_size=(960, 640),
-        frameless=True,
+        frameless=sys.platform != "darwin",
         easy_drag=False,
         text_select=True,
         js_api=host_api,
@@ -1380,6 +1550,23 @@ def main() -> int:
         _MACOS_REOPEN_STATE["window"] = window
         _MACOS_REOPEN_STATE["host_api"] = host_api
         _install_macos_dock_reopen()
+        # Red traffic-light button hides instead of destroying the window.
+        _install_macos_close_to_hide()
+        # Dock edge behavior needs no custom handling: dragging goes through
+        # AppKit's native drag loop (HostApi._begin_macos_drag), which
+        # constrains the window against the Dock and menu bar itself.
+
+    def _apply_native_titlebar() -> None:
+        # before_show fires on the main thread during window creation, so
+        # the style mask lands before the window is ever on screen; shown
+        # is an idempotent safety net in case the event never fires.
+        _install_macos_native_titlebar(window)
+
+    if sys.platform == "darwin":
+        try:
+            window.events.before_show += _apply_native_titlebar
+        except Exception:
+            pass
 
     notifier = TaskNotifier(port, token, window) if _task_notify_enabled() else None
     if notifier is not None:
@@ -1397,6 +1584,7 @@ def main() -> int:
     elif sys.platform == "darwin":
 
         def _on_shown(*_args: object) -> None:
+            _apply_native_titlebar()
             try:
                 from PyObjCTools import AppHelper
 
@@ -1407,6 +1595,7 @@ def main() -> int:
         try:
             window.events.shown += _on_shown
         except Exception:
+            _apply_native_titlebar()
             _install_macos_native_menu(window)
 
     def _on_closing() -> None:
