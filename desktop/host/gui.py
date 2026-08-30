@@ -3,6 +3,10 @@
 Creates a WebView2 (Windows) / system WebView window via pywebview,
 launches the Code Wood backend in serve mode, loads the TypeScript
 frontend, and tears the backend down when the window closes.
+
+On macOS the title-bar close button only hides the window (the app keeps
+running so the backend and any running tasks stay alive); clicking the
+Dock icon brings the window back, and Cmd+Q / "Quit Code Wood" quits.
 """
 
 from __future__ import annotations
@@ -35,6 +39,11 @@ WINDOW_TITLE = "Code Wood"
 # NSMenuItem does not retain its target, so the menu dispatch object must be
 # kept alive for the lifetime of the process or AppKit will nil it out.
 _MACSOS_MENU_TARGETS: list[object] = []
+
+# Holds the main window and host API for the macOS Dock-icon reopen handler
+# (see ``_install_macos_dock_reopen``). Filled in by ``main()`` once the
+# window exists; read from the AppKit reopen callback.
+_MACOS_REOPEN_STATE: dict = {}
 
 
 MIN_WIDTH = 960
@@ -798,6 +807,30 @@ class HostApi:
         self._pre_maximize_geometry = None
 
     def close_window(self) -> None:
+        # macOS: the red close button only hides the window — the macOS
+        # convention is that closing the last window must not quit the app.
+        # The process (and with it the backend and any running tasks) stays
+        # alive, and clicking the Dock icon brings the window back (see
+        # ``_install_macos_dock_reopen``). Quitting remains with Cmd+Q /
+        # "Quit Code Wood" in the menu bar.
+        if sys.platform == "darwin":
+            window = _MACOS_REOPEN_STATE.get("window") or webview.active_window()
+            if window is not None:
+                try:
+                    window.hide()
+                except Exception:
+                    pass
+            # The overlay browser floats independently of the main window on
+            # macOS; hide it too (keeping its want-visible intent) so it can
+            # never resurface as an orphan while the main window is hidden.
+            # ``resync()`` on reopen re-shows it exactly like the minimize
+            # path does.
+            if self._overlay is not None:
+                try:
+                    self._overlay.suspend_for_main_minimized()
+                except Exception:
+                    pass
+            return
         # Destroy the window, then make sure the whole app actually quits. On
         # the GTK/WebKit backend ``window.destroy()`` alone can leave the GTK
         # main loop running, so ``webview.start()`` never returns and the
@@ -1185,6 +1218,68 @@ def _install_macos_native_menu(window) -> None:
         pass
 
 
+def _install_macos_dock_reopen() -> None:
+    """Re-show the hidden main window when the user clicks the Dock icon.
+
+    On macOS the close button only hides the window (see
+    ``HostApi.close_window``), so the app keeps running with a Dock icon.
+    Clicking that icon fires the AppKit
+    ``applicationShouldHandleReopen:hasVisibleWindows:`` delegate callback;
+    without a handler macOS does nothing and the app would appear stuck
+    running invisibly.
+
+    The method is added to pywebview's shared AppDelegate *class* via
+    ``objc.classAddMethod`` instead of swapping in our own delegate object:
+    pywebview re-installs its plain shared delegate every time another window
+    (e.g. the browser overlay) is created, which would silently drop a
+    replacement delegate, while a class-level method survives that. The
+    method pywebview already defines (``applicationShouldTerminate:``, used
+    for its quit path) is untouched.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+        import objc
+        from webview.platforms import cocoa
+
+        def _reopen(self, app, has_visible_windows: bool) -> bool:
+            try:
+                shared = AppKit.NSApplication.sharedApplication()
+                # An app-level Hide (Cmd+H / "Hide Code Wood") unhides
+                # automatically on Dock click; just let AppKit do its thing.
+                if shared.isHidden():
+                    return True
+                if not has_visible_windows:
+                    window = _MACOS_REOPEN_STATE.get("window")
+                    if window is not None:
+                        # Safe from any thread: pywebview's Cocoa show()
+                        # marshals onto the main run loop internally.
+                        window.show()
+                    host = _MACOS_REOPEN_STATE.get("host_api")
+                    overlay = getattr(host, "_overlay", None)
+                    if overlay is not None:
+                        # Re-show the browser overlay if the renderer wanted
+                        # it visible (same path the minimize/restore cycle
+                        # uses; also re-attaches it as a child window).
+                        try:
+                            overlay.resync()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # True: the normal reopen handling (activation) should proceed.
+            return True
+
+        objc.classAddMethod(
+            cocoa.BrowserView.AppDelegate,
+            b"applicationShouldHandleReopen:hasVisibleWindows:",
+            objc.selector(_reopen, signature=b"B@:@B"),
+        )
+    except Exception:
+        pass
+
+
 def main() -> int:
     _apply_macos_dock_icon()
     backend = BackendProcess()
@@ -1225,6 +1320,13 @@ def main() -> int:
 
     overlay = BrowserOverlay(webview, window, enabled=True)
     host_api.attach_overlay(overlay)
+
+    # Register for the Dock-icon reopen handler *before* anything can hide
+    # the window, so a Dock click always brings it back (macOS only).
+    if sys.platform == "darwin":
+        _MACOS_REOPEN_STATE["window"] = window
+        _MACOS_REOPEN_STATE["host_api"] = host_api
+        _install_macos_dock_reopen()
 
     notifier = TaskNotifier(port, token, window) if _task_notify_enabled() else None
     if notifier is not None:
