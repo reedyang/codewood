@@ -1054,13 +1054,62 @@ def _find_macos_app_icon() -> Path | None:
     return None
 
 
+def _macos_owning_app_bundle() -> Path | None:
+    """Return the ``.app`` bundle whose main executable is this process.
+
+    Walks up from ``sys.executable`` to the nearest enclosing ``Contents`` /
+    ``Info.plist`` and reports the bundle only when its ``CFBundleExecutable``
+    matches this process's binary name — i.e. this process IS the bundle's
+    main executable, so LaunchServices already associates it (and its Dock
+    icon) with the bundle. Returns ``None`` for helper processes inside a
+    bundle and for runs outside any bundle (dev, bare onedir).
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        exe = Path(sys.executable).resolve()
+        me = exe.name.lower()
+        for parent in exe.parents:
+            info = parent / "Contents" / "Info.plist"
+            if info.is_file():
+                try:
+                    import plistlib
+
+                    with open(info, "rb") as fh:
+                        plist = plistlib.load(fh)
+                    bundle_exe = str(plist.get("CFBundleExecutable", "")).lower()
+                    if bundle_exe and bundle_exe == me:
+                        return parent
+                except Exception:
+                    pass
+                # Only the nearest enclosing bundle counts: a helper process
+                # nested deeper is not owned by an outer bundle either.
+                break
+    except Exception:
+        return None
+    return None
+
+
 def _apply_macos_dock_icon() -> None:
     """Make the GUI window present as a proper macOS app with the Code Wood
     Dock icon.
 
-    The window is created by a launcher-spawned process that macOS does not
-    automatically bind to the .app bundle, so without this it shows up in the
-    Dock as a generic "exec" icon, separated from the Code Wood app icon.
+    Two very different situations:
+
+    - Running as an ``.app`` bundle's main executable (the installed app, or
+      ``dist/codewood-gui.app``): LaunchServices already associates the
+      process with the bundle and the Dock renders ``CFBundleIconFile``
+      itself — at the standard app-icon size, with the system inset and
+      shadow. Overriding that with ``setApplicationIconImage_`` makes the
+      Dock draw the raw full-bleed artwork edge-to-edge, which reads as an
+      oversized Dock icon for as long as the app runs (the normal-size icon
+      only comes back after quit). So in this case the icon is deliberately
+      left to LaunchServices.
+
+    - Running outside a bundle it owns (``codewood app`` from the console
+      build, dev runs): the process would otherwise surface in the Dock as a
+      generic "exec" icon, so set the regular activation policy and apply
+      the ``.icns`` explicitly.
     """
     if sys.platform != "darwin":
         return
@@ -1072,6 +1121,10 @@ def _apply_macos_dock_icon() -> None:
         app = AppKit.NSApplication.sharedApplication()
         # Foreground app: keeps a Dock icon, menu bar and Cmd-Tab presence.
         app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
+        if _macos_owning_app_bundle() is not None:
+            # Bundle-owned: the Dock already shows the bundle icon; don't
+            # override it (see the docstring for why that looks oversized).
+            return
         icon = _find_macos_app_icon()
         if icon is not None:
             image = AppKit.NSImage.alloc().initWithContentsOfFile_(str(icon))
