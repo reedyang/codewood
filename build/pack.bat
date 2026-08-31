@@ -134,17 +134,10 @@ if not exist "models\%MODEL_NAME%\config.json" (
 ) else (
     echo Embedding model already cached in models\%MODEL_NAME%.
 )
-rem ---- Also bundle the ONNX embedding model so ARM64-native Windows installs
-rem ---- (which have no torch wheels and use onnxruntime instead) can embed
-rem ---- offline. Harmless for x64 installs: the provider prefers
-rem ---- sentence-transformers and only uses ONNX as a fallback.
-if not exist "models\%MODEL_NAME%\onnx\model.onnx" (
-    echo Downloading ONNX embedding model for ARM64 support...
-    "%VENV_PYTHON%" -c "import sys; sys.path.insert(0, '.'); from cli.tools.embedding import ensure_onnx_model; sys.exit(0 if ensure_onnx_model(r'models\%MODEL_NAME%') else 1)"
-    if errorlevel 1 (
-        echo WARNING: Could not download ONNX model. ARM64-native installs will download it on first run.
-    )
-)
+rem ---- The frozen build is always x64 (built with x64 Python); on ARM64
+rem ---- Windows it runs under x64 emulation and sentence-transformers
+rem ---- works normally.  The ONNX fallback is only used by source-tree
+rem ---- runs with ARM64-native Python, which is not the packaged build.
 
 rem NOTE: --paths (pathex) is resolved relative to the current working
 rem directory (the project root here), unlike --add-data sources which are
