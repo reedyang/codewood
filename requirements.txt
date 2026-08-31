@@ -40,13 +40,7 @@ tree-sitter-sql>=0.3
 tree-sitter-hcl>=1.2
 numpy>=1.24
 jieba>=0.42.1
-# torch/sentence-transformers ship no win_arm64 wheels.  On ARM64-native
-# Python pip will fail to install them (clear error); on x64 Python running
-# under ARM64 emulation they install and work normally.  The embedding
-# backend falls back to onnxruntime when they are unavailable.
-torch==2.8.0
-sentence-transformers==5.1.0
-onnxruntime>=1.20; sys_platform == "win32" and platform_machine == "ARM64"
-tokenizers>=0.20; sys_platform == "win32" and platform_machine == "ARM64"
+onnxruntime>=1.20
+tokenizers>=0.20
 pathspec>=1.1
 watchdog>=4.0

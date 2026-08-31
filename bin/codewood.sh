@@ -27,8 +27,7 @@ install_dependencies() {
     echo "Dependencies installed successfully."
 }
 
-# torch 2.8.0 (requirements.txt) only ships wheels for Python 3.9-3.13, so
-# bootstrap with a compatible interpreter (3.14+ would fail on torch).
+# Bootstrap with Python 3.9-3.13 (3.14+ may have compatibility issues).
 PY_BOOTSTRAP=""
 for cand in python3.13 python3.12 python3.11 python3.10 python3 python; do
     if command -v "$cand" >/dev/null 2>&1 \
@@ -38,8 +37,8 @@ for cand in python3.13 python3.12 python3.11 python3.10 python3 python; do
     fi
 done
 if [ -z "$PY_BOOTSTRAP" ]; then
-    echo "No compatible Python found. torch 2.8.0 requires Python 3.9-3.13;"
-    echo "Python 3.14+ is not supported yet. Please install Python 3.13 or earlier."
+    echo "No compatible Python found. Python 3.14+ is not supported yet."
+    echo "Please install Python 3.13 or earlier."
     exit 127
 fi
 

@@ -20,9 +20,8 @@ set VENV_DIR=.venv-windows
 set VENV_PYTHON=%VENV_DIR%\Scripts\python.exe
 set REQ_FILE=requirements.txt
 
-rem The venv must use Python 3.9-3.13 (3.14+ ships no torch wheels on the
-rem platforms that need torch). Native ARM64 Python works: requirements.txt
-rem switches the embedding backend to onnxruntime there.
+rem The venv must use Python 3.9-3.13 (3.14+ may have compatibility issues).
+rem The embedding backend uses ONNX Runtime for all platforms.
 if not exist "%VENV_DIR%\Scripts\activate.bat" goto venv_create
 "%VENV_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info < (3,14) else 1)" >nul 2>nul
 if not errorlevel 1 goto venv_ready
@@ -122,22 +121,21 @@ rem pythonnet) are discoverable; fall back to one on PATH otherwise.
 set PYINSTALLER=.venv-windows\Scripts\pyinstaller.exe
 if not exist "%PYINSTALLER%" set PYINSTALLER=pyinstaller
 
-rem ---- Download the embedding model before building so PyInstaller can bundle it ----
+rem ---- Download the ONNX embedding model before building so PyInstaller can bundle it ----
 echo Checking embedding model for offline bundle...
 set "MODEL_NAME=all-MiniLM-L6-v2"
-if not exist "models\%MODEL_NAME%\config.json" (
-    echo Downloading embedding model...
-    "%VENV_PYTHON%" -c "from sentence_transformers import SentenceTransformer; m = SentenceTransformer('%MODEL_NAME%', device='cpu'); m.save(r'models\%MODEL_NAME%')"
+rem Remove legacy sentence-transformers model weights (no longer needed).
+del /q "models\%MODEL_NAME%\model.safetensors" 2>nul
+del /q "models\%MODEL_NAME%\pytorch_model.bin" 2>nul
+if not exist "models\%MODEL_NAME%\onnx\model.onnx" (
+    echo Downloading ONNX embedding model...
+    "%VENV_PYTHON%" -c "import sys; sys.path.insert(0, '.'); from cli.tools.embedding import ensure_onnx_model; sys.exit(0 if ensure_onnx_model(r'models\%MODEL_NAME%') else 1)"
     if errorlevel 1 (
-        echo WARNING: Could not download embedding model. The package will require online HF access.
+        echo WARNING: Could not download ONNX embedding model. The package will require online HF access.
     )
 ) else (
-    echo Embedding model already cached in models\%MODEL_NAME%.
+    echo ONNX embedding model already cached in models\%MODEL_NAME%.
 )
-rem ---- The frozen build is always x64 (built with x64 Python); on ARM64
-rem ---- Windows it runs under x64 emulation and sentence-transformers
-rem ---- works normally.  The ONNX fallback is only used by source-tree
-rem ---- runs with ARM64-native Python, which is not the packaged build.
 
 rem NOTE: --paths (pathex) is resolved relative to the current working
 rem directory (the project root here), unlike --add-data sources which are

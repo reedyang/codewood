@@ -46,70 +46,8 @@ if [ ! -f "$REQ_FILE" ]; then
   exit 1
 fi
 
-# Linux PyPI torch wheels pull CUDA + nvidia-* runtimes (several GB). The
-# app only runs embeddings on CPU (cli/tools/embedding.py), so packaging
-# must ship the CPU wheel or the Linux artifact dwarfs Windows/macOS.
-#
-# The CPU index publishes local versions (2.8.0+cpu), not bare 2.8.0.
-# `pip install torch==2.8.0 --index-url .../whl/cpu` fails with
-# "from versions: none" because ==2.8.0 does not match 2.8.0+cpu.
-TORCH_SPEC="$(grep -E '^[[:space:]]*torch([=<>!~]|$)' "$REQ_FILE" | head -n 1 | sed 's/[[:space:]]*#.*//' | tr -d '[:space:]')"
-[ -n "$TORCH_SPEC" ] || TORCH_SPEC="torch==2.8.0"
-case "$TORCH_SPEC" in
-  *"+cpu") TORCH_CPU_SPEC="$TORCH_SPEC" ;;
-  torch==*) TORCH_CPU_SPEC="${TORCH_SPEC}+cpu" ;;
-  *) TORCH_CPU_SPEC="torch==2.8.0+cpu" ;;
-esac
-
-install_linux_cpu_torch() {
-  # Corporate HTTPS inspection (self-signed cert in the chain) breaks pip's
-  # default SSL verify against download.pytorch.org. --trusted-host is scoped
-  # to the PyTorch CPU CDN only; PyPI stays verified. Prefer PIP_CERT /
-  # SSL_CERT_FILE pointing at the corporate CA when available.
-  echo "Installing CPU-only $TORCH_CPU_SPEC (Linux CUDA wheels are several GB)..."
-  "$VENV_PYTHON" -m pip install --force-reinstall "$TORCH_CPU_SPEC" \
-    --index-url https://download.pytorch.org/whl/cpu \
-    --extra-index-url https://pypi.org/simple \
-    --trusted-host download.pytorch.org \
-    --trusted-host download-r2.pytorch.org \
-    || { echo "Failed to install CPU-only PyTorch. Aborting packaging." >&2
-         echo "download.pytorch.org failed SSL verify (self-signed cert in chain)." >&2
-         echo "Set PIP_CERT or SSL_CERT_FILE to your corporate CA bundle and retry." >&2
-         exit 1; }
-}
-
-uninstall_linux_cuda_leftovers() {
-  local leftover
-  leftover="$("$VENV_PYTHON" -m pip freeze | sed -n 's/==.*//p' | grep -iE '^(nvidia-|cuda-|triton$)' || true)"
-  if [ -n "$leftover" ]; then
-    echo "Uninstalling leftover CUDA/NVIDIA packages so PyInstaller cannot bundle them:"
-    echo "$leftover"
-    # shellcheck disable=SC2086
-    "$VENV_PYTHON" -m pip uninstall -y $leftover || true
-  fi
-}
-
-if [ "$PACK_PLATFORM" = "linux" ]; then
-  # CPU torch first, then the rest of requirements.txt without the torch pin
-  # so pip does not replace 2.8.0+cpu with the PyPI CUDA wheel (torch==2.8.0).
-  install_linux_cpu_torch
-  REQ_NO_TORCH="$(mktemp)"
-  grep -v -E '^[[:space:]]*torch([=<>!~]|$)' "$REQ_FILE" > "$REQ_NO_TORCH"
-  echo "Installing/updating dependencies from \"$REQ_FILE\" (torch excluded; using $TORCH_CPU_SPEC)..."
-  if ! "$VENV_PYTHON" -m pip install -r "$REQ_NO_TORCH"; then
-    rm -f "$REQ_NO_TORCH"
-    echo "Failed to install dependencies." >&2
-    exit 1
-  fi
-  rm -f "$REQ_NO_TORCH"
-  uninstall_linux_cuda_leftovers
-  "$VENV_PYTHON" -c "import torch; cuda=getattr(torch.version,'cuda',None); v=torch.__version__; raise SystemExit('CUDA torch still installed: %s (cuda=%s). CPU wheel required for Linux packaging.' % (v, cuda) if cuda else 0)" \
-    || { echo "CPU-only PyTorch check failed. Aborting packaging." >&2; exit 1; }
-  echo "Using CPU-only PyTorch: $("$VENV_PYTHON" -c 'import torch; print(torch.__version__)')"
-else
-  echo "Installing/updating dependencies from \"$REQ_FILE\"..."
-  "$VENV_PYTHON" -m pip install -r "$REQ_FILE" || { echo "Failed to install dependencies." >&2; exit 1; }
-fi
+echo "Installing/updating dependencies from \"$REQ_FILE\"..."
+"$VENV_PYTHON" -m pip install -r "$REQ_FILE" || { echo "Failed to install dependencies." >&2; exit 1; }
 
 # pkg_resources (pulled in by setuptools) imports jaraco at frozen startup.
 # Ensure the standalone package is present so PyInstaller can collect it.
@@ -159,16 +97,21 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 # 1) codewood carries ALL terminal-UI and GUI logic (frontend bundle +
 #    pywebview host included). Default = terminal UI; "codewood app" = GUI.
 
-# ---- Download the embedding model before building so PyInstaller can bundle it ----
+# ---- Download the ONNX embedding model before building so PyInstaller can bundle it ----
 echo "Checking embedding model for offline bundle..."
 MODEL_NAME="all-MiniLM-L6-v2"
-if [ ! -f "models/$MODEL_NAME/config.json" ]; then
-    echo "Downloading embedding model..."
-    if ! "$VENV_PYTHON" -c "from sentence_transformers import SentenceTransformer; m = SentenceTransformer('$MODEL_NAME', device='cpu'); m.save('models/$MODEL_NAME')"; then
-        echo "WARNING: Could not download embedding model. The package will require online HF access."
+# Remove legacy sentence-transformers model weights (model.safetensors /
+# pytorch_model.bin) that are no longer used.  Only the ONNX format is needed.
+if [ -d "models/$MODEL_NAME" ]; then
+    rm -f "models/$MODEL_NAME/model.safetensors" "models/$MODEL_NAME/pytorch_model.bin" 2>/dev/null || true
+fi
+if [ ! -f "models/$MODEL_NAME/onnx/model.onnx" ]; then
+    echo "Downloading ONNX embedding model..."
+    if ! "$VENV_PYTHON" -c "import sys; sys.path.insert(0, '.'); from cli.tools.embedding import ensure_onnx_model; import sys; sys.exit(0 if ensure_onnx_model('models/$MODEL_NAME') else 1)"; then
+        echo "WARNING: Could not download ONNX embedding model. The package will require online HF access."
     fi
 else
-    echo "Embedding model already cached in models/$MODEL_NAME."
+    echo "ONNX embedding model already cached in models/$MODEL_NAME."
 fi
 
 DATA_ARGS=(

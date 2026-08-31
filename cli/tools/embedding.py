@@ -28,9 +28,7 @@ _INDEX_LOCK = threading.Lock()
 _EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 # Hugging Face repo hosting the model. The ONNX backend downloads raw files
-# from here (honoring the HF_ENDPOINT mirror env var) because
-# sentence-transformers may be unavailable (e.g. ARM64-native Windows has no
-# torch wheels at all).
+# from here (honoring the HF_ENDPOINT mirror env var) for offline embedding.
 _HF_REPO = f"sentence-transformers/{_EMBEDDING_MODEL_NAME}"
 _MODEL_TOKENIZER_FILES = (
     "config.json",
@@ -185,14 +183,7 @@ class EmbeddingProvider:
             return
         self._initialized = True
 
-        provider = self._try_init_local_provider()
-        if provider is not None:
-            self._provider = provider
-            self._provider_name = "local:all-MiniLM-L6-v2"
-            logger.info("Embedding provider initialized: local model all-MiniLM-L6-v2")
-            return
-
-        provider = self._try_init_onnx_provider()
+        provider = self._try_init_provider()
         if provider is not None:
             self._provider = provider
             self._provider_name = "onnx:all-MiniLM-L6-v2"
@@ -222,49 +213,8 @@ class EmbeddingProvider:
         except Exception:
             return []
 
-    def _try_init_local_provider(self) -> Optional[Callable[[List[str]], List[np.ndarray]]]:
-        try:
-            import sentence_transformers  # type: ignore[import-untyped]
-        except ImportError:
-            return None
-
-        for name in ("sentence_transformers", "transformers", "huggingface_hub", "filelock", "urllib3"):
-            lg = logging.getLogger(name)
-            lg.setLevel(logging.ERROR)
-            lg.propagate = False
-
-        model_name = _EMBEDDING_MODEL_NAME
-        model_path = _resolve_model_path(model_name)
-        logger.info("Loading embedding model: model_name=%s model_path=%s", model_name, model_path)
-
-        try:
-            model = sentence_transformers.SentenceTransformer(
-                model_path if model_path else model_name,
-                device="cpu",
-            )
-        except Exception as e:
-            logger.error("Failed to load embedding model: %s", e)
-            return None
-
-        self._local_model = model
-        logger.info("Local embedding model loaded: all-MiniLM-L6-v2 (dim=%d)", _EMBEDDING_DIM)
-
-        def _local_embed(texts: List[str]) -> List[np.ndarray]:
-            if not texts:
-                return []
-            try:
-                result = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-                if isinstance(result, np.ndarray):
-                    return [np.array(r, dtype=np.float32) for r in result]
-                return [np.array(r, dtype=np.float32) for r in result]
-            except Exception:
-                return [np.zeros(_EMBEDDING_DIM, dtype=np.float32) for _ in texts]
-
-        return _local_embed
-
-    def _try_init_onnx_provider(self) -> Optional[Callable[[List[str]], List[np.ndarray]]]:
-        """ONNX Runtime fallback used where sentence-transformers/torch cannot
-        be installed (ARM64-native Windows publishes no torch wheels)."""
+    def _try_init_provider(self) -> Optional[Callable[[List[str]], List[np.ndarray]]]:
+        """Initialize the ONNX embedding provider."""
         # The ORT import itself can print the early cpuid warning, so the
         # stderr redirect must already be active here.
         with _ONNX_INIT_LOCK, _silenced_native_stderr():

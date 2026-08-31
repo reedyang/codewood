@@ -9,10 +9,9 @@ set "VENV_DIR=%ROOT_DIR%\.venv-windows"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQ_FILE=%ROOT_DIR%\requirements.txt"
 :: ---- Check if environment or dependencies are missing ----
-:: The venv must use Python 3.9-3.13: torch 2.8.0 (requirements.txt, on
-:: non-ARM64 platforms) ships no wheels for 3.14+. ARM64-native Python is
-:: supported -- requirements.txt switches the embedding backend to
-:: onnxruntime there. An incompatible venv is recreated automatically.
+:: The venv must use Python 3.9-3.13 (3.14+ may have compatibility issues).
+:: The embedding backend uses ONNX Runtime for all platforms. An incompatible
+:: venv is recreated automatically.
 set "INSTALL_NEEDED="
 set "VENV_INCOMPATIBLE="
 if not exist "%VENV_DIR%\Scripts\activate.bat" set "INSTALL_NEEDED=1"
@@ -68,10 +67,9 @@ exit /b 0
 exit /b %ERRORLEVEL%
 
 :: ---- Inlined former install.bat: create venv, install deps ----
-:: Bootstrap with any Python 3.9-3.13 (native ARM64 Python works: the
-:: requirements markers swap torch/sentence-transformers for onnxruntime
-:: there). Prefer the "py" launcher with an explicit version, then "python",
-:: then the "py" default -- each is rejected if it is 3.14+.
+:: Bootstrap with any Python 3.9-3.13. Prefer the "py" launcher with an
+:: explicit version, then "python", then the "py" default -- each is
+:: rejected if it is 3.14+.
 :install
 set "PY_BOOTSTRAP="
 where py >nul 2>nul
