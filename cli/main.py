@@ -718,6 +718,37 @@ def _pywebview_runtime() -> str:
     return "netfx"
 
 
+# pythonnet's coreclr backend only loads Microsoft.NETCore.App by default.
+# WinForms lives in Microsoft.WindowsDesktop.App, so we need a runtimeconfig
+# that requests both frameworks.
+_CORECLR_RUNTIMECONFIG = """\
+{
+  "runtimeOptions": {
+    "tfm": "net8.0",
+    "rollForward": "LatestMajor",
+    "frameworks": [
+      {"name": "Microsoft.NETCore.App", "version": "8.0.0"},
+      {"name": "Microsoft.WindowsDesktop.App", "version": "8.0.0"}
+    ]
+  }
+}
+"""
+
+
+def _ensure_coreclr_runtime_config() -> str:
+    """Write a runtimeconfig.json for coreclr + WinForms and return its path.
+
+    Called on ARM64 Windows before pywebview loads pythonnet.  The file is
+    written to the system temp directory (small, idempotent, no cleanup needed).
+    """
+    import tempfile
+
+    path = os.path.join(tempfile.gettempdir(), "codewood-coreclr-runtimeconfig.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_CORECLR_RUNTIMECONFIG)
+    return path
+
+
 def _spawn_detached_gui() -> int:
     """Re-launch ourselves as a detached, console-free GUI process.
 
@@ -742,7 +773,11 @@ def _spawn_detached_gui() -> int:
            if not (k.startswith("_PYI") or k.startswith("_MEI"))}
     env[_GUI_DETACHED_ENV] = "1"
     if os.name == "nt":
-        env.setdefault("PYTHONNET_RUNTIME", _pywebview_runtime())
+        runtime = _pywebview_runtime()
+        env.setdefault("PYTHONNET_RUNTIME", runtime)
+        if runtime == "coreclr":
+            env.setdefault("PYTHONNET_CORECLR_RUNTIME_CONFIG",
+                            _ensure_coreclr_runtime_config())
 
     creationflags = 0
     if os.name == "nt":
@@ -1053,7 +1088,11 @@ def _launch_gui_app() -> int | None:
     # auto-select coreclr and intermittently fail with "Failed to create a
     # .NET runtime (coreclr)", especially inside the frozen one-file build.
     if os.name == "nt":
-        os.environ.setdefault("PYTHONNET_RUNTIME", _pywebview_runtime())
+        runtime = _pywebview_runtime()
+        os.environ.setdefault("PYTHONNET_RUNTIME", runtime)
+        if runtime == "coreclr":
+            os.environ.setdefault("PYTHONNET_CORECLR_RUNTIME_CONFIG",
+                                  _ensure_coreclr_runtime_config())
 
     if getattr(sys, "frozen", False):
         host_dir = os.path.join(getattr(sys, "_MEIPASS", ""), "host")
