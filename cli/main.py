@@ -705,50 +705,6 @@ def _free_own_console() -> None:
         pass
 
 
-def _pywebview_runtime() -> str:
-    """Return the pythonnet runtime name that pywebview should use on Windows.
-
-    On ARM64-native Python, .NET Framework (netfx) is unavailable because
-    clr_loader ships ClrLoader.dll only for x86/amd64.  Use coreclr instead
-    (requires the .NET Desktop Runtime for ARM64 to be installed).
-    On x64 machines the legacy netfx path works and is preferred.
-    """
-    if platform.machine().upper() == "ARM64":
-        return "coreclr"
-    return "netfx"
-
-
-# pythonnet's coreclr backend only loads Microsoft.NETCore.App by default.
-# WinForms lives in Microsoft.WindowsDesktop.App, so we need a runtimeconfig
-# that requests both frameworks.
-_CORECLR_RUNTIMECONFIG = """\
-{
-  "runtimeOptions": {
-    "tfm": "net8.0",
-    "rollForward": "LatestMajor",
-    "frameworks": [
-      {"name": "Microsoft.NETCore.App", "version": "8.0.0"},
-      {"name": "Microsoft.WindowsDesktop.App", "version": "8.0.0"}
-    ]
-  }
-}
-"""
-
-
-def _ensure_coreclr_runtime_config() -> str:
-    """Write a runtimeconfig.json for coreclr + WinForms and return its path.
-
-    Called on ARM64 Windows before pywebview loads pythonnet.  The file is
-    written to the system temp directory (small, idempotent, no cleanup needed).
-    """
-    import tempfile
-
-    path = os.path.join(tempfile.gettempdir(), "codewood-coreclr-runtimeconfig.json")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(_CORECLR_RUNTIMECONFIG)
-    return path
-
-
 def _spawn_detached_gui() -> int:
     """Re-launch ourselves as a detached, console-free GUI process.
 
@@ -773,11 +729,7 @@ def _spawn_detached_gui() -> int:
            if not (k.startswith("_PYI") or k.startswith("_MEI"))}
     env[_GUI_DETACHED_ENV] = "1"
     if os.name == "nt":
-        runtime = _pywebview_runtime()
-        env.setdefault("PYTHONNET_RUNTIME", runtime)
-        if runtime == "coreclr":
-            env.setdefault("PYTHONNET_CORECLR_RUNTIME_CONFIG",
-                            _ensure_coreclr_runtime_config())
+        env.setdefault("PYTHONNET_RUNTIME", "netfx")
 
     creationflags = 0
     if os.name == "nt":
@@ -1083,16 +1035,34 @@ def _launch_gui_app() -> int | None:
             _foreground_running_gui_window(timeout=_GUI_FOREGROUND_TIMEOUT)
             return 0
 
+    # pywebview's WinForms backend uses .NET Framework assemblies that are
+    # not available under .NET Core (coreclr).  On ARM64 Windows, .NET
+    # Framework (netfx) cannot load because clr_loader ships ClrLoader.dll
+    # only for x86/amd64, so coreclr is the only option — but pywebview is
+    # not compatible with it.  Fall back to the terminal UI immediately.
+    if os.name == "nt" and platform.machine().upper() == "ARM64":
+        note = (
+            "⚠  The desktop GUI is not available on ARM64 Windows with\n"
+            "   native Python — pywebview requires .NET Framework, which\n"
+            "   cannot load under ARM64.\n"
+            "\n"
+            "   To use the GUI, run via x64 Python under emulation:\n"
+            "     C:\\Python313\\python.exe ...\\codewood\\cli\\main.py app\n"
+            "\n"
+            "   Falling back to the terminal UI.\n"
+        )
+        if os.environ.get(_GUI_DETACHED_ENV) == "1":
+            _log_gui_error(note)
+        else:
+            print(note)
+        return None
+
     # Force pywebview's EdgeChromium backend to host the .NET Framework
     # runtime (always present on Windows 10/11). Without this, pythonnet may
     # auto-select coreclr and intermittently fail with "Failed to create a
     # .NET runtime (coreclr)", especially inside the frozen one-file build.
     if os.name == "nt":
-        runtime = _pywebview_runtime()
-        os.environ.setdefault("PYTHONNET_RUNTIME", runtime)
-        if runtime == "coreclr":
-            os.environ.setdefault("PYTHONNET_CORECLR_RUNTIME_CONFIG",
-                                  _ensure_coreclr_runtime_config())
+        os.environ.setdefault("PYTHONNET_RUNTIME", "netfx")
 
     if getattr(sys, "frozen", False):
         host_dir = os.path.join(getattr(sys, "_MEIPASS", ""), "host")
@@ -1100,18 +1070,6 @@ def _launch_gui_app() -> int | None:
         host_dir = str(project_root / "desktop" / "host")
     if host_dir and host_dir not in sys.path:
         sys.path.insert(0, host_dir)
-
-    # On ARM64 with coreclr, pywebview's winforms backend needs extra
-    # assemblies that .NET Core doesn't auto-load (they're implicit in
-    # .NET Framework).  Pre-load them so the top-level imports in
-    # webview/platforms/winforms.py succeed.
-    if os.name == "nt" and os.environ.get("PYTHONNET_RUNTIME") == "coreclr":
-        try:
-            import clr  # noqa: F811 — re-initialises coreclr (env vars already set)
-            clr.AddReference("System.Runtime.Extensions")
-            clr.AddReference("System.Drawing.Common")
-        except Exception:
-            pass
 
     try:
         import gui  # type: ignore
