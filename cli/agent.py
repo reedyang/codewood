@@ -309,6 +309,13 @@ class Agent:
             model_config=model_config,
             ollama_importer=lambda: None,
         )
+        # main.py always passes a resolved params dict; only the GUI
+        # placeholder backend (``_serve_without_valid_model``) constructs the
+        # agent without one, leaving the constructor-default placeholder model
+        # (ollama/gemma3:4b) active. Chat-state code uses this flag to avoid
+        # persisting or restoring that placeholder as if it were a real
+        # user selection.
+        self._has_configured_model = bool(params)
         self._restore_active_chat_model()
 
         bootstrap.setup_subagents(self)
@@ -1285,8 +1292,9 @@ class Agent:
         provider = str((chat or {}).get("model_provider") or "").strip()
         model_name = str((chat or {}).get("model_name") or "").strip()
         stored_level = str((chat or {}).get("reasoning_level") or "").strip()
+        has_configured_model = bool(getattr(self, "_has_configured_model", True))
         if not provider or not model_name:
-            if persist_if_missing:
+            if persist_if_missing and has_configured_model:
                 chat["model_provider"] = str(getattr(self, "provider", "") or "").strip()
                 chat["model_name"] = str(getattr(self, "model_name", "") or "").strip()
             return False
@@ -1311,10 +1319,12 @@ class Agent:
         choice = self._find_configured_model_choice(f"{provider}/{model_name}")
         if choice:
             self._apply_runtime_model_choice(choice, validate=False)
-        else:
+        elif provider.lower() == str(getattr(self, "provider", "") or "").strip().lower():
+            # Not in the catalog, but the persisted provider is the currently
+            # configured one -- keep it with the configured params (port,
+            # api_mode, ...) so e.g. a hand-edited ollama model list still
+            # restores.
             fallback_params = dict(getattr(self, "params", {}) or {})
-            if str(getattr(self, "provider", "") or "").strip().lower() != provider.lower():
-                fallback_params = {}
             fallback_params["model"] = model_name
             self._apply_runtime_model_choice(
                 {
@@ -1325,6 +1335,17 @@ class Agent:
                 },
                 validate=False,
             )
+        else:
+            # The persisted model references a provider the configuration does
+            # not define (typically a stale default such as the GUI placeholder
+            # agent's ollama/gemma3:4b). Keep the configured model instead of
+            # fabricating a provider switch -- otherwise the TUI would show an
+            # unconfigured model and probe a daemon (e.g. Ollama) the user
+            # never set up. Heal the chat record so the stale entry goes away.
+            if has_configured_model:
+                chat["model_provider"] = str(getattr(self, "provider", "") or "").strip()
+                chat["model_name"] = str(getattr(self, "model_name", "") or "").strip()
+            return False
         self._refresh_model_dependent_caches()
         # Restore this chat's reasoning effort for the now-active model.
         self.reasoning_level = self._normalize_reasoning_effort(stored_level)
@@ -7858,8 +7879,11 @@ class Agent:
     def _schedule_model_validation_background(self) -> None:
         """
         Ollama model-list probing can block; run it in a background thread to shorten the wait between main printing model info and showing the prompt.
-        Non-ollama (api_mode) configurations do not start a thread.
+        Non-ollama (api_mode) configurations do not start a thread, and neither
+        does the GUI placeholder backend (no model configured).
         """
+        if not bool(getattr(self, "_has_configured_model", True)):
+            return
         api_mode = resolve_api_mode(
             params=getattr(self, "params", None),
             provider=getattr(self, "provider", ""),

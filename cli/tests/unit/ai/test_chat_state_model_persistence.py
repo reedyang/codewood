@@ -2453,5 +2453,100 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             self.assertEqual([m.get("content") for m in chat_a["messages"]], ["hello"])
 
 
+class ApplyChatModelFromEntryTests(unittest.TestCase):
+    """Regression tests for ``Agent._apply_chat_model_from_entry``.
+
+    A stale persisted model selection (e.g. the GUI placeholder backend's
+    constructor-default ``ollama/gemma3:4b``) must never override the
+    configured model: restoring may only fabricate params when the persisted
+    provider is the currently configured one, and the placeholder backend must
+    never seed its defaults into chat state.
+    """
+
+    def _make_agent(self, provider: str, params: dict, catalog: list, configured: bool = True):
+        agent = Agent.__new__(Agent)
+        agent.provider = provider
+        agent.model_name = "gpt-4.1"
+        agent.params = dict(params)
+        agent._has_configured_model = configured
+        agent._catalog = list(catalog)
+        agent.applied = []
+        agent._current_model_selector = lambda: f"{provider}/gpt-4.1".lower()
+        agent._find_configured_model_choice = lambda selector: next(
+            (c for c in catalog if str(c.get("selector", "")).lower() == str(selector).lower()),
+            None,
+        )
+
+        def _apply(choice, validate=False):
+            agent.applied.append(choice)
+            agent.provider = str(choice.get("provider") or "")
+            agent.model_name = str(choice.get("name") or "")
+            agent.params = dict(choice.get("params") or {})
+
+        agent._apply_runtime_model_choice = _apply
+        agent._refresh_model_dependent_caches = lambda: None
+        agent._pin_session_model = lambda: None
+        agent._normalize_reasoning_effort = lambda level: level
+        return agent
+
+    def test_stale_other_provider_model_does_not_override_configured_model(self):
+        agent = self._make_agent(
+            provider="openai",
+            params={"api_mode": "chat", "model": "gpt-4.1"},
+            catalog=[{"selector": "openai/gpt-4.1", "provider": "openai", "name": "gpt-4.1"}],
+        )
+        chat = {"model_provider": "ollama", "model_name": "gemma3:4b"}
+        applied = agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
+        self.assertFalse(applied)
+        self.assertEqual(agent.applied, [])
+        # The stale entry is healed back to the configured model.
+        self.assertEqual(chat["model_provider"], "openai")
+        self.assertEqual(chat["model_name"], "gpt-4.1")
+        self.assertEqual(agent.provider, "openai")
+        self.assertEqual(agent.model_name, "gpt-4.1")
+
+    def test_same_provider_model_not_in_catalog_restores_with_configured_params(self):
+        agent = self._make_agent(
+            provider="ollama",
+            params={"api_mode": "ollama", "port": 11434, "model": "llama3"},
+            catalog=[{"selector": "ollama/llama3", "provider": "ollama", "name": "llama3"}],
+        )
+        chat = {"model_provider": "ollama", "model_name": "gemma3:4b"}
+        applied = agent._apply_chat_model_from_entry(chat)
+        self.assertTrue(applied)
+        self.assertEqual(agent.model_name, "gemma3:4b")
+        self.assertEqual(agent.params.get("port"), 11434)
+        self.assertEqual(agent.params.get("api_mode"), "ollama")
+
+    def test_other_provider_model_in_catalog_restores_normally(self):
+        agent = self._make_agent(
+            provider="openai",
+            params={"api_mode": "chat", "model": "gpt-4.1"},
+            catalog=[
+                {"selector": "openai/gpt-4.1", "provider": "openai", "name": "gpt-4.1"},
+                {"selector": "ollama/qwen3", "provider": "ollama", "name": "qwen3",
+                 "params": {"api_mode": "ollama", "port": 11500}},
+            ],
+        )
+        chat = {"model_provider": "ollama", "model_name": "qwen3"}
+        applied = agent._apply_chat_model_from_entry(chat)
+        self.assertTrue(applied)
+        self.assertEqual(agent.provider, "ollama")
+        self.assertEqual(agent.model_name, "qwen3")
+        self.assertEqual(agent.params.get("port"), 11500)
+
+    def test_placeholder_agent_does_not_seed_model_into_chat(self):
+        agent = self._make_agent(
+            provider="ollama",
+            params={},
+            catalog=[],
+            configured=False,
+        )
+        chat = {}
+        agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
+        self.assertEqual(chat.get("model_provider", ""), "")
+        self.assertEqual(chat.get("model_name", ""), "")
+
+
 if __name__ == "__main__":
     unittest.main()
