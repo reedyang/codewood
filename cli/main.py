@@ -8,6 +8,7 @@ Usage:
 
 import sys
 import os
+import platform
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -704,6 +705,19 @@ def _free_own_console() -> None:
         pass
 
 
+def _pywebview_runtime() -> str:
+    """Return the pythonnet runtime name that pywebview should use on Windows.
+
+    On ARM64-native Python, .NET Framework (netfx) is unavailable because
+    clr_loader ships ClrLoader.dll only for x86/amd64.  Use coreclr instead
+    (requires the .NET Desktop Runtime for ARM64 to be installed).
+    On x64 machines the legacy netfx path works and is preferred.
+    """
+    if platform.machine().upper() == "ARM64":
+        return "coreclr"
+    return "netfx"
+
+
 def _spawn_detached_gui() -> int:
     """Re-launch ourselves as a detached, console-free GUI process.
 
@@ -728,7 +742,7 @@ def _spawn_detached_gui() -> int:
            if not (k.startswith("_PYI") or k.startswith("_MEI"))}
     env[_GUI_DETACHED_ENV] = "1"
     if os.name == "nt":
-        env.setdefault("PYTHONNET_RUNTIME", "netfx")
+        env.setdefault("PYTHONNET_RUNTIME", _pywebview_runtime())
 
     creationflags = 0
     if os.name == "nt":
@@ -1039,7 +1053,7 @@ def _launch_gui_app() -> int | None:
     # auto-select coreclr and intermittently fail with "Failed to create a
     # .NET runtime (coreclr)", especially inside the frozen one-file build.
     if os.name == "nt":
-        os.environ.setdefault("PYTHONNET_RUNTIME", "netfx")
+        os.environ.setdefault("PYTHONNET_RUNTIME", _pywebview_runtime())
 
     if getattr(sys, "frozen", False):
         host_dir = os.path.join(getattr(sys, "_MEIPASS", ""), "host")
@@ -1070,6 +1084,15 @@ def _launch_gui_app() -> int | None:
                 print(note)
             return None
         message = f"❌ Failed to launch the desktop GUI: {exc}"
+        if "Failed to create a .NET runtime" in str(exc):
+            note = (
+                "\n  To fix this on ARM64 Windows:\n"
+                "    1) Install .NET Desktop Runtime 8 for ARM64 from\n"
+                "       https://dotnet.microsoft.com/download/dotnet/8.0\n"
+                "       (choose the ARM64 \"Desktop Runtime\" variant)\n"
+                "    2) Or run the GUI via x64 Python under emulation\n"
+            )
+            message += note
         if os.environ.get(_GUI_DETACHED_ENV) == "1":
             _log_gui_error(message)
         else:
