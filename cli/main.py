@@ -1100,6 +1100,19 @@ def _launch_gui_app() -> int | None:
         host_dir = str(project_root / "desktop" / "host")
     if host_dir and host_dir not in sys.path:
         sys.path.insert(0, host_dir)
+
+    # On ARM64 with coreclr, pywebview's winforms backend needs extra
+    # assemblies that .NET Core doesn't auto-load (they're implicit in
+    # .NET Framework).  Pre-load them so the top-level imports in
+    # webview/platforms/winforms.py succeed.
+    if os.name == "nt" and os.environ.get("PYTHONNET_RUNTIME") == "coreclr":
+        try:
+            import clr  # noqa: F811 — re-initialises coreclr (env vars already set)
+            clr.AddReference("System.Runtime.Extensions")
+            clr.AddReference("System.Drawing.Common")
+        except Exception:
+            pass
+
     try:
         import gui  # type: ignore
 
