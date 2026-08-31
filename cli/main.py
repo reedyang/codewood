@@ -9,6 +9,7 @@ Usage:
 import sys
 import os
 import platform
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -1036,11 +1037,11 @@ def _launch_gui_app() -> int | None:
             return 0
 
     # pywebview's WinForms backend uses .NET Framework assemblies that are
-    # not available under .NET Core (coreclr).  On ARM64 Windows, .NET
-    # Framework (netfx) cannot load because clr_loader ships ClrLoader.dll
-    # only for x86/amd64, so coreclr is the only option — but pywebview is
-    # not compatible with it.  Fall back to the terminal UI immediately.
-    if os.name == "nt" and platform.machine().upper() == "ARM64":
+    # not available under .NET Core (coreclr).  On ARM64-native Python,
+    # .NET Framework (netfx) cannot load because clr_loader ships
+    # ClrLoader.dll only for x86/amd64.  Fall back to the terminal UI.
+    # (x64 Python under ARM64 emulation CAN load netfx and works fine.)
+    if os.name == "nt" and _is_arm64_python():
         note = (
             "⚠  The desktop GUI is not available on ARM64 Windows with\n"
             "   native Python — pywebview requires .NET Framework, which\n"
@@ -1253,6 +1254,34 @@ def _serve_without_valid_model(
                 agent.shutdown(wait=False)
             except Exception:
                 pass
+
+
+def _is_arm64_python() -> bool:
+    """Check if the current Python interpreter is ARM64-native.
+
+    On ARM64 Windows, x64 Python runs under emulation and CAN load .NET
+    Framework (netfx) via clr_loader's x64 ClrLoader.dll.  ARM64-native
+    Python cannot because clr_loader ships ClrLoader.dll only for x86/amd64.
+
+    ``platform.machine()`` returns ``"ARM64"`` on ARM64 hardware regardless
+    of whether the process is native ARM64 or x64-emulated, so we inspect
+    the PE header of the running interpreter instead.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        exe = os.path.realpath(sys.executable)
+        with open(exe, "rb") as f:
+            # DOS header: e_lfanew at offset 60 → PE header offset
+            f.seek(60)
+            pe_offset = struct.unpack("<I", f.read(4))[0]
+            f.seek(pe_offset)
+            if f.read(4) != b"PE\x00\x00":
+                return False
+            machine = struct.unpack("<H", f.read(2))[0]
+            return machine == 0xAA64  # IMAGE_FILE_MACHINE_ARM64
+    except Exception:
+        return False
 
 
 def _handle_sandbox_command(argv: list) -> int:
