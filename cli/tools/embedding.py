@@ -232,6 +232,15 @@ class EmbeddingProvider:
         except ImportError:
             return None
 
+        # onnxruntime logs through its own native logger (stderr, not Python
+        # logging). Its CPUID probe prints a harmless "Unknown CPU vendor"
+        # warning on ARM64 Windows, so keep the native logger at ERROR to
+        # avoid polluting the TUI output.
+        try:
+            ort.set_default_logger_severity(3)  # 3 = ERROR (hide warnings)
+        except Exception:
+            pass
+
         for name in ("onnxruntime", "tokenizers"):
             lg = logging.getLogger(name)
             lg.setLevel(logging.ERROR)
