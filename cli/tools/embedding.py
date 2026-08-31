@@ -7,8 +7,9 @@ import sqlite3
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -39,6 +40,44 @@ _MODEL_TOKENIZER_FILES = (
     "vocab.txt",
 )
 _ONNX_MAX_LENGTH = 256
+# Serializes the silenced stderr windows: the fd-2 redirect is process-wide,
+# so concurrent provider initializations must not restore it under each other.
+_ONNX_INIT_LOCK = threading.Lock()
+
+
+@contextmanager
+def _silenced_native_stderr() -> Iterator[None]:
+    """Temporarily point the C-level stderr (fd 2) at os.devnull.
+
+    onnxruntime emits some early warnings (e.g. the harmless "Unknown CPU
+    vendor" cpuid_info message on ARM64 Windows) through a raw ``std::cerr``
+    fallback that fires during library initialization, before its own logger
+    exists -- so it ignores both Python logging and
+    ``set_default_logger_severity``. Redirecting the underlying file
+    descriptor keeps such native output out of the TUI. Errors still surface
+    normally as Python exceptions.
+    """
+    try:
+        saved_fd = os.dup(2)
+    except Exception:
+        yield
+        return
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull_fd, 2)
+        finally:
+            os.close(devnull_fd)
+        yield
+    finally:
+        try:
+            os.dup2(saved_fd, 2)
+        except Exception:
+            pass
+        try:
+            os.close(saved_fd)
+        except Exception:
+            pass
 
 
 def _default_model_dir() -> str:
@@ -226,20 +265,21 @@ class EmbeddingProvider:
     def _try_init_onnx_provider(self) -> Optional[Callable[[List[str]], List[np.ndarray]]]:
         """ONNX Runtime fallback used where sentence-transformers/torch cannot
         be installed (ARM64-native Windows publishes no torch wheels)."""
-        try:
-            import onnxruntime as ort
-            from tokenizers import Tokenizer
-        except ImportError:
-            return None
+        # The ORT import itself can print the early cpuid warning, so the
+        # stderr redirect must already be active here.
+        with _ONNX_INIT_LOCK, _silenced_native_stderr():
+            try:
+                import onnxruntime as ort
+                from tokenizers import Tokenizer
+            except ImportError:
+                return None
 
-        # onnxruntime logs through its own native logger (stderr, not Python
-        # logging). Its CPUID probe prints a harmless "Unknown CPU vendor"
-        # warning on ARM64 Windows, so keep the native logger at ERROR to
-        # avoid polluting the TUI output.
-        try:
-            ort.set_default_logger_severity(3)  # 3 = ERROR (hide warnings)
-        except Exception:
-            pass
+            # ORT logs through its own native logger (not Python logging);
+            # keep it at ERROR so later session events stay quiet as well.
+            try:
+                ort.set_default_logger_severity(3)  # 3 = ERROR (hide warnings)
+            except Exception:
+                pass
 
         for name in ("onnxruntime", "tokenizers"):
             lg = logging.getLogger(name)
@@ -254,14 +294,15 @@ class EmbeddingProvider:
             logger.warning("ONNX embedding model not available under %s", model_dir)
             return None
 
-        try:
-            tokenizer = Tokenizer.from_file(os.path.join(model_dir, "tokenizer.json"))
-            tokenizer.enable_truncation(max_length=_ONNX_MAX_LENGTH)
-            tokenizer.enable_padding()
-            session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-        except Exception as e:
-            logger.error("Failed to load ONNX embedding model: %s", e)
-            return None
+        with _ONNX_INIT_LOCK, _silenced_native_stderr():
+            try:
+                tokenizer = Tokenizer.from_file(os.path.join(model_dir, "tokenizer.json"))
+                tokenizer.enable_truncation(max_length=_ONNX_MAX_LENGTH)
+                tokenizer.enable_padding()
+                session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+            except Exception as e:
+                logger.error("Failed to load ONNX embedding model: %s", e)
+                return None
 
         output_names = [o.name for o in session.get_outputs()]
         # Prefer the sentence_embedding output (already mean-pooled by the
