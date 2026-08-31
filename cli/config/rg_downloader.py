@@ -3,6 +3,8 @@ import os
 import platform
 import re
 import shutil
+import ssl
+import sys
 import tarfile
 import tempfile
 import threading
@@ -17,6 +19,62 @@ from ..core.logging.app_logging import get_logger, get_app_logger_root
 # a real handler falls through to `logging.lastResort`, which writes to that
 # bridged stderr and would surface internal log lines inside the GUI chat.
 _logger = get_logger(f"{get_app_logger_root()}.config.rg_downloader")
+
+
+def _create_ssl_context() -> ssl.SSLContext:
+    """Create an SSL context that works on Windows with system certificates.
+
+    On Windows, Python's ``ssl`` module does not use the system certificate
+    store by default, causing ``CERTIFICATE_VERIFY_FAILED`` for HTTPS
+    downloads.  This helper tries, in order:
+    1. The ``certifi`` package (if installed).
+    2. The system default store via ``ssl.create_default_context()`` with
+       ``load_default_certs()``.
+    3. A permissive fallback (logs a warning) so packaging can proceed even
+       in air-gapped or misconfigured environments.
+    """
+    # 1) certifi — the most portable solution
+    try:
+        import certifi  # type: ignore[import-untyped]
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
+
+    # 2) System certificate store (works on most platforms)
+    ctx = ssl.create_default_context()
+    try:
+        ctx.load_default_certs()
+    except Exception:
+        # load_default_certs is a no-op on some builds; ignore.
+        pass
+
+    # If the context has no loaded CAs, fall through to a permissive ctx.
+    if ctx.get_ca_certs():
+        return ctx
+
+    # 3) Permissive fallback — allows downloads to proceed in environments
+    #    where the certificate store is not available (CI containers, etc.).
+    _logger.warning(
+        "No system CA certificates found; falling back to unverified HTTPS "
+        "for rg download.  Install the ``certifi`` package to restore "
+        "certificate verification."
+    )
+    permissive = ssl.create_default_context()
+    permissive.check_hostname = False
+    permissive.verify_mode = ssl.CERT_NONE
+    return permissive
+
+
+# Lazy-initialised so the env check only runs once per process.
+_ssl_ctx: ssl.SSLContext | None = None
+
+
+def _get_ssl_context() -> ssl.SSLContext:
+    global _ssl_ctx
+    if _ssl_ctx is None:
+        _ssl_ctx = _create_ssl_context()
+    return _ssl_ctx
 
 _GITHUB_API_RELEASES_URL = "https://api.github.com/repos/BurntSushi/ripgrep/releases/latest"
 _GITHUB_LATEST_REDIRECT_URL = "https://github.com/BurntSushi/ripgrep/releases/latest"
@@ -105,7 +163,7 @@ def _try_api_latest_with_url() -> tuple[str | None, str | None]:
             _GITHUB_API_RELEASES_URL,
             headers={"Accept": "application/json", "User-Agent": "codewood"},
         )
-        with urlopen(req, timeout=20) as response:
+        with urlopen(req, timeout=20, context=_get_ssl_context()) as response:
             data = json.loads(response.read().decode("utf-8"))
 
         version = data.get("tag_name", "")
@@ -134,7 +192,7 @@ def _try_redirect_version() -> str | None:
             _GITHUB_LATEST_REDIRECT_URL,
             headers={"User-Agent": "codewood"},
         )
-        with urlopen(req, timeout=15) as response:
+        with urlopen(req, timeout=15, context=_get_ssl_context()) as response:
             final_url = response.geturl()
             match = re.search(r"/tag/([^/]+?)(?:$|\?)", final_url)
             if match:
@@ -238,7 +296,7 @@ def _download_and_extract_rg(bin_dir: Path, *, is_update: bool = False) -> bool:
 
         try:
             req = Request(download_url, headers={"User-Agent": "codewood"})
-            with urlopen(req, timeout=120) as response:
+            with urlopen(req, timeout=120, context=_get_ssl_context()) as response:
                 with open(tmp_path, "wb") as f:
                     shutil.copyfileobj(response, f)
 
