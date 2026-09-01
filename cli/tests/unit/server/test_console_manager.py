@@ -55,6 +55,18 @@ class RingBufferTests(unittest.TestCase):
         s._ingest(b"world\n")
         self.assertEqual(seen, [b"hello\n"])
 
+    def test_identical_cr_refresh_is_activity_without_growing_pending(self):
+        s = self._session()
+        s._ingest(b"still working...\r")
+        first = s.read_lines(0, 10)
+        ts1, rev1 = s._last_change_ts, s._rev
+        s._ingest(b"still working...\r")
+        second = s.read_lines(0, 10)
+        self.assertEqual(first["pending"], "still working...")
+        self.assertEqual(second["pending"], "still working...")
+        self.assertGreater(s._last_change_ts, ts1)
+        self.assertGreater(s._rev, rev1)
+
 
 class ManagerTests(unittest.TestCase):
     def test_open_rejects_unknown_kind(self):

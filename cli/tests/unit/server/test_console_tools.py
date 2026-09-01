@@ -583,7 +583,10 @@ class ConsoleDispatchTests(unittest.TestCase):
 
         stub = self._stub()
         session = ConsoleSession("a", "cmd", "t", "/tmp", 100)
-        session._settle_quiet = 0.05
+        # Same generous settle window as the other refresh-stream tests so a
+        # loaded parallel run cannot treat a delayed identical ``\r`` reprint
+        # as silence and return before the wait deadline.
+        session._settle_quiet = 0.2
         stub._console._active = session
 
         def _stream():
@@ -608,13 +611,16 @@ class ConsoleDispatchTests(unittest.TestCase):
 
         stub = self._stub()
         session = ConsoleSession("a", "cmd", "t", "/tmp", 100)
-        session._settle_quiet = 0.05
+        # Generous settle window so a slow scheduler cannot settle on an
+        # early frame before ``done`` lands (written 0.02s after the last
+        # refresh, far inside the 0.2s window).
+        session._settle_quiet = 0.2
         stub._console._active = session
 
         def _stream():
             for i in range(10):
                 session._ingest(b"frame %d\n" % i)
-                time.sleep(0.01)
+                time.sleep(0.03)
             time.sleep(0.02)
             session._ingest(b"done\n")
 

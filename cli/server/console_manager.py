@@ -380,13 +380,15 @@ class ConsoleSession:
                 self._lines.append(_strip_ansi(_collapse_cr(line)))
                 self._total += 1
                 changed = True
-            # Collapse any in-place ``\r`` refresh in the unfinished line so
-            # progress bars don't grow the pending buffer unboundedly.
+            # Always fold the unfinished line so repeated ``\r`` refreshes
+            # cannot grow the pending buffer. Identical visible text still
+            # counts as activity: a spinner reprinting "still working...\r"
+            # is running, and stable-wait must not treat that as silence.
             collapsed = _strip_ansi(_collapse_cr(self._pending))
             if collapsed != prev_pending:
-                self._pending = collapsed
                 changed = True
-            if changed:
+            self._pending = collapsed
+            if changed or text:
                 self._rev += 1
                 self._last_change_ts = time.monotonic()
             self._cond.notify_all()
