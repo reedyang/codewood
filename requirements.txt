@@ -2,6 +2,10 @@ prompt_toolkit>=3.0.0
 pyyaml>=6.0
 requests>=2.25.0
 certifi>=2021.10.8
+# OS trust store for TLS (Windows Schannel / macOS SecureTransport). Used by
+# packaging downloads (ONNX model, rg) so corporate roots already trusted by
+# the OS are accepted without disabling verification. PyPI: truststore.
+truststore>=0.9.1; python_version >= "3.10"
 # tiktoken publishes no win_arm64 wheels; TokenEstimator falls back to a
 # CJK-aware heuristic when the import is unavailable (see cli/runtime/token_estimator.py).
 tiktoken>=0.7.0; sys_platform != "win32" or platform_machine != "ARM64"

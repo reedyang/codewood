@@ -99,16 +99,20 @@ def _hf_download(rel_src: str, dest_path: str) -> bool:
     url = f"{endpoint}/{_HF_REPO}/resolve/main/{rel_src}"
     logger.info("Downloading %s", url)
     try:
-        import requests
+        from ..config.tls import https_session
 
-        with requests.get(url, stream=True, timeout=(10, 60), allow_redirects=True) as resp:
-            resp.raise_for_status()
-            tmp_path = dest_path + ".part"
-            with open(tmp_path, "wb") as fh:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        fh.write(chunk)
-            os.replace(tmp_path, dest_path)
+        # Verify TLS against the OS trust store (plus certifi), so corporate
+        # roots already trusted by Windows/macOS are accepted. Untrusted
+        # self-signed certificates are still rejected.
+        with https_session() as session:
+            with session.get(url, stream=True, timeout=(10, 60), allow_redirects=True) as resp:
+                resp.raise_for_status()
+                tmp_path = dest_path + ".part"
+                with open(tmp_path, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        if chunk:
+                            fh.write(chunk)
+                os.replace(tmp_path, dest_path)
         return True
     except Exception as e:
         logger.error("Failed to download %s: %s", url, e)

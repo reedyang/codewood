@@ -22,48 +22,15 @@ _logger = get_logger(f"{get_app_logger_root()}.config.rg_downloader")
 
 
 def _create_ssl_context() -> ssl.SSLContext:
-    """Create an SSL context that works on Windows with system certificates.
+    """Create an SSL context that trusts OS CAs (and certifi).
 
-    On Windows, Python's ``ssl`` module does not use the system certificate
-    store by default, causing ``CERTIFICATE_VERIFY_FAILED`` for HTTPS
-    downloads.  This helper tries, in order:
-    1. The ``certifi`` package (if installed).
-    2. The system default store via ``ssl.create_default_context()`` with
-       ``load_default_certs()``.
-    3. A permissive fallback (logs a warning) so packaging can proceed even
-       in air-gapped or misconfigured environments.
+    ``requests``/certifi-only verification misses enterprise roots that are
+    already in the Windows/macOS trust store. Untrusted self-signed
+    certificates are still rejected.
     """
-    # 1) certifi — the most portable solution
-    try:
-        import certifi  # type: ignore[import-untyped]
+    from .tls import create_ssl_context
 
-        return ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        pass
-
-    # 2) System certificate store (works on most platforms)
-    ctx = ssl.create_default_context()
-    try:
-        ctx.load_default_certs()
-    except Exception:
-        # load_default_certs is a no-op on some builds; ignore.
-        pass
-
-    # If the context has no loaded CAs, fall through to a permissive ctx.
-    if ctx.get_ca_certs():
-        return ctx
-
-    # 3) Permissive fallback — allows downloads to proceed in environments
-    #    where the certificate store is not available (CI containers, etc.).
-    _logger.warning(
-        "No system CA certificates found; falling back to unverified HTTPS "
-        "for rg download.  Install the ``certifi`` package to restore "
-        "certificate verification."
-    )
-    permissive = ssl.create_default_context()
-    permissive.check_hostname = False
-    permissive.verify_mode = ssl.CERT_NONE
-    return permissive
+    return create_ssl_context()
 
 
 # Lazy-initialised so the env check only runs once per process.
