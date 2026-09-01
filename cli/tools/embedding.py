@@ -304,55 +304,67 @@ class FileEmbeddingIndex:
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
+        # WAL allows concurrent readers with a single writer; the busy
+        # timeout lets a second index instance wait out a background
+        # writer instead of failing with "database is locked".
+        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _ensure_schema(self) -> None:
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    rel TEXT PRIMARY KEY,
-                    embedding BLOB NOT NULL,
-                    indexed_at REAL NOT NULL
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_embeddings_rel ON embeddings(rel)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS chunk_embeddings (
-                    file_rel TEXT NOT NULL,
-                    chunk_name TEXT NOT NULL,
-                    chunk_kind TEXT NOT NULL,
-                    chunk_text TEXT NOT NULL,
-                    embedding BLOB NOT NULL,
-                    indexed_at REAL NOT NULL,
-                    PRIMARY KEY (file_rel, chunk_name)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chunk_file ON chunk_embeddings(file_rel)"
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-                ("schema_version", str(_SCHEMA_VERSION)),
-            )
-            conn.execute("COMMIT")
-        finally:
+        # Multiple ProjectContextIndex instances can share one storage dir
+        # (e.g. tests, or a second index object over the same workspace).
+        # Only the first instance needs to create the schema; a second
+        # concurrent writer here would hit SQLITE_BUSY while a background
+        # embedding-init thread is mid-write on the same database.
+        with _INDEX_LOCK:
+            if str(self.db_path) in _INDEX_CREATED:
+                return
+            conn = self._connect()
             try:
-                conn.close()
-            except Exception:
-                pass
+                conn.execute("BEGIN")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS meta (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS embeddings (
+                        rel TEXT PRIMARY KEY,
+                        embedding BLOB NOT NULL,
+                        indexed_at REAL NOT NULL
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_embeddings_rel ON embeddings(rel)"
+                )
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                        file_rel TEXT NOT NULL,
+                        chunk_name TEXT NOT NULL,
+                        chunk_kind TEXT NOT NULL,
+                        chunk_text TEXT NOT NULL,
+                        embedding BLOB NOT NULL,
+                        indexed_at REAL NOT NULL,
+                        PRIMARY KEY (file_rel, chunk_name)
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_chunk_file ON chunk_embeddings(file_rel)"
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    ("schema_version", str(_SCHEMA_VERSION)),
+                )
+                conn.execute("COMMIT")
+                _INDEX_CREATED.add(str(self.db_path))
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def get_provider(self) -> Optional[EmbeddingProvider]:
         return self._provider

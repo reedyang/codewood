@@ -415,6 +415,7 @@ class ProjectContextIndex:
         self._refresh_progress_done: int = 0
         self._refresh_progress_phase: str = ""
         self._file_watcher: Optional[Any] = None
+        self._shutdown: bool = False
         self._yield_event = threading.Event()
         self._subprocess: Optional[multiprocessing.Process] = None
         self._status_file: Optional[str] = str(self.storage_dir / ".index_status.json")
@@ -441,6 +442,11 @@ class ProjectContextIndex:
 
     def shutdown(self) -> None:
         self._stop_watcher()
+        # Refuse to start (or continue) the async embedding initialization
+        # once the index is shutting down: the background thread writes the
+        # SQLite embeddings database, and a late write can race a caller
+        # that is removing the storage directory.
+        self._shutdown = True
 
     def request_yield(self) -> None:
         self._yield_event.set()
@@ -1296,6 +1302,8 @@ class ProjectContextIndex:
         self._get_embedding_index()
 
         def _init() -> None:
+            if self._shutdown:
+                return
             try:
                 provider = self._get_embedding_index().initialize_provider()
                 with self._lock:
@@ -1325,6 +1333,8 @@ class ProjectContextIndex:
             return self._embedding_provider
 
     def build_embeddings(self) -> Dict[str, Any]:
+        if getattr(self, "_shutdown", False):
+            return {"success": False, "error": "Index is shut down"}
         with self._lock:
             ep = self._embedding_provider
             if ep is None or not ep.available:

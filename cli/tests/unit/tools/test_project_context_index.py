@@ -114,6 +114,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             self.assertEqual(len(index.files), 1)
             self.assertIn("a.py", index.files)
             self.assertNotIn(abs_key, index.files)
+            index.shutdown()
 
     def test_refresh_writes_index_file_even_when_workspace_has_no_code_files(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
@@ -138,6 +139,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             self.assertEqual(meta["workspace_root"], str(workspace.resolve()))
             self.assertEqual(file_count, 0)
             self.assertIsInstance(float(meta["last_index_at"]), float)
+            index.shutdown()
 
     def test_bind_project_index_workspace_uses_workspace_root(self):
         with tempfile.TemporaryDirectory() as td_workspace:
@@ -209,6 +211,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             res = index.refresh_index(force=True)
             self.assertTrue(res["success"])
             self.assertEqual(res["files_total"], 1)
+            index.shutdown()
 
             # A fresh instance must reload everything from SQLite.
             reloaded = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
@@ -219,6 +222,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             cg = reloaded.call_graph("main", direction="callees", auto_refresh=False)
             callee_names = {c["callee"] for c in cg.get("callees", [])}
             self.assertIn("helper", callee_names)
+            reloaded.shutdown()
 
     def test_checkpoint_batch_roundtrip_is_loadable(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
@@ -263,6 +267,7 @@ class ProjectContextIndexTests(unittest.TestCase):
                 int(first_stat.st_size),
             )
             seed._save_checkpoint_batch({"first.py": first_entry}, checkpoint_ts=1.0)
+            seed.shutdown()
 
             resumed = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
             parsed_rels = []
@@ -278,6 +283,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual(parsed_rels, ["second.py"])
             self.assertEqual(sorted(resumed.files.keys()), ["first.py", "second.py"])
+            resumed.shutdown()
 
     def test_refresh_short_circuits_when_existing_index_is_fully_unchanged(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
@@ -288,6 +294,7 @@ class ProjectContextIndexTests(unittest.TestCase):
 
             seeded = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
             seeded.refresh_index(force=True)
+            seeded.shutdown()
 
             index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
             parse_calls = []
@@ -310,6 +317,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual(parse_calls, [])
             self.assertEqual(save_calls, [])
+            index.shutdown()
 
     def test_final_save_removes_deleted_files_after_checkpoint_resume(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
@@ -321,6 +329,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
             index.refresh_index(force=True)
             self.assertIn("doomed.py", index.files)
+            index.shutdown()
 
             doomed.unlink()
             refreshed = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
@@ -328,6 +337,7 @@ class ProjectContextIndexTests(unittest.TestCase):
 
             self.assertTrue(result["success"])
             self.assertNotIn("doomed.py", refreshed.files)
+            refreshed.shutdown()
 
     def test_refresh_keeps_saving_phase_while_running_full_save(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
@@ -348,6 +358,7 @@ class ProjectContextIndexTests(unittest.TestCase):
 
             self.assertTrue(result["success"])
             self.assertIn("saving", phases_seen)
+            index.shutdown()
 
     def test_iter_code_files_reports_final_progress_for_small_workspaces(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
@@ -391,6 +402,7 @@ class ProjectContextIndexTests(unittest.TestCase):
             callee_names = {c["callee"] for c in callees["callees"]}
             self.assertIn("helper", callee_names)
             self.assertIn("other", callee_names)
+            index.shutdown()
 
     def test_call_graph_empty_symbol_fails(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:

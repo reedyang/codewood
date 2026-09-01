@@ -83,8 +83,9 @@ class HfDownloadTlsTests(unittest.TestCase):
         fake = FakeSession()
         with tempfile.TemporaryDirectory() as td:
             dest = os.path.join(td, "model.onnx")
-            with mock.patch("cli.config.tls.https_session", return_value=fake):
-                ok = embedding._hf_download("onnx/model.onnx", dest)
+            with mock.patch.dict(os.environ, {"HF_ENDPOINT": "https://huggingface.co"}):
+                with mock.patch("cli.config.tls.https_session", return_value=fake):
+                    ok = embedding._hf_download("onnx/model.onnx", dest)
             self.assertTrue(ok)
             self.assertTrue(os.path.isfile(dest))
             with open(dest, "rb") as fh:
