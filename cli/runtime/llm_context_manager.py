@@ -984,8 +984,19 @@ class LLMContextManager:
                 self._software_development_prompt_append(),
             ]
         )
+        # The skills routing prefix is mostly instruction boilerplate: only the
+        # compact "- **name** · directory id - description" entries belong to
+        # the "skills" bucket, the surrounding header/footer guidance counts as
+        # system text.
+        routing_prefix = str(getattr(self.agent, "_skills_routing_prefix", "") or "")
+        skills_listing = str(getattr(self.agent, "_skills_listing", "") or "")
+        if skills_listing and skills_listing in routing_prefix:
+            prefix_wo_listing = routing_prefix.replace(skills_listing, "").strip()
+        else:
+            prefix_wo_listing = routing_prefix
+        system_text = "\n".join([system_text, prefix_wo_listing]) if prefix_wo_listing else system_text
         _add("system", system_text)
-        _add("skills", str(getattr(self.agent, "_skills_routing_prefix", "") or ""))
+        _add("skills", skills_listing)
         for key in (
             "agents_md",
             "user_preferences",

@@ -545,8 +545,16 @@ def build_tools_prompt_append(agent: Any) -> str:
 
     # Apply conditional template blocks ([[if $var="val"]]) so the
     # same tools_prompt.md works with or without project_context_search.
+    from ..tools.registry import iter_disabled_tools
+
     pcs_enabled = str(getattr(agent, "project_context_search_enabled", True)).lower()
-    template = preprocess_prompt(template, {"project_context_search_enabled": pcs_enabled})
+    disabled = iter_disabled_tools(agent)
+    template = preprocess_prompt(template, {
+        "project_context_search_enabled": pcs_enabled,
+        "update_plan_enabled": str("update_plan" not in disabled).lower(),
+        "request_user_input_enabled": str("request_user_input" not in disabled).lower(),
+        "user_preferences_enabled": str("user_preferences_read" not in disabled and "user_preferences_patch" not in disabled).lower(),
+    })
 
     memory_enabled = bool(getattr(agent, "memory_enabled", True))
     if memory_enabled:

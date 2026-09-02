@@ -250,6 +250,41 @@ def load_skills_merged(
     return sorted(by_id.values(), key=lambda x: x.skill_id.lower())
 
 
+def collect_disabled_skill_ids(
+    config_dir: Path,
+    builtin_skills_dir: Optional[Path] = None,
+    workspace_dir: Optional[Path] = None,
+) -> set:
+    """Collect all disabled skill IDs from all sources' skills.jsonc files."""
+    from ..config.config_jsonc import load_config_jsonc
+
+    disabled_ids: set = set()
+
+    def _load_disabled(cfg_path: Path) -> set:
+        try:
+            if not cfg_path.is_file():
+                return set()
+            data = load_config_jsonc(cfg_path) or {}
+            if not isinstance(data, dict):
+                return set()
+            raw = data.get("disabledSkills")
+            if not isinstance(raw, list):
+                return set()
+            return {str(s).strip() for s in raw if isinstance(s, str) and str(s).strip()}
+        except Exception:
+            return set()
+
+    # Global config: builtin/agents/global all share one file
+    disabled_ids |= _load_disabled(config_dir / "skills.jsonc")
+
+    # Workspace config: workspace/workspaceAgents share one file
+    if workspace_dir is not None:
+        ws_cfg = Path(workspace_dir) / get_app_config_dirname() / "skills.jsonc"
+        disabled_ids |= _load_disabled(ws_cfg)
+
+    return disabled_ids
+
+
 def _skills_root_fingerprint_part(skills_root: Path) -> Dict[str, object]:
     root = Path(skills_root).expanduser().resolve()
     if not root.is_dir():
@@ -317,12 +352,38 @@ def _list_bundled_script_paths(bundle_root: str, max_files: int = 20) -> List[st
     return [str(p.resolve()) for p in out[:max_files]]
 
 
-def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
+def _filter_enabled_skills(
+    skills: List[SkillRecord],
+    disabled_ids: Optional[set] = None,
+) -> List[SkillRecord]:
+    """Return skills with ``disabled_ids`` removed (order preserved)."""
+    if not disabled_ids:
+        return list(skills)
+    return [s for s in skills if s.skill_id not in disabled_ids]
+
+
+def build_skills_listing(skills: List[SkillRecord], disabled_ids: Optional[set] = None) -> str:
+    """The compact ``- **name** · directory id - description`` bullet lines only.
+
+    Used by the context dashboard so the "skills" bucket reflects the actual
+    skill entries rather than the routing-prefix boilerplate around them.
+    """
+    filtered = _filter_enabled_skills(skills, disabled_ids)
+    if not filtered:
+        return ""
+    return "\n".join(
+        f"- **`{s.name}`** · directory `{s.skill_id}` - {s.description}"
+        for s in filtered
+    )
+
+
+def build_skills_routing_prefix(skills: List[SkillRecord], disabled_ids: Optional[set] = None) -> str:
     """
     Short block placed *before* system_prompt.md so models attend to skills (routing)
     before long JSON rules. Does not duplicate full SKILL bodies.
     """
-    if not skills:
+    filtered = _filter_enabled_skills(skills, disabled_ids)
+    if not filtered:
         return ""
 
     lines = [
@@ -338,8 +399,10 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
         "**Loaded skills:**",
         "",
     ]
-    for s in skills:
-        lines.append(f"- **`{s.name}`** · directory `{s.skill_id}` - {s.description}")
+    lines.extend(
+        f"- **`{s.name}`** · directory `{s.skill_id}` - {s.description}"
+        for s in filtered
+    )
     lines.extend(
         [
             "",

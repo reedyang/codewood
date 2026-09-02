@@ -32,8 +32,10 @@ except Exception:
 from .core.logging.app_logging import get_logger
 from .core.state.history_manager import HistoryManager
 from .core.config.skills_loader import (
+    build_skills_listing,
     build_skills_routing_prefix,
     calc_skills_dirs_fingerprint,
+    collect_disabled_skill_ids,
     load_skills_merged,
 )
 from .core.config.skills_watcher import start_skills_watcher, stop_skills_watcher, update_workspace_paths
@@ -7920,7 +7922,13 @@ class Agent:
                 language=getattr(self, "display_language", "en") or "en",
             )
             self._skills_dirs_fingerprint = latest_fp
-            self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
+            disabled_skill_ids = collect_disabled_skill_ids(
+                self.config_dir,
+                self._builtin_skills_root,
+                self.workspace_config_dir,
+            )
+            self._skills_routing_prefix = build_skills_routing_prefix(self.skills, disabled_skill_ids)
+            self._skills_listing = build_skills_listing(self.skills, disabled_skill_ids)
             self._refresh_input_handler_skill_completions()
             self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
             self._prune_stale_skill_disable_entries()

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ...config.app_info import get_app_prompt_name, get_app_prompt_slug_kebab
+from ...tools.registry import iter_disabled_tools
 from ..prompt_preprocessor import preprocess_prompt
 from .base import ModelContextPart
 
@@ -54,4 +55,10 @@ class BaseSystemPromptPart(ModelContextPart):
 
     def render(self, agent: Any, include_tools: bool) -> str:
         pcs_enabled = str(getattr(agent, "project_context_search_enabled", True)).lower()
-        return build_base_system_prompt(variables={"project_context_search_enabled": pcs_enabled})
+        disabled = iter_disabled_tools(agent)
+        return build_base_system_prompt(variables={
+            "project_context_search_enabled": pcs_enabled,
+            "update_plan_enabled": str("update_plan" not in disabled).lower(),
+            "request_user_input_enabled": str("request_user_input" not in disabled).lower(),
+            "run_subagent_enabled": str("run_subagent" not in disabled).lower(),
+        })

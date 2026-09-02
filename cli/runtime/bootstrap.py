@@ -18,8 +18,10 @@ from ..integrations.mcp import McpManager
 from ..policy.path_policy import PathPolicy
 from ..services.session_memory_service import SessionMemoryService
 from ..core.config.skills_loader import (
+    build_skills_listing,
     build_skills_routing_prefix,
     calc_skills_dirs_fingerprint,
+    collect_disabled_skill_ids,
     load_skills_merged,
 )
 from ..core.config.subagents_loader import (
@@ -411,7 +413,13 @@ def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
         agent._builtin_skills_root,
         agent.workspace_config_dir,
     )
-    agent._skills_routing_prefix = build_skills_routing_prefix(agent.skills)
+    disabled_skill_ids = collect_disabled_skill_ids(
+        agent.config_dir,
+        agent._builtin_skills_root,
+        agent.workspace_config_dir,
+    )
+    agent._skills_routing_prefix = build_skills_routing_prefix(agent.skills, disabled_skill_ids)
+    agent._skills_listing = build_skills_listing(agent.skills, disabled_skill_ids)
     agent._active_skill_full_prompt = ""
     agent._active_skill_id = None
     agent._active_skill_source = None
