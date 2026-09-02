@@ -1,7 +1,6 @@
 ---
 name: skillhub-skill-installer
-description: Search skills from SkillHub and install a selected skill with explicit CLI confirmation. Callers must provide an explicit install target via `--install-skills-root`. Use this whenever the user asks to browse, find, or install skills from skillhub.club, especially for "search and install a skill". Installation must stop on name conflicts with currently loaded skills unless an explicit conflict policy is provided.
-license: Proprietary
+description: Search skills from SkillHub and install a selected skill with explicit CLI confirmation. Use this whenever the user asks to browse, find, or install skills from skillhub.club, especially for "search and install a skill".
 ---
 
 # SkillHub Skill Installer (built-in)

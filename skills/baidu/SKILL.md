@@ -1,7 +1,6 @@
 ---
 name: baidu
-description: "Use this skill for web search and fact-finding via **Baidu**. Trigger when the user asks to search with Baidu, wants web search as long as Baidu is acceptable, asks what the web says, or needs fresh public facts such as weather, news, stocks, definitions, or current events without specifying another engine. Do **not** trigger when the user explicitly wants Google, Bing, or DuckDuckGo only, or when the task is purely local files/code with no web need. **This skill does NOT support fetching a specific URL.** If the user pastes a URL and asks about its content, use `webfetch` instead. This skill’s YAML frontmatter declares **`model_context_file_env`**; compatible hosts may point that environment variable to a temp file path so the script can write the full report without flooding the terminal, then merge it into the subprocess result shown to the model. For time-sensitive questions, run the bundled script once per query; do not repeat the same command more than 5 times in a row for this skill. After a successful run whose captured `output` contains both `【Answer】` and `【AI Review】`, treat the Baidu search as complete for the current query. Do not rerun the same `baidu_search.py` command unless the user refines the question."
-license: Proprietary
+description: "Use this skill for web search via **Baidu**. Triggers when the user wants Baidu search or needs fresh public facts (weather, news, stocks, current events) without specifying another engine. Does **not** support fetching specific URLs — use `webfetch` instead."
 model_context_file_env: BAIDU_SKILL_MERGE_OUTPUT
 ---
 
