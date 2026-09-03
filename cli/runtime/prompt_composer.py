@@ -119,7 +119,7 @@ def build_mcp_system_append(agent: Any) -> str:
     """Build MCP section appended to system prompt (only connected servers, only enabled tools)."""
     servers = (agent.mcp_config or {}).get("mcpServers", {})
     if not isinstance(servers, dict) or not servers:
-        return "\n\n## MCP Configuration\nNo usable MCP server was detected; `mcp.jsonc` is missing or empty under the config directory."
+        return ""
     status_servers: Dict[str, Any] = {}
     try:
         status_servers = (

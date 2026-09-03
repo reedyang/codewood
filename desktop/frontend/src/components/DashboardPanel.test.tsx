@@ -70,6 +70,26 @@ describe("DashboardPanel context usage", () => {
     ]);
   });
 
+  it("renders zero-token rows for empty parts (no skills / no MCP)", () => {
+    renderDashboard({
+      contextUsage: {
+        percent: 1,
+        tokens: 100,
+        window: 128000,
+        parts: [
+          { key: "system", tokens: 100 },
+          { key: "tools", tokens: 0 },
+          { key: "skills", tokens: 0 },
+          { key: "mcp", tokens: 0 },
+          { key: "history", tokens: 0 },
+        ],
+      },
+    });
+
+    expect(screen.getByText("dashboard.part.skills")).toBeTruthy();
+    expect(screen.getByText("dashboard.part.mcp")).toBeTruthy();
+  });
+
   it("renders an empty state when no context usage data exists (new chat)", () => {
     renderDashboard({});
     expect(screen.getByText("dashboard.context")).toBeTruthy();

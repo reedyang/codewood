@@ -45,7 +45,7 @@ function ContextUsageView({ usage, t }: { usage: ContextUsage | null | undefined
     return i === -1 ? CONTEXT_PART_ORDER.length : i;
   };
   const parts = (usage?.parts ?? [])
-    .filter((p) => p && p.tokens > 0)
+    .filter((p) => p && p.tokens >= 0)
     .sort((a, b) => orderIndex(a.key) - orderIndex(b.key));
 
   return (

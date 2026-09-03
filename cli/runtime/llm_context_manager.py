@@ -1010,7 +1010,23 @@ class LLMContextManager:
         # tools bucket (otherwise they leak into the history residual).
         _add_tokens("tools", self._estimate_tool_schemas_tokens())
         _add_tokens("history", history_tokens)
-        return [{"key": k, "tokens": v} for k, v in buckets.items()]
+        # Always emit the full fixed bucket set so the dashboard shows a row for
+        # every part even when its token count is 0 (e.g. no skills enabled or
+        # no MCP servers configured).
+        fixed_keys = (
+            "system",
+            "skills",
+            "agents_md",
+            "user_preferences",
+            "tools",
+            "subagents",
+            "mcp",
+            "history",
+        )
+        return [
+            {"key": key, "tokens": max(0, int(buckets.get(key, 0) or 0))}
+            for key in fixed_keys
+        ]
 
     def _auto_tail_count_within_budget(self, rows: List[Tuple[int, Dict[str, Any]]], max_tokens: int) -> int:
         if not rows or max_tokens <= 0:
@@ -1619,6 +1635,9 @@ class LLMContextManager:
                 else:
                     history_display = self._context_usage_from_chat_record(messages_only=True)
                 if history_display > 0:
+                    parts = [
+                        p for p in parts if str(p.get("key") or "") != "history"
+                    ]
                     parts.append({"key": "history", "tokens": history_display})
             else:
                 tool_schemas_tokens = self._estimate_tool_schemas_tokens()
