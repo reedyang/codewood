@@ -113,7 +113,7 @@ class PromptComposerTests(unittest.TestCase):
     def test_build_mcp_system_append_includes_initialize_instructions(self):
         class _FakeMcpManager:
             def get_status(self):
-                return {"servers": {"codegraph": {"state": "success"}}}
+                return {"servers": {"codegraph": {"state": "success", "tool_count": 3}}}
 
             @staticmethod
             def sanitize_server_name(name: str) -> str:
@@ -152,6 +152,39 @@ class PromptComposerTests(unittest.TestCase):
         self.assertIn("codegraph", text)
         self.assertIn("CodeGraph instructions", text)
         self.assertIn("Use codegraph_explore first", text)
+
+    def test_build_mcp_system_append_all_tools_disabled_returns_empty(self):
+        class _FakeMcpManager:
+            def get_status(self):
+                return {"servers": {"codegraph": {"state": "success", "tool_count": 0}}}
+
+            def sanitize_server_name(self, name: str) -> str:
+                return name
+
+            def cached_initialize_instructions_for_prompt(self):
+                return "- codegraph:\n  CodeGraph instructions"
+
+            def cached_resources_for_prompt(self):
+                return "No cached MCP resources yet."
+
+            def cached_prompts_for_prompt(self):
+                return "No cached MCP prompts yet."
+
+        agent = self._make_agent(config_dir=Path("D:/config"), workspace_root=Path("D:/workspace"))
+        agent.mcp_config = {
+            "mcpServers": {
+                "codegraph": {
+                    "type": "stdio",
+                    "command": "codegraph",
+                    "args": ["serve", "--mcp"],
+                }
+            }
+        }
+        agent.mcp_manager = _FakeMcpManager()
+
+        text = prompt_composer.build_mcp_system_append(agent)
+
+        self.assertEqual(text, "")
 
     def test_standard_skill_section_hint_uses_standard_tools_not_json(self):
         text, meta = prompt_composer.render_skill_section_payload(

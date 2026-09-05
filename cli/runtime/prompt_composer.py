@@ -150,6 +150,11 @@ def build_mcp_system_append(agent: Any) -> str:
         state_raw = str(st.get("state", "pending") or "pending").lower()
         if state_raw != "success":
             continue
+        # A server counts only when it exposes at least one enabled tool; a
+        # fully-disabled server (all of its tools disabled) must not contribute
+        # to the MCP section or its token accounting.
+        if int(st.get("tool_count", 0) or 0) <= 0:
+            continue
         loaded.append(str(name))
         if "url" in conf:
             lines.append(f"- {name}: type=remote, url={conf.get('url')}")
@@ -168,6 +173,8 @@ def build_mcp_system_append(agent: Any) -> str:
         if isinstance(env, dict) and env:
             env_keys = ", ".join(str(k) for k in sorted(env.keys()))
             lines.append(f"  env_keys: {env_keys}")
+    if not loaded:
+        return ""
     lines.append(f"Connected servers: {', '.join(loaded) if loaded else 'none'}")
     # Show the prefix mapping that the model sees in the tool list, so when MCP
     # prompts / instructions refer to a tool by its short name the model can
