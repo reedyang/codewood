@@ -67,6 +67,60 @@ interface SlashItem {
 
 const ZWSP = "\u200B";
 
+/** Block-level tags the browser may use to wrap a paragraph break inside a
+ *  ``contentEditable`` surface. A user-entered line break can land either as a
+ *  ``<br>`` or as its own block element (``<div>``, ``<p>``, ``<li>`` …)
+ *  depending on the platform/IME. ``readSegmentsFromDom`` treats every line
+ *  break uniformly as ``\\n`` so the model stays identical across those
+ *  renderings, which is why block elements are handled alongside ``<br>``. */
+const BLOCK_TAGS = new Set([
+  "DIV", "P", "LI", "UL", "OL", "TD", "TH", "PRE", "H1", "H2", "H3", "H4",
+  "H5", "H6", "BLOCKQUOTE", "SECTION", "ARTICLE", "ASIDE", "HEADER", "FOOTER",
+  "FIGURE", "FIGCAPTION", "DD", "DT", "CAPTION",
+]);
+
+/** True when ``tagName`` denotes a block-level element whose edges should be
+ *  treated as line breaks when flattening the editor to the segment model. */
+function isBlockLevel(tagName: string): boolean {
+  return BLOCK_TAGS.has(tagName.toUpperCase());
+}
+
+/** The canonical text a single DOM child contributes to the flattened segment
+ *  model, mirroring ``readSegmentsFromDom`` exactly. Text nodes and inline
+ *  spans contribute their (ZWSP-stripped) text; a line break — whether a
+ *  ``<br>`` or a block-level element — contributes a leading ``\n`` only when
+ *  it is *followed by* content (``precededByContent``), i.e. the ``\n`` is the
+ *  separator BETWEEN two lines rather than a stray leading break at the very
+ *  start of the editor. Pills contribute nothing (they are emitted as their own
+ *  segment by the caller). Sharing this one rule across the whole-DOM reader,
+ *  the selection-range reader and the caret→model mapper keeps their offsets in
+ *  lockstep so editing operations (delete / cut / copy) never drift by a stray
+ *  newline. */
+function flattenNodeText(child: Node, precededByContent: boolean): string {
+  if (child.nodeType === Node.TEXT_NODE) {
+    return (child.textContent ?? "").replace(/\u200B/g, "");
+  }
+  if (child.nodeType !== Node.ELEMENT_NODE) {
+    return "";
+  }
+  const el = child as HTMLElement;
+  const kind = el.getAttribute("data-token-kind");
+  if (
+    kind &&
+    (kind === "attach" || kind === "skill" || kind === "mcp-tool" || kind === "mcp-prompt")
+  ) {
+    return "";
+  }
+  if (el.tagName === "BR" || isBlockLevel(el.tagName)) {
+    const text = (el.textContent ?? "").replace(/\u200B/g, "");
+    if (!precededByContent) {
+      return text.trim() !== "" ? text : "";
+    }
+    return `\n${text.trim() !== "" ? text : ""}`;
+  }
+  return (el.textContent ?? "").replace(/\u200B/g, "");
+}
+
 /** Build the flat suggestion pool from the backend catalog. Skills come
  *  first (most likely intent for a power user), then MCP tools, then
  *  prompts; within each group the entries keep their backend order so the
@@ -145,6 +199,13 @@ function filterSlashItems(pool: SlashItem[], query: string): SlashItem[] {
 function readSegmentsFromDom(root: HTMLElement): Segment[] {
   const out: Segment[] = [];
   let buf = "";
+  // ``sawContent`` tracks whether any content (text or pill) has been emitted
+  // before the current node. A block / <br> is the separator between two lines,
+  // so it only prefixes a "\n" when it is preceded by content — otherwise the
+  // very first line would gain a spurious leading newline. This must mirror the
+  // identical state machine in ``readSegmentsFromRange`` and
+  // ``canonicalFromSnapshot`` so editing offsets never drift.
+  let sawContent = false;
   const flushText = () => {
     if (buf) {
       out.push({ kind: "text", value: buf });
@@ -152,11 +213,10 @@ function readSegmentsFromDom(root: HTMLElement): Segment[] {
     }
   };
   for (const node of Array.from(root.childNodes)) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      buf += (node.textContent ?? "").replace(/\u200B/g, "");
-      continue;
-    }
     if (node.nodeType !== Node.ELEMENT_NODE) {
+      const t = flattenNodeText(node, sawContent);
+      if (t) sawContent = true;
+      buf += t;
       continue;
     }
     const el = node as HTMLElement;
@@ -165,14 +225,12 @@ function readSegmentsFromDom(root: HTMLElement): Segment[] {
       flushText();
       const payload = el.getAttribute("data-token-payload") || "";
       out.push({ kind: kind as TokenKind, value: payload });
+      sawContent = true;
       continue;
     }
-    // BR (Enter), or a stray inline span — flatten to text.
-    if (el.tagName === "BR") {
-      buf += "\n";
-    } else {
-      buf += (el.textContent ?? "").replace(/\u200B/g, "");
-    }
+    const t = flattenNodeText(node, sawContent);
+    if (t) sawContent = true;
+    buf += t;
   }
   flushText();
   return out;
@@ -186,6 +244,10 @@ function readSegmentsFromDom(root: HTMLElement): Segment[] {
 function readSegmentsFromRange(root: HTMLElement, range: Range): Segment[] {
   const out: Segment[] = [];
   let buf = "";
+  // Same separator state machine as ``readSegmentsFromDom`` (see its
+  // ``sawContent`` comment) so a block / <br> only contributes a leading "\n"
+  // when it is preceded by content within the selection.
+  let sawContent = false;
   const flushText = () => {
     if (buf) {
       out.push({ kind: "text", value: buf });
@@ -217,6 +279,7 @@ function readSegmentsFromRange(root: HTMLElement, range: Range): Segment[] {
           ? raw.slice(startOff, endOff).replace(/\u200B/g, "")
           : full;
       buf += slice;
+      if (slice) sawContent = true;
       continue;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) {
@@ -230,13 +293,12 @@ function readSegmentsFromRange(root: HTMLElement, range: Range): Segment[] {
     ) {
       flushText();
       out.push({ kind: kind as TokenKind, value: el.getAttribute("data-token-payload") || "" });
+      sawContent = true;
       continue;
     }
-    if (el.tagName === "BR") {
-      buf += "\n";
-    } else {
-      buf += (el.textContent ?? "").replace(/\u200B/g, "");
-    }
+    const t = flattenNodeText(node, sawContent);
+    if (t) sawContent = true;
+    buf += t;
   }
   flushText();
   return out;
@@ -359,6 +421,11 @@ function canonicalFromSnapshot(
   const kids = Array.from(root.childNodes);
   let segIdx = 0;
   let pendingTextLen = 0;
+  // Mirrors the ``sawContent`` separator state machine in ``readSegmentsFromDom``
+  // (see its comment) so a block / <br> contributes a leading "\n" only when it
+  // is preceded by content. Keeping the two in lockstep is what stops cut /
+  // delete between multi-line blocks from drifting by a stray newline.
+  let sawContent = false;
   for (let i = 0; i < kids.length && i < snap.segIndex; i += 1) {
     const child = kids[i];
     const isPill =
@@ -370,8 +437,11 @@ function canonicalFromSnapshot(
         pendingTextLen = 0;
       }
       segIdx += 1;
+      sawContent = true;
     } else {
-      pendingTextLen += (child.textContent ?? "").replace(/\u200B/g, "").length;
+      const t = flattenNodeText(child, sawContent);
+      pendingTextLen += t.length;
+      if (t) sawContent = true;
     }
   }
   const at = kids[snap.segIndex];
@@ -385,7 +455,19 @@ function canonicalFromSnapshot(
     }
     return { segIdx, offset: 0 };
   }
-  return { segIdx, offset: pendingTextLen + snap.textOffset };
+  // A block-level or <br> child that is preceded by content contributes a
+  // synthetic leading "\n" that is not part of its own textContent, so the
+  // caret offset measured inside ``snap.textOffset`` lands one character later
+  // in the flattened model. A leading block (no content before it) has no such
+  // separator.
+  const atLeading =
+    at != null &&
+    at.nodeType === Node.ELEMENT_NODE &&
+    ((at as HTMLElement).tagName === "BR" || isBlockLevel((at as HTMLElement).tagName)) &&
+    sawContent
+      ? 1
+      : 0;
+  return { segIdx, offset: pendingTextLen + atLeading + snap.textOffset };
 }
 
 function canonicalCaretFromDom(root: HTMLElement): CanonicalCaret | null {
