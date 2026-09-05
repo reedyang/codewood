@@ -40,6 +40,9 @@ class McpError(Exception):
 _MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 
 
+_ENV_VAR_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
 _SENSITIVE_KEY_PARTS: Tuple[str, ...] = (
     "authorization",
     "token",
@@ -335,8 +338,23 @@ class McpServerClient:
         extra = self.config.get("env", {})
         if isinstance(extra, dict):
             for k, v in extra.items():
-                env[str(k)] = str(v)
+                env[str(k)] = self._expand_env_value(str(v))
         return env
+
+    @staticmethod
+    def _expand_env_value(value: str) -> str:
+        """
+        Expand ``$VAR`` / ``${VAR}`` references in env values using the
+        process environment, so configs like ``PATH=/opt/homebrew/bin:$PATH``
+        work when the GUI is launched from Finder/Dock (minimal PATH).
+        Unknown variable names are left as-is to keep literal ``$`` values safe.
+        """
+
+        def _sub(m: "re.Match[str]") -> str:
+            name = m.group(1) or m.group(2)
+            return os.environ.get(name, m.group(0))
+
+        return _ENV_VAR_REF_RE.sub(_sub, value)
 
     @staticmethod
     def _resolve_command(command_str: str) -> str:
@@ -383,9 +401,10 @@ class McpServerClient:
         command = self.config.get("command")
         if not command:
             raise McpError("MCP server is missing 'command'")
+        env = self._build_env()
         command_str = str(command).strip()
         resolved_command = self._resolve_command(command_str)
-        if not Path(resolved_command).is_absolute() and shutil.which(command_str) is None:
+        if not Path(resolved_command).is_absolute() and shutil.which(command_str, path=env.get("PATH", os.environ.get("PATH", ""))) is None:
             raise McpError(f"Executable not found: {command_str}")
         args = self.config.get("args", [])
         if not isinstance(args, list):
@@ -404,7 +423,7 @@ class McpServerClient:
             "stdin": subprocess.PIPE,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
-            "env": self._build_env(),
+            "env": env,
             "text": False,
         }
         if platform.system().lower().startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW"):

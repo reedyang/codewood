@@ -427,6 +427,8 @@ Example `mcp.jsonc`:
 }
 ```
 
+`env` 值中的 `$VAR` 和 `${VAR}` 会按启动进程的环境变量展开，因此可以用 `PATH=/opt/homebrew/bin:$PATH` 追加路径，避免 GUI 从 Finder/Dock 启动时因 PATH 不完整导致 `npx`/`node` 找不到。
+
 ## Troubleshooting
 
 ### Model Configuration Issues
