@@ -235,6 +235,17 @@ class EmbeddingProvider:
             except Exception:
                 pass
 
+            # ORT ships a Microsoft 1DS telemetry SDK that uploads events over
+            # HTTP from a background worker thread. On Apple Silicon its
+            # HttpResponseDecoder callback can crash on a recursive_mutex lock
+            # (system_error -> abort), producing a macOS "Python quit
+            # unexpectedly" report. Disabling telemetry collection stops those
+            # uploads from ever starting.
+            try:
+                ort.disable_telemetry_events()
+            except Exception:
+                pass
+
         for name in ("onnxruntime", "tokenizers"):
             lg = logging.getLogger(name)
             lg.setLevel(logging.ERROR)
