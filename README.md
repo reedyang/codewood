@@ -1,6 +1,6 @@
 # Code Wood
 
-Code Wood is a terminal-based coding assistant.
+Code Wood — a desktop AI coding assistant with Agent Skills, MCP tools, and a companion terminal CLI.
 
 ## Highlights
 
