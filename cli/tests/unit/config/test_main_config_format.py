@@ -29,7 +29,7 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertEqual(model_config["provider"], "openai")
         self.assertEqual(model_config["params"]["models"][0], "gpt-oss-120b")
         self.assertEqual(model_config["params"]["model"], "gpt-oss-120b")
-        self.assertEqual(model_config["params"]["context_window"], 128000)
+        self.assertEqual(model_config["params"]["context_window"], 128 * 1024)
         self.assertTrue(model_config["params"]["streaming"])
 
     def test_supports_object_model_with_numeric_context_window(self):
@@ -71,7 +71,7 @@ class MainConfigFormatTests(unittest.TestCase):
             }
         )
         self.assertIsNone(error)
-        self.assertEqual(model_config["params"]["context_window"], 128000)
+        self.assertEqual(model_config["params"]["context_window"], 128 * 1024)
 
     def test_supports_m_suffix_context_window(self):
         _, _, model_config, error = _extract_model_runtime_config(
@@ -90,7 +90,7 @@ class MainConfigFormatTests(unittest.TestCase):
             }
         )
         self.assertIsNone(error)
-        self.assertEqual(model_config["params"]["context_window"], 2_000_000)
+        self.assertEqual(model_config["params"]["context_window"], 2 * 1024 * 1024)
 
     def test_invalid_context_window_falls_back_to_default(self):
         _, _, model_config, error = _extract_model_runtime_config(
@@ -108,7 +108,7 @@ class MainConfigFormatTests(unittest.TestCase):
             }
         )
         self.assertIsNone(error)
-        self.assertEqual(model_config["params"]["context_window"], 128000)
+        self.assertEqual(model_config["params"]["context_window"], 128 * 1024)
 
     def test_supports_streaming_flag(self):
         _, _, model_config, error = _extract_model_runtime_config(

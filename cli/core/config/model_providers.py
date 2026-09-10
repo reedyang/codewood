@@ -2,9 +2,11 @@ import re
 from typing import Any, Dict, List
 
 
-DEFAULT_CONTEXT_WINDOW = 128_000
+DEFAULT_CONTEXT_WINDOW = 128 * 1024
 DEFAULT_OLLAMA_PORT = 11_434
 _CTX_WINDOW_PATTERN = re.compile(r"^(\d+)([kKmM]?)$")
+_KILO = 1024
+_MEGA = _KILO * 1024
 
 
 def parse_context_window(value: Any, default_value: int = DEFAULT_CONTEXT_WINDOW) -> int:
@@ -25,9 +27,9 @@ def parse_context_window(value: Any, default_value: int = DEFAULT_CONTEXT_WINDOW
         suffix = m.group(2)
         if suffix:
             if suffix in ("k", "K"):
-                num *= 1000
+                num *= _KILO
             elif suffix in ("m", "M"):
-                num *= 1_000_000
+                num *= _MEGA
         return num
     return default_value
 

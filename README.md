@@ -335,9 +335,9 @@ Create `.codewood/config.jsonc` in your user directory:
   - For backward compatibility, configurations that omit `api_mode` and set `provider: "ollama"` are still treated as `api_mode: "ollama"`
 - `model_providers[i].params.port`: used by `api_mode: "ollama"`, with a default of `11434`
 - `model_providers[i].params.models`: model list; the first model is used by default
-  - String form: `"gpt-oss-120b"` uses the default `context_window=128000` and `streaming=true`
+  - String form: `"gpt-oss-120b"` uses the default `context_window=128K` (= `131072`) and `streaming=true`
   - Object form: `{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"use_clean_content":false,"multimodal":false,"extra_headers":{"X-Model":"gpt-oss-120b"}}`
-- `context_window`: accepts a positive integer or a string matching `^\d+[kKmM]?$`; invalid values fall back to `128000`
+- `context_window`: accepts a positive integer or a string matching `^\d+[kKmM]?$`, where `1K = 1024` and `1M = 1024K` (e.g. `"128K"` = `131072`); invalid or missing values fall back to `128K` (`131072`)
 - All models share one context-packing logic: Code Wood sends the full system prompt, tool prompts, skill prompts, memory, and operational context regardless of `context_window` (only the token budget ratios adapt to the window size)
 - `streaming`: per-model streaming toggle, default `true`
 - `use_clean_content`: per-model history-cleaning toggle, default `false`. When enabled, Code Wood prefers stored `_clean_content` over raw assistant `content` when replaying prior history to the model

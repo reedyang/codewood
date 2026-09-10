@@ -389,7 +389,7 @@ export const zhCN: Dict = {
   "models.displayName": "Display name",
   "models.modelOptions": "模型选项",
   "models.contextWindow": "上下文窗口",
-  "models.contextWindowPlaceholder": "如 128000 或 128k",
+  "models.contextWindowPlaceholder": "如 128k（= 131072）",
   "models.resetContextWindow": "重置为API默认值",
   "models.multimodal": "多模态（支持图片输入）",
   "models.streaming": "流式响应",

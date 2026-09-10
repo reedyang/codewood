@@ -48,7 +48,7 @@
         "models": [
           {
             "name": "<YOUR OLLAMA MODEL NAME>",
-            "context_window": 128000,
+            "context_window": "128K",
             "streaming": true,               // optional, default is true
             "multimodal": false              // optional, default is true; set false to hide image-input via ``read``
           }

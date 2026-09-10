@@ -200,7 +200,7 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual(out, "ok")
         headers = mock_post.call_args.kwargs.get("headers", {})
-        self.assertEqual(headers.get("X-Context-Window"), "64000")
+        self.assertEqual(headers.get("X-Context-Window"), str(64 * 1024))
 
     def test_openai_invalid_context_window_uses_default_header(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
@@ -227,7 +227,7 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual(out, "ok")
         headers = mock_post.call_args.kwargs.get("headers", {})
-        self.assertEqual(headers.get("X-Context-Window"), "128000")
+        self.assertEqual(headers.get("X-Context-Window"), str(128 * 1024))
 
     def test_openai_merges_model_level_extra_headers(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
@@ -947,7 +947,7 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(out, "ok")
         self.assertEqual(mock_post.call_args.args[0], "http://127.0.0.1:11434/api/chat")
         payload = mock_post.call_args.kwargs.get("json", {})
-        self.assertEqual(payload.get("options", {}).get("num_ctx"), 96000)
+        self.assertEqual(payload.get("options", {}).get("num_ctx"), 96 * 1024)
         self.assertFalse(payload.get("stream"))
 
     def test_ollama_uses_configured_http_port(self):
