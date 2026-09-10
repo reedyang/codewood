@@ -1,12 +1,19 @@
 """Model API adapter for DeepSeek API cache-hit statistics.
 
 DeepSeek API (identified by base_url containing ``api.deepseek.com``) reports
-prompt-cache hit/miss tokens in the ``usage`` section of the response body.
+prompt-cache statistics in the ``usage`` section of the response body, using a
+different shape per endpoint:
+
+* ``/chat/completions`` reports the hit/miss split explicitly as
+  ``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens``.
+* ``/responses`` reports the OpenAI-compatible ``input_tokens`` plus the cached
+  portion in ``input_tokens_details.cached_tokens`` (the miss count is the
+  difference between the two).
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from cli.ai.model_api_adapter import BaseModelApiAdapter
 
@@ -14,11 +21,17 @@ from cli.ai.model_api_adapter import BaseModelApiAdapter
 class DeepSeekModelApiAdapter(BaseModelApiAdapter):
     """Extract cache stats from DeepSeek API responses.
 
-    DeepSeek returns these fields in ``response["usage"]``:
+    ``/chat/completions`` returns these fields in ``response[\"usage\"]``:
       - ``prompt_cache_hit_tokens``
       - ``prompt_cache_miss_tokens``
 
-    Both are integers representing the token counts for input cache hits/misses.
+    ``/responses`` returns instead::
+
+        usage.input_tokens                        →  total input
+        usage.input_tokens_details.cached_tokens  →  hit
+        total - hit                               →  miss
+
+    All are integers representing the token counts for input cache hits/misses.
     """
 
     def supports_cache_stats(self) -> bool:
@@ -37,9 +50,36 @@ class DeepSeekModelApiAdapter(BaseModelApiAdapter):
                 "prompt_cache_hit_tokens": hit_val,
                 "prompt_cache_miss_tokens": miss_val,
             }
+        result = self._try_token_details(usage)
+        if result is not None:
+            cached_tokens, total_input = result
+            return {
+                "prompt_cache_hit_tokens": cached_tokens,
+                "prompt_cache_miss_tokens": max(0, total_input - cached_tokens),
+            }
         result = self._try_root_tokens_only(usage)
         if result is not None:
             return {"input_tokens": result}
+        return None
+
+    @staticmethod
+    def _try_token_details(usage: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+        """Extract cached tokens from a ``*_tokens_details`` sub-object.
+
+        Handles both the Responses API naming (``input_tokens_details`` over
+        ``input_tokens``) and the Chat Completions naming
+        (``prompt_tokens_details`` over ``prompt_tokens``).
+
+        Returns ``(cached_tokens, total_input_tokens)`` or None when neither
+        sub-object carries a ``cached_tokens`` field.
+        """
+        for details_key, root_key in (
+            ("input_tokens_details", "input_tokens"),
+            ("prompt_tokens_details", "prompt_tokens"),
+        ):
+            details = usage.get(details_key)
+            if isinstance(details, dict) and "cached_tokens" in details:
+                return (_safe_int(details.get("cached_tokens")), _safe_int(usage.get(root_key)))
         return None
 
     @staticmethod

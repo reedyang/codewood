@@ -78,6 +78,71 @@ class TestDeepSeekModelApiAdapter(unittest.TestCase):
         self.assertEqual(stats["prompt_cache_hit_tokens"], 0)
         self.assertEqual(stats["prompt_cache_miss_tokens"], 0)
 
+    # -- Responses API usage --
+
+    def test_extract_responses_input_tokens_details(self):
+        data = {
+            "usage": {
+                "input_tokens": 2006,
+                "output_tokens": 300,
+                "total_tokens": 2306,
+                "input_tokens_details": {"cached_tokens": 1920},
+                "output_tokens_details": {"reasoning_tokens": 100},
+            }
+        }
+        stats = self.adapter.extract_cache_stats(data)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["prompt_cache_hit_tokens"], 1920)
+        self.assertEqual(stats["prompt_cache_miss_tokens"], 86)
+
+    def test_extract_responses_cached_zero(self):
+        data = {
+            "usage": {
+                "input_tokens": 2037,
+                "total_tokens": 2053,
+                "input_tokens_details": {"cached_tokens": 0},
+            }
+        }
+        stats = self.adapter.extract_cache_stats(data)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["prompt_cache_hit_tokens"], 0)
+        self.assertEqual(stats["prompt_cache_miss_tokens"], 2037)
+
+    def test_extract_responses_cached_exceeds_total_clamped_to_zero(self):
+        data = {
+            "usage": {
+                "input_tokens": 100,
+                "input_tokens_details": {"cached_tokens": 500},
+            }
+        }
+        stats = self.adapter.extract_cache_stats(data)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["prompt_cache_hit_tokens"], 500)
+        self.assertEqual(stats["prompt_cache_miss_tokens"], 0)
+
+    def test_extract_prompt_tokens_details_without_explicit_hit_miss(self):
+        data = {
+            "usage": {
+                "prompt_tokens": 1000,
+                "prompt_tokens_details": {"cached_tokens": 400},
+            }
+        }
+        stats = self.adapter.extract_cache_stats(data)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["prompt_cache_hit_tokens"], 400)
+        self.assertEqual(stats["prompt_cache_miss_tokens"], 600)
+
+    def test_extract_input_tokens_details_absent_cached_key_falls_back(self):
+        data = {
+            "usage": {
+                "input_tokens": 100,
+                "input_tokens_details": {"audio_tokens": 3},
+            }
+        }
+        stats = self.adapter.extract_cache_stats(data)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["input_tokens"], 100)
+
 
 class TestOpenAIModelApiAdapter(unittest.TestCase):
     def setUp(self):
