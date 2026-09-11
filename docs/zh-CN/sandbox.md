@@ -1,5 +1,7 @@
 # Shell 沙箱(Sandbox)
 
+[English](../en/sandbox.md) | **简体中文**
+
 Code Wood 可以为 AI 执行的 `shell` 命令提供一个基于操作系统的隔离层,
 限制命令对文件系统与网络的访问范围。设计参考了 OpenAI 的
 [Building a Codex sandbox for Windows](https://openai.com/index/building-codex-windows-sandbox/)。

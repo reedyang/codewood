@@ -1,5 +1,7 @@
 # Agent Skills architecture principles
 
+**English** | [简体中文](../zh-CN/skill-architecture.md)
+
 This document describes how **Code Wood** loads and uses **Agent Skills**, written so the same ideas can be reused in **other AI coding assistants, agents, or IDEs** (Cursor, Claude Code, Copilot-style workflows, custom MCP hosts, etc.). It is **not** tied to a single vendor UI.
 
 Upstream reference format: [Anthropic Agent Skills (`anthropics/skills`)](https://github.com/anthropics/skills/blob/main/README.md).
