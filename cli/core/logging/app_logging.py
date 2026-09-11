@@ -33,6 +33,33 @@ _LOGGER_NAME = get_app_logger_root()
 _file_handler_installed = False
 _log_file_path: Optional[Path] = None
 
+# Third-party loggers that must never write to the console. ``watchdog``'s
+# macOS FSEvents emitter logs "Unhandled exception in FSEventsEmitter" with a
+# full traceback from its observer thread (e.g. when a path is already
+# scheduled); unbuffered stderr would splice that traceback into the TUI
+# transcript. Their records are routed to the application log file instead.
+_THIRD_PARTY_LOGGER_NAMES = ("fsevents", "watchdog")
+
+
+def _route_third_party_loggers_to_file(root: logging.Logger) -> None:
+    """Attach the application file handler to third-party loggers directly.
+
+    ``root.propagate`` cannot be used here (setting it would create a cycle,
+    since these loggers are children of ``root``); the file handler is attached
+    to each child instead and propagation to the console-only root logger is
+    disabled.
+    """
+    file_handler = next(
+        (h for h in root.handlers if isinstance(h, logging.FileHandler)), None
+    )
+    if file_handler is None:
+        return
+    for name in _THIRD_PARTY_LOGGER_NAMES:
+        child = logging.getLogger(name)
+        child.propagate = False
+        if file_handler not in child.handlers:
+            child.addHandler(file_handler)
+
 
 def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging.INFO) -> logging.Logger:
     if os.environ.get("CODEWOOD_DEBUG") == "1":
@@ -68,6 +95,7 @@ def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging
         root.addHandler(fh)
         _log_file_path = log_path
         _file_handler_installed = True
+        _route_third_party_loggers_to_file(root)
     except OSError:
         pass
 
@@ -102,5 +130,9 @@ def shutdown_app_logging_handlers() -> None:
             root.removeHandler(h)
         except Exception:
             pass
+        for name in _THIRD_PARTY_LOGGER_NAMES:
+            child = logging.getLogger(name)
+            if h in child.handlers:
+                child.removeHandler(h)
     _file_handler_installed = False
     _log_file_path = None
