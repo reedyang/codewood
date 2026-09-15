@@ -646,36 +646,45 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                                 "body": body,
                                 "text": title if not body else f"{title}\n\n{body}",
                             }
-                        turns.append(
-                            {
-                                "userText": "",
-                                "timestamp": str(msg.get("created_at") or ""),
-                                "rounds": [
-                                    {
-                                        "waitSeconds": 0,
-                                        "text": "",
-                                        "tools": "",
-                                        "selection": "",
-                                        "thinking": "",
-                                        # When the compaction summary IS the
-                                        # chat's first message (e.g. a chat
-                                        # seeded from a summary), drop the
-                                        # "Context compacted" banner line —
-                                        # there is no prior context to have
-                                        # been compacted, so the banner would
-                                        # be meaningless.
-                                        "compactNoticeTitle": (
-                                            ""
-                                            if idx == 0
-                                            else str(compact_display.get("title") or "")
-                                        ),
-                                        "compactNoticeBody": str(compact_display.get("body") or ""),
-                                    }
-                                ],
-                            }
+                        # A compaction belongs to the LOGICAL TURN that was
+                        # running when it happened: it renders as a round
+                        # INSIDE that turn (between the tool rounds already
+                        # emitted and the continuation rounds that follow it),
+                        # never as a standalone turn whose own ``created_at``
+                        # would have to be sorted against the surrounding
+                        # turns. Only a chat whose first message IS a summary
+                        # (a chat seeded from a compaction) has no owning turn
+                        # yet, so that one keeps its own assistant-only turn.
+                        summary_ts = str(msg.get("created_at") or "")
+                        made_turn = current is None
+                        turn = _ensure_turn()
+                        if made_turn and summary_ts:
+                            turn["timestamp"] = summary_ts
+                        wait = (
+                            (ts - prev_ts)
+                            if (ts is not None and prev_ts is not None)
+                            else 0
                         )
-                        current = None
+                        notice_round = _new_round(turn, wait)
+                        # When the compaction summary IS the chat's first
+                        # message (e.g. a chat seeded from a summary), drop the
+                        # "Context compacted" banner line — there is no prior
+                        # context to have been compacted, so the banner would
+                        # be meaningless.
+                        notice_round["compactNoticeTitle"] = (
+                            ""
+                            if idx == 0
+                            else str(compact_display.get("title") or "")
+                        )
+                        notice_round["compactNoticeBody"] = str(
+                            compact_display.get("body") or ""
+                        )
+                        # The notice round is display-only: the continuation
+                        # after the compaction must open its own round in the
+                        # SAME turn instead of appending its reply text here.
                         current_round = None
+                        if ts is not None:
+                            prev_ts = ts
                         continue
             except Exception:
                 pass

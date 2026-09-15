@@ -372,18 +372,6 @@ export interface AskMoreInfoRequest {
   chatId: string;
 }
 
-export interface CompactNoticeData {
-  title: string;
-  body: string;
-  text: string;
-  stage?: string;
-  mode?: string;
-  /** Live turn whose user entry immediately precedes this in-progress summary. */
-  anchorTurnId?: number;
-  /** Client time of the first streamed summary notice, used as a timeline slot. */
-  createdAt?: number;
-}
-
 export type ServerEvent =
   | { event: "idle"; data: { state: AppState } }
   | { event: "turn_start"; data: { text: string } }
@@ -459,6 +447,15 @@ export interface TurnRound {
   waitStartedAt: number;
   waitEndedAt: number | null;
   segments: TurnSegment[];
+  /** A context-compaction notice rendered inside this round. A compaction is a
+   *  round of the LOGICAL TURN it happened during (never a standalone turn),
+   *  so the live view and the reloaded history render it the same way. */
+  compactNoticeTitle?: string;
+  /** Persisted compaction summary body shown below the notice banner. */
+  compactNoticeBody?: string;
+  /** ``start`` / ``stream`` while the summary is still arriving; ``done`` (or
+   *  absent, for history rounds) once it is final. */
+  compactNoticeStage?: string;
   /** A request_user_input choice, shown with the same left-side style as history. */
   selection?: string;
   /** Accumulated model reasoning/thinking text for this round. */

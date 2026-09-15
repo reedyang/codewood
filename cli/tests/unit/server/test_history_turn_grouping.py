@@ -351,7 +351,11 @@ class StructuredTurnGroupingTests(unittest.TestCase):
         second_round = turn["rounds"][1]
         self.assertEqual(second_round["text"], "最终答案")
 
-    def test_emits_compaction_turn_from_summary_without_notice(self):
+    def test_compaction_summary_joins_the_turn_it_happened_in(self):
+        # A compaction is a round of the LOGICAL TURN that was running when it
+        # happened, not a turn of its own: it must render inside that turn (so
+        # the transcript has one order, derived from the history, and never has
+        # to sort a mid-task summary by its own timestamp).
         agent = _FakeAgent()
         agent.session_memory_service = _FakeCompactionSessionMemoryService()
         agent.conversation_history = [
@@ -369,11 +373,70 @@ class StructuredTurnGroupingTests(unittest.TestCase):
 
         turns = _build_structured_turns(agent)
 
-        self.assertEqual(len(turns), 2)
-        compact_round = turns[-1]["rounds"][0]
-        self.assertEqual(turns[-1]["userText"], "")
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["userText"], "old question")
+        compact_round = turns[0]["rounds"][-1]
         self.assertEqual(compact_round["compactNoticeTitle"], "Context compacted")
         self.assertEqual(compact_round["compactNoticeBody"], "Compacted summary body")
+
+    def test_compaction_mid_turn_keeps_the_continuation_in_the_same_turn(self):
+        # The persisted order after a mid-turn compaction is [user turn, tool
+        # rounds, internal compact prompt, summary, continuation rounds]. All of
+        # it belongs to ONE logical turn: the summary renders between the tool
+        # rounds it followed and the reply that came after it.
+        agent = _FakeAgent()
+        agent.session_memory_service = _FakeCompactionSessionMemoryService()
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": "run the task",
+                "created_at": "2026-07-08 18:21:31",
+            },
+            {
+                "role": "assistant",
+                "content": _tool_plan("shell", {"command": "ls"}),
+                "created_at": "2026-07-08 18:21:32",
+            },
+            _tool_result("shell", {"command": "ls"}, "a.py"),
+            {
+                "role": "user",
+                "content": "compact_mode=auto\nCONTEXT CHECKPOINT COMPACTION",
+                "_internal": True,
+                "created_at": "2026-07-08 18:21:41",
+            },
+            {
+                "role": "assistant",
+                "content": "SUMMARY",
+                "created_at": "2026-07-08 18:21:45",
+            },
+            {
+                "role": "assistant",
+                "content": "continuation reply",
+                "created_at": "2026-07-08 18:21:52",
+            },
+        ]
+
+        turns = _build_structured_turns(agent)
+
+        self.assertEqual(len(turns), 1)
+        turn = turns[0]
+        self.assertEqual(turn["userText"], "run the task")
+        # The notice is a round of the turn, sitting between the tool round that
+        # preceded the compaction and the continuation reply that followed it.
+        notice_idx = next(
+            i
+            for i, r in enumerate(turn["rounds"])
+            if r["compactNoticeTitle"] or r["compactNoticeBody"]
+        )
+        self.assertGreater(notice_idx, 0)
+        self.assertLess(notice_idx, len(turn["rounds"]) - 1)
+        self.assertEqual(
+            turn["rounds"][notice_idx]["compactNoticeBody"], "Compacted summary body"
+        )
+        # The tool round that preceded the compaction stays in this turn, before
+        # the notice; the reply that followed it stays in this turn, after it.
+        self.assertIn("Ran", turn["rounds"][0]["tools"])
+        self.assertIn("continuation reply", turn["rounds"][-1]["text"])
 
     def test_first_message_compaction_summary_drops_banner_title(self):
         # A chat seeded from a compact summary starts with the summary as its
@@ -400,7 +463,7 @@ class StructuredTurnGroupingTests(unittest.TestCase):
     def test_hides_internal_compact_prompt_user_message(self):
         # The compact prompt is appended to the conversation as an ``_internal``
         # user message; the GUI turn builder must not surface it as a turn
-        # (only the persisted summary turn is rendered).
+        # (only the persisted summary round is rendered).
         agent = _FakeAgent()
         agent.session_memory_service = _FakeCompactionSessionMemoryService()
         agent.conversation_history = [
@@ -424,10 +487,9 @@ class StructuredTurnGroupingTests(unittest.TestCase):
 
         turns = _build_structured_turns(agent)
 
-        self.assertEqual(len(turns), 2)
+        self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["userText"], "old question")
-        self.assertEqual(turns[1]["userText"], "")
-        self.assertEqual(turns[1]["rounds"][0]["compactNoticeTitle"], "Context compacted")
+        self.assertEqual(turns[0]["rounds"][0]["compactNoticeTitle"], "Context compacted")
         joined = "\n".join(str(r.get("text") or "") + str(r.get("tools") or "") for t in turns for r in t["rounds"])
         self.assertNotIn("CONTEXT CHECKPOINT COMPACTION", joined)
         self.assertNotIn("compact_mode=manual", joined)

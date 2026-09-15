@@ -13,7 +13,7 @@ import {
 import appIconUrl from "../assets/app_icon_mark.svg";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
-import type { CompactNoticeData, HistoryRound, HistoryTurn, PlanStep, RetryCountdownState, SubAgentMessage, Turn, TurnRound } from "../api/types";
+import type { HistoryRound, HistoryTurn, PlanStep, RetryCountdownState, SubAgentMessage, Turn, TurnRound } from "../api/types";
 import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
@@ -407,45 +407,34 @@ type TranscriptEntry =
   | { source: "live"; index: number; turn: Turn; timestamp: number | undefined; order: number };
 
 /**
- * A history reload can race a terminal SSE event: the newly persisted turn is
- * then in history while an older settled turn is still kept in the live bucket
- * until its duplicate check can be retried.  Do not let the storage buckets
- * dictate transcript order in that window; use their message times instead.
+ * Merge the persisted history page with the chat's live turns into one ordered
+ * transcript.  History is the structural prefix (the backend groups it, and a
+ * context compaction is a round of the turn it happened in, so it never splits
+ * a turn); a live turn can only follow the last persisted one, because a chat
+ * runs one turn at a time and an in-progress turn is always the newest.  Order
+ * is therefore the storage order, never a timestamp comparison: history and
+ * live turns are recorded with different clocks (server second-resolution
+ * ``created_at`` vs. client ``Date.now()``), and comparing the two reorders
+ * the transcript on a tie.
  */
 export function orderTranscriptEntries(
   historyTurns: HistoryTurn[],
   liveTurns: Turn[],
 ): TranscriptEntry[] {
-  // A persisted compaction summary is its own assistant-only history turn whose
-  // ``created_at`` sits *mid-task* — after the running turn's user message was
-  // recorded. Sorting it by that absolute time would place the formatted
-  // summary BELOW the still-running turn's output on the next history reload
-  // (e.g. after clicking the chat name in the sidebar). Clamp its effective
-  // sort time to the previous regular history turn so it stays right above the
-  // running task, after the already-compacted conversation.
-  let lastRegularHistoryTs: number | undefined = undefined;
-  const entries: TranscriptEntry[] = [
-    ...historyTurns.map((turn, index) => {
-      const parsed = parseHistoryTime(turn.timestamp);
-      const isSummaryTurn =
-        String(turn.userText || "").trim() === "" &&
-        (String(turn.rounds?.[0]?.compactNoticeTitle || "").trim() !== "" ||
-          String(turn.rounds?.[0]?.compactNoticeBody || "").trim() !== "");
-      const timestamp =
-        isSummaryTurn && lastRegularHistoryTs !== undefined
-          ? lastRegularHistoryTs
-          : parsed;
-      if (!isSummaryTurn && parsed !== undefined) {
-        lastRegularHistoryTs = parsed;
-      }
-      return {
-        source: "history" as const,
-        index,
-        turn,
-        timestamp,
-        order: index,
-      };
-    }),
+  // A still-running live turn is usually ALSO persisted (its user message, and
+  // the rounds emitted so far), so it is subsumed from the page before it gets
+  // here (see ``subsumedHistoryStartIndex``) and no longer matches a persisted
+  // turn's index. To keep one live turn from ever sorting BEFORE persisted
+  // turns it cannot precede, anchor every live turn at the end of the history
+  // page: a live turn can only be newer than what is already persisted.
+  return [
+    ...historyTurns.map((turn, index) => ({
+      source: "history" as const,
+      index,
+      turn,
+      timestamp: parseHistoryTime(turn.timestamp),
+      order: index,
+    })),
     ...liveTurns.map((turn, index) => ({
       source: "live" as const,
       index,
@@ -453,28 +442,7 @@ export function orderTranscriptEntries(
       timestamp: turn.startedAt,
       order: historyTurns.length + index,
     })),
-  ];
-  return entries.sort((left, right) => {
-    // Preserve the previous history-then-live order when either legacy record
-    // has no reliable time rather than guessing and causing a fresh reorder.
-    if (left.timestamp === undefined || right.timestamp === undefined) {
-      return left.order - right.order;
-    }
-    return left.timestamp - right.timestamp || left.order - right.order;
-  });
-}
-
-export function compactNoticeInsertionIndex(
-  entries: TranscriptEntry[],
-  createdAt: number | undefined,
-): number {
-  if (!Number.isFinite(createdAt)) {
-    return entries.length;
-  }
-  const nextEntryIndex = entries.findIndex(
-    (entry) => entry.timestamp !== undefined && entry.timestamp > createdAt!,
-  );
-  return nextEntryIndex === -1 ? entries.length : nextEntryIndex;
+  ].sort((left, right) => left.order - right.order);
 }
 
 interface MessageHandlers {
@@ -1195,14 +1163,12 @@ export function ChatView() {
     chatImageUrl,
     interrupt,
     compactContext,
-    compactNotice,
     retryCountdownByChat,
     setExecutionPolicy,
     setModel,
     setReasoning,
     pickFiles,
     forkChat,
-    startChatFromCompactSummary,
     editChat,
     setPlanMode,
     draftMode,
@@ -1550,7 +1516,7 @@ export function ChatView() {
         }
       });
     }
-  }, [turns, now, compactNotice, confirmRequest]);
+  }, [turns, now, confirmRequest]);
 
   // When history turns change: a prepend (older page) preserves the viewport;
   // a replacement (initial load / switch) jumps to the bottom. A routine
@@ -1909,23 +1875,6 @@ export function ChatView() {
     () => orderTranscriptEntries(historyTurns, turns),
     [historyTurns, turns],
   );
-  const standaloneCompactNotice =
-    compactNotice?.anchorTurnId === undefined ? compactNotice : null;
-  const standaloneCompactNoticeIndex = compactNoticeInsertionIndex(
-    orderedTranscriptEntries,
-    standaloneCompactNotice?.createdAt,
-  );
-  const standaloneCompactNoticeNode = standaloneCompactNotice ? (
-    <div className="turn compact-notice-turn" role="alert" aria-live="polite">
-      <CompactNoticeView
-        title={standaloneCompactNotice.title}
-        body={standaloneCompactNotice.body}
-        stage={standaloneCompactNotice.stage}
-        onStartChat={() => startChatFromCompactSummary(standaloneCompactNotice.title, standaloneCompactNotice.body)}
-      />
-    </div>
-  ) : null;
-
   // While an ``request_user_input`` prompt is pending the agent is paused waiting
   // on the user's selection — it isn't actively working — so the action
   // button must revert to "send" (not the interrupt/stop affordance) even
@@ -2246,10 +2195,8 @@ export function ChatView() {
                 {historyLoading ? t("history.loading") : t("history.more")}
               </div>
             )}
-            {orderedTranscriptEntries.map((entry, renderIndex) => (
+            {orderedTranscriptEntries.map((entry) => (
               <Fragment key={`${entry.source}-${entry.index}`}>
-                {standaloneCompactNoticeNode && renderIndex === standaloneCompactNoticeIndex &&
-                  standaloneCompactNoticeNode}
                 {entry.source === "history" ? (
                   <div
                     data-turn-abs={historyStart + entry.index}
@@ -2275,16 +2222,12 @@ export function ChatView() {
                       now={now}
                       negIndex={liveNeg[entry.index]}
                       handlers={messageHandlers}
-                      compactNotice={compactNotice?.anchorTurnId === turn.id ? compactNotice : null}
                       onStreamingThinkingCollapsedChange={handleStreamingThinkingCollapsed}
                     />
                   );
                 })()}
               </Fragment>
             ))}
-            {standaloneCompactNoticeNode &&
-              standaloneCompactNoticeIndex === orderedTranscriptEntries.length &&
-              standaloneCompactNoticeNode}
             {retryCountdown && (
               <div className="retry-countdown" role="status" aria-live="polite">
                 <span className="retry-countdown-icon">⏳</span>
@@ -2574,8 +2517,11 @@ export function HistoryRoundDetailView({
   const compactNoticeTitle = String(round.compactNoticeTitle || "");
   const compactNoticeBody = String(round.compactNoticeBody || "");
   if (compactNoticeTitle.trim().length > 0 || compactNoticeBody.trim().length > 0) {
+    // The compaction is a round of the surrounding turn, not a turn of its own:
+    // render no ``.turn`` wrapper here (the transcript's turn slots are counted
+    // by the minimap and the search anchors).
     return (
-      <div className="turn compact-notice-turn">
+      <div className="compact-notice-turn">
         <CompactNoticeView
           title={compactNoticeTitle}
           body={compactNoticeBody}
@@ -2664,6 +2610,10 @@ export function liveTurnToHistoryTurn(turn: Turn): HistoryTurn {
       tools,
       selection: String(r.selection || ""),
       thinking: String(r.thinkingText || ""),
+      // A compaction notice is a round of this turn; carry it through so a
+      // settled-but-still-live turn renders exactly like the reloaded history.
+      compactNoticeTitle: String(r.compactNoticeTitle || ""),
+      compactNoticeBody: String(r.compactNoticeBody || ""),
     };
   });
   return {
@@ -2699,12 +2649,11 @@ const MINIMAP_LINE_GAP = 6;
 
 // DOM slots that correspond 1:1 with the minimap's memoized turn list:
 // each loaded history turn renders one `.search-turn-anchor` wrapper and each
-// live turn renders one root `.turn` element. `.turn.compact-notice-turn`
-// nodes (standalone notices or the sibling notice of a settled live turn) are
-// extra DOM nodes the memoized list does not count, so they are excluded.
+// live turn renders one root `.turn` element. A compact-notice node now lives
+// inside its turn (it is a round of it), so it is never a root-level slot.
 const MINIMAP_TURN_SELECTOR =
   ':scope > .transcript-inner > .search-turn-anchor, ' +
-  ':scope > .transcript-inner > .turn:not(.compact-notice-turn)';
+  ':scope > .transcript-inner > .turn';
 
 function snapToDevicePixel(value: number) {
   const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
@@ -3091,8 +3040,11 @@ function CompletedTurnView({
       );
     }
     if (compactNoticeTitle.length > 0 || compactNoticeBody.length > 0) {
+      // A compaction is a round of THIS turn, so its summary renders inside the
+      // turn (between the collapsed rounds it followed and the answer that came
+      // after it) instead of as a turn of its own.
       compactNoticeNodes.push(
-        <div className="turn compact-notice-turn" key={`compact-notice-${index}`}>
+        <div className="compact-notice-turn" key={`compact-notice-${index}`}>
           <CompactNoticeView
             title={compactNoticeTitle}
             body={compactNoticeBody}
@@ -3160,7 +3112,6 @@ function CompletedTurnView({
           handlers={handlers}
         />
       )}
-      {compactNoticeNodes}
       {hasDetails ? (
         <>
           <RoundShell
@@ -3173,10 +3124,14 @@ function CompletedTurnView({
             detailsNode={<div className="worked-for-body">{detailNodes}</div>}
             textNode={null}
           />
+          {compactNoticeNodes}
           {finalAnswer}
         </>
       ) : (
-        finalAnswer
+        <>
+          {compactNoticeNodes}
+          {finalAnswer}
+        </>
       )}
       {interruptedNodes}
       {modelErrorNodes}
@@ -3331,6 +3286,13 @@ export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
   };
 
   for (const round of rounds) {
+    // A compaction notice round renders as its own block; it must never be
+    // merged into a neighbouring tool group.
+    if (String(round.compactNoticeTitle || "").trim() || String(round.compactNoticeBody || "").trim()) {
+      flushTools();
+      groups.push({ kind: "other", round });
+      continue;
+    }
     const hasThinking = String(round.thinkingText || "").trim().length > 0;
     const hasSteps = round.segments.some((segment) => segment.kind === "step" && segment.text.trim());
     const hasAnswer = round.segments.some((segment) => segment.kind === "answer" && segment.text.trim());
@@ -3366,6 +3328,12 @@ export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
 function hasVisibleRoundContent(round: TurnRound | undefined): boolean {
   if (!round) {
     return false;
+  }
+  // A compaction notice is visible content, but it is NOT model output: a
+  // pending (still-open) notice round must not be treated as a round that is
+  // waiting for its reply, so the "Working..." indicator stays correct.
+  if (String(round.compactNoticeTitle || "").trim() || String(round.compactNoticeBody || "").trim()) {
+    return true;
   }
   const hasThinking = Boolean(round.thinkingText?.trim().length);
   const hasSegments = round.segments.some((segment) => segment.text.trim().length > 0);
@@ -3934,7 +3902,23 @@ export function LiveRoundView({
   forceSettled?: boolean;
   onStreamingThinkingCollapsedChange?: (collapsed: boolean) => void;
 }) {
-  const { t } = useApp();
+  const { t, startChatFromCompactSummary } = useApp();
+  // A compaction notice is a round of this turn: it renders through the same
+  // component the reloaded history uses, so the live and persisted views agree.
+  const compactTitle = String(round.compactNoticeTitle || "").trim();
+  const compactBody = String(round.compactNoticeBody || "").trim();
+  if (compactTitle || compactBody) {
+    return (
+      <div className="compact-notice-turn">
+        <CompactNoticeView
+          title={compactTitle}
+          body={compactBody}
+          stage={round.compactNoticeStage}
+          onStartChat={() => startChatFromCompactSummary(compactTitle, compactBody)}
+        />
+      </div>
+    );
+  }
   const selection = String(round.selection || "").trim();
   if (selection) {
     return (
@@ -4032,17 +4016,15 @@ export function TurnView({
   now,
   negIndex,
   handlers,
-  compactNotice,
   onStreamingThinkingCollapsedChange,
 }: {
   turn: Turn;
   now: number;
   negIndex: number;
   handlers: MessageHandlers;
-  compactNotice: CompactNoticeData | null;
   onStreamingThinkingCollapsedChange?: (collapsed: boolean) => void;
 }) {
-  const { t, state, steerHoldTurnIds, startChatFromCompactSummary } = useApp();
+  const { t, state, steerHoldTurnIds } = useApp();
   const [settle, setSettle] = useState(false);
   const wasRunningRef = useRef(turn.endedAt === null);
 
@@ -4069,16 +4051,6 @@ export function TurnView({
     const holdOpen = (steerHoldTurnIds ?? []).includes(String(turn.id));
     return (
       <>
-        {compactNotice && (
-          <div className="turn compact-notice-turn" role="alert" aria-live="polite">
-            <CompactNoticeView
-              title={compactNotice.title}
-              body={compactNotice.body}
-              stage={compactNotice.stage}
-              onStartChat={() => startChatFromCompactSummary(compactNotice.title, compactNotice.body)}
-            />
-          </div>
-        )}
         <CompletedTurnView
           turn={liveTurnToHistoryTurn(turn)}
           negIndex={negIndex}
@@ -4107,16 +4079,6 @@ export function TurnView({
           index={negIndex}
           handlers={handlers}
         />
-      )}
-      {compactNotice && (
-        <div className="turn compact-notice-turn" role="alert" aria-live="polite">
-          <CompactNoticeView
-            title={compactNotice.title}
-            body={compactNotice.body}
-            stage={compactNotice.stage}
-            onStartChat={() => startChatFromCompactSummary(compactNotice.title, compactNotice.body)}
-          />
-        </div>
       )}
       {liveGroups.map((group, index) => {
         if (group.kind === "tool") {

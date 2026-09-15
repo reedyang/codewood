@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { liveTurnToHistoryTurn } from "./ChatView";
-import type { Turn } from "../api/types";
+import type { HistoryRound, Turn, TurnRound } from "../api/types";
 
 const startChatFromCompactSummaryMock = vi.hoisted(() => vi.fn());
 
@@ -22,7 +22,7 @@ vi.mock("../state/AppContext", () => ({
   }),
 }));
 
-import { compactNoticeInsertionIndex, groupLiveRounds, HistoryRoundDetailView, LiveRoundView, orderTranscriptEntries, RoundShell, TurnView } from "./ChatView";
+import { groupLiveRounds, HistoryRoundDetailView, LiveRoundView, orderTranscriptEntries, RoundShell, TurnView } from "./ChatView";
 import { StepsView } from "./Steps";
 
 describe("HistoryRoundDetailView", () => {
@@ -492,35 +492,48 @@ describe("liveTurnToHistoryTurn", () => {
   });
 });
 
+const compactRound = (overrides: Partial<TurnRound> = {}): TurnRound => ({
+  id: 1,
+  waitStartedAt: 1000,
+  waitEndedAt: 1100,
+  segments: [],
+  compactNoticeTitle: "Context compacted",
+  compactNoticeBody: "formatted summary",
+  ...overrides,
+});
+
+const answerRound = (overrides: Partial<TurnRound> = {}): TurnRound => ({
+  id: 2,
+  waitStartedAt: 1200,
+  waitEndedAt: 1300,
+  segments: [{ id: 3, kind: "answer", text: "最终回答" }],
+  ...overrides,
+});
+
 describe("TurnView compact notice placement", () => {
-  it("keeps a streamed compact summary after the triggering live user entry", () => {
+  it("renders a streaming compact summary between its user entry and the continuation", () => {
     render(
       <TurnView
         turn={{
           id: 9,
           userText: "最新一条用户消息",
-          rounds: [],
-          startedAt: 1000,
+          rounds: [compactRound({ compactNoticeStage: "stream" }), answerRound()],
+          startedAt: 900,
           endedAt: null,
         }}
-        now={1100}
+        now={1400}
         negIndex={-1}
         handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
-        compactNotice={{
-          title: "Compacting context",
-          body: "streamed compact summary",
-          text: "Compacting context",
-          stage: "stream",
-          anchorTurnId: 9,
-        }}
       />,
     );
 
     const user = screen.getByText("最新一条用户消息");
-    const summary = screen.getByText("streamed compact summary");
-    expect(
-      user.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+    const summary = screen.getByText("formatted summary");
+    const answer = screen.getByText("最终回答");
+    // The summary belongs to this turn and sits between the user entry and the
+    // post-compaction continuation.
+    expect(user.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(summary.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it("keeps a compact summary above a settled turn's output", () => {
@@ -529,28 +542,21 @@ describe("TurnView compact notice placement", () => {
         turn={{
           id: 10,
           userText: "已结束任务的消息",
-          rounds: [],
+          rounds: [compactRound(), answerRound()],
           startedAt: 1000,
           endedAt: 2000,
         }}
         now={3000}
         negIndex={-1}
         handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
-        compactNotice={{
-          title: "Context compacted",
-          body: "formatted summary",
-          text: "Context compacted",
-          stage: "done",
-          anchorTurnId: 10,
-        }}
       />,
     );
 
     const summary = screen.getByText("formatted summary");
     const user = screen.getByText("已结束任务的消息");
-    expect(
-      summary.compareDocumentPosition(user) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+    const answer = screen.getByText("最终回答");
+    expect(user.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(summary.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it("offers a new-chat action on a completed compact summary", () => {
@@ -559,20 +565,13 @@ describe("TurnView compact notice placement", () => {
         turn={{
           id: 11,
           userText: "已完成任务的消息",
-          rounds: [],
+          rounds: [compactRound()],
           startedAt: 1000,
           endedAt: 2000,
         }}
         now={3000}
         negIndex={-1}
         handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
-        compactNotice={{
-          title: "Context compacted",
-          body: "formatted summary",
-          text: "Context compacted",
-          stage: "done",
-          anchorTurnId: 11,
-        }}
       />,
     );
 
@@ -591,20 +590,13 @@ describe("TurnView compact notice placement", () => {
         turn={{
           id: 12,
           userText: "正在流式摘要的消息",
-          rounds: [],
+          rounds: [compactRound({ compactNoticeStage: "stream" })],
           startedAt: 1000,
           endedAt: null,
         }}
         now={1100}
         negIndex={-1}
         handlers={{ onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() }}
-        compactNotice={{
-          title: "Compacting context",
-          body: "streamed compact summary",
-          text: "Compacting context",
-          stage: "stream",
-          anchorTurnId: 12,
-        }}
       />,
     );
 
@@ -615,77 +607,44 @@ describe("TurnView compact notice placement", () => {
 });
 
 describe("orderTranscriptEntries", () => {
-  it("keeps an older settled live turn ahead of a newer persisted history turn", () => {
-    const entries = orderTranscriptEntries(
-      [{
-        userText: "本轮用户消息",
-        timestamp: "2026-08-04 12:01:00",
-        rounds: [],
-      }],
-      [{
-        id: 1,
-        userText: "前一轮用户消息",
-        rounds: [],
-        startedAt: new Date("2026-08-04T12:00:00").getTime(),
-        endedAt: new Date("2026-08-04T12:00:30").getTime(),
-      }],
-    );
-
-    expect(entries.map((entry) => entry.turn.userText)).toEqual([
-      "前一轮用户消息",
-      "本轮用户消息",
-    ]);
-  });
-
-  it("inserts an unanchored compact summary before a user turn sent after it", () => {
-    const entries = orderTranscriptEntries(
-      [{ userText: "旧消息", timestamp: "2026-08-05 12:00:00", rounds: [] }],
-      [{
-        id: 2,
-        userText: "compact 后的新消息",
-        rounds: [],
-        startedAt: new Date("2026-08-05T12:02:00").getTime(),
-        endedAt: null,
-      }],
-    );
-
-    expect(
-      compactNoticeInsertionIndex(entries, new Date("2026-08-05T12:01:00").getTime()),
-    ).toBe(1);
-  });
-
-  it("keeps a persisted compact summary above the running turn it belongs to", () => {
+  it("keeps the persisted history order and appends the live turns after it", () => {
     const entries = orderTranscriptEntries(
       [
-        { userText: "正在执行任务的用户消息", timestamp: "2026-08-05 12:00:00", rounds: [] },
+        { userText: "第一条用户消息", timestamp: "2026-08-04 12:00:00", rounds: [] },
         {
-          userText: "",
-          timestamp: "2026-08-05 12:05:00",
-          rounds: [
-            {
-              waitSeconds: 0,
-              text: "",
-              tools: "",
-              compactNoticeTitle: "Context compacted",
-              compactNoticeBody: "formatted summary",
-            },
-          ],
+          userText: "第二条用户消息",
+          timestamp: "2026-08-04 12:01:00",
+          rounds: [compactRound({ waitEndedAt: 1100 }) as unknown as HistoryRound],
         },
       ],
       [{
-        id: 3,
-        userText: "正在执行任务的用户消息",
+        id: 1,
+        userText: "第三条用户消息",
         rounds: [],
-        startedAt: new Date("2026-08-05T12:00:00").getTime(),
+        startedAt: new Date("2026-08-04T11:59:00").getTime(),
         endedAt: null,
       }],
     );
 
+    // The live turn's client clock must not reorder it ahead of persisted turns
+    // (server second-resolution timestamps vs. client milliseconds).
     expect(entries.map((entry) => entry.turn.userText)).toEqual([
-      "正在执行任务的用户消息",
-      "",
-      "正在执行任务的用户消息",
+      "第一条用户消息",
+      "第二条用户消息",
+      "第三条用户消息",
     ]);
+  });
+
+  it("does not reorder two persisted turns whose timestamps tie", () => {
+    const entries = orderTranscriptEntries(
+      [
+        { userText: "先前", timestamp: "2026-08-05 12:00:00", rounds: [] },
+        { userText: "随后", timestamp: "2026-08-05 12:00:00", rounds: [] },
+      ],
+      [],
+    );
+
+    expect(entries.map((entry) => entry.turn.userText)).toEqual(["先前", "随后"]);
   });
 });
 

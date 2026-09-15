@@ -14,7 +14,6 @@ import type {
   AskMoreInfoRequest,
   ChatSearchHit,
   ChatSummary,
-  CompactNoticeData,
   ConfirmAllowlist,
   CompletionCatalog,
   ConfirmRequest,
@@ -135,6 +134,28 @@ function buildModelChangePatch(
     ? prevModel?.reasoningEffort ?? ""
     : "";
   return { current: selector, reasoningEfforts: efforts, reasoningEffort };
+}
+
+/** A round that carries a context-compaction notice instead of model output.
+ *  Compactions are rounds of the logical turn they happened during, so they
+ *  are recognized the same way as the persisted history rounds. */
+function hasCompactNotice(round: TurnRound | undefined): boolean {
+  return Boolean(
+    String(round?.compactNoticeTitle || "").trim() ||
+      String(round?.compactNoticeBody || "").trim(),
+  );
+}
+
+/** Index of the last round of ``rounds`` that is NOT a compact notice — the
+ *  model round whose ``round_end`` a trailing notice round has superseded.
+ *  Returns -1 when every round before it is a notice too. */
+function findRoundBeforeCompactNotice(rounds: TurnRound[]): number {
+  for (let i = rounds.length - 2; i >= 0; i -= 1) {
+    if (!hasCompactNotice(rounds[i])) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 // Mirror the backend's ``_last_used_chat_model``: the most recently updated
@@ -300,7 +321,6 @@ interface AppContextValue {
    * from the pending list). Persists the new order. */
   reorderPendingInput: (from: number, to: number) => void;
   compactContext: () => Promise<{ ok: boolean; text?: string }>;
-  compactNotice: CompactNoticeData | null;
   /** Live 429/503 retry countdown per chat (workspace-qualified keys). */
   retryCountdownByChat: Record<string, RetryCountdownState | null>;
   answerConfirm: (answer: string) => Promise<void>;
@@ -513,32 +533,15 @@ function systemPrefersDark(): boolean {
   return Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
 }
 
-function buildCompactNoticeData(
-  titleOrText: string,
-  body = "",
-  extras?: Pick<CompactNoticeData, "stage" | "mode">,
-): CompactNoticeData {
-  const title = String(titleOrText || "").trim();
-  const detail = String(body || "").trim();
-  return {
-    title,
-    body: detail,
-    text: detail ? `${title}\n\n${detail}` : title,
-    stage: extras?.stage,
-    mode: extras?.mode,
-  };
-}
-
 // A still-streaming live turn may already be partially persisted in the recent
 // history page.  Normally that archived copy is the page TAIL, but a mid-turn
-// context compaction splits the running turn into [user turn, compaction-
-// summary turn, assistant continuation turn], so the tail becomes an
-// assistant-only turn with no user text and can never match the live turn by
-// user text.  Return the index of the FIRST history turn that is an archived
-// copy of one of the given active live turns (same user text + close send
-// time), or -1 when the page holds no copy of them.  Everything from that
-// index to the end of the page belongs to the same logical turn and must not
-// render next to the live copy.
+// context compaction appends an assistant summary round to the SAME turn (and
+// the task keeps appending further rounds after it), so the page's last turn
+// can carry more rounds than the live copy yet.  Return the index of the FIRST
+// history turn that is an archived copy of one of the given active live turns
+// (same user text + close send time), or -1 when the page holds no copy of
+// them.  Everything from that index to the end of the page belongs to the same
+// logical turn and must not render next to the live copy.
 export function subsumedHistoryStartIndex(
   activeTurns: Turn[],
   pageTurns: HistoryTurn[],
@@ -906,11 +909,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [optimisticModelByChat]);
   const [optimisticChatFocus, setOptimisticChatFocus] =
     useState<OptimisticChatFocus | null>(null);
-  const [compactNoticeState, setCompactNoticeState] = useState<{
-    chatKey: string;
-    notice: CompactNoticeData | null;
-    version: number;
-  }>({ chatKey: "", notice: null, version: 0 });
   // The backend emits one ``compact_notice`` SSE event per streamed summary
   // chunk.  With a very long transcript every body update re-renders the whole
   // message list, so without coalescing the live summary visibly flickers
@@ -1042,10 +1040,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ),
     };
   }, [state, optimisticModel, activeChatId, draftMode, selectedWorkspaceId, workspaceChats]);
-  const compactNotice =
-    activeKey && compactNoticeState.chatKey === activeKey
-      ? compactNoticeState.notice
-      : null;
   // The active chat's live turns / busy flag are what the chat view renders.
   const turns = turnsByChat[activeKey] ?? EMPTY_TURNS;
   const busy = busyByChat[activeKey] ?? false;
@@ -1896,9 +1890,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             segments: [],
           };
           rounds.push(round);
-        } else if (round.waitEndedAt !== null) {
+        } else if (round.waitEndedAt !== null || hasCompactNotice(round)) {
           // If the last round is closed (timer ended), open a fresh round
           // rather than appending new visible output to an earlier model pass.
+          // A compaction notice round counts as closed too: it carries no
+          // model output, and the post-compaction continuation must not render
+          // inside the summary block.
           round = {
             id: nextIdRef.current++,
             waitStartedAt: Date.now(),
@@ -2375,7 +2372,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         !last ||
         last.waitEndedAt !== null ||
         last.segments.length > 0 ||
-        last.thinkingText
+        last.thinkingText ||
+        // A compaction notice is a display-only round: the continuation after
+        // it must open its own round instead of appending its reply into the
+        // notice (which would render the answer inside the summary block).
+        hasCompactNotice(last)
       ) {
         if (last && last.waitEndedAt === null && !isBgRoundActive(last)) {
           rounds[rounds.length - 1] = {
@@ -2399,7 +2400,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Freeze the current round's wait timer (the model has fully responded).
-  const endRound = useCallback((chatId: string, backendElapsedMs?: number) => {
+  // ``options.settleBeforeCompactNotice`` handles the one ordering the backend
+  // cannot express: a compaction that finished AFTER the model round it
+  // reports on. The notice round is then the last one in the turn, and the
+  // finished model round sits right before it.
+  const endRound = useCallback((chatId: string, backendElapsedMs?: number, options?: { settleBeforeCompactNotice?: boolean }) => {
     if (!chatId) {
       return;
     }
@@ -2407,6 +2412,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const list = prev[chatId];
       if (!list || list.length === 0) {
         return prev;
+      }
+      // A context compaction appends a summary round of its own while the
+      // model round that triggered it is still timed as "waiting": the
+      // backend's ``round_end`` then arrives with the NOTICE round as the last
+      // one.  That round carries no timer of its own (the backend stamps it
+      // with 0 seconds), so the finished model round — the last one BEFORE the
+      // notice — is the one to freeze. The notice may sit in an earlier turn
+      // (a compaction that ran before the newest message belonged to the
+      // previous one), so locate the turn that actually owns it.
+      if (options?.settleBeforeCompactNotice) {
+        for (let turnIdx = list.length - 1; turnIdx >= 0; turnIdx -= 1) {
+          const owner = list[turnIdx];
+          if (owner.rounds.length === 0) {
+            continue;
+          }
+          if (!hasCompactNotice(owner.rounds[owner.rounds.length - 1])) {
+            break;
+          }
+          const targetIdx = findRoundBeforeCompactNotice(owner.rounds);
+          if (targetIdx < 0) {
+            continue;
+          }
+          const target = owner.rounds[targetIdx];
+          if (target.waitEndedAt !== null) {
+            return prev;
+          }
+          const settled: TurnRound = {
+            ...target,
+            waitEndedAt: Date.now(),
+            toolCallStreaming: false,
+          };
+          if (typeof backendElapsedMs === "number" && backendElapsedMs > 0) {
+            settled.backendElapsedMs = backendElapsedMs;
+          }
+          const rounds = [...owner.rounds];
+          rounds[targetIdx] = settled;
+          const next = [...list];
+          next[turnIdx] = { ...owner, rounds };
+          return { ...prev, [chatId]: next };
+        }
       }
       const turn = list[list.length - 1];
       if (turn.rounds.length === 0) {
@@ -2436,6 +2481,100 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return { ...prev, [chatId]: next };
     });
   }, []);
+
+  // Apply a context-compaction notice (``compact_notice`` SSE) to the chat's
+  // live turn. A compaction is a round of the LOGICAL TURN it happened during,
+  // so the summary is appended there — between the rounds that ran before it
+  // and the continuation rounds that follow — exactly like the persisted
+  // history groups it. While the same compaction streams, its later chunks
+  // UPDATE the round the ``start`` banner created, so a long summary never
+  // litters the transcript with one round per chunk (the ``done`` notice
+  // replaces that round in place: its localized title differs from the
+  // in-progress banner's, but it is still the same compaction).
+  const applyCompactNotice = useCallback(
+    (
+      chatId: string,
+      notice: { title: string; body: string; stage?: string },
+    ) => {
+      if (!chatId) {
+        return;
+      }
+      const title = String(notice.title || "").trim();
+      const body = String(notice.body || "").trim();
+      if (!title && !body) {
+        return;
+      }
+      setTurnsByChat((prev) => {
+        const list = prev[chatId] ?? [];
+        // The notice belongs to the last turn that has ROUNDS. A compaction can
+        // run before the model has seen the newest message (the auto-compact
+        // that precedes a user message runs after ``turn_start`` opened that
+        // turn, and a manual compaction runs while the chat is idle): it then
+        // sits at the END of the previous turn, exactly where the persisted
+        // history puts it, instead of jumping to the top of the empty turn.
+        let turnIdx = list.length - 1;
+        while (turnIdx >= 0 && list[turnIdx].rounds.length === 0) {
+          turnIdx -= 1;
+        }
+        if (turnIdx < 0) {
+          if (list.length === 0) {
+            // No live turn at all (a compaction on a chat whose transcript is
+            // all persisted): open a settled placeholder for the notice. The
+            // next history reload replaces it with the persisted summary round.
+            const placeholder: Turn = {
+              id: nextIdRef.current++,
+              userText: "",
+              rounds: [],
+              startedAt: Date.now(),
+              endedAt: Date.now(),
+            };
+            turnIdx = 0;
+            list.push(placeholder);
+          } else {
+            turnIdx = list.length - 1;
+          }
+        }
+        let turn = list[turnIdx];
+        const rounds = [...turn.rounds];
+        const last = rounds[rounds.length - 1];
+        // The in-progress notice round of the compaction this notice belongs
+        // to: everything it emits updates that one round until it is done.
+        const inProgressNotice = Boolean(
+          last &&
+            hasCompactNotice(last) &&
+            (last.compactNoticeStage === "start" || last.compactNoticeStage === "stream"),
+        );
+        if (last && inProgressNotice) {
+          // A streamed body chunk updates the existing round in place. An empty
+          // body (the ``start`` banner) must not erase a body already streamed.
+          rounds[rounds.length - 1] = {
+            ...last,
+            compactNoticeTitle: title,
+            compactNoticeBody: body || String(last.compactNoticeBody || ""),
+            compactNoticeStage: notice.stage,
+          };
+        } else {
+          const waitEndedAt = last ? Date.now() : null;
+          if (last && last.waitEndedAt === null) {
+            rounds[rounds.length - 1] = { ...last, waitEndedAt };
+          }
+          rounds.push({
+            id: nextIdRef.current++,
+            waitStartedAt: waitEndedAt ?? Date.now(),
+            waitEndedAt,
+            segments: [],
+            compactNoticeTitle: title,
+            compactNoticeBody: body,
+            compactNoticeStage: notice.stage,
+          });
+        }
+        const next = [...list];
+        next[turnIdx] = { ...turn, rounds };
+        return { ...prev, [chatId]: next };
+      });
+    },
+    [],
+  );
 
   // Settle the running turn(s) an ``idle`` event closes. The backend emits an
   // idle whenever a turn ends; a chat runs turns strictly one at a time, so the
@@ -2976,7 +3115,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const roundMeta = event.data as Record<string, unknown>;
           const backendElapsedS = typeof roundMeta.thinkingElapsedSeconds === "number"
             ? roundMeta.thinkingElapsedSeconds as number : undefined;
-          endRound(eventKey, backendElapsedS != null ? Math.round(backendElapsedS * 1000) : undefined);
+          endRound(
+            eventKey,
+            backendElapsedS != null ? Math.round(backendElapsedS * 1000) : undefined,
+            { settleBeforeCompactNotice: true },
+          );
           // Refresh context-usage ring and cache/output token stats from the
           // round_end payload so they stay live during a multi-round task
           // instead of freezing until the terminal idle event.
@@ -3042,36 +3185,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!eventKey || !title) {
             break;
           }
-          const applyCompactNotice = () => {
-            // History and streaming turns are separate lists.  Anchor this
-            // streamed summary to the live turn that was current on arrival,
-            // so it remains after its user entry instead of above it.
-            const liveTurns = turnsByChatRef.current[eventKey] ?? EMPTY_TURNS;
-            const anchorTurnId = liveTurns.length > 0
-              ? liveTurns[liveTurns.length - 1].id
-              : undefined;
-            setCompactNoticeState((state) => ({
-              chatKey: eventKey,
-              notice: {
-                ...buildCompactNoticeData(title, body, {
-                  stage: String(compactData.stage ?? "") || undefined,
-                  mode: String(compactData.mode ?? "") || undefined,
-                }),
-                // Stream chunks update the body but retain the original anchor.
-                anchorTurnId:
-                  state.chatKey === eventKey && state.notice?.anchorTurnId !== undefined
-                    ? state.notice.anchorTurnId
-                    : anchorTurnId,
-                // The final notice replaces its streamed predecessors. Keep
-                // the original slot so a later user turn cannot jump above it.
-                createdAt:
-                  state.chatKey === eventKey && state.notice?.createdAt !== undefined
-                    ? state.notice.createdAt
-                    : Date.now(),
-              },
-              version: state.version + 1,
-            }));
+          // The notice is a round of the live turn it belongs to, so it needs
+          // no separate rendering path, no anchor and no timeline slot.
+          const notice = {
+            title,
+            body,
+            stage: String(compactData.stage ?? "") || undefined,
           };
+          const applyNotice = () => applyCompactNotice(eventKey, notice);
           if (String(compactData.stage ?? "") === "stream") {
             // One SSE event per model chunk: coalesce into a single render per
             // animation frame so a long transcript doesn't re-render (and
@@ -3082,14 +3203,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
             compactStreamRafRef.current = requestAnimationFrame(() => {
               compactStreamRafRef.current = 0;
-              applyCompactNotice();
+              applyNotice();
             });
           } else {
             if (compactStreamRafRef.current) {
               cancelAnimationFrame(compactStreamRafRef.current);
               compactStreamRafRef.current = 0;
             }
-            applyCompactNotice();
+            applyNotice();
           }
           break;
         }
@@ -3621,7 +3742,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       source?.close();
     };
-  }, [client, connGeneration, appendSegment, startTurn, startRound, endRound, endActiveTurn, setBusyForChat]);
+  }, [client, connGeneration, appendSegment, startTurn, startRound, endRound, endActiveTurn, setBusyForChat, applyCompactNotice]);
 
   // Backend crash recovery: the host restarts the serve process on a fresh
   // port/token and publishes the new endpoint. While disconnected we poll the
@@ -4401,14 +4522,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // from the new-chat idle event and overwrite the correct history).
       const expectedKey = historyChatRef.current;
       setHistoryLoading(true);
-      // When history reloads (e.g. after a turn finishes), the persisted
-      // compact summary is already part of the returned structured turns.
-      // Clear the live compact notice so it doesn't duplicate the history turn.
-      setCompactNoticeState((state) =>
-        state.notice
-          ? { chatKey: "", notice: null, version: state.version + 1 }
-          : state,
-      );
       try {
         const page = await client.getChatHistory(target?.before, INITIAL_HISTORY, cid, wsId);
         void (client as any).logFrontendTrace?.("ws-switch", {
@@ -4459,13 +4572,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
             (tt) => tt.endedAt === null || heldIds.includes(String(tt.id)),
           );
           // Normally the archived copy of the active turn IS the page tail,
-          // but a mid-turn context compaction splits the running turn into
-          // [user turn, compaction-summary turn, assistant continuation turn]
-          // so the tail is an assistant-only turn that can never match the
-          // live turn's user text.  Drop every page turn from the first
-          // archived copy of the live turn onward (the whole logical turn) and
-          // keep the live rendering; the post-settlement recheck below
-          // replaces it with the full history.
+          // but its rounds keep being appended as the task runs (tools, then
+          // the compaction notice, then the continuation), so the whole
+          // logical turn is dropped from the first archived copy of the live
+          // turn onward and the live rendering is kept; the post-settlement
+          // recheck below replaces it with the full history.
           const subsumedFrom = subsumedHistoryStartIndex(activeTurns, page.turns);
           const subsumed = subsumedFrom !== -1;
           const keptTurns = subsumed ? page.turns.slice(0, subsumedFrom) : page.turns;
@@ -4670,11 +4781,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })();
       setFocusOverride(null);
       setOptimisticChatFocus(null);
-      setCompactNoticeState((state) =>
-        state.notice
-          ? { chatKey: "", notice: null, version: state.version + 1 }
-          : state,
-      );
       setDraftMode(false);
       setDraftWorkspaceId("");
       historyChatRef.current = chatKey(targetWsId, chatId);
@@ -4744,11 +4850,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setFocusOverride(null);
       setOptimisticChatFocus(null);
       setActiveSearchHit(null);
-      setCompactNoticeState((state) =>
-        state.notice
-          ? { chatKey: "", notice: null, version: state.version + 1 }
-          : state,
-      );
       pendingFocusWsIdRef.current = workspaceId;
       const _t0 = performance.now();
       const ok = await client.selectChat("", workspaceId);
@@ -4886,11 +4987,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         workspaceId ?? state?.workspace.id ?? draftWorkspaceIdRef.current ?? "";
       setFocusOverride(null);
       setOptimisticChatFocus(null);
-      setCompactNoticeState((state) =>
-        state.notice
-          ? { chatKey: "", notice: null, version: state.version + 1 }
-          : state,
-      );
       setDraftWorkspaceId(wsId);
       setDraftMode(true);
       // Returning to a draft that still holds content (e.g. the user typed a
@@ -5779,11 +5875,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     steerHoldTurnIds: activeKey ? (steerHoldTurnsByChat[activeKey] ?? []) : [],
     reorderPendingInput,
     compactContext: async () => {
-      setCompactNoticeState((state) =>
-        state.notice
-          ? { chatKey: "", notice: null, version: state.version + 1 }
-          : state,
-      );
       const chatId = activeChatIdRef.current;
       const wsId = activeWorkspaceIdRef.current;
       const result = await client.compactContext(chatId, wsId);
@@ -5793,23 +5884,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // already idle), so the frontend transcript would keep showing the
         // pre-compaction messages until the user switches chats or sends the
         // next message.  Reload the history of the chat that was compacted so
-        // the persisted summary turn renders immediately and the compacted-
+        // the persisted summary round renders immediately and the compacted-
         // away messages drop out.  Guarded by ``historyChatRef`` so a chat
-        // switch made while the HTTP request was in flight is untouched;
-        // ``loadChatHistory`` clears the live notice to avoid a duplicate.
+        // switch made while the HTTP request was in flight is untouched.  The
+        // live turns are dropped with it, so the streamed notice rounds a
+        // manual compact emitted are not left behind to duplicate the reloaded
+        // history.
         if (historyChatRef.current === chatKey(wsId, chatId)) {
+          clearTurns(chatId);
           await loadChatHistory({ chatId, wsId });
         }
       } else if (!result.ok && result.text && activeKey) {
-        setCompactNoticeState((state) => ({
-          chatKey: activeKey,
-          notice: buildCompactNoticeData(result.text ?? ""),
-          version: state.version + 1,
-        }));
+        // Compaction failed without producing a summary: surface the reason as
+        // a notice round of the chat's live turn (it is compaction output, and
+        // the transcript already has a place for it).
+        applyCompactNotice(activeKey, { title: String(result.text ?? ""), body: "" });
       }
       return result;
     },
-    compactNotice,
     retryCountdownByChat,
     answerConfirm,
     answerAskMoreInfo,

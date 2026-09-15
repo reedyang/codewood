@@ -4755,3 +4755,103 @@ describe("compactContext history refresh", () => {
     expect(lastCall[2]).toBe("chat-2");
   });
 });
+
+describe("AppContext compact notice rounds", () => {
+  it("appends the streamed compaction summary as a round of the live turn", async () => {
+    apiMock.getChatHistory.mockResolvedValue({ turns: [], start: 0, total: 0 });
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "跑一下任务", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "• Ran shell ls", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+    });
+
+    // The compaction streams in as ``compact_notice`` events, not as assistant
+    // output: it must land in the SAME turn, as its own round.
+    act(() => {
+      apiMock.emit({
+        event: "compact_notice",
+        data: {
+          title: "正在压缩上下文",
+          body: "",
+          text: "正在压缩上下文",
+          stage: "start",
+          mode: "auto",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+    });
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(2);
+      expect(turns[0].rounds[1].compactNoticeTitle).toBe("正在压缩上下文");
+    });
+
+    // Streamed body chunks update that round in place instead of adding one
+    // round (and one transcript block) per chunk.
+    act(() => {
+      apiMock.emit({
+        event: "compact_notice",
+        data: {
+          title: "正在压缩上下文",
+          body: "交接摘要",
+          text: "正在压缩上下文",
+          stage: "stream",
+          mode: "auto",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+    });
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns[0].rounds).toHaveLength(2);
+      expect(turns[0].rounds[1].compactNoticeBody).toBe("交接摘要");
+    });
+
+    // The continuation after the compaction opens its own round; it must not
+    // render inside the notice.
+    act(() => {
+      apiMock.emit({
+        event: "compact_notice",
+        data: {
+          title: "上下文已自动压缩",
+          body: "交接摘要",
+          text: "上下文已自动压缩",
+          stage: "done",
+          mode: "auto",
+          chatId: "chat-1",
+          workspaceId: "ws-1",
+        },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "继续执行", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns[0].rounds).toHaveLength(3);
+      expect(turns[0].rounds[1].compactNoticeTitle).toBe("上下文已自动压缩");
+      expect(turns[0].rounds[2].compactNoticeTitle).toBeUndefined();
+    });
+  });
+});

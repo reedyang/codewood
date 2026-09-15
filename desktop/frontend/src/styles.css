@@ -5026,9 +5026,12 @@ div.skills-group-header:hover {
   text-align: center;
 }
 
+/* A context compaction renders INSIDE its logical turn (it is a round of it),
+   so this block is a turn-round child, centered like the other banners. */
 .compact-notice-turn {
   display: flex;
   justify-content: center;
+  margin: 6px 0;
 }
 
 /* Hover-only action row on compact summaries, styled exactly like the
