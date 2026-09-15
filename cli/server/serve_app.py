@@ -8943,6 +8943,13 @@ class ServeApp:
                 ),
             ),
         )
+        # The model started streaming tool-call information for the round. The
+        # GUI uses this to extend its live "Working…" indicator across the
+        # tool-call window (no tool row exists until the round completes), so
+        # the transcript never sits idle while the payload arrives.
+        self.agent._gui_tool_call_streaming = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "tool_call_streaming", self._route()
+        )
         # Forward 429/503 retry countdown ticks to the GUI so it can render a
         # live countdown line under the last message while the backend backs
         # off (3s first, then 2^n seconds capped at 60s, retrying forever).

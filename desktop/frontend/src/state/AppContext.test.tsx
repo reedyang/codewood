@@ -683,6 +683,55 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("flags the running round while the model streams its tool-call payload", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Investigate", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "thinking",
+        data: { text: "reasoning", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      // No visible text yet — the tool-call payload is still arriving.
+      apiMock.emit({
+        event: "tool_call_streaming",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns[0].rounds[0].toolCallStreaming).toBe(true);
+    });
+
+    // The round ends: the payload is complete, so the flag clears and the
+    // tool row (once it exists) owns the spinner instead.
+    act(() => {
+      apiMock.emit({
+        event: "round_end",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns[0].rounds[0].toolCallStreaming).toBe(false);
+    });
+  });
+
   it("splits visible answer text from subsequent tool output without an explicit round_start", async () => {
     render(
       <AppProvider>

@@ -758,6 +758,15 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
   const startedAt = session.startedAt ? new Date(session.startedAt).getTime() : 0;
   const finalAnswerText = session.output || "";
   const liveStartedAt = startedAt || now;
+  // The sub-agent is still streaming its tool-call payload for the newest
+  // round, so no tool row exists yet: the live "Working..." indicator must
+  // cover that window instead of the view looking idle.
+  const lastSubAgentMessage = mergedMessages[mergedMessages.length - 1];
+  const toolCallStreamingLive = Boolean(
+    isLive &&
+      lastSubAgentMessage?.role === "assistant" &&
+      lastSubAgentMessage._tool_call_streaming,
+  );
   const liveTurnRounds = useMemo<TurnRound[]>(() => {
     return rounds.map((round, index) => {
       const isLast = index === rounds.length - 1;
@@ -914,6 +923,20 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
   const workingElapsed = lastRound
     ? formatElapsed(now - lastRound.waitStartedAt)
     : formatElapsed(now - liveStartedAt);
+  // The newest round carries no tool row yet (its tool-call payload is still
+  // streaming) and, when it streamed reasoning, the Thinking guard suppresses
+  // the placeholder — keep the "Working..." indicator visible over that window.
+  // A just-flagged message has no tool row yet either, so it renders no round
+  // at all; the flag alone drives the indicator in that case.
+  const showToolCallStreamingWorking = Boolean(
+    !showWorking &&
+      isLive &&
+      (toolCallStreamingLive ||
+        (lastRound?.toolCallStreaming === true &&
+          !lastRound.segments.some(
+            (segment) => segment.kind === "step" && segment.text.trim(),
+          ))),
+  );
 
   return (
     <div className="transcript" ref={scrollRef} onContextMenu={copyCtx.onContextMenu}>
@@ -951,7 +974,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
               <MarkdownText text={session.output} />
             </div>
           )}
-          {showWorking && (
+          {(showWorking || showToolCallStreamingWorking) && (
             <div className="activity">
               <div className="activity-header running">
                 <span className="activity-text marquee">
@@ -3430,17 +3453,33 @@ export function getLiveTurnDisplayState(
   const hasToolGroupWorking =
     liveGroupShowsOwnWorking(lastVisibleGroup, hasPendingContinuation);
   const hasInvisibleRunningRound = hasPendingInvisibleRound(turn);
+  // The model is still streaming this round's tool-call information and no
+  // tool row exists yet (no ``step`` segment). The round would otherwise look
+  // idle — it carries no visible content, and when it streamed reasoning the
+  // ``hasActiveThinking`` guard below suppresses the placeholder — so the
+  // "Working..." indicator must cover this window explicitly.
+  const hasToolCallStreamingRound = Boolean(
+    lastRound &&
+    lastRound.waitEndedAt === null &&
+    lastRound.toolCallStreaming &&
+    !roundHasToolSteps(lastRound),
+  );
   const showWorking =
     isRunning &&
-    !hasActiveThinking &&
     !hasRunningToolRound &&
     !hasToolGroupWorking &&
     (
-      turn.rounds.length === 0 ||
-      Boolean(lastRound && lastRound.waitEndedAt !== null) ||
-      liveGroups.length === 0 ||
-      hasInvisibleRunningRound ||
-      shouldShowStreamingWorkingForRound(lastRound)
+      hasToolCallStreamingRound ||
+      (
+        !hasActiveThinking &&
+        (
+          turn.rounds.length === 0 ||
+          Boolean(lastRound && lastRound.waitEndedAt !== null) ||
+          liveGroups.length === 0 ||
+          hasInvisibleRunningRound ||
+          shouldShowStreamingWorkingForRound(lastRound)
+        )
+      )
     );
 
   return {

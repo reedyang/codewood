@@ -2420,7 +2420,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return prev;
       }
       const rounds = [...turn.rounds];
-      const updated: TurnRound = { ...lastRound, waitEndedAt: Date.now() };
+      const updated: TurnRound = {
+        ...lastRound,
+        waitEndedAt: Date.now(),
+        // The round is over, so its tool-call payload has fully arrived: stop
+        // holding the "Working..." indicator open for the tool-call window.
+        toolCallStreaming: false,
+      };
       if (typeof backendElapsedMs === "number" && backendElapsedMs > 0) {
         updated.backendElapsedMs = backendElapsedMs;
       }
@@ -2935,6 +2941,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
           startRound(eventKey);
           break;
         }
+        case "tool_call_streaming": {
+          // The model started emitting this round's tool-call information.
+          // Flag the running round so the live transcript keeps its
+          // "Working..." indicator (the round has no tool row until the model
+          // round completes and its prompt line is printed).
+          if (!eventKey) break;
+          setTurnsByChat((prev) => {
+            const list = prev[eventKey];
+            if (!list || list.length === 0) {
+              return prev;
+            }
+            const turn = list[list.length - 1];
+            const rounds = [...turn.rounds];
+            const lastRound = rounds[rounds.length - 1];
+            if (!lastRound || lastRound.waitEndedAt !== null || lastRound.toolCallStreaming) {
+              return prev;
+            }
+            rounds[rounds.length - 1] = { ...lastRound, toolCallStreaming: true };
+            const next = [...list];
+            next[next.length - 1] = { ...turn, rounds };
+            return { ...prev, [eventKey]: next };
+          });
+          break;
+        }
         case "round_end": {
           // The model round completed: any 429/503 retry countdown is over.
           setRetryCountdownByChat((prev) => {
@@ -3400,6 +3430,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "sub_agent_tool_call_streaming": {
+          // The sub-agent started emitting this round's tool-call information.
+          // Flag the trailing assistant message so the live session view keeps
+          // its "Working..." indicator while the payload is still arriving.
+          const d = event.data as { sessionId: string };
+          const sessionId = String(d.sessionId || "");
+          const current = activeSubAgentSessionRef.current;
+          if (current && current.id === sessionId && current.messages.length > 0) {
+            const msgs = [...current.messages];
+            const lastMsg = msgs[msgs.length - 1] as SubAgentMessage | undefined;
+            if (lastMsg && lastMsg.role === "assistant" && !lastMsg._tool_call_streaming) {
+              msgs[msgs.length - 1] = { ...lastMsg, _tool_call_streaming: true };
+              applySubAgentSession({ ...current, messages: msgs });
+            }
+          }
+          break;
+        }
         case "sub_agent_tool_call": {
           const d = event.data as { sessionId: string; toolName: string; args: Record<string, unknown>; thinkingElapsedSeconds?: number };
           const sessionId = String(d.sessionId || "");
@@ -3419,6 +3466,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             }
             delete subAgentThinkingStartRef.current[sessionId];
+            // The tool call itself has arrived: its payload is complete, so
+            // drop the streaming flag and let the tool row own the spinner.
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              const m = msgs[i] as SubAgentMessage;
+              if (m.role === "assistant" && m._tool_call_streaming) {
+                msgs[i] = { ...m, _tool_call_streaming: false };
+                break;
+              }
+            }
             msgs.push({
               role: "assistant",
               content: "",

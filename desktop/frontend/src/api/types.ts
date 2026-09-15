@@ -389,6 +389,7 @@ export type ServerEvent =
   | { event: "turn_start"; data: { text: string } }
   | { event: "round_start"; data: { chatId?: string } }
   | { event: "round_end"; data: { chatId?: string } }
+  | { event: "tool_call_streaming"; data: { chatId?: string; workspaceId?: string } }
   | { event: "tool_feedback_repaint"; data: { text: string; chatId?: string; workspaceId?: string } }
   | { event: "compact_notice"; data: { title?: string; body?: string; text: string; stage?: string; mode?: string; chatId?: string; workspaceId?: string } }
   | { event: "output"; data: { text: string; chatId?: string; workspaceId?: string; bgTaskId?: string } }
@@ -405,6 +406,7 @@ export type ServerEvent =
   | { event: "sub_agent_thinking"; data: { sessionId: string; text: string } }
   | { event: "sub_agent_thinking_end"; data: { sessionId: string; thinkingElapsedSeconds: number } }
   | { event: "sub_agent_tool_call"; data: { sessionId: string; toolName: string; args: Record<string, unknown>; thinkingElapsedSeconds?: number } }
+  | { event: "sub_agent_tool_call_streaming"; data: { sessionId: string } }
   | { event: "sub_agent_output"; data: { sessionId: string; text: string; toolName: string } }
   | { event: "sub_agent_end"; data: { sessionId: string; output: string; success: boolean; max_rounds_reached?: boolean } }
   | { event: string; data: Record<string, unknown> };
@@ -474,6 +476,11 @@ export interface TurnRound {
    *  spinner running even across round/answer boundaries. */
   bgTaskId?: string;
   bgTaskEnded?: boolean;
+  /** The model has started streaming this round's tool-call information.
+   *  Set on ``tool_call_streaming`` and cleared on ``round_end``; while true
+   *  (and no tool row is visible yet) the live "Working..." indicator keeps
+   *  covering the window in which the tool-call payload is still arriving. */
+  toolCallStreaming?: boolean;
 }
 
 /** One user request and the assistant's streamed response, split into rounds. */
@@ -579,6 +586,11 @@ export interface SubAgentMessage {
    *  persisted by the backend. Used for the "Thought for Xs" label. */
   _thinking_elapsed_seconds?: number;
   tool_calls?: SubAgentToolCall[];
+  /** The sub-agent is still streaming this round's tool-call information.
+   *  Set on ``sub_agent_tool_call_streaming`` and cleared once the tool call
+   *  itself arrives; lets the live session view keep its "Working..."
+   *  indicator over the tool-call window (no tool row exists yet). */
+  _tool_call_streaming?: boolean;
   /** Rendered tool-round display text (main-chat envelope) attached to an
    *  assistant message that issued tool calls. When present it is rendered
    *  through StepsView instead of the raw tool_calls + tool messages. */

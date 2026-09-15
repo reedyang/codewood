@@ -974,6 +974,98 @@ class RuntimeLoopTests(unittest.TestCase):
                 _consume_streaming_ai_response(_Agent(), stream)
         self.assertTrue(stream.closed)
 
+    def test_consume_streaming_ai_response_marks_tool_call_streaming_once(self):
+        class _FakeToolCallStream:
+            def __init__(self):
+                self.thinking_text = ""
+                self.tool_call_streaming = False
+
+            def __iter__(self):
+                # Reasoning first: the GUI's placeholder is suppressed here.
+                self.thinking_text = "reasoning"
+                yield ""
+                self.thinking_text = "reasoning more"
+                yield ""
+                # Tool-call payload starts arriving with no visible text.
+                self.tool_call_streaming = True
+                yield ""
+                yield ""
+
+        class _FakeStdout:
+            def write(self, text):
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            _gui_plain_stream = True
+
+            def __init__(self):
+                self.marks = []
+
+            def _consume_task_interrupt_requested(self):
+                return False
+
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+            def _gui_tool_call_streaming(self):
+                self.marks.append("mark")
+
+        agent = _Agent()
+        with patch("cli.runtime.runtime_loop.sys.stdout", _FakeStdout()):
+            _consume_streaming_ai_response(agent, _FakeToolCallStream())
+
+        # Once per round, even though several chunks carried the latch.
+        self.assertEqual(agent.marks, ["mark"])
+
+    def test_consume_streaming_ai_response_skips_tool_mark_when_not_streaming(self):
+        class _FakeStream:
+            def __init__(self):
+                self.thinking_text = ""
+                self.tool_call_streaming = False
+
+            def __iter__(self):
+                yield "hello"
+
+        class _FakeStdout:
+            def write(self, text):
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            _gui_plain_stream = True
+
+            def __init__(self):
+                self.marks = []
+
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+            def _gui_tool_call_streaming(self):
+                self.marks.append("mark")
+
+        agent = _Agent()
+        with patch("cli.runtime.runtime_loop.sys.stdout", _FakeStdout()):
+            _consume_streaming_ai_response(agent, _FakeStream())
+
+        self.assertEqual(agent.marks, [])
+
     def test_consume_streaming_ai_response_tty_append_mode_avoids_block_clear_redraw(self):
         class _FakeTtyStream:
             def __init__(self):

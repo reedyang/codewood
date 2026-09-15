@@ -1870,6 +1870,9 @@ def _consume_streaming_ai_response(
                 pass
 
     consume_interrupt = getattr(agent, "_consume_task_interrupt_requested", None)
+    # The GUI's "Working..." indicator must span the tool-call window too, so
+    # mark it once per round on the first streamed tool-call payload.
+    _tool_call_streaming_marked = False
     try:
         for chunk in ai_result:
             if callable(consume_interrupt) and bool(consume_interrupt()):
@@ -1878,6 +1881,13 @@ def _consume_streaming_ai_response(
             thinking_now = getattr(ai_result, "thinking_text", "") or ""
             if thinking_now:
                 _render_thinking_tui(thinking_now)
+            # The model has begun streaming tool-call information for this
+            # round. Tell the GUI once so its live "Working..." indicator
+            # covers the window while the tool-call payload is still arriving.
+            if bool(getattr(ai_result, "tool_call_streaming", False)):
+                if not _tool_call_streaming_marked:
+                    _tool_call_streaming_marked = True
+                    _gui_tool_call_streaming_mark(agent)
             piece = str(chunk or "")
             if not piece:
                 continue
@@ -2921,6 +2931,27 @@ def _gui_round_mark(agent: Any, begin: bool) -> None:
     if not bool(getattr(agent, "_gui_plain_stream", False)):
         return
     hook = getattr(agent, "_gui_round_begin" if begin else "_gui_round_end", None)
+    if callable(hook):
+        try:
+            hook()
+        except Exception:
+            pass
+
+
+def _gui_tool_call_streaming_mark(agent: Any) -> None:
+    """Tell the GUI the model has started emitting tool-call information.
+
+    Fires once per model round, on the first streamed tool-call payload. The
+    GUI keeps a live "Working..." indicator over that window: a round whose
+    tool call arrives after reasoning (or nothing visible) would otherwise sit
+    idle while the tool-call JSON streams, since no tool row exists until the
+    model round completes and its prompt line is printed.
+
+    No-op outside GUI plain-stream mode (the TUI renders its own ticker).
+    """
+    if not bool(getattr(agent, "_gui_plain_stream", False)):
+        return
+    hook = getattr(agent, "_gui_tool_call_streaming", None)
     if callable(hook):
         try:
             hook()

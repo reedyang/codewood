@@ -1114,6 +1114,12 @@ def _stream_openai_like_response(
             self.thinking_text: str = ""
             self._thinking_from_content: bool = False
             self._sanitizer: Optional[_StreamingSanitizer] = None
+            # Latched once the stream switches from reasoning/visible text to
+            # tool-call payload. Consumers use it to tell the GUI that the
+            # model is now emitting tool-call information, so its live
+            # "Working..." indicator can cover that window instead of the
+            # transcript sitting dark until the first tool row streams.
+            self.tool_call_streaming: bool = False
             # Natural-arrival record of the stream, in order, as tuples
             # (kind, data, source) with kind in
             # ("reasoning", "content", "thinking", "tool_call") and source in
@@ -1130,6 +1136,7 @@ def _stream_openai_like_response(
             seen_payload_keys: List[str] = []
             tool_call_states: Dict[str, Dict[str, Any]] = {}
             tool_call_order: List[str] = []
+            _tool_args_total = 0
             _reply_events: List[Tuple[str, Any, str]] = []
             _tool_order_len = 0
             sanitizer = _make_stream_sanitizer()
@@ -1179,6 +1186,20 @@ def _stream_openai_like_response(
                     states=tool_call_states,
                     order=tool_call_order,
                 )
+                _tool_args_total_now = sum(
+                    len(str(_state.get("arguments") or ""))
+                    for _state in tool_call_states.values()
+                )
+                # Tool-call payload is streaming this chunk: a new call was
+                # registered or an existing call's arguments grew. Latch it so
+                # the consumer can notify the GUI once per round.
+                _tool_streaming_now = bool(
+                    _tool_args_total_now > _tool_args_total
+                    or len(tool_call_order) > _tool_order_len
+                )
+                _tool_args_total = _tool_args_total_now
+                if _tool_streaming_now and not self.tool_call_streaming:
+                    self.tool_call_streaming = True
                 if len(tool_call_order) > _tool_order_len:
                     for _key in tool_call_order[_tool_order_len:]:
                         _reply_events.append(("tool_call", _key, "native"))
@@ -1215,6 +1236,11 @@ def _stream_openai_like_response(
                 # hidden blocks (e.g. <|channel>thought...<channel|>) but yielded
                 # no visible text, so the consumer can forward it to the GUI.
                 if new_thinking and not delta_yielded:
+                    yield ""
+                # Heartbeat so the consumer observes the tool-call streaming
+                # latch (and notifies the GUI) without waiting for the next
+                # chunk of visible text.
+                if _tool_streaming_now and not delta_yielded:
                     yield ""
             tail = sanitizer.flush()
             # Extract thinking captured by the sanitizer (stripped <think> blocks etc.)
@@ -3043,6 +3069,8 @@ def _call_with_ollama(
                 self.final_message: Optional[Dict[str, Any]] = None
                 self.thinking_text: str = ""
                 self._thinking_from_content: bool = False
+                # See ``_OpenAIStreamResult.tool_call_streaming``.
+                self.tool_call_streaming: bool = False
                 self._response = response
 
             def close(self) -> None:
@@ -3069,6 +3097,8 @@ def _call_with_ollama(
                         current_tool_calls = _normalize_ollama_tool_calls(message.get("tool_calls"))
                         if current_tool_calls:
                             tool_calls = current_tool_calls
+                        if tool_calls and not self.tool_call_streaming:
+                            self.tool_call_streaming = True
                         raw_delta = message.get("content", "") or ""
                         if raw_delta:
                             raw_buffer += raw_delta
@@ -3098,6 +3128,11 @@ def _call_with_ollama(
                         elif thinking_delta:
                             # Thinking arrived but no visible text yet — yield an
                             # empty string so the consumer checks thinking_text.
+                            yield ""
+                        elif tool_calls:
+                            # Tool-call payload arrived with no visible text —
+                            # heartbeat so the consumer observes the streaming
+                            # latch and notifies the GUI's Working indicator.
                             yield ""
                     tail = sanitizer.flush()
                     # Capture final sanitizer thinking

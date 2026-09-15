@@ -439,4 +439,59 @@ describe("getLiveTurnDisplayState", () => {
 
     expect(getLiveTurnDisplayState(turn).showWorking).toBe(false);
   });
+
+  it("shows Working while the round is still streaming its tool-call payload", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          toolCallStreaming: true,
+          segments: [],
+        },
+      ],
+    } as Parameters<typeof getLiveTurnDisplayState>[0];
+
+    expect(getLiveTurnDisplayState(turn).showWorking).toBe(true);
+  });
+
+  it("keeps Working during tool-call streaming even after reasoning streamed", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          thinkingText: "hidden reasoning",
+          toolCallStreaming: true,
+          segments: [],
+        },
+      ],
+    } as Parameters<typeof getLiveTurnDisplayState>[0];
+
+    expect(getLiveTurnDisplayState(turn).showWorking).toBe(true);
+  });
+
+  it("hands Working back to the tool row once the tool call is visible", () => {
+    const turn = {
+      startedAt: 10,
+      endedAt: null,
+      rounds: [
+        {
+          id: 1,
+          waitStartedAt: 20,
+          waitEndedAt: null,
+          toolCallStreaming: true,
+          segments: [{ id: 1, kind: "step", text: "\uE004• Edit x.py\uE005" }],
+        },
+      ],
+    } as Parameters<typeof getLiveTurnDisplayState>[0];
+
+    expect(getLiveTurnDisplayState(turn).showWorking).toBe(false);
+  });
 });

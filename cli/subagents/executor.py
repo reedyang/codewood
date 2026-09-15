@@ -886,6 +886,10 @@ def run_subagent(
                 # marker-free.
                 _sanitizer = _StreamingSanitizer()
                 _emitted_thinking_len = 0
+                # The sub-agent began streaming this round's tool-call payload.
+                # Emitted once so the session viewer keeps its live
+                # "Working..." indicator over the tool-call window too.
+                _tool_streaming_emitted = False
                 try:
                     for _delta in stream_result:
                         if isinstance(_delta, str) and _delta:
@@ -896,6 +900,14 @@ def run_subagent(
                                     "sessionId": session_id,
                                     "text": _clean_delta,
                                 })
+                        if (
+                            not _tool_streaming_emitted
+                            and bool(getattr(stream_result, "tool_call_streaming", False))
+                        ):
+                            _tool_streaming_emitted = True
+                            _emit_subagent_event(agent, "sub_agent_tool_call_streaming", {
+                                "sessionId": session_id,
+                            })
                         # Surface accumulated reasoning (all providers: reasoning
                         # deltas, <|channel>thought markers, ollama thinking) so
                         # the GUI renders a live, collapsible thinking block like
