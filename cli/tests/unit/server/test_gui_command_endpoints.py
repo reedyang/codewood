@@ -148,6 +148,11 @@ class ServeAppGuiCommandEndpointTests(unittest.TestCase):
         agent = _agent()
         app = _app(agent)
         app.interrupt = Mock()
+        # The edit truncates a conversation, so the chat under edit must hold
+        # messages; without an authoritative record it refuses (see below).
+        agent._chat_state["chats"][1]["messages"] = [
+            {"role": "user", "content": "hello", "created_at": "2026-08-01 10:00:00"}
+        ]
 
         with patch(
             "cli.controllers.chat_command_controller.handle_chat_edit_command"
@@ -160,6 +165,56 @@ class ServeAppGuiCommandEndpointTests(unittest.TestCase):
         # An edit leaves the chat id unchanged; the frontend reloads history on
         # the next idle event (not via the active-chat change effect).
         self.assertTrue(any(e == "idle" for e, _ in app.broadcaster.published))
+
+    def test_chat_edit_hydrates_history_from_the_persisted_record(self):
+        # The HTTP thread's session may hold a stale / mis-hydrated
+        # ``conversation_history``. Truncating THAT would keep the wrong prefix
+        # and permanently cut the chat down to it (the reported "editing one
+        # message dropped every earlier message"), so the edit must rebind the
+        # session to the authoritative persisted messages first.
+        agent = _agent()
+        app = _app(agent)
+        app.interrupt = Mock()
+        recorded = [
+            {"role": "user", "content": "first", "created_at": "2026-08-01 10:00:00"},
+            {"role": "user", "content": "second", "created_at": "2026-08-01 10:05:00"},
+        ]
+        agent._chat_state["chats"][1]["messages"] = recorded
+        # Poison the thread's session with the wrong chat's history.
+        agent.conversation_history = [
+            {"role": "user", "content": "other chat", "created_at": "2026-08-02 09:00:00"}
+        ]
+        seen = {}
+
+        def fake_edit(agent_obj, raw_index: str):
+            seen["history"] = list(agent_obj.conversation_history)
+
+        with patch(
+            "cli.controllers.chat_command_controller.handle_chat_edit_command",
+            side_effect=fake_edit,
+        ):
+            ok = app.chat_edit("chat-2", "ws-1", -1)
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            [m["content"] for m in seen["history"]], ["first", "second"]
+        )
+
+    def test_chat_edit_refuses_when_no_authoritative_history_exists(self):
+        # An empty record cannot anchor a truncation: refusing is the only safe
+        # outcome, and no state/idle event may be broadcast as if it succeeded.
+        agent = _agent()
+        app = _app(agent)
+        app.interrupt = Mock()
+
+        with patch(
+            "cli.controllers.chat_command_controller.handle_chat_edit_command"
+        ) as edit:
+            ok = app.chat_edit("chat-2", "ws-1", -1)
+
+        self.assertFalse(ok)
+        edit.assert_not_called()
+        self.assertFalse(any(e == "idle" for e, _ in app.broadcaster.published))
 
     def test_chat_new_from_compact_creates_seeded_chat_with_unique_name(self):
         agent = _agent()

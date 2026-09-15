@@ -5129,6 +5129,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // flag the next idle event to reload the (now shorter) history.
   const editChat = useCallback(
     async (index: number) => {
+      // Snapshot the transcript before the optimistic trim: if the backend
+      // declines the edit (it refuses when it cannot resolve an authoritative
+      // history to truncate), the caller must not be left staring at a
+      // transcript the backend never actually produced.
+      const historyBefore = historyTurns;
       clearTurns();
       trimHistoryTurnsForEdit(index);
       // Editing the last user message deletes that turn (and any pending
@@ -5169,9 +5174,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pendingHistoryReloadRef.current = true;
       // Route the edit to the exact chat (and workspace) being edited so the
       // backend scopes its interrupt to that chat instead of the active one.
-      await client.editChat(activeChatId, activeWorkspaceIdRef.current, index);
+      const ok = await client.editChat(
+        activeChatId,
+        activeWorkspaceIdRef.current,
+        index,
+      );
+      if (!ok) {
+        // The backend did not truncate anything: restore the transcript we
+        // optimistically trimmed and drop the reload flag (it would otherwise
+        // make the next idle event re-fetch a history that never changed).
+        pendingHistoryReloadRef.current = false;
+        setHistoryTurns(historyBefore);
+        setHistoryTotal(historyStart + historyBefore.length);
+      }
     },
-    [client, clearTurns, trimHistoryTurnsForEdit, activeChatId, askMoreInfoByChat, setBusyForChat],
+    [client, clearTurns, trimHistoryTurnsForEdit, activeChatId, askMoreInfoByChat, setBusyForChat, historyTurns, historyStart],
   );
 
   // Create + switch to a workspace from a directory path (dedicated

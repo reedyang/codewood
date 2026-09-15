@@ -3460,12 +3460,40 @@ class ServeApp:
         if not self._switch_to_workspace_safe(wsid or original_wsid):
             return False
         self.interrupt(chat_id=cid, workspace_id=wsid or original_wsid)
+        ok = False
         try:
             with self._session_scope_for_chat(cid, wsid or original_wsid):
                 agent.active_chat_id = cid
                 refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
                 if callable(refresh):
                     refresh(cid)
+                # The edit TRUNCATES the conversation, so it must run against the
+                # authoritative persisted record — never against whatever this
+                # thread's session happens to hold. ``_session_scope_for_chat``
+                # only rebinds the session KEY; an existing SessionState keeps
+                # its own (possibly stale, possibly hydrated for another chat)
+                # ``conversation_history``, and ``_refresh_chat_record_from_disk``
+                # refreshes the chat ENTRY without rehydrating that session. A
+                # truncation computed against such a history keeps the wrong
+                # prefix, and because the edit path persists with
+                # ``allow_empty=True`` a shorter prefix is a perfectly "legal"
+                # evolution of the on-disk record — so the chat would be
+                # permanently cut down to it (the reported "editing one message
+                # dropped every earlier message").
+                authoritative = None
+                try:
+                    chat = agent._find_chat_by_id(cid)
+                    if isinstance(chat, dict):
+                        messages = chat.get("messages")
+                        if isinstance(messages, list) and messages:
+                            authoritative = list(messages)
+                except Exception:
+                    authoritative = None
+                if authoritative is None:
+                    # No authoritative messages available: refuse rather than
+                    # truncate an unknown history.
+                    return False
+                agent.conversation_history = authoritative
                 from ..controllers.chat_command_controller import (
                     handle_chat_edit_command,
                 )
@@ -3474,10 +3502,13 @@ class ServeApp:
                     handle_chat_edit_command(
                         agent, str(index if index is not None else -1)
                     )
+                ok = True
         except Exception:
             return False
         finally:
             self._restore_workspace(original_wsid)
+        if not ok:
+            return False
         # The chat id is unchanged by an edit, so the frontend cannot rely on
         # its active-chat history effect; it flags the next idle event to
         # reload the (now shorter) transcript (see ``editChat`` in AppContext).

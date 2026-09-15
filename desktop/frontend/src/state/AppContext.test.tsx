@@ -1926,6 +1926,53 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("restores the transcript when the backend declines the edit", async () => {
+    // The backend refuses an edit it cannot anchor on an authoritative history
+    // (see ServeApp.chat_edit). The optimistic trim must then be rolled back:
+    // leaving it applied would strand the user on a transcript the chat never
+    // actually had (reported as "editing one message dropped everything else").
+    apiMock.getChatHistory.mockResolvedValue({
+      turns: [
+        { userText: "第一条", rounds: [] },
+        { userText: "第二条", rounds: [] },
+        { userText: "第三条", rounds: [] },
+      ],
+      start: 0,
+      total: 3,
+    });
+    apiMock.editChat.mockResolvedValue(false);
+
+    render(
+      <AppProvider>
+        <EditHistoryProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("edit-history-view").textContent || "{}") as {
+        historyTurns: Array<{ userText?: string }>;
+      };
+      expect(view.historyTurns).toHaveLength(3);
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "edit last" }));
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("edit-history-view").textContent || "{}") as {
+        historyTurns: Array<{ userText?: string }>;
+        historyTotal: number;
+      };
+      expect(view.historyTurns.map((t) => t.userText)).toEqual([
+        "第一条",
+        "第二条",
+        "第三条",
+      ]);
+      expect(view.historyTotal).toBe(3);
+    });
+  });
+
   it("starts a new chat from a compact summary without sending it", async () => {
     render(
       <AppProvider>
