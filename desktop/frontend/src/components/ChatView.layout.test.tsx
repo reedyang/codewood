@@ -439,6 +439,39 @@ describe("TurnView streaming thinking collapse reporting", () => {
     fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
     expect(onStreamingThinkingCollapsedChange).toHaveBeenLastCalledWith(true);
   });
+
+  it("freezes the thought timer and keeps Working while the tool-call payload streams", () => {
+    const handlers = { onCopy: vi.fn(), onFork: vi.fn(), onEdit: vi.fn() };
+    const streamedTurn: Turn = {
+      id: 8,
+      userText: "edit a file",
+      rounds: [
+        {
+          id: 81,
+          waitStartedAt: 1000,
+          waitEndedAt: null,
+          thinkingText: "reasoning finished",
+          thinkingStartedAt: 1000,
+          thinkingEndedAt: 2500,
+          toolCallStreaming: true,
+          segments: [],
+        },
+      ],
+      startedAt: 1000,
+      endedAt: null,
+    };
+
+    render(
+      <TurnView turn={streamedTurn} now={3000} negIndex={-1} handlers={handlers} />,
+    );
+
+    // Reasoning is over: the panel settles on the elapsed form instead of the
+    // live "Thinking (…)" label.
+    expect(screen.queryByRole("button", { name: /Thinking \(/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Thought for/ })).toBeTruthy();
+    // The "Working…" indicator still covers the wait for the tool row.
+    expect(screen.getAllByText(/Working/).length).toBeGreaterThan(0);
+  });
 });
 
 describe("liveTurnToHistoryTurn", () => {

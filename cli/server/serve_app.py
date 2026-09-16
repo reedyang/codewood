@@ -9237,39 +9237,50 @@ class ServeApp:
             ctx = self._ws_persist_ctx.get(wsid)
             if ctx is not None:
                 return ctx
-            # Prefer the dir captured at runtime spawn (always correct); fall
-            # back to deriving from the workspace registry.
-            cfg: Optional[Path] = None
-            hint = str(config_dir_hint or "").strip()
-            if hint:
-                cfg = Path(hint)
-            if cfg is None:
-                cfg = self._workspace_config_dir_for(wsid)
-            if cfg is None:
-                return None
-            try:
-                snapshot = self.agent._chat_state_manager.load_chat_state_snapshot(
-                    cfg,
-                    expected_workspace_id=wsid,
-                    # Index-only placeholders: this context exists to let a
-                    # background loop persist ITS OWN workspace without touching
-                    # the focused globals. Reading every record (dozens, some
-                    # multi-MB) under _ws_persist_lock stalled select_chat for
-                    # ~0.3-0.8s; save_chat_state hydrates placeholders from
-                    # disk on demand before writing.
-                    lazy_records=True,
-                )
-            except Exception:
-                return None
-            ctx = {
-                "workspace_id": wsid,
-                "config_dir": cfg,
-                "chats_root": get_app_global_config_dir() / "chats",
-                "chat_state": snapshot,
-                # RLock: sync_active_chat_messages holds it then re-enters via
-                # save_chat_state (mirrors the agent's reentrant chat lock).
-                "lock": threading.RLock(),
-            }
+        # Build the context OUTSIDE the lock: resolving the workspace dir and
+        # reading the chat index touch the disk, and holding this process-wide
+        # lock across them stalls every other workspace-context lookup (and the
+        # focus switch that clears the cache). Duplicate builds are harmless —
+        # the first published entry wins below.
+        #
+        # Prefer the dir captured at runtime spawn (always correct); fall back
+        # to deriving from the workspace registry.
+        cfg: Optional[Path] = None
+        hint = str(config_dir_hint or "").strip()
+        if hint:
+            cfg = Path(hint)
+        if cfg is None:
+            cfg = self._workspace_config_dir_for(wsid)
+        if cfg is None:
+            return None
+        try:
+            snapshot = self.agent._chat_state_manager.load_chat_state_snapshot(
+                cfg,
+                expected_workspace_id=wsid,
+                # Index-only placeholders: this context exists to let a
+                # background loop persist ITS OWN workspace without touching
+                # the focused globals. Reading every record (dozens, some
+                # multi-MB) stalled select_chat for ~0.3-0.8s; save_chat_state
+                # hydrates placeholders from disk on demand before writing.
+                lazy_records=True,
+            )
+        except Exception:
+            return None
+        ctx = {
+            "workspace_id": wsid,
+            "config_dir": cfg,
+            "chats_root": get_app_global_config_dir() / "chats",
+            "chat_state": snapshot,
+            # RLock: sync_active_chat_messages holds it then re-enters via
+            # save_chat_state (mirrors the agent's reentrant chat lock).
+            "lock": threading.RLock(),
+        }
+        with self._ws_persist_lock:
+            # Another thread may have published a context while we were
+            # reading; keep the published one so its lock stays authoritative.
+            existing = self._ws_persist_ctx.get(wsid)
+            if existing is not None:
+                return existing
             self._ws_persist_ctx[wsid] = ctx
             return ctx
 

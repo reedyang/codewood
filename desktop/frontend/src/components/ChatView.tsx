@@ -746,7 +746,14 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
       const hasThinking = thinkingText.trim().length > 0;
       const hasTools = round.tools.trim().length > 0;
       const hasAnswer = round.text.trim().length > 0;
-      const thinkingStillRunning = Boolean(isLive && isLast && hasThinking && !hasTools && !hasAnswer);
+      // A trailing tool-call-streaming flag means the model already stopped
+      // reasoning and is now emitting the call payload: freeze the thought
+      // timer from that moment so the panel shows "Thought for …" while the
+      // "Working…" indicator covers the wait for the tool row.
+      const thinkingStillRunning = Boolean(
+        isLive && isLast && hasThinking && !hasTools && !hasAnswer &&
+        !lastSubAgentMessage?._tool_call_streaming,
+      );
       const segments: TurnRound["segments"] = [];
       if (hasTools) {
         segments.push({ id: index * 2 + 1, kind: "step", text: round.tools });
@@ -765,7 +772,7 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
         backendElapsedMs: backendElapsedMs > 0 ? backendElapsedMs : undefined,
       };
     });
-  }, [rounds, isLive, liveStartedAt, now]);
+  }, [rounds, isLive, liveStartedAt, now, lastSubAgentMessage?._tool_call_streaming]);
 
   const messageHandlers: MessageHandlers = {
     onCopy: (text: string) => {

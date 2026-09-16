@@ -3097,7 +3097,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
             if (!lastRound || lastRound.waitEndedAt !== null || lastRound.toolCallStreaming) {
               return prev;
             }
-            rounds[rounds.length - 1] = { ...lastRound, toolCallStreaming: true };
+            // The tool-call payload only starts once the model has finished
+            // reasoning, so freeze the Thinking timer here: it must flip from
+            // the live "Thinking (…)" label to the settled "Thought for …"
+            // one while the "Working…" indicator keeps covering the wait for
+            // the tool row.
+            rounds[rounds.length - 1] = {
+              ...lastRound,
+              toolCallStreaming: true,
+              thinkingEndedAt:
+                lastRound.thinkingText && !lastRound.thinkingEndedAt
+                  ? Date.now()
+                  : lastRound.thinkingEndedAt,
+            };
             const next = [...list];
             next[next.length - 1] = { ...turn, rounds };
             return { ...prev, [eventKey]: next };

@@ -732,6 +732,42 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("freezes the round's thinking timer while the tool-call payload streams", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Investigate", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "thinking",
+        data: { text: "reasoning", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "tool_call_streaming",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    // The model stopped reasoning when the payload started arriving, so the
+    // timer freezes now instead of ticking until the round ends.
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns[0].rounds[0].thinkingEndedAt).toBeTypeOf("number");
+    });
+  });
+
   it("splits visible answer text from subsequent tool output without an explicit round_start", async () => {
     render(
       <AppProvider>
