@@ -127,6 +127,7 @@ class BackgroundTaskRecord:
         "kind",
         "cancel",
         "session_marker",
+        "kill_requested",
     )
 
     def __init__(
@@ -171,6 +172,10 @@ class BackgroundTaskRecord:
         self.output_path = ""
         self.notification_pending = False
         self.notification_injected = False
+        # Set when ``kill`` is honoured before the worker published its process
+        # object: the worker re-applies the kill as soon as it spawns, so the
+        # request is never silently dropped.
+        self.kill_requested = False
         self.finalized = False
         self._finalize_lock = threading.Lock()
         self.kind = str(kind or "shell")
@@ -286,6 +291,16 @@ class BackgroundTaskManager:
                 "full_output_path": record.output_path,
             }
         agent = record.agent
+        # Record the kill intent BEFORE resolving the process. The worker may
+        # still be spawning (``process_ref`` is only filled once ``Popen``
+        # returns), and a kill landing in that window would otherwise find no
+        # process to mark/terminate and be dropped on the floor — leaving the
+        # task "running" forever, because a background task never hits an idle
+        # or total timeout. The worker re-applies the kill at spawn time.
+        record.kill_requested = True
+        worker_state = getattr(record, "worker_state", None)
+        if isinstance(worker_state, dict):
+            worker_state["kill_requested"] = True
         # Non-process tasks (e.g. background sub-agents) expose a ``cancel``
         # callback instead of a process tree: ask the worker to stop at its
         # next checkpoint. The watcher finalizes the record as usual.

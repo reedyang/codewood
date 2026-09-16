@@ -195,6 +195,66 @@ class ShellBackgroundTests(unittest.TestCase):
         pending = _wait_for_notification(mgr, "killed")
         self.assertTrue(any(p.get("status") == "killed" for p in pending))
 
+    def test_kill_before_worker_publishes_process_still_kills(self):
+        """A kill landing in the spawn window must not be dropped.
+
+        ``process_ref`` is only filled once ``Popen`` returns, and a background
+        task never hits an idle/total timeout — so a kill that found ``None``
+        there used to be silently discarded and the task reported "killed"
+        while running forever. The request is now latched and re-applied by the
+        worker as soon as the process exists.
+        """
+        popen = _FakeBackgroundPopen()
+        agent = _DummyAgent()
+        agent._next_tool_call_id = lambda: "call_bg_1"
+        agent._bg_aborted = False
+        spawn_gate = threading.Event()
+
+        def _mark_process_aborted(process):
+            agent._bg_aborted = True
+
+        def _terminate_single_process_tree(process):
+            if hasattr(process, "kill"):
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            return True
+
+        def _consume_process_aborted(process):
+            if getattr(agent, "_bg_aborted", False):
+                agent._bg_aborted = False
+                return True
+            return False
+
+        agent._mark_process_aborted = _mark_process_aborted
+        agent._terminate_single_process_tree = _terminate_single_process_tree
+        agent._consume_process_aborted = _consume_process_aborted
+        agent._unregister_interruptible_process = lambda process: None
+
+        def _gated_popen(*args, **kwargs):
+            # Hold the worker inside Popen() so ``process_ref`` is still empty
+            # when the kill arrives — the exact race being regression-tested.
+            spawn_gate.wait(5.0)
+            return popen
+
+        with patch("subprocess.Popen", side_effect=_gated_popen), patch(
+            "cli.tools.shell._git_repo_root", return_value=None), patch(
+            "cli.tools.shell._snapshot_workspace_file_list", return_value={},
+        ):
+            result = action_shell_command(
+                agent, "echo hi", confirmed=False, interactive=False,
+                input_data=None, background=True,
+            )
+            mgr = agent._background_task_manager
+            self.assertTrue(result.get("background"))
+            kill_res = mgr.kill("call_bg_1")
+            self.assertTrue(kill_res.get("success"))
+            spawn_gate.set()
+            st = _wait_for_status(mgr, "call_bg_1", "killed")
+        self.assertEqual(st.get("status"), "killed")
+        self.assertTrue(popen.killed)
+
     def test_background_task_kill_tool_unknown_id(self):
         agent = _DummyAgent()
         res = BackgroundTaskKillTool().execute(

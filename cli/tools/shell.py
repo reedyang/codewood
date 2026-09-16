@@ -2657,6 +2657,27 @@ def action_shell_command(
                         reg_proc = getattr(agent, "_register_interruptible_process", None)
                         if callable(reg_proc):
                             reg_proc(process)
+                        # A ``background_task_kill`` may have landed while this
+                        # worker was still spawning (``process_ref`` was empty
+                        # then, so the request found nothing to terminate and
+                        # only latched its intent).  Honour it now: mark the
+                        # process aborted and kill the tree, so the round unwinds
+                        # as killed instead of running to completion.
+                        if background_mode and worker_state.get("kill_requested"):
+                            _mark_kill = getattr(agent, "_mark_process_aborted", None)
+                            if callable(_mark_kill):
+                                try:
+                                    _mark_kill(process)
+                                except Exception:
+                                    pass
+                            _kill_tree = getattr(
+                                agent, "_terminate_single_process_tree", None
+                            )
+                            if callable(_kill_tree):
+                                try:
+                                    _kill_tree(process)
+                                except Exception:
+                                    pass
                         _abort_event_api = getattr(agent, "_register_process_abort_event", None)
                         if callable(_abort_event_api):
                             try:
