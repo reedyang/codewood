@@ -82,6 +82,12 @@ mid-download and starting it again later resumes instead of restarting. Only
 the newest release's package is kept — a stale package (and its partial file)
 is deleted before a new download begins.
 
+Every download is verified against the release's published **SHA-256**
+(GitHub's asset `digest`): the assembled file is hashed before it becomes
+installable, and a mismatch — or a cached package that no longer matches — is
+discarded and re-fetched. A downloaded package also never reaches the Update
+button unless its byte count matches the release exactly.
+
 The download runs silently — **no UI appears until it completes**. If the
 origin download fails (GitHub's asset CDN is unreachable from some networks),
 the file is retried through `https://gh-proxy.com/<url>`; set

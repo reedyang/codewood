@@ -7,6 +7,7 @@ download goes to a temporary config directory, so no network or GUI is needed.
 """
 
 import importlib.util
+import hashlib
 import json
 import os
 import sys
@@ -108,6 +109,28 @@ class VersionTests(unittest.TestCase):
         self.assertFalse(updater_mod.is_newer("v0.0.9", "0.1.0"))
         # An unresolvable local version must never fake an update.
         self.assertFalse(updater_mod.is_newer("v9.9.9", ""))
+
+    def test_parse_digest_accepts_only_sha256_hex(self):
+        valid = "a" * 64
+        self.assertEqual(updater_mod.parse_digest(f"sha256:{valid}"), valid)
+        self.assertEqual(updater_mod.parse_digest(f"SHA256:{valid.upper()}"), valid)
+        # Anything we cannot compare meaningfully must disable verification
+        # rather than be treated as a hash.
+        self.assertIsNone(updater_mod.parse_digest(""))
+        self.assertIsNone(updater_mod.parse_digest(None))
+        self.assertIsNone(updater_mod.parse_digest("sha512:" + "a" * 128))
+        self.assertIsNone(updater_mod.parse_digest("sha256:tooshort"))
+        self.assertIsNone(updater_mod.parse_digest("sha256:" + "z" * 64))
+        self.assertIsNone(updater_mod.parse_digest(valid))
+
+    def test_sha256_file_matches_hashlib(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "payload.bin"
+            payload = b"code wood" * 1000
+            path.write_bytes(payload)
+            self.assertEqual(
+                updater_mod.sha256_file(path), hashlib.sha256(payload).hexdigest()
+            )
 
 
 class ProxyTests(unittest.TestCase):
@@ -298,6 +321,77 @@ class DownloadTests(unittest.TestCase):
         state = self.manager.check_once()
         self.assertEqual(state["status"], updater_mod.STATUS_FAILED)
         self.assertEqual(len(session.requests), 1)
+
+    def _digest_of_payload(self, payload: bytes) -> str:
+        return hashlib.sha256(payload).hexdigest()
+
+    def test_accepts_package_matching_published_sha256(self):
+        payload = b"abcdef"
+        session = _FakeSession(
+            [_FakeResponse(200, {"Content-Length": "6"}, [payload])]
+        )
+        release = _release("v0.2.0", self.asset)
+        release["assets"][0]["digest"] = f"sha256:{self._digest_of_payload(payload)}"
+        patches = self._patch_release([release], session)
+        for ctx in patches:
+            ctx.start()
+            self.addCleanup(ctx.stop)
+
+        state = self.manager.check_once()
+        self.assertEqual(state["status"], updater_mod.STATUS_READY)
+        self.assertEqual((self.dir / self.asset).read_bytes(), payload)
+
+    def test_rejects_package_failing_sha256(self):
+        """Right size but wrong bytes must never become installable."""
+        payload = b"abcdef"
+        session = _FakeSession(
+            [_FakeResponse(200, {"Content-Length": "6"}, [payload])]
+        )
+        release = _release("v0.2.0", self.asset)
+        release["assets"][0]["digest"] = "sha256:" + "0" * 64
+        patches = self._patch_release([release], session)
+        for ctx in patches:
+            ctx.start()
+            self.addCleanup(ctx.stop)
+
+        state = self.manager.check_once()
+        self.assertEqual(state["status"], updater_mod.STATUS_FAILED)
+        self.assertIn("SHA-256", state["error"])
+        # Nothing installable is left behind, and the bad data is not kept.
+        self.assertFalse((self.dir / self.asset).exists())
+        self.assertFalse((self.dir / f"{self.asset}.part").exists())
+        self.assertIsNone(self.manager.installer_path())
+
+    def test_missing_digest_still_downloads(self):
+        """Releases without a digest (older uploads) must keep working."""
+        session = _FakeSession(
+            [_FakeResponse(200, {"Content-Length": "6"}, [b"abcdef"])]
+        )
+        patches = self._patch_release([_release("v0.2.0", self.asset)], session)
+        for ctx in patches:
+            ctx.start()
+            self.addCleanup(ctx.stop)
+
+        self.assertEqual(self.manager.check_once()["status"], updater_mod.STATUS_READY)
+
+    def test_cached_package_failing_sha256_is_refetched(self):
+        """A cached file that no longer matches must not be trusted."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / self.asset).write_bytes(b"corrupt")
+        payload = b"abcdef"
+        session = _FakeSession(
+            [_FakeResponse(200, {"Content-Length": "6"}, [payload])]
+        )
+        release = _release("v0.2.0", self.asset)
+        release["assets"][0]["digest"] = f"sha256:{self._digest_of_payload(payload)}"
+        patches = self._patch_release([release], session)
+        for ctx in patches:
+            ctx.start()
+            self.addCleanup(ctx.stop)
+
+        state = self.manager.check_once()
+        self.assertEqual(state["status"], updater_mod.STATUS_READY)
+        self.assertEqual((self.dir / self.asset).read_bytes(), payload)
 
     def test_resumes_partial_download(self):
         self.dir.mkdir(parents=True, exist_ok=True)

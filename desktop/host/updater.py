@@ -31,6 +31,7 @@ Set ``CODEWOOD_UPDATE=0`` to disable the whole feature.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -222,6 +223,34 @@ def proxied_url(url: str) -> str:
 
 
 _CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.IGNORECASE)
+
+
+def parse_digest(value: Any) -> Optional[str]:
+    """Return the lowercase hex SHA-256 from a GitHub asset ``digest`` field.
+
+    GitHub reports ``"sha256:<hex>"``. Any other algorithm, or a malformed
+    value, returns None so the caller *skips* verification instead of
+    comparing against something meaningless.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    algorithm, _, hexdigest = raw.partition(":")
+    if algorithm.strip().lower() != "sha256":
+        return None
+    digest = hexdigest.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None
+    return digest
+
+
+def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Streaming SHA-256 of *path* (the payloads are ~150 MB)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def parse_content_range(value: Any) -> Optional[Tuple[int, int, int]]:
@@ -591,12 +620,20 @@ class UpdateManager:
             name = str(asset.get("name") or "")
             url = str(asset.get("browser_download_url") or "")
             size = int(asset.get("size") or 0)
+            digest = parse_digest(asset.get("digest")) or ""
             self._prepare_cache(name, version, url)
             target = self._dir / name
             if target.exists() and (not size or target.stat().st_size == size):
-                log(f"{version} already downloaded ({name})")
-                self._set_ready(version, name, target)
-                return self.state()
+                if not digest or self._matches_digest(target, digest):
+                    log(f"{version} already downloaded ({name})")
+                    self._set_ready(version, name, target)
+                    return self.state()
+                # A cached package that fails its checksum is not reusable.
+                log(f"cached {name} failed its SHA-256 check; downloading again")
+                try:
+                    target.unlink()
+                except Exception:
+                    pass
 
             log(f"downloading {version} ({name}) -> {target}")
             self._update(
@@ -607,7 +644,7 @@ class UpdateManager:
                 received=0,
                 total=size,
             )
-            if not self._download(url, target, size):
+            if not self._download(url, target, size, digest):
                 log(f"download of {name} did not complete; will resume next time")
                 self._update(status=STATUS_FAILED)
                 return self.state()
@@ -665,6 +702,14 @@ class UpdateManager:
                 pass
         self._write_meta({"version": version, "asset": asset_name, "url": url})
 
+    @staticmethod
+    def _matches_digest(path: Path, digest: str) -> bool:
+        """True when *path* hashes to *digest* (False on any read error)."""
+        try:
+            return sha256_file(path) == digest
+        except Exception:
+            return False
+
     def _read_meta(self) -> Dict[str, Any]:
         try:
             data = json.loads((self._dir / _META_FILENAME).read_text(encoding="utf-8"))
@@ -695,7 +740,7 @@ class UpdateManager:
             candidates = [previous] + [c for c in candidates if c != previous]
         return candidates
 
-    def _download(self, url: str, target: Path, size: int) -> bool:
+    def _download(self, url: str, target: Path, size: int, digest: str = "") -> bool:
         """Download *target*, falling back to the mirror when the origin fails.
 
         The origin URL is tried first; if that transfer fails — unreachable
@@ -711,7 +756,7 @@ class UpdateManager:
             if self._stop.is_set():
                 # Quitting: keep the partial file so the next launch resumes.
                 return False
-            outcome = self._transfer(candidate, target, size)
+            outcome = self._transfer(candidate, target, size, digest)
             if outcome == _TRANSFER_DONE:
                 meta = self._read_meta()
                 meta["source"] = candidate
@@ -725,7 +770,7 @@ class UpdateManager:
                 log(f"download failed; retrying via mirror {candidates[index + 1]}")
         return False
 
-    def _transfer(self, url: str, target: Path, size: int) -> str:
+    def _transfer(self, url: str, target: Path, size: int, digest: str = "") -> str:
         """Copy one complete transfer from *url* into ``<target>.part``.
 
         Returns one of ``_TRANSFER_DONE`` / ``_TRANSFER_RETRY`` /
@@ -733,6 +778,11 @@ class UpdateManager:
         place so the next attempt — or the next launch — continues from its
         current length; on a corrupt one it is deleted so the offset can never
         be trusted again.
+
+        When *digest* is a SHA-256, the assembled file is hashed before the
+        atomic rename; a mismatch discards the file and reports a fatal error,
+        because a wrong payload is not something a retry through another mirror
+        can fix without the same corrupt data.
         """
         part = target.with_name(f"{target.name}.part")
         meta = self._read_meta()
@@ -856,6 +906,30 @@ class UpdateManager:
                 return _TRANSFER_FATAL
             # Truncated transfer: keep the partial file for a later resume.
             return _TRANSFER_RETRY
+
+        if digest:
+            # Verify the assembled payload before it becomes the installable
+            # package. A size check alone cannot catch a mirror that served the
+            # right number of wrong bytes.
+            try:
+                actual_digest = sha256_file(part)
+            except Exception as exc:
+                self._update(error=str(exc))
+                return _TRANSFER_RETRY
+            if actual_digest != digest:
+                log(
+                    f"checksum mismatch for {target.name} "
+                    f"(expected {digest}, got {actual_digest}); discarding"
+                )
+                try:
+                    part.unlink()
+                except Exception:
+                    pass
+                self._update(
+                    status=STATUS_FAILED, error="downloaded package failed its SHA-256 check"
+                )
+                return _TRANSFER_FATAL
+
         try:
             part.replace(target)
         except Exception as exc:
