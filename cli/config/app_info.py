@@ -9,7 +9,7 @@ from typing import Dict
 
 APP_INFO: Dict[str, str] = {
     "name": "Code Wood",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "author": "Reed Yang",
     "description": "Code Wood AI Agent",
 }
