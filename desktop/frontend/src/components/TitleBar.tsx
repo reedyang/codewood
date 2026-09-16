@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { GlobalChatSearch } from "./GlobalChatSearch";
 import { Icon } from "./Icon";
+import { UpdateButton } from "./UpdateButton";
 
 interface HostWindowApi {
   minimize?: () => void;
@@ -272,6 +273,10 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
         }}
         onDoubleClick={() => void toggleMaximize()}
       />
+
+      {/* Sits immediately before the window controls so on Windows/Linux it
+          lands just left of Minimize, and on macOS at the far right. */}
+      <UpdateButton />
 
       {native && !isMac && (
         <div className="win-controls">

@@ -142,6 +142,8 @@ export const en: Dict = {
   "win.maximize": "Maximize",
   "win.restore": "Restore Down",
   "win.close": "Close",
+  "update.button": "Update",
+  "update.ready": "Update to {version} — click to install and restart",
 
   "about.title": "About Code Wood",
   "about.version": "Version",

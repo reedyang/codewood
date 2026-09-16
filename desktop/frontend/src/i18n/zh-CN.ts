@@ -142,6 +142,8 @@ export const zhCN: Dict = {
   "win.maximize": "最大化",
   "win.restore": "向下还原",
   "win.close": "关闭",
+  "update.button": "更新",
+  "update.ready": "更新到 {version} — 点击安装并重启",
 
   "about.title": "关于 Code Wood",
   "about.version": "版本",

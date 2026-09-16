@@ -701,6 +701,34 @@ mark.search-term {
   }
 }
 
+/* Auto-update button (title bar, left of the window controls). It only
+   appears once the new package has finished downloading. */
+.update-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: calc(var(--titlebar-height) - 12px);
+  margin-right: 6px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.update-btn:hover {
+  filter: brightness(1.08);
+}
+
+.update-btn .icon {
+  flex: none;
+}
+
 /* Window controls */
 .win-controls {
   display: flex;

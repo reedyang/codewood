@@ -35,6 +35,32 @@ codewood app
 - GUI 进程启动一个后端进程，并通过 `127.0.0.1` 使用每次启动生成的 bearer token 与之通信。
 - 后端的 `serve` 模式复用常规 agent 循环，因此每个 GUI 操作都对应终端中的同一套逻辑。
 
+## 自动更新
+
+GUI 在启动时以及随后每小时检查一次
+[github.com/reedyang/codewood/releases](https://github.com/reedyang/codewood/releases)。
+发现新版本后，会在后台**静默**下载对应的安装包到
+`<配置目录>/cache/`：
+
+| 平台 | 安装包 |
+| --- | --- |
+| Windows | `…-windows-x64-setup.exe` |
+| macOS | `…-macos-<arch>.pkg` |
+| Linux | `…-linux-<arch>.AppImage`（跨发行版、免 root 的通用格式，缺失时退回 `.deb`） |
+
+下载支持**断点续传**：文件先写入 `<asset>.part`，并用 HTTP `Range` 从当前
+偏移继续，因此中途退出 Code Wood、下次启动时会接着下载而不是重来。缓存中
+只保留最新版本的安装包——开始新下载前会先删除旧安装包及其未完成文件。
+
+下载过程完全静默，**下载完成前界面上不会出现任何提示**。如果原地址下载失败
+（部分网络无法连通 GitHub 的资源 CDN），会自动改用
+`https://gh-proxy.com/<url>` 重试；设置 `CODEWOOD_UPDATE_PROXY=0` 可关闭该
+回退。
+
+下载完成后，标题栏最右侧（Windows/Linux 上位于最小化按钮左侧）会出现
+**Update** 按钮并显示版本号。点击它会启动安装程序并退出 Code Wood，
+以免安装时文件被占用。设置 `CODEWOOD_UPDATE=0` 可完全关闭该功能。
+
 ## 后端 serve 模式
 
 ```bash

@@ -32,6 +32,7 @@ from backend import BackendError, BackendProcess
 from bridge import resolve_frontend_url
 from browser_overlay import BrowserOverlay
 from notifier import TaskNotifier
+from updater import UpdateManager, update_check_enabled
 
 
 WINDOW_TITLE = "Code Wood"
@@ -383,6 +384,9 @@ class HostApi:
         self._backend_port: int = 0
         self._backend_url: str = ""
         self._backend_token: str = ""
+        # Set by ``main()``; the renderer polls it for update availability and
+        # triggers the installer launch.
+        self._updater: "UpdateManager | None" = None
 
     def attach_overlay(self, overlay: "BrowserOverlay") -> None:
         self._overlay = overlay
@@ -391,6 +395,44 @@ class HostApi:
         self._backend_port = int(port)
         self._backend_url = f"http://127.0.0.1:{port}"
         self._backend_token = token
+
+    def attach_updater(self, updater: "UpdateManager") -> None:
+        self._updater = updater
+
+    def update_state(self) -> dict:
+        """Current auto-update state for the title-bar Update button.
+
+        Polled by the frontend while a download is in flight (the host also
+        pushes ``codewood:update-ready`` when a package finishes). Returns an
+        ``status`` of ``"idle"`` when the feature is disabled or unavailable,
+        so the renderer simply keeps the button hidden.
+        """
+        updater = self._updater
+        if updater is None:
+            return {
+                "status": "idle",
+                "version": "",
+                "progress": 0.0,
+                "received": 0,
+                "total": 0,
+                "error": "",
+            }
+        state = updater.state()
+        return {
+            "status": str(state.get("status") or "idle"),
+            "version": str(state.get("version") or ""),
+            "progress": float(state.get("progress") or 0.0),
+            "received": int(state.get("received") or 0),
+            "total": int(state.get("total") or 0),
+            "error": str(state.get("error") or ""),
+        }
+
+    def start_update_install(self) -> bool:
+        """Launch the downloaded installer and quit; True when it started."""
+        updater = self._updater
+        if updater is None:
+            return False
+        return bool(updater.install())
 
     def backend_info(self) -> dict:
         """Current backend endpoint for the frontend.
@@ -1500,6 +1542,37 @@ def _install_macos_close_to_hide() -> None:
         pass
 
 
+def _start_update_manager(host_api: "HostApi", window, on_quit) -> "UpdateManager | None":
+    """Start the automatic update checker for this window, or None when off.
+
+    The manager downloads a newer release's installer silently in the
+    background; when the package is ready the renderer is pushed a
+    ``codewood:update-ready`` event (it also polls ``update_state``) so the
+    title-bar Update button appears without a restart.
+
+    ``CODEWOOD_UPDATE=0`` disables the feature. A dev run (no bundled
+    ``app_info.py``) still works — the version simply resolves to an empty
+    string and no update is ever reported.
+    """
+    if not update_check_enabled():
+        return None
+
+    def _on_ready(state: dict) -> None:
+        try:
+            window.evaluate_js(
+                "window.dispatchEvent(new CustomEvent("
+                "'codewood:update-ready',"
+                f"{{detail: {json.dumps(state)}}}))"
+            )
+        except Exception:
+            pass
+
+    manager = UpdateManager(on_ready=_on_ready, on_quit=on_quit)
+    host_api.attach_updater(manager)
+    manager.start()
+    return manager
+
+
 def main() -> int:
     _apply_macos_dock_icon()
     backend = BackendProcess()
@@ -1571,6 +1644,34 @@ def main() -> int:
     notifier = TaskNotifier(port, token, window) if _task_notify_enabled() else None
     if notifier is not None:
         notifier.start()
+
+    def _quit_for_update() -> None:
+        """Leave Code Wood so the freshly downloaded installer can run.
+
+        Stopping the backend releases the one-dir bundle's file locks (Windows
+        refuses to overwrite a running executable) and ``os._exit`` guarantees
+        the installer is not blocked by a lingering main loop. The installer
+        itself was already spawned detached by the updater.
+        """
+        try:
+            overlay.destroy()
+        except Exception:
+            pass
+        if notifier is not None:
+            try:
+                notifier.stop()
+            except Exception:
+                pass
+        backend_stop.set()
+        try:
+            backend.stop()
+        except Exception:
+            pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+    updater = _start_update_manager(host_api, window, _quit_for_update)
 
     if sys.platform == "win32":
 
@@ -1713,6 +1814,11 @@ def main() -> int:
         webview.start(gui=_preferred_gui(), debug=debug)
     finally:
         backend_stop.set()
+        if updater is not None:
+            try:
+                updater.stop()
+            except Exception:
+                pass
         if notifier is not None:
             try:
                 notifier.stop()

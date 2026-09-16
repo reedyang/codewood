@@ -1,3 +1,19 @@
+/** Auto-update status reported by the desktop host (see desktop/host/updater.py). */
+export interface UpdateState {
+  status:
+    | "idle"
+    | "checking"
+    | "up-to-date"
+    | "downloading"
+    | "ready"
+    | "failed";
+  version: string;
+  progress: number;
+  received: number;
+  total: number;
+  error: string;
+}
+
 /** Typed accessor for the pywebview host bridge (``window.pywebview.api``).
  *
  * Only the methods the web layer actually calls are declared; every member is
@@ -42,6 +58,12 @@ export interface HostBridgeApi {
   /** Read the system clipboard as text (host-native, no browser permission
    *  prompt). Returns "" when the clipboard holds no text. */
   get_clipboard_text?: () => string | Promise<string>;
+  /** Auto-update state, polled while a package downloads. ``status`` is one
+   *  of "idle" | "checking" | "up-to-date" | "downloading" | "ready" |
+   *  "failed"; ``progress`` is 0..1. */
+  update_state?: () => UpdateState | Promise<UpdateState>;
+  /** Launch the downloaded installer and quit Code Wood. */
+  start_update_install?: () => boolean | Promise<boolean>;
   /** Current backend endpoint (port/token). Changes after a crash-restart,
    *  telling the frontend to rebuild its API client and reconnect. */
   backend_info?: () =>

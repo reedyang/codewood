@@ -62,6 +62,37 @@ and the terminal UI uses **one**.
 - The backend `serve` mode reuses the normal agent loop, so every GUI
   action maps to the same logic the terminal uses.
 
+## Automatic updates
+
+The GUI checks
+[github.com/reedyang/codewood/releases](https://github.com/reedyang/codewood/releases)
+at launch and then once an hour. When a newer release exists, the matching
+installer is downloaded **silently** in the background into
+`<config dir>/cache/`:
+
+| Platform | Package |
+| --- | --- |
+| Windows | `…-windows-x64-setup.exe` |
+| macOS | `…-macos-<arch>.pkg` |
+| Linux | `…-linux-<arch>.AppImage` (the distro-agnostic, no-root format; a `.deb` is used as a fallback) |
+
+Downloads are **resumable**: the payload is written to `<asset>.part` and an
+HTTP `Range` request continues from the current offset, so quitting Code Wood
+mid-download and starting it again later resumes instead of restarting. Only
+the newest release's package is kept — a stale package (and its partial file)
+is deleted before a new download begins.
+
+The download runs silently — **no UI appears until it completes**. If the
+origin download fails (GitHub's asset CDN is unreachable from some networks),
+the file is retried through `https://gh-proxy.com/<url>`; set
+`CODEWOOD_UPDATE_PROXY=0` to disable that fallback.
+
+Once the package is complete an **Update** button appears at the right end of
+the title bar (left of the minimize button on Windows/Linux) showing the
+release version. Clicking it launches the installer and quits Code Wood so the
+files are not locked while they are replaced. Set `CODEWOOD_UPDATE=0` to
+disable the feature entirely.
+
 ## Backend serve mode
 
 ```bash
