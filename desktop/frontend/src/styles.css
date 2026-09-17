@@ -6036,19 +6036,12 @@ h6.md-h {
 
 .model-trigger-label {
   min-width: 0;
-  max-width: 28ch;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-height: 1.15;
+  max-width: 52ch;
+  display: block;
   text-align: center;
-  white-space: normal;
+  white-space: nowrap;
   overflow: hidden;
-  overflow-wrap: anywhere;
-}
-
-.model-trigger-name {
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
 }
 
 .model-submenu-label {
