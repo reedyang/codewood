@@ -5972,7 +5972,7 @@ h6.md-h {
   align-items: center;
   justify-content: start;
   column-gap: 8px;
-  max-width: min(100%, 300px);
+  max-width: 100%;
 }
 
 .dropdown-menu.align-right {
