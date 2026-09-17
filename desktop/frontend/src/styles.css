@@ -1145,6 +1145,15 @@ body.resizing-y {
   padding: 8px 10px;
 }
 
+.models-search {
+  margin: 10px 0 6px;
+}
+
+.models-search .text-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .models-list {
   display: flex;
   flex-direction: column;

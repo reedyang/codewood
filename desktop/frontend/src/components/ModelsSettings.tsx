@@ -14,6 +14,16 @@ import {
 
 const FIXED_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 
+function modelMatchesSearch(name: string, rawQuery: string): boolean {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return true;
+  if (!query.includes("*")) return name.toLowerCase().includes(query);
+  const escaped = query
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(escaped.join(".*"), "i").test(name);
+}
+
 interface ModelsSettingsProps {
   onDirtyChange?: (dirty: boolean) => void;
   saveSignal?: number;
@@ -27,6 +37,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   const [dirty, setDirty] = useState(false);
   const [busyIdx, setBusyIdx] = useState<number | null>(null);
   const [errorByIdx, setErrorByIdx] = useState<Record<number, string>>({});
+  const [modelSearch, setModelSearch] = useState<Record<number, string>>({});
   const [revealKey, setRevealKey] = useState<Record<number, boolean>>({});
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [expandModel, setExpandModel] = useState<Record<string, boolean>>({});
@@ -503,6 +514,9 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
           return n > 1 ? `${raw}-${n}` : raw;
         };
         const collapsedLabel = effectiveLabel() || preset?.label || t("models.provider");
+        const visibleModels = p.models.filter((m) =>
+          modelMatchesSearch(m.name, modelSearch[idx] ?? ""),
+        );
         return (
           <div className={`models-provider ${isCollapsed ? "collapsed" : ""}`} key={idx}>
             <div className="models-provider-head">
@@ -645,11 +659,27 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                 </div>
                 {errorByIdx[idx] && <div className="models-error">{errorByIdx[idx]}</div>}
 
+                {p.models.length >= 5 && (
+                  <div className="models-search">
+                    <input
+                      className="text-input"
+                      type="search"
+                      aria-label={t("models.search")}
+                      placeholder={t("models.searchPlaceholder")}
+                      value={modelSearch[idx] ?? ""}
+                      onChange={(e) =>
+                        setModelSearch((prev) => ({ ...prev, [idx]: e.target.value }))
+                      }
+                    />
+                  </div>
+                )}
+
                 <div className="models-list">
                   {p.models.length === 0 ? (
                     <div className="models-empty">{t("models.noModels")}</div>
-                  ) : (
-                    p.models.map((m) => {
+                  ) : visibleModels.length === 0 ? (
+                    <div className="models-empty">{t("models.noSearchResults")}</div>
+                  ) : visibleModels.map((m) => {
                       const mkey = `${idx}:${m.name}`;
                       // Track whether the API provided a context_window for this model.
                       const apiCtx = fetchContextAttr[mkey];
@@ -833,8 +863,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                           )}
                         </div>
                       );
-                    })
-                  )}
+                    })}
                 </div>
               </>
             )}
