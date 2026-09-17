@@ -20,6 +20,14 @@ logger = logging.getLogger(f"{get_app_logger_root()}.embedding")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+# ORT ships a Microsoft 1DS telemetry SDK that starts its uploader thread and
+# persistent device id the moment the native module is imported, i.e. before
+# Python can call ``disable_telemetry_events()``. On Apple Silicon that
+# background HttpClientManager/HttpResponseDecoder can crash on a
+# recursive_mutex lock (system_error -> abort), producing a macOS "Python quit
+# unexpectedly" report. The env var must therefore be set before ``import
+# onnxruntime`` ever runs.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 _EMBEDDING_DIM = 384
 _SCHEMA_VERSION = 1
@@ -239,8 +247,10 @@ class EmbeddingProvider:
             # HTTP from a background worker thread. On Apple Silicon its
             # HttpResponseDecoder callback can crash on a recursive_mutex lock
             # (system_error -> abort), producing a macOS "Python quit
-            # unexpectedly" report. Disabling telemetry collection stops those
-            # uploads from ever starting.
+            # unexpectedly" report. ``ORT_DISABLE_TELEMETRY=1`` (set at module
+            # import, above) already keeps the uploader from being created; this
+            # API call is belt-and-braces for the case where the env var was
+            # cleared by an embedder before the import happened.
             try:
                 ort.disable_telemetry_events()
             except Exception:
