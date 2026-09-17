@@ -2200,23 +2200,96 @@ def fetch_openai_compatible_models(
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
+    # Keep model-discovery failures diagnosable without ever logging the API
+    # key, Authorization header, response body, or proxy values.
+    try:
+        proxy_configured = bool(
+            requests.utils.get_environ_proxies(f"{root}/models")
+        )
+    except Exception:
+        proxy_configured = False
+    _OPENAI_ROUTE_LOG.info(
+        "model discovery start: base_url=%s api_mode=compatible key_present=%s "
+        "proxy_configured=%s",
+        root,
+        bool(key),
+        proxy_configured,
+    )
+
     candidates = [f"{root}/models"]
     if not root.endswith("/v1"):
         candidates.append(f"{root}/v1/models")
 
     last_error: Optional[Exception] = None
     for url in candidates:
+        started = time.monotonic()
+        resp = None
+        _OPENAI_ROUTE_LOG.info("model discovery request: method=GET url=%s", url)
         try:
             resp = requests.get(url, headers=headers, verify=False, timeout=30)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:  # noqa: BLE001 - try next candidate
             last_error = e
+            status = getattr(resp, "status_code", None)
+            _OPENAI_ROUTE_LOG.warning(
+                "model discovery failed: url=%s status=%s elapsed_ms=%d "
+                "exception_type=%s",
+                url,
+                status if status is not None else "none",
+                int((time.monotonic() - started) * 1000),
+                type(e).__name__,
+            )
             continue
-        return _extract_models_with_context(data, context_length_attr_name)
+        models = _extract_models_with_context(data, context_length_attr_name)
+        shape = _describe_model_response_shape(data)
+        _OPENAI_ROUTE_LOG.info(
+            "model discovery success: url=%s status=%s elapsed_ms=%d model_count=%d "
+            "response_shape=%s",
+            url,
+            resp.status_code,
+            int((time.monotonic() - started) * 1000),
+            len(models),
+            shape,
+        )
+        return models
     if last_error is not None:
         raise last_error
     return []
+
+
+def _describe_model_response_shape(data: Any) -> str:
+    """Return safe structural diagnostics for an advertised-model response.
+
+    Values are intentionally excluded: model names and provider metadata may
+    be sensitive, while keys/types/counts are sufficient to diagnose schema
+    compatibility.
+    """
+    if isinstance(data, list):
+        items = data
+        top = "list"
+    elif isinstance(data, dict):
+        top = "dict:" + ",".join(sorted(str(k) for k in data.keys())[:20])
+        items = None
+        for key in ("data", "models", "items", "results"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                items = candidate
+                break
+        if items is None:
+            return f"{top};items=none"
+    else:
+        return f"{type(data).__name__};items=none"
+
+    item_keys = set()
+    item_types = set()
+    for item in items[:5]:
+        item_types.add(type(item).__name__)
+        if isinstance(item, dict):
+            item_keys.update(str(k) for k in item.keys())
+    keys = ",".join(sorted(item_keys)[:20]) or "-"
+    types = ",".join(sorted(item_types)) or "-"
+    return f"{top};items={len(items)};item_types={types};item_keys={keys}"
 
 
 def _extract_models_with_context(
@@ -2244,7 +2317,13 @@ def _extract_models_with_context(
         if isinstance(item, str):
             name = item.strip()
         elif isinstance(item, dict):
-            name = str(item.get("id") or item.get("name") or "").strip()
+            name = str(
+                item.get("id")
+                or item.get("name")
+                or item.get("model")
+                or item.get("model_id")
+                or ""
+            ).strip()
         if not name or name in seen:
             continue
         seen.add(name)

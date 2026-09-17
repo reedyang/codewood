@@ -266,10 +266,16 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
             };
           },
         );
+        const fetchedNames = new Set(
+          fetched.map((e) => (typeof e === "string" ? e : e.name)),
+        );
         for (const m of prov.models) {
-          if (!fetched.some((e) => (typeof e === "string" ? e : e.name) === m.name)) {
-            merged.push(m);
-          }
+          if (fetchedNames.has(m.name)) continue;
+          // A manual refresh is authoritative for models that the user has
+          // deselected: if the provider no longer advertises one, remove it
+          // instead of keeping a stale unchecked entry forever. Silent
+          // startup refreshes remain non-destructive.
+          if (silent || m.enabled) merged.push(m);
         }
         return { ...prov, models: merged };
       }),

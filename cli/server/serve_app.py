@@ -7728,11 +7728,15 @@ class ServeApp:
         except Exception:
             api_key = api_key_raw
 
-        # ---- Cache key derived from base_url + attribute name ----
+        # ---- Cache key derived from endpoint, context attribute, and a
+        # non-reversible API-key digest.  The key itself must never be written
+        # to disk or logs, and providers using different credentials must not
+        # reuse one another's model catalog.
         cache_dir = Path(self.agent.config_dir) / "cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
+        api_key_digest = hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else "no-key"
         cache_key = hashlib.sha256(
-            f"{base_url}|{context_attr}".encode()
+            f"{base_url}|{context_attr}|{api_key_digest}".encode()
         ).hexdigest()[:16]
         cache_path = cache_dir / f"models_{cache_key}.json"
 
@@ -7745,7 +7749,14 @@ class ServeApp:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
                 if isinstance(cached, dict):
                     ts = cached.get("_ts", 0)
-                    if now - ts < 300 and isinstance(cached.get("models"), list):
+                    # Never treat an empty catalog as a successful cache hit.
+                    # A transient gateway/schema problem must be retried on
+                    # the next refresh instead of being hidden for the TTL.
+                    if (
+                        now - ts < 300
+                        and isinstance(cached.get("models"), list)
+                        and len(cached["models"]) > 0
+                    ):
                         result = {"ok": True, "models": cached["models"]}
                         return result
             except Exception:  # noqa: BLE001 - stale cache, ignore
@@ -7760,14 +7771,17 @@ class ServeApp:
                 api_key=api_key,
                 context_length_attr_name=context_attr,
             )
-            # Write to cache.
-            try:
-                cache_path.write_text(
-                    json.dumps({"_ts": now, "models": models}, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-            except Exception:  # noqa: BLE001 - cache write failure is non-fatal
-                pass
+            # Only cache a non-empty catalog.  Empty results are valid enough
+            # to return to the caller, but are not stable enough to suppress a
+            # later retry.
+            if models:
+                try:
+                    cache_path.write_text(
+                        json.dumps({"_ts": time.time(), "models": models}, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                except Exception:  # noqa: BLE001 - cache write failure is non-fatal
+                    pass
             return {"ok": True, "models": models}
         except Exception as e:  # noqa: BLE001 - surface a clean message to UI
             return {"ok": False, "error": str(e)[:300]}
