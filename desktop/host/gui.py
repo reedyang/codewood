@@ -12,6 +12,7 @@ Dock icon brings the window back, and Cmd+Q / "Quit Code Wood" quits.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import threading
@@ -48,6 +49,7 @@ _MACOS_REOPEN_STATE: dict = {}
 
 
 MIN_WIDTH = 960
+MIN_CONTENT_WIDTH = 480
 MIN_HEIGHT = 640
 
 
@@ -1058,7 +1060,14 @@ class HostApi:
         except Exception:
             return False
 
-    def set_window_geometry(self, x: float, y: float, width: float, height: float) -> None:
+    def set_window_geometry(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        min_width: float | None = None,
+    ) -> None:
         """Resize/move the OS window (drives the web-rendered resize grips).
 
         WebView2 covers the frameless window edges and swallows the native
@@ -1069,7 +1078,19 @@ class HostApi:
         if window is None:
             return
         try:
-            w = max(MIN_WIDTH, int(round(width)))
+            if min_width is None:
+                effective_min_width = MIN_WIDTH
+            elif (
+                isinstance(min_width, bool)
+                or not isinstance(min_width, (int, float))
+                or not math.isfinite(float(min_width))
+            ):
+                return
+            else:
+                effective_min_width = int(round(float(min_width)))
+                if not MIN_CONTENT_WIDTH <= effective_min_width <= MIN_WIDTH:
+                    return
+            w = max(effective_min_width, int(round(width)))
             h = max(MIN_HEIGHT, int(round(height)))
             nx = int(round(x))
             ny = int(round(y))
@@ -1607,7 +1628,7 @@ def main() -> int:
         url=url,
         width=1140,
         height=780,
-        min_size=(960, 640),
+        min_size=(MIN_CONTENT_WIDTH, MIN_HEIGHT),
         frameless=sys.platform != "darwin",
         easy_drag=False,
         text_select=True,

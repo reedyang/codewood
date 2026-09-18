@@ -4,13 +4,29 @@ type Dir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 const DIRS: Dir[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 
-const MIN_WIDTH = 960;
+const BASE_MIN_WIDTH = 960;
+const SIDEBAR_MIN_WIDTH = 240;
+const RIGHT_PANEL_MIN_WIDTH = 240;
 const MIN_HEIGHT = 640;
 
 interface HostGeometryApi {
-  set_window_geometry?: (x: number, y: number, width: number, height: number) => void;
+  set_window_geometry?: (
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    minWidth?: number,
+  ) => void;
   start_window_resize?: (direction: Dir) => boolean | Promise<boolean>;
   toggle_vertical_maximize?: () => boolean;
+}
+
+export function getMinWindowWidth(sidebarOpen: boolean, rightPanelOpen: boolean): number {
+  return (
+    BASE_MIN_WIDTH -
+    (sidebarOpen ? 0 : SIDEBAR_MIN_WIDTH) -
+    (rightPanelOpen ? 0 : RIGHT_PANEL_MIN_WIDTH)
+  );
 }
 
 function hostApi(): HostGeometryApi | undefined {
@@ -22,7 +38,7 @@ function hostApi(): HostGeometryApi | undefined {
  * swallows the native resize hit-test, so we drive resizing from JS using the
  * window's on-screen position (CSS pixels) and call back into the host.
  */
-export function ResizeGrips() {
+export function ResizeGrips({ sidebarOpen, rightPanelOpen }: { sidebarOpen: boolean; rightPanelOpen: boolean }) {
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
   const frameRef = useRef<number | null>(null);
 
@@ -31,6 +47,32 @@ export function ResizeGrips() {
     window.addEventListener("pywebviewready", onReady);
     return () => window.removeEventListener("pywebviewready", onReady);
   }, []);
+
+  useEffect(() => {
+    const ensureMinimumWidth = () => {
+      const api = hostApi();
+      if (!api?.set_window_geometry) {
+        return;
+      }
+      const minWidth = getMinWindowWidth(sidebarOpen, rightPanelOpen);
+      if (window.innerWidth >= minWidth) {
+        return;
+      }
+      api.set_window_geometry(
+        window.screenX,
+        window.screenY,
+        minWidth,
+        window.innerHeight,
+        minWidth,
+      );
+    };
+
+    // The state can change before pywebview exposes its API on first launch.
+    // Retrying on readiness also covers that startup ordering.
+    ensureMinimumWidth();
+    window.addEventListener("pywebviewready", ensureMinimumWidth);
+    return () => window.removeEventListener("pywebviewready", ensureMinimumWidth);
+  }, [sidebarOpen, rightPanelOpen]);
 
   if (!native) {
     return null;
@@ -78,6 +120,7 @@ export function ResizeGrips() {
       w: window.innerWidth,
       h: window.innerHeight,
     };
+    const minWidth = getMinWindowWidth(sidebarOpen, rightPanelOpen);
 
     const apply = (mx: number, my: number) => {
       const dx = mx - start.mx;
@@ -98,11 +141,11 @@ export function ResizeGrips() {
         y = start.y + dy;
       }
       // Clamp to the minimum size, keeping the anchored edge in place.
-      if (w < MIN_WIDTH) {
+      if (w < minWidth) {
         if (dir.includes("w")) {
-          x -= MIN_WIDTH - w;
+          x -= minWidth - w;
         }
-        w = MIN_WIDTH;
+        w = minWidth;
       }
       if (h < MIN_HEIGHT) {
         if (dir.includes("n")) {
@@ -110,7 +153,7 @@ export function ResizeGrips() {
         }
         h = MIN_HEIGHT;
       }
-      api.set_window_geometry?.(x, y, w, h);
+      api.set_window_geometry?.(x, y, w, h, minWidth);
     };
 
     const onMove = (ev: MouseEvent) => {

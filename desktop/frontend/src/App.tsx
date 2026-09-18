@@ -228,7 +228,7 @@ function Shell() {
 
       {aboutOpen && <AboutDialog onClose={closeAbout} />}
       {!settingsOpen && noModelConfigured && <NoModelGuide />}
-      <ResizeGrips />
+      <ResizeGrips sidebarOpen={!collapsed && !settingsOpen} rightPanelOpen={!settingsOpen && planOpen} />
     </div>
   );
 }
