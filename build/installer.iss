@@ -11,7 +11,7 @@
 ; Defaults below keep the script runnable standalone for quick iteration.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.1.2"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist\codewood"
