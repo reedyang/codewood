@@ -10,6 +10,7 @@ host only keeps the latest plan available as in-flight model context.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from .base import BaseTool
@@ -109,7 +110,11 @@ class UpdatePlanTool(BaseTool):
     @classmethod
     def validate_plan_items(cls, raw_plan: Any) -> List[Dict[str, str]]:
         if not isinstance(raw_plan, list):
-            raise PlanValidationError("plan must be a list of {step, status} items")
+            # Some model providers (e.g. llm-gateway) serialize array-typed tool
+            # arguments as a JSON-encoded string rather than a structured array.
+            # Recover the list so the tool tolerates that form instead of failing
+            # every call.
+            raw_plan = cls._decode_plan_string(raw_plan)
         if not raw_plan:
             raise PlanValidationError("plan must contain at least one step")
         if len(raw_plan) > MAX_PLAN_ITEMS:
@@ -133,6 +138,30 @@ class UpdatePlanTool(BaseTool):
                 "plan must have at most one step with status 'in_progress'"
             )
         return items
+
+    @staticmethod
+    def _decode_plan_string(raw_plan: Any) -> Any:
+        if not isinstance(raw_plan, str):
+            raise PlanValidationError(
+                "plan must be a JSON array of {step, status} objects"
+            )
+        text = raw_plan.strip()
+        if not (text.startswith("[") and text.endswith("]")):
+            raise PlanValidationError(
+                "plan must be a JSON array of {step, status} objects"
+            )
+        try:
+            decoded = json.loads(text)
+        except (ValueError, TypeError) as exc:
+            raise PlanValidationError(
+                "plan must be a JSON array of {step, status} objects; "
+                f"failed to parse the JSON-encoded array: {exc}"
+            )
+        if not isinstance(decoded, list):
+            raise PlanValidationError(
+                "plan must be a JSON array of {step, status} objects"
+            )
+        return decoded
 
     @classmethod
     def parse_args(cls, params: Dict[str, Any]) -> Dict[str, Any]:
