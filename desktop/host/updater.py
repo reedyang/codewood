@@ -38,6 +38,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -297,9 +298,45 @@ def is_newer(candidate: Any, current: Any) -> bool:
     return new + (0,) * (width - len(new)) > cur + (0,) * (width - len(cur))
 
 
+#: ``IMAGE_FILE_MACHINE_*`` PE header values of the architectures an installer
+#: can be built for, mapped to the names used in release asset file names.
+_PE_MACHINE_ARCH = {
+    0x014C: "x86",  # IMAGE_FILE_MACHINE_I386
+    0x01C4: "arm64",  # IMAGE_FILE_MACHINE_ARMNT (32-bit ARM)
+    0x8664: "x64",  # IMAGE_FILE_MACHINE_AMD64
+    0xAA64: "arm64",  # IMAGE_FILE_MACHINE_ARM64
+}
+
+
+def _windows_build_arch() -> str:
+    """Architecture the running executable was built for (``""`` when unknown).
+
+    On Windows ``platform.machine()`` describes the *machine*, not the running
+    process: an x64 build emulated on Windows-on-ARM still reports ``"ARM64"``
+    (via ``PROCESSOR_ARCHITEW6432``). Selecting the installer from that value
+    made such a build reject its own ``…-windows-x64-…`` package and never
+    update. The installer has to match the running build, so the PE header of
+    the running executable is inspected instead — the same trick as
+    ``cli/main.py:_is_arm64_python``.
+    """
+    if sys.platform != "win32":
+        return ""
+    try:
+        with open(sys.executable, "rb") as handle:
+            # DOS header: ``e_lfanew`` at offset 60 -> PE header offset.
+            handle.seek(60)
+            pe_offset = struct.unpack("<I", handle.read(4))[0]
+            handle.seek(pe_offset)
+            if handle.read(4) != b"PE\x00\x00":
+                return ""
+            return _PE_MACHINE_ARCH.get(struct.unpack("<H", handle.read(2))[0], "")
+    except Exception:
+        return ""
+
+
 def _machine_arch() -> str:
-    """Normalized CPU architecture of this machine (``arm64``/``x64``/…)."""
-    machine = platform.machine().lower()
+    """Normalized architecture of the running build (``arm64``/``x64``/…)."""
+    machine = (_windows_build_arch() or platform.machine()).lower()
     if machine in ("arm64", "aarch64"):
         return "arm64"
     if machine in ("x86_64", "amd64"):
@@ -334,10 +371,11 @@ def select_asset(assets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Pick the installer asset for this platform from a release's assets.
 
     Selection is by file name: the OS keyword must appear, the architecture
-    must match when the name names one, and the extension must be one of the
-    platform's installer formats (an ``.AppImage`` beats an ``.deb``, a
-    ``.pkg`` beats a ``.dmg``). Portable archives never match. Returns None
-    when the release ships nothing installable for this platform/arch.
+    of the running build (:func:`_machine_arch`) must match when the name
+    names one, and the extension must be one of the platform's installer
+    formats (an ``.AppImage`` beats a ``.deb``, a ``.pkg`` beats a ``.dmg``).
+    Portable archives never match. Returns None when the release ships
+    nothing installable for this platform/arch.
     """
     os_keywords, extensions = _platform_asset_names()
     arch_groups = _arch_alias_groups()

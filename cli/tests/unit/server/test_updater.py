@@ -10,6 +10,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -249,6 +250,112 @@ class SelectAssetTests(unittest.TestCase):
                     )
                 )
         self.assertIsNone(chosen)
+
+
+def _write_fake_pe(path, machine):
+    """Write a minimal PE image whose header reports *machine*."""
+    image = bytearray(72)
+    struct.pack_into("<I", image, 60, 64)  # e_lfanew -> PE header offset
+    image[64:68] = b"PE\x00\x00"
+    struct.pack_into("<H", image, 68, machine)
+    path.write_bytes(bytes(image))
+    return path
+
+
+class BuildArchTests(unittest.TestCase):
+    """The installer must match the *running build*, not the machine arch.
+
+    An x64 build emulated on Windows-on-ARM reports
+    ``platform.machine() == "ARM64"``; selecting the asset from the machine
+    architecture made such a build reject its own ``…-windows-x64-…``
+    installer, so it silently never updated.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.exe = Path(self._tmp.name) / "codewood.exe"
+
+    def test_reads_the_pe_header_of_the_running_executable(self):
+        with patch.object(updater_mod.sys, "platform", "win32"):
+            with patch.object(
+                updater_mod.sys,
+                "executable",
+                str(_write_fake_pe(self.exe, 0x8664)),
+            ):
+                self.assertEqual(updater_mod._windows_build_arch(), "x64")
+            with patch.object(
+                updater_mod.sys,
+                "executable",
+                str(_write_fake_pe(self.exe, 0xAA64)),
+            ):
+                self.assertEqual(updater_mod._windows_build_arch(), "arm64")
+
+    def test_returns_empty_when_not_windows_or_not_a_pe(self):
+        with patch.object(updater_mod.sys, "platform", "linux"):
+            with patch.object(
+                updater_mod.sys,
+                "executable",
+                str(_write_fake_pe(self.exe, 0x8664)),
+            ):
+                self.assertEqual(updater_mod._windows_build_arch(), "")
+        missing = Path(self._tmp.name) / "missing.exe"
+        self.exe.write_bytes(b"not a pe image")
+        with patch.object(updater_mod.sys, "platform", "win32"):
+            with patch.object(updater_mod.sys, "executable", str(missing)):
+                self.assertEqual(updater_mod._windows_build_arch(), "")
+            with patch.object(updater_mod.sys, "executable", str(self.exe)):
+                self.assertEqual(updater_mod._windows_build_arch(), "")
+
+    def test_build_arch_wins_over_machine_arch_on_windows(self):
+        with patch.object(updater_mod.sys, "platform", "win32"):
+            with patch.object(
+                updater_mod.sys,
+                "executable",
+                str(_write_fake_pe(self.exe, 0x8664)),
+            ):
+                with patch.object(
+                    updater_mod.platform, "machine", return_value="ARM64"
+                ):
+                    self.assertEqual(updater_mod._machine_arch(), "x64")
+
+    def test_x64_build_on_arm64_machine_takes_the_x64_installer(self):
+        with patch.object(updater_mod.sys, "platform", "win32"):
+            with patch.object(
+                updater_mod.sys,
+                "executable",
+                str(_write_fake_pe(self.exe, 0x8664)),
+            ):
+                with patch.object(
+                    updater_mod.platform, "machine", return_value="ARM64"
+                ):
+                    chosen = updater_mod.select_asset(
+                        _assets(
+                            "CodeWood-0.2.0-windows-x64-portable.zip",
+                            "CodeWood-0.2.0-windows-x64-setup.exe",
+                        )
+                    )
+        self.assertEqual(chosen["name"], "CodeWood-0.2.0-windows-x64-setup.exe")
+
+    def test_arm64_build_ignores_the_x64_installer(self):
+        with patch.object(updater_mod.sys, "platform", "win32"):
+            with patch.object(
+                updater_mod.sys,
+                "executable",
+                str(_write_fake_pe(self.exe, 0xAA64)),
+            ):
+                self.assertIsNone(
+                    updater_mod.select_asset(
+                        _assets(
+                            "CodeWood-0.2.0-windows-x64-setup.exe",
+                            "CodeWood-0.2.0-windows-x64-portable.zip",
+                        )
+                    )
+                )
+                chosen = updater_mod.select_asset(
+                    _assets("CodeWood-0.2.0-windows-arm64-setup.exe")
+                )
+        self.assertEqual(chosen["name"], "CodeWood-0.2.0-windows-arm64-setup.exe")
 
 
 class DownloadTests(unittest.TestCase):
