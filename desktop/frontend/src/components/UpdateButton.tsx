@@ -25,15 +25,15 @@ export function UpdateButton() {
   const launchedRef = useRef(false);
 
   useEffect(() => {
-    const api = hostApi();
-    if (!api || typeof api.update_state !== "function") {
-      return;
-    }
     let cancelled = false;
     let timer: number | undefined;
 
     const poll = async () => {
       let next = IDLE_POLL_MS;
+      const api = hostApi();
+      if (!api || typeof api.update_state !== "function") {
+        return;
+      }
       try {
         const info = await api.update_state!();
         if (cancelled) {
@@ -58,6 +58,9 @@ export function UpdateButton() {
       void poll();
     };
 
+    // pywebview injects its API after the frontend has mounted on startup.
+    // Keep listening even when the first hostApi() lookup returns undefined.
+    window.addEventListener("pywebviewready", onReady);
     window.addEventListener("codewood:update-ready", onReady);
     void poll();
     return () => {
@@ -65,6 +68,7 @@ export function UpdateButton() {
       if (timer !== undefined) {
         window.clearTimeout(timer);
       }
+      window.removeEventListener("pywebviewready", onReady);
       window.removeEventListener("codewood:update-ready", onReady);
     };
   }, []);

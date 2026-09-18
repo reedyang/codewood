@@ -47,13 +47,17 @@ def _assets(*names):
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, headers=None, chunks=(), on_chunk=None):
+    def __init__(self, status_code=200, headers=None, chunks=(), on_chunk=None, payload=None):
         self.status_code = status_code
         self.headers = headers or {}
         self._chunks = list(chunks)
         # Invoked after each chunk is handed out, so a test can simulate the
         # process quitting between two chunks of a transfer.
         self._on_chunk = on_chunk
+        self._payload = payload
+
+    def json(self):
+        return self._payload if self._payload is not None else {}
 
     def iter_content(self, chunk_size=None):
         del chunk_size
@@ -84,6 +88,11 @@ class _FakeSession:
 
     def close(self):
         self.closed = True
+
+
+class _FailingResponse(_FakeResponse):
+    def raise_for_status(self):
+        raise RuntimeError("metadata unavailable")
 
 
 def _release(tag, *names):
@@ -143,6 +152,25 @@ class ProxyTests(unittest.TestCase):
             self.assertTrue(updater_mod.proxy_fallback_enabled())
         with patch.dict("os.environ", {"CODEWOOD_UPDATE_PROXY": "0"}):
             self.assertFalse(updater_mod.proxy_fallback_enabled())
+
+
+class MetadataTests(unittest.TestCase):
+    def test_release_metadata_retries_through_mirror(self):
+        session = _FakeSession(
+            [
+                _FailingResponse(),
+                _FakeResponse(payload=[_release("v0.1.1")]),
+            ]
+        )
+        manager = UpdateManager(config_dir=Path(tempfile.mkdtemp()))
+        with patch.object(manager, "_session", return_value=session):
+            releases = manager.fetch_releases()
+        self.assertEqual(releases[0]["tag_name"], "v0.1.1")
+        self.assertEqual(session.requests[0]["url"], updater_mod._GITHUB_API_RELEASES_URL)
+        self.assertEqual(
+            session.requests[1]["url"],
+            updater_mod.proxied_url(updater_mod._GITHUB_API_RELEASES_URL),
+        )
 
 
 class SelectReleaseTests(unittest.TestCase):

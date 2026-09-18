@@ -62,6 +62,23 @@ describe("UpdateButton", () => {
     expect(updateState).not.toHaveBeenCalled();
   });
 
+  it("starts polling when pywebview becomes ready after mount", async () => {
+    setHostBridge(false);
+    render(<UpdateButton />);
+    expect(updateState).not.toHaveBeenCalled();
+
+    updateState.mockResolvedValue(
+      state({ status: "ready", version: "v1.0.1", progress: 1 }),
+    );
+    setHostBridge(true);
+    await act(async () => {
+      window.dispatchEvent(new Event("pywebviewready"));
+    });
+
+    expect(await screen.findByRole("button")).toBeTruthy();
+    expect(updateState).toHaveBeenCalled();
+  });
+
   it("stays hidden while the download is in flight", async () => {
     updateState.mockResolvedValue(
       state({ status: "downloading", version: "v0.2.0", progress: 0.42 }),

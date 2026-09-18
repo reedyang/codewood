@@ -557,27 +557,43 @@ class UpdateManager:
         return requests.Session()
 
     def fetch_releases(self) -> List[Dict[str, Any]]:
-        """Query the GitHub releases API; returns the raw release list."""
+        """Query GitHub releases, retrying metadata through the configured mirror."""
+        urls = [_GITHUB_API_RELEASES_URL]
+        if proxy_fallback_enabled():
+            urls.append(proxied_url(_GITHUB_API_RELEASES_URL))
         session = self._session()
+        last_error: Optional[Exception] = None
         try:
-            response = session.get(
-                _GITHUB_API_RELEASES_URL,
-                headers={
-                    "User-Agent": _user_agent(),
-                    "Accept": "application/vnd.github+json",
-                },
-                timeout=_META_TIMEOUT,
-            )
-            response.raise_for_status()
-            payload = response.json()
+            for index, url in enumerate(urls):
+                try:
+                    response = session.get(
+                        url,
+                        headers={
+                            "User-Agent": _user_agent(),
+                            "Accept": "application/vnd.github+json",
+                        },
+                        timeout=_META_TIMEOUT,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    if not isinstance(payload, list):
+                        return []
+                    return [rel for rel in payload if isinstance(rel, dict)]
+                except Exception as exc:
+                    last_error = exc
+                    if index + 1 < len(urls):
+                        log(
+                            f"release metadata request failed; retrying via mirror "
+                            f"{urls[index + 1]}"
+                        )
         finally:
             try:
                 session.close()
             except Exception:
                 pass
-        if not isinstance(payload, list):
-            return []
-        return [rel for rel in payload if isinstance(rel, dict)]
+        if last_error is not None:
+            raise last_error
+        return []
 
     def check_once(self) -> Dict[str, Any]:
         """Run a single check-and-download cycle; returns the new state."""
